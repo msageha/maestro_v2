@@ -19,15 +19,17 @@ import (
 // --- YAML input types (mirrors plan.SubmitInput/TaskInput/PhaseInput to avoid import cycle) ---
 
 type taskInputYAML struct {
-	Name               string   `yaml:"name"`
-	Purpose            string   `yaml:"purpose"`
-	Content            string   `yaml:"content"`
-	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
-	Constraints        []string `yaml:"constraints,omitempty"`
-	BlockedBy          []string `yaml:"blocked_by,omitempty"`
-	BloomLevel         int      `yaml:"bloom_level"`
-	Required           bool     `yaml:"required"`
-	ToolsHint          []string `yaml:"tools_hint,omitempty"`
+	Name               string                   `yaml:"name"`
+	Purpose            string                   `yaml:"purpose"`
+	Content            string                   `yaml:"content"`
+	AcceptanceCriteria string                   `yaml:"acceptance_criteria"`
+	Constraints        []string                 `yaml:"constraints,omitempty"`
+	BlockedBy          []string                 `yaml:"blocked_by,omitempty"`
+	BloomLevel         int                      `yaml:"bloom_level"`
+	Required           bool                     `yaml:"required"`
+	ToolsHint          []string                 `yaml:"tools_hint,omitempty"`
+	ExpectedPaths      []string                 `yaml:"expected_paths,omitempty"`
+	DefinitionOfAbort  *model.DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
 }
 
 type constraintInputYAML struct {
@@ -89,6 +91,7 @@ func newE2EDaemon(t *testing.T) *daemon.E2EDaemon {
 
 func writeTasksYAML(t *testing.T, tasks []taskInputYAML) string {
 	t.Helper()
+	tasks = withE2EDefaultTaskFields(tasks)
 	input := submitInputYAML{Tasks: tasks}
 	data, err := yamlv3.Marshal(input)
 	if err != nil {
@@ -103,6 +106,9 @@ func writeTasksYAML(t *testing.T, tasks []taskInputYAML) string {
 
 func writePhasesYAML(t *testing.T, phases []phaseInputYAML) string {
 	t.Helper()
+	for i := range phases {
+		phases[i].Tasks = withE2EDefaultTaskFields(phases[i].Tasks)
+	}
 	input := submitInputYAML{Phases: phases}
 	data, err := yamlv3.Marshal(input)
 	if err != nil {
@@ -115,8 +121,32 @@ func writePhasesYAML(t *testing.T, phases []phaseInputYAML) string {
 	return path
 }
 
+func withE2EDefaultTaskFields(tasks []taskInputYAML) []taskInputYAML {
+	out := make([]taskInputYAML, len(tasks))
+	copy(out, tasks)
+	for i := range out {
+		if len(out[i].ExpectedPaths) == 0 {
+			out[i].ExpectedPaths = []string{"."}
+		}
+		if out[i].DefinitionOfAbort == nil {
+			doa := model.DefaultDefinitionOfAbort()
+			out[i].DefinitionOfAbort = &doa
+		}
+	}
+	return out
+}
+
+func writeE2EVerifySnapshot(t *testing.T, e *daemon.E2EDaemon, commandID string) {
+	t.Helper()
+	path := filepath.Join(e.MaestroDir(), "state", "verify", commandID+".yaml")
+	if err := model.SaveVerifyConfig(path, &model.VerifyConfig{Build: []string{"git diff --check"}}); err != nil {
+		t.Fatalf("write verify snapshot: %v", err)
+	}
+}
+
 func callPlanSubmit(t *testing.T, e *daemon.E2EDaemon, commandID, tasksFile string) *uds.Response {
 	t.Helper()
+	writeE2EVerifySnapshot(t, e, commandID)
 	data, _ := json.Marshal(map[string]string{
 		"command_id": commandID,
 		"tasks_file": tasksFile,
@@ -135,6 +165,7 @@ func callPlanSubmit(t *testing.T, e *daemon.E2EDaemon, commandID, tasksFile stri
 
 func callPlanSubmitPhase(t *testing.T, e *daemon.E2EDaemon, commandID, tasksFile, phaseName string) *uds.Response {
 	t.Helper()
+	writeE2EVerifySnapshot(t, e, commandID)
 	data, _ := json.Marshal(map[string]string{
 		"command_id": commandID,
 		"tasks_file": tasksFile,

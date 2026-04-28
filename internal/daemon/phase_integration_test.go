@@ -172,6 +172,11 @@ func (e *recordingExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
 
 func (e *recordingExecutor) Close() error { return nil }
 
+// RespawnPaneToProjectRoot satisfies the AgentExecutor interface added
+// 2026-04-28 for Phase B's pre-cleanup pane respawn. The integration
+// test does not exercise that path, so a no-op stub is sufficient.
+func (e *recordingExecutor) RespawnPaneToProjectRoot(string) error { return nil }
+
 func (e *recordingExecutor) getCalls() []agent.ExecRequest {
 	e.mu.Lock()
 	defer e.mu.Unlock()

@@ -14,6 +14,9 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// QueueWriteParams aliases daemonapi.QueueWriteParams so daemon-internal
+// callers can keep their existing import surface after the request body
+// decoding moved into daemonapi.
 type QueueWriteParams = daemonapi.QueueWriteParams
 
 var validNotificationTypes = map[model.NotificationType]bool{

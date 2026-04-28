@@ -208,7 +208,7 @@ func (db *FingerprintDB) SaveJSON(path string) error {
 		return patterns[i].Fingerprint < patterns[j].Fingerprint
 	})
 
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(patterns, "", "  ")
@@ -226,7 +226,10 @@ func (db *FingerprintDB) SaveJSON(path string) error {
 // an empty DB so first-run startup needs no special handling.
 func LoadFingerprintDB(path string, maxSize int) (*FingerprintDB, error) {
 	db := NewFingerprintDB(maxSize)
-	data, err := os.ReadFile(path)
+	// path is supplied by daemon startup from a fixed maestroDir layout;
+	// the read does not honour user input, so gosec G304 (file
+	// inclusion) does not apply.
+	data, err := os.ReadFile(path) //nolint:gosec // controlled maestroDir-based path
 	if err != nil {
 		if os.IsNotExist(err) {
 			return db, nil

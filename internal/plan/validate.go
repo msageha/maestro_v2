@@ -2,11 +2,62 @@ package plan
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
+
+// workerIDPattern matches the configured worker slot naming scheme
+// (worker1, worker2, …). Used for fast-fail format validation of the
+// optional worker_id pinning field on TaskInput; existence against
+// agents.workers.count is checked downstream by AssignWorkers.
+var workerIDPattern = regexp.MustCompile(`^worker[1-9][0-9]*$`)
+
+// validateTaskWorkerPins runs the count-aware existence check for every
+// task's worker_id pin. Format-only validation (workerN shape) already
+// runs inside validateTaskFieldsCore; this layer additionally requires
+// that the numeric suffix is in [1, workerCount] so dry-run cannot pass
+// a typo like worker99 in a 2-worker config (2026-04-28 E2E retest2).
+//
+// fieldPrefix is the YAML path prefix used for error messages
+// ("tasks" for flat submits, "phases[<name>].tasks" for phased ones)
+// so validation errors point the operator at the offending entry.
+func validateTaskWorkerPins(tasks []TaskInput, workerCount int, fieldPrefix string) *ValidationErrors {
+	if workerCount <= 0 {
+		// Caller has not configured workers at all — `plan submit`'s
+		// downstream AssignWorkers path will surface the more useful
+		// "no workers configured" error. Skip the pin check here so
+		// the user does not receive a less-actionable secondary error.
+		return nil
+	}
+	errs := &ValidationErrors{}
+	for i, t := range tasks {
+		if t.WorkerID == "" {
+			continue
+		}
+		if !workerIDPattern.MatchString(t.WorkerID) {
+			// Format error is already reported by validateTaskFieldsCore;
+			// skip duplicate noise here.
+			continue
+		}
+		// workerN pattern guarantees the suffix is a positive integer.
+		var n int
+		if _, err := fmt.Sscanf(t.WorkerID, "worker%d", &n); err != nil || n < 1 {
+			continue
+		}
+		if n > workerCount {
+			errs.Add(fmt.Sprintf("%s[%d].worker_id", fieldPrefix, i),
+				fmt.Sprintf("worker_id %q references worker %d but only %d workers are configured (agents.workers.count=%d)",
+					t.WorkerID, n, workerCount, workerCount))
+		}
+	}
+	if errs.HasErrors() {
+		return errs
+	}
+	return nil
+}
 
 // BloomLevel range constants.
 const (
@@ -329,6 +380,18 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 	if task.RunOnMain && task.RunOnIntegration {
 		errs.Add(fieldPrefix, "run_on_main and run_on_integration are mutually exclusive; set at most one")
 	}
+
+	// worker_id pinning is optional, but when present it must look like a
+	// configured worker slot (worker1, worker2, …). Existence is verified
+	// later by AssignWorkers against the actual workers.count, so the
+	// format check here is purely a fast-fail for typos like "wroker1" or
+	// "worker_one" — same shape used by `plan add-task --worker-id`.
+	if task.WorkerID != "" {
+		if !workerIDPattern.MatchString(task.WorkerID) {
+			errs.Add(fieldPrefix+".worker_id",
+				fmt.Sprintf("invalid worker_id %q: must match workerN where N is a positive integer", task.WorkerID))
+		}
+	}
 }
 
 func validateNameUniqueness(names []string, fieldPrefix string, errs *ValidationErrors) {
@@ -407,11 +470,11 @@ func validateDefinitionOfDone(items []string, fieldPath string, errs *Validation
 
 func validateOperationType(op string, fieldPath string, errs *ValidationErrors) {
 	switch op {
-	case "", model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout:
+	case "", model.OperationTypeVerify, model.OperationTypeRepair:
 		return
 	default:
-		errs.Add(fieldPath, fmt.Sprintf("must be one of %q, %q, %q, got %q",
-			model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout, op))
+		errs.Add(fieldPath, fmt.Sprintf("must be one of %q, %q, got %q",
+			model.OperationTypeVerify, model.OperationTypeRepair, op))
 	}
 }
 

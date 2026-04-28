@@ -268,28 +268,137 @@ func (h *TaskRetryHandler) CreateVerifyRepairTask(originalTask *model.Task, fail
 }
 
 // RegisterRetryTaskInState registers a retry task in the command state.
-func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID string) error {
+//
+// The retry task is wired into command state the same way the planner-side
+// retry path (internal/plan/retry.go) does so that the daemon's queue scan
+// recognises it as a known task:
+//
+//   - predecessorTaskID is replaced by retryTask.ID in RequiredTaskIDs /
+//     OptionalTaskIDs / SystemCommitTaskID, preserving the original
+//     membership semantics (a retry of a required task stays required).
+//   - retryTask.ID is appended to the phase that contained the predecessor;
+//     if that phase had already terminated as `failed`, it is reopened to
+//     `active` so the retry is allowed to run.
+//   - TaskDependencies, RetryLineage, and TaskStates are populated for the
+//     new ID.
+//
+// Without these updates state_reader.isKnownTaskID would reject the retry
+// every scan, producing a `task_ready_state_update_failed ... task not
+// found` log loop at queue_scan_collect.markTaskReady (the original cause of
+// the orphan retry stuck in the worker queue).
+func (h *TaskRetryHandler) RegisterRetryTaskInState(retryTask *model.Task, predecessorTaskID, commandID string) error {
 	stateLockKey := fmt.Sprintf("state:%s", commandID)
 	h.lockMap.Lock(stateLockKey)
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
 	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		now := h.clock.Now().UTC().Format(time.RFC3339)
+
 		if state.TaskStates == nil {
 			state.TaskStates = make(map[string]model.Status)
 		}
+		if state.TaskDependencies == nil {
+			state.TaskDependencies = make(map[string][]string)
+		}
+		if state.RetryLineage == nil {
+			state.RetryLineage = make(map[string]string)
+		}
+
+		// Replace predecessor in required/optional/system_commit so the new ID
+		// inherits the same completion semantics. If the predecessor cannot be
+		// located (defensive — the caller is expected to pass the just-failed
+		// task), append the retry as optional so it remains a known task.
+		if predecessorTaskID == "" || !replaceTaskMembership(state, predecessorTaskID, retryTask.ID) {
+			h.log(LogLevelWarn,
+				"retry_task_predecessor_unmembered command=%s retry=%s predecessor=%q (adding retry to optional_task_ids as fallback)",
+				commandID, retryTask.ID, predecessorTaskID)
+			state.OptionalTaskIDs = append(state.OptionalTaskIDs, retryTask.ID)
+		}
+
+		// Track the retry inside the predecessor's phase. A failed phase has to
+		// be reopened (failed→active is the dedicated add-retry transition in
+		// model.ValidatePhaseTransition) so the queue scan dispatches the new
+		// task and so phase merge eventually picks up the retry's commit.
+		if predecessorTaskID != "" {
+			for i := range state.Phases {
+				phase := &state.Phases[i]
+				if !phaseContainsTask(phase, predecessorTaskID) {
+					continue
+				}
+				phase.TaskIDs = append(phase.TaskIDs, retryTask.ID)
+				if phase.Status == model.PhaseStatusFailed {
+					phase.Status = model.PhaseStatusActive
+					reopenedAt := now
+					phase.ReopenedAt = &reopenedAt
+					phase.CompletedAt = nil
+				}
+				break
+			}
+		}
+
+		// Inherit the predecessor's dependencies so blocked_by checks resolve
+		// against the same upstream tasks.
+		if predecessorTaskID != "" {
+			if deps, ok := state.TaskDependencies[predecessorTaskID]; ok && len(deps) > 0 {
+				cloned := make([]string, len(deps))
+				copy(cloned, deps)
+				state.TaskDependencies[retryTask.ID] = cloned
+			}
+		}
+
+		// Record lineage so future cascade-recovery walks can resolve the
+		// retry chain back to the original task.
+		if predecessorTaskID != "" {
+			state.RetryLineage[retryTask.ID] = predecessorTaskID
+		}
+
 		// §2.1: daemon-side retry tasks enter the lifecycle at `planned`,
 		// matching the planner-side retry path (internal/plan/retry.go).
-		state.TaskStates[task.ID] = model.StatusPlanned
-		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		state.TaskStates[retryTask.ID] = model.StatusPlanned
+		state.UpdatedAt = now
 		return nil
 	}); err != nil {
 		return fmt.Errorf("update state file: %w", err)
 	}
 
-	h.log(LogLevelInfo, "retry_task_registered task=%s command=%s",
-		task.ID, commandID)
+	h.log(LogLevelInfo, "retry_task_registered task=%s predecessor=%s command=%s",
+		retryTask.ID, predecessorTaskID, commandID)
 	return nil
+}
+
+// replaceTaskMembership swaps oldID for newID in RequiredTaskIDs,
+// OptionalTaskIDs, or SystemCommitTaskID. Returns true when the swap
+// happened. The first match wins (a task ID should only appear in one list).
+func replaceTaskMembership(state *model.CommandState, oldID, newID string) bool {
+	for i, id := range state.RequiredTaskIDs {
+		if id == oldID {
+			state.RequiredTaskIDs[i] = newID
+			return true
+		}
+	}
+	for i, id := range state.OptionalTaskIDs {
+		if id == oldID {
+			state.OptionalTaskIDs[i] = newID
+			return true
+		}
+	}
+	if state.SystemCommitTaskID != nil && *state.SystemCommitTaskID == oldID {
+		updated := newID
+		state.SystemCommitTaskID = &updated
+		return true
+	}
+	return false
+}
+
+// phaseContainsTask reports whether phase.TaskIDs already lists taskID.
+func phaseContainsTask(phase *model.Phase, taskID string) bool {
+	for _, tid := range phase.TaskIDs {
+		if tid == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 // AddRetryTaskToQueue acquires the queue lock for workerID and adds the retry task.
@@ -328,6 +437,11 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 // logical operation: register in command state, add to worker queue, and on
 // queue failure attempt rollback before falling back to reconciler recovery.
 //
+// predecessorTaskID identifies the just-failed task whose membership /
+// dependencies the retry should inherit. It is threaded into both
+// RegisterRetryTaskInState and rollbackRetryTaskFromState so that the
+// required/optional/phase rewiring can be reversed exactly on rollback.
+//
 // Error handling strategy (C-A7):
 //
 //	(a) Register retry task in state, then immediately attempt queue add.
@@ -336,25 +450,25 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 //
 // This minimises the window where an orphaned state entry exists without
 // a corresponding queue entry.
-func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, workerID string) error {
+func (h *TaskRetryHandler) RetryTaskAtomically(retryTask *model.Task, predecessorTaskID, commandID, workerID string) error {
 	// Step 1: Register in state
-	if err := h.RegisterRetryTaskInState(task, commandID); err != nil {
+	if err := h.RegisterRetryTaskInState(retryTask, predecessorTaskID, commandID); err != nil {
 		return fmt.Errorf("register retry task in state: %w", err)
 	}
 
 	// Step 2: Add to queue
-	if err := h.AddRetryTaskToQueue(task, workerID); err != nil {
+	if err := h.AddRetryTaskToQueue(retryTask, workerID); err != nil {
 		h.log(LogLevelError, "retry_atomic_queue_failed task=%s worker=%s command=%s error=%v",
-			task.ID, workerID, commandID, err)
+			retryTask.ID, workerID, commandID, err)
 
 		// Step 3a: Attempt to rollback state entry
-		if rollbackErr := h.rollbackRetryTaskFromState(task.ID, commandID); rollbackErr != nil {
+		if rollbackErr := h.rollbackRetryTaskFromState(retryTask.ID, predecessorTaskID, commandID); rollbackErr != nil {
 			// Step 3b: Rollback failed — mark for R1 reconciler recovery
 			h.log(LogLevelError, "retry_atomic_rollback_failed task=%s command=%s error=%v",
-				task.ID, commandID, rollbackErr)
-			if markErr := h.MarkRetryEnqueueFailed(task.ID, workerID, commandID); markErr != nil {
+				retryTask.ID, commandID, rollbackErr)
+			if markErr := h.MarkRetryEnqueueFailed(retryTask.ID, workerID, commandID); markErr != nil {
 				h.log(LogLevelError, "retry_atomic_mark_failed task=%s command=%s error=%v",
-					task.ID, commandID, markErr)
+					retryTask.ID, commandID, markErr)
 				return errors.Join(
 					fmt.Errorf("queue add failed: %w", err),
 					fmt.Errorf("rollback failed: %w", rollbackErr),
@@ -365,27 +479,60 @@ func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, work
 		}
 
 		h.log(LogLevelInfo, "retry_atomic_state_rolled_back task=%s command=%s",
-			task.ID, commandID)
+			retryTask.ID, commandID)
 		return fmt.Errorf("queue add failed (state rolled back): %w", err)
 	}
 
 	h.log(LogLevelInfo, "retry_task_atomic_completed task=%s worker=%s command=%s",
-		task.ID, workerID, commandID)
+		retryTask.ID, workerID, commandID)
 	return nil
 }
 
-// rollbackRetryTaskFromState removes a retry task entry from the command state.
-// Used when queue add fails after state registration to restore consistency.
-func (h *TaskRetryHandler) rollbackRetryTaskFromState(taskID, commandID string) error {
+// rollbackRetryTaskFromState removes a retry task entry from the command
+// state, undoing the additions made by RegisterRetryTaskInState. Used when
+// queue add fails after state registration to restore consistency.
+//
+// The phase status is intentionally not reverted from active back to failed:
+// the next CheckPhaseTransitions scan re-evaluates the phase from its current
+// task statuses (active → failed is a permitted transition), so leaving the
+// phase active for one extra scan is safe and avoids racing the transition
+// validator. ReopenedAt is cleared so audit reads don't see a phantom reopen.
+func (h *TaskRetryHandler) rollbackRetryTaskFromState(retryTaskID, predecessorTaskID, commandID string) error {
 	stateLockKey := fmt.Sprintf("state:%s", commandID)
 	h.lockMap.Lock(stateLockKey)
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
 	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
-		if state.TaskStates != nil {
-			delete(state.TaskStates, taskID)
+		// Undo task-level state additions.
+		delete(state.TaskStates, retryTaskID)
+		delete(state.TaskDependencies, retryTaskID)
+		delete(state.RetryLineage, retryTaskID)
+
+		// Undo membership swap. If the predecessor was already replaced, the
+		// retry ID will be in the slot we want to restore.
+		if predecessorTaskID != "" {
+			restored := replaceTaskMembership(state, retryTaskID, predecessorTaskID)
+			if !restored {
+				// Defensive fallback: the retry was added to OptionalTaskIDs
+				// in RegisterRetryTaskInState (when the predecessor was not
+				// found). Strip it so we don't leak an orphan ID.
+				state.OptionalTaskIDs = removeStringFromSlice(state.OptionalTaskIDs, retryTaskID)
+			}
+		} else {
+			state.OptionalTaskIDs = removeStringFromSlice(state.OptionalTaskIDs, retryTaskID)
 		}
+
+		// Undo phase membership and the failed→active reopen.
+		for i := range state.Phases {
+			phase := &state.Phases[i]
+			before := len(phase.TaskIDs)
+			phase.TaskIDs = removeStringFromSlice(phase.TaskIDs, retryTaskID)
+			if len(phase.TaskIDs) != before {
+				phase.ReopenedAt = nil
+			}
+		}
+
 		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
 		return nil
 	}); err != nil {
@@ -393,6 +540,17 @@ func (h *TaskRetryHandler) rollbackRetryTaskFromState(taskID, commandID string) 
 	}
 
 	return nil
+}
+
+// removeStringFromSlice returns a new slice with the first occurrence of
+// target removed. Returns the input unchanged when target is absent.
+func removeStringFromSlice(ss []string, target string) []string {
+	for i, s := range ss {
+		if s == target {
+			return append(ss[:i], ss[i+1:]...)
+		}
+	}
+	return ss
 }
 
 // MarkRetryEnqueueFailed marks a retry task in the command state as having failed

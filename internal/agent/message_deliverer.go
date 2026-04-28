@@ -137,12 +137,22 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	// Capture a pre-paste pane snapshot for the Claude submit probe to use
+	// as its initial growth baseline. Before this (2026-04-28), the probe
+	// recorded its baseline on the first post-paste capture (T+750ms),
+	// which meant content_growth detection only started at probe #2 and a
+	// slow worker that finished its first activity marker outside the
+	// remaining 7 × 750ms window was misclassified as
+	// `probe_budget_exhausted` even though the paste had already landed.
+	// Using the pre-paste hash makes any post-submit pane change a valid
+	// confirmation signal from probe #1 onwards.
+	prePaste := d.captureSubmitProbeBaseline(paneTarget, req)
 	if err := d.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
 		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
-	probe, err := d.confirmSubmittedOrRetry(ctx, paneTarget, req)
+	probe, err := d.confirmSubmittedOrRetry(ctx, paneTarget, req, prePaste)
 	if err != nil {
 		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=submit_confirm: %v",
 			req.AgentID, req.TaskID, err)
@@ -150,7 +160,18 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	}
 	if probe.Uncertain() {
 		err := fmt.Errorf("%w: status=%s attempts=%d", ErrSubmitConfirmUncertain, probe.Status, probe.Attempts)
-		d.log(logLevelWarn, "delivery_submit_unconfirmed agent_id=%s task_id=%s command_id=%s status=%s attempts=%d (non-retryable to avoid duplicate submit)",
+		// 2026-04-28 retest8: demoted from WARN to INFO. The historical
+		// WARN double-counted the uncertainty: the queue scan path emits
+		// `dispatch_uncertain_assume_running` (WARN) right after as the
+		// load-bearing operator-facing signal, and at the agent layer this
+		// branch is the *upstream* false-negative side — paste already
+		// landed; the probe simply did not see a confirming UI marker.
+		// 2026-04 retest7/8 flagged this as the dominant ERROR/WARN noise
+		// source: workers had completed task execution while operators saw
+		// `delivery_submit_unconfirmed` WARN lines and read them as
+		// genuine delivery failures. Keeping the structured error so the
+		// caller still distinguishes the path; only the log level moves.
+		d.log(logLevelInfo, "delivery_submit_unconfirmed agent_id=%s task_id=%s command_id=%s status=%s attempts=%d (non-retryable to avoid duplicate submit; queue path will surface dispatch_uncertain_assume_running for operator visibility)",
 			req.AgentID, req.TaskID, req.CommandID, probe.Status, probe.Attempts)
 		return ExecResult{Error: err, Retryable: false}
 	}
@@ -174,11 +195,107 @@ func (r submitProbeResult) Uncertain() bool {
 	return r.Status == submitProbeCaptureFailed || r.Status == submitProbeExhausted
 }
 
-func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest) (submitProbeResult, error) {
+// submitProbeBaseline captures a pane snapshot used to seed the Claude
+// submit probe's content-growth detector before we paste the envelope.
+// Empty Hash means we did not capture (e.g. probe was not needed for this
+// runtime, or the capture itself failed and we want the probe to fall back
+// to its post-paste baseline).
+type submitProbeBaseline struct {
+	Hash  string
+	Lines int
+}
+
+func (d *messageDeliverer) captureSubmitProbeBaseline(paneTarget string, req ExecRequest) submitProbeBaseline {
+	if !needsSubmitConfirmation(req.Message) {
+		return submitProbeBaseline{}
+	}
+	if !d.runtimeUsesClaudePromptUX(paneTarget) {
+		// confirmGenericRuntimeProgress takes its own baseline post-paste,
+		// matching its "any change is progress" contract. Capturing here
+		// would only invite false positives if the pane churns between
+		// pre-paste and the runtime's first redraw.
+		return submitProbeBaseline{}
+	}
+	content, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+	if err != nil {
+		// Non-fatal: confirmClaudeSubmittedOrRetry will fall back to the
+		// historical post-paste baseline path. Log at debug so we still
+		// have a breadcrumb when diagnosing exhausted probes.
+		d.log(logLevelDebug, "submit_probe_pre_paste_capture_failed agent_id=%s task_id=%s error=%v",
+			req.AgentID, req.TaskID, err)
+		return submitProbeBaseline{}
+	}
+	normalized := normalizeProbeSnapshot(content)
+	return submitProbeBaseline{
+		Hash:  contentHash(normalized),
+		Lines: countNonBlankLines(normalized),
+	}
+}
+
+func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest, prePaste submitProbeBaseline) (submitProbeResult, error) {
 	if !needsSubmitConfirmation(req.Message) {
 		return submitProbeResult{Status: submitProbeNotNeeded}, nil
 	}
+	// The pasted-text placeholder ("Pasted text #") and activity markers
+	// ("Thinking", "Working", "⏺", …) tested by submittedActivityVisible /
+	// pastedTextPlaceholderAtPrompt are Claude Code-specific UI tokens. Other
+	// runtimes (codex, gemini) never render them, so the Claude probe always
+	// exhausts on those panes.
+	// Earlier attempts to handle this by skipping the probe entirely produced
+	// the opposite failure mode: deliveries claimed success even when the
+	// pane was wedged on a blocking modal (codex first-run trust prompt,
+	// gemini onboarding) and the message never reached the runtime —
+	// dispatch_task_success was logged while worker app.txt stayed at the
+	// baseline. The probe is now split per UX family so each path runs the
+	// detection that matches the runtime it is observing.
+	if d.runtimeUsesClaudePromptUX(paneTarget) {
+		return d.confirmClaudeSubmittedOrRetry(ctx, paneTarget, req, prePaste)
+	}
+	return d.confirmGenericRuntimeProgress(ctx, paneTarget, req)
+}
+
+// confirmClaudeSubmittedOrRetry runs the Claude Code-specific probe.
+//
+// Primary signals:
+//   - "Pasted text #N" placeholder visible at the prompt → message stuck in
+//     the input box; resend Enter and keep probing.
+//   - Activity marker ("Thinking", "Working", "Running", "Bash(", "⏺") visible
+//     anywhere in the captured viewport → submission confirmed.
+//
+// Secondary signal (content-growth fallback): some submissions complete fast
+// enough — or push enough output that the marker scrolls past the captured
+// PromptReadyLines window — that no probe sample catches a marker even when
+// the Planner is plainly rendering output. To avoid the false-positive
+// "uncertain → exhausted" outcome reported by the codex / gemini E2E run,
+// the probe also remembers the first marker-free, placeholder-free snapshot
+// as a baseline and treats subsequent samples that meet BOTH conditions
+// below as confirmation:
+//
+//  1. Normalized content hash differs from the baseline. Normalization
+//     (stripANSI + per-line right-trim + blank-line collapse) absorbs
+//     cursor blinks and status-bar timer redraws.
+//  2. Non-blank line count is strictly greater than the baseline. This
+//     guards against false-positives from startup banner shuffles
+//     ("Welcome back" → "Still starting") that change content without
+//     adding new output. Real progress in Claude — a tool result, a
+//     "Thinking" line, a streamed assistant response — appends to the
+//     pane history, so the line count grows.
+//
+// The baseline is reset whenever a placeholder triggers a resend, since
+// post-Enter constitutes a fresh observation phase and the prior baseline
+// reflects the unsubmitted state.
+func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest, prePaste submitProbeBaseline) (submitProbeResult, error) {
 	retried := false
+	changeBaselineHash := prePaste.Hash
+	changeBaselineLines := prePaste.Lines
+	// A non-zero pre-paste hash means we already have a meaningful
+	// baseline from before the SendTextAndSubmit call — content_growth
+	// detection can fire on the very first probe rather than wasting the
+	// first observation on baseline capture. An empty hash means the
+	// pre-paste capture was skipped (probe not needed for this runtime
+	// family) or failed (logged at debug); fall back to the historical
+	// post-paste baseline path so behaviour is unchanged in those cases.
+	haveChangeBaseline := prePaste.Hash != ""
 	for attempt := 1; attempt <= maxSubmitProbeAttempts; attempt++ {
 		if err := sleepCtx(ctx, submitRetryProbeDelay); err != nil {
 			return submitProbeResult{Status: submitProbeExhausted, Attempts: attempt - 1}, fmt.Errorf("wait for submit probe: %w", err)
@@ -189,6 +306,24 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 				req.AgentID, req.TaskID, err)
 			return submitProbeResult{Status: submitProbeCaptureFailed, Attempts: attempt}, nil
 		}
+		// Activity-first ordering: if Claude is visibly processing
+		// ("Thinking", tool invocation, ⏺ status, …) the task has been
+		// received and the dispatcher's job is done — even if a stale
+		// "[Pasted text #1 +247 lines]" placeholder from the *previous*
+		// turn is still scrolled into the bottom-N-line search window.
+		// Without this short-circuit the probe would treat the lingering
+		// placeholder as "not yet submitted", fire an Enter retry, and
+		// flag the dispatch as exhausted/uncertain even though delivery
+		// already succeeded — the false-negative pattern surfaced by the
+		// 2026-04-28 retest7 (`submit_confirm pasted_text_still_at_prompt
+		// attempts=8` followed by a successful task completion).
+		if submittedActivityVisible(content) {
+			status := submitProbeConfirmed
+			if retried {
+				status = submitProbeRetried
+			}
+			return submitProbeResult{Status: status, Attempts: attempt}, nil
+		}
 		if pastedTextPlaceholderAtPrompt(content) {
 			d.log(logLevelWarn, "submit_confirm pasted_text_still_at_prompt agent_id=%s task_id=%s attempt=%d/%d",
 				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
@@ -196,9 +331,23 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 				return submitProbeResult{Status: submitProbeRetried, Attempts: attempt}, fmt.Errorf("send retry enter: %w", err)
 			}
 			retried = true
+			haveChangeBaseline = false
 			continue
 		}
-		if submittedActivityVisible(content) {
+		normalized := normalizeProbeSnapshot(content)
+		normalizedHash := contentHash(normalized)
+		nonBlankLines := countNonBlankLines(normalized)
+		if !haveChangeBaseline {
+			changeBaselineHash = normalizedHash
+			changeBaselineLines = nonBlankLines
+			haveChangeBaseline = true
+			continue
+		}
+		if normalizedHash != changeBaselineHash && nonBlankLines > changeBaselineLines {
+			d.log(logLevelInfo,
+				"submit_confirm content_growth_fallback agent_id=%s task_id=%s attempt=%d baseline_lines=%d current_lines=%d "+
+					"(no Claude UI marker captured but pane gained output lines — treating as confirmed)",
+				req.AgentID, req.TaskID, attempt, changeBaselineLines, nonBlankLines)
 			status := submitProbeConfirmed
 			if retried {
 				status = submitProbeRetried
@@ -207,18 +356,132 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 		}
 	}
 	// F-016: probe budget exhausted without seeing either the pasted-text
-	// placeholder OR an activity marker. We deliberately fall through to a
-	// non-error return rather than escalating to Retryable: re-delivering the
-	// envelope risks double plan_submit (Bug L). Surface the situation as a
-	// warn so operators can correlate post-hoc with worker progress.
-	d.log(logLevelWarn,
-		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d (non-retryable error returned to avoid double-submit; check worker progress manually if stalled)",
+	// placeholder OR an activity marker OR any content change. We deliberately
+	// fall through to a non-error return rather than escalating to Retryable:
+	// re-delivering the envelope risks double plan_submit (Bug L).
+	//
+	// 2026-04-28: demoted from WARN to INFO. The historical WARN level
+	// double-counted: dispatch_uncertain_assume_running (which the queue
+	// path emits next) is the load-bearing log line for operators, and
+	// queue lease recovery is the real failure detector. Pre-paste
+	// baseline (above) makes this branch much rarer; when it does fire
+	// the system path documents it as recoverable, so emitting WARN here
+	// added dashboard noise without changing operator action.
+	d.log(logLevelInfo,
+		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d "+
+			"(no marker captured within probe window; non-retryable to avoid double-submit, lease recovery will retry if the worker is genuinely stuck)",
 		req.AgentID, req.TaskID, maxSubmitProbeAttempts)
+	return submitProbeResult{Status: submitProbeExhausted, Attempts: maxSubmitProbeAttempts}, nil
+}
+
+// normalizeProbeSnapshot collapses transient differences in a tmux capture so
+// the Claude submit probe's content-growth fallback only fires on real
+// progress. It strips ANSI escapes, right-trims each line, drops the
+// trailing newline so input ending in "\n" is not treated as having an
+// extra blank trailing line, and collapses runs of blank lines. Cursor
+// blinks and status-bar timer redraws share their normalized form, while a
+// fresh output line / tool result / prompt clearing survives normalization
+// and changes the hash. Kept package-local because it is only meaningful in
+// the context of submit confirmation.
+func normalizeProbeSnapshot(content string) string {
+	stripped := strings.TrimRight(stripANSI(content), "\n")
+	if stripped == "" {
+		return ""
+	}
+	lines := strings.Split(stripped, "\n")
+	var b strings.Builder
+	b.Grow(len(stripped))
+	prevBlank := false
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t")
+		if trimmed == "" {
+			if prevBlank {
+				continue
+			}
+			prevBlank = true
+		} else {
+			prevBlank = false
+		}
+		b.WriteString(trimmed)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// countNonBlankLines returns the number of lines in s that contain at least
+// one non-whitespace character. Used by the Claude submit probe to require
+// that the pane "grows" before falling back to content-change confirmation.
+func countNonBlankLines(s string) int {
+	n := 0
+	for _, line := range strings.Split(s, "\n") {
+		if strings.TrimSpace(line) != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// confirmGenericRuntimeProgress is the runtime-agnostic submit confirmation
+// used by non-claude-code worker panes. It captures the joined pane content
+// once as the post-Enter baseline and then polls for any change across the
+// probe window. An accepted input drives observable churn — input box clears,
+// the conversation history grows, a thinking spinner advances. A pane that
+// stays byte-for-byte identical across the full window is the signature of
+// a blocking modal (codex first-run trust prompt, gemini onboarding) that
+// swallowed the paste before the runtime saw it. We treat that as the same
+// "uncertain" outcome the Claude path uses: the dispatcher keeps the
+// envelope non-retryable to avoid double-submit, and lease expiry drives a
+// fresh attempt once the operator clears the modal.
+func (d *messageDeliverer) confirmGenericRuntimeProgress(ctx context.Context, paneTarget string, req ExecRequest) (submitProbeResult, error) {
+	initial, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+	if err != nil {
+		d.log(logLevelWarn, "submit_confirm capture_failed agent_id=%s task_id=%s error=%v",
+			req.AgentID, req.TaskID, err)
+		return submitProbeResult{Status: submitProbeCaptureFailed, Attempts: 1}, nil
+	}
+	initialHash := contentHash(initial)
+	for attempt := 1; attempt <= maxSubmitProbeAttempts; attempt++ {
+		if err := sleepCtx(ctx, submitRetryProbeDelay); err != nil {
+			return submitProbeResult{Status: submitProbeExhausted, Attempts: attempt - 1}, fmt.Errorf("wait for submit probe: %w", err)
+		}
+		snapshot, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+		if err != nil {
+			d.log(logLevelWarn, "submit_confirm capture_failed agent_id=%s task_id=%s attempt=%d error=%v",
+				req.AgentID, req.TaskID, attempt, err)
+			return submitProbeResult{Status: submitProbeCaptureFailed, Attempts: attempt}, nil
+		}
+		if contentHash(snapshot) != initialHash {
+			return submitProbeResult{Status: submitProbeConfirmed, Attempts: attempt}, nil
+		}
+	}
+	d.log(logLevelWarn,
+		"submit_confirm probe_budget_exhausted_no_progress agent_id=%s task_id=%s attempts=%d "+
+			"(pane content stable across %s probe window; input may not have reached the runtime — "+
+			"check for blocking prompts like codex first-run trust)",
+		req.AgentID, req.TaskID, maxSubmitProbeAttempts,
+		time.Duration(maxSubmitProbeAttempts)*submitRetryProbeDelay)
 	return submitProbeResult{Status: submitProbeExhausted, Attempts: maxSubmitProbeAttempts}, nil
 }
 
 func needsSubmitConfirmation(message string) bool {
 	return strings.Contains(message, "\n")
+}
+
+// runtimeUsesClaudePromptUX reports whether the @runtime pane variable
+// indicates a runtime whose UI emits the Claude Code-specific pasted-text
+// placeholder + activity markers. Mirrors the fail-open shape used by
+// ClaudeProcessManager.paneRuntime: any read failure is treated as the
+// default (claude-code), which preserves the historical probe behaviour for
+// panes that were created before the @runtime variable existed.
+func (d *messageDeliverer) runtimeUsesClaudePromptUX(paneTarget string) bool {
+	rt, err := d.paneIO.GetUserVar(paneTarget, "runtime")
+	if err != nil {
+		return true
+	}
+	if rt == "" {
+		return true
+	}
+	return rt == model.RuntimeClaudeCode
 }
 
 func submittedActivityVisible(content string) bool {
@@ -231,6 +494,22 @@ func submittedActivityVisible(content string) bool {
 	return false
 }
 
+// pastedTextPlaceholderAtPrompt reports whether the live input area at the
+// bottom of the pane still shows the "[Pasted text #N +M lines]" placeholder
+// — the signal that Claude Code received the paste but has NOT yet processed
+// the Enter that submits it. The probe loop uses this to decide whether to
+// re-fire Enter.
+//
+// Scoping is critical: lines above the bottom-most prompt line are scrolled-
+// in pane history from previous turns. A "❯ [Pasted text #1 +247 lines]" in
+// the history (e.g. the prior task's input area, now scrolled up two screens)
+// must NOT trigger a retry, otherwise every dispatch on a hot pane racks up
+// false-positive retries and lands at submitProbeExhausted even though the
+// current paste was submitted seconds ago. The 2026-04-28 retest7 surfaced
+// exactly this: `submit_confirm pasted_text_still_at_prompt attempts=8`
+// followed by a successful task completion. The fix here is to consider
+// ONLY the first prompt-marker line walked back from the bottom; anything
+// above is history.
 func pastedTextPlaceholderAtPrompt(content string) bool {
 	lines := strings.Split(content, "\n")
 	checked := 0
@@ -239,30 +518,66 @@ func pastedTextPlaceholderAtPrompt(content string) bool {
 		if trimmed == "" {
 			continue
 		}
-		if strings.Contains(trimmed, pastedTextPlaceholder) &&
-			(strings.Contains(trimmed, "❯") || strings.HasPrefix(trimmed, ">")) {
-			return true
+		isPromptLine := strings.Contains(trimmed, "❯") || strings.HasPrefix(trimmed, ">")
+		if !isPromptLine {
+			checked++
+			continue
 		}
-		checked++
+		// Bottom-most prompt line found. If it still carries the
+		// placeholder the live input area has the unsubmitted paste;
+		// otherwise the prompt is empty / activity has consumed the
+		// turn and we treat history matches above as irrelevant.
+		return strings.Contains(trimmed, pastedTextPlaceholder)
 	}
 	return false
 }
 
-// clearAndConfirm sends /clear and confirms it was processed by the target application.
-// It retries up to ClearMaxAttempts times. Returns nil on confirmed clear, or an error
-// if all attempts fail (fail-closed: caller must NOT proceed with delivery).
+// clearAndConfirm sends /clear exactly once per attempt and confirms it was
+// processed by the target application. It retries up to ClearMaxAttempts times.
+// Returns nil on confirmed clear, or an error if all attempts fail (fail-closed:
+// caller must NOT proceed with delivery).
 //
-// Confirmation checks (per poll):
+// Send semantics: SendCommand pastes "/clear" with `send-keys -l` then sends
+// `Enter` as one logical action. The previous implementation followed that with
+// a 500ms wait + second `Enter` because earlier Claude Code releases displayed
+// a completion prompt for slash-commands and required confirmation. Claude
+// Code 2.x executes /clear immediately on the first Enter and treats a
+// subsequent Enter on the (now-cleared) input as "re-run last command",
+// causing /clear to fire twice on every task transition (observed in the
+// 2026-04-27 single-worker E2E run). The unconditional second Enter is
+// therefore removed; reliability is preserved by the existing pollUntilTimeout
+// confirmation and the per-attempt resend in this loop.
+//
+// Confirmation checks (per poll, evaluated by clearConfirmationPoller):
 //  1. "/clear" text is NOT visible near the bottom of the pane (primary signal --
-//     directly detects the production failure mode where /clear remains as unprocessed
-//     text in the input field).
-//  2. Pane content hash has changed from pre-clear snapshot (secondary signal).
+//     directly detects the production failure mode where /clear remained as
+//     unprocessed text in the input field). Stability alone never confirms.
+//  2. Pane content hash has changed from the pre-clear snapshot (secondary signal).
 //  3. Pane content is stable across two consecutive polls.
+//
+// Per-attempt resend (not per-Enter retry): if pollUntilTimeout cannot confirm
+// processing within ClearConfirmTimeoutSec, the next attempt resends "/clear"
+// in full. This keeps each attempt single-shot from the runtime's perspective —
+// the runtime sees one /clear per attempt, never one followed by a stray Enter.
 func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget string) error {
 	timeout := time.Duration(d.config.ClearConfirmTimeoutSec) * time.Second
 	pollInterval := time.Duration(d.config.ClearConfirmPollMs) * time.Millisecond
 	maxAttempts := d.config.ClearMaxAttempts
 	backoffMs := d.config.ClearRetryBackoffMs
+
+	// 2026-04 doubled-/clear E2E investigation: pane transcripts on Claude Code
+	// 2.x show "/clear" twice per task transition even when the daemon only
+	// invokes a single SendCommand. To rule out an extra send happening from
+	// some other code path, every clearAndConfirm call emits an INFO log on
+	// entry and immediately before each SendCommand("/clear"). Operators can
+	// grep `clear_send_invocation` in the agent_executor log: one entry per
+	// observed pane "/clear" line means the doubling is purely a Claude Code
+	// transcript artifact (echo + slash-command history line); two or more
+	// entries per transition would indicate a real double-send and point at a
+	// non-clearAndConfirm caller. The logs are concise and fire at most a
+	// handful of times per dispatch, so leaving them at INFO is a deliberate
+	// observability choice rather than a temporary debug hook.
+	d.log(logLevelInfo, "clear_send_begin pane=%s max_attempts=%d", paneTarget, maxAttempts)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -277,7 +592,14 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		}
 		preClearHash := contentHash(preClearContent)
 
-		// Send /clear with double-enter for reliability
+		// Send /clear once. SendCommand emits the literal "/clear" string and a
+		// single Enter to submit it. No additional Enter is sent — see the
+		// function-level comment for why a second Enter caused doubled /clear
+		// in Claude Code 2.x. The clear_send_invocation log immediately
+		// preceding this call is the canonical counter for "how many times
+		// did the daemon put '/clear' on the wire" — see the function-level
+		// comment for usage.
+		d.log(logLevelInfo, "clear_send_invocation pane=%s attempt=%d/%d", paneTarget, attempt, maxAttempts)
 		if err := d.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
 			d.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
@@ -287,26 +609,6 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 				continue
 			}
 			return fmt.Errorf("clear_confirm: %w after %d attempts: %w", ErrClearSendFailed, maxAttempts, err)
-		}
-
-		// Wait before sending second Enter (configurable; default 500ms).
-		// Claude's /clear command may trigger a completion prompt, requiring a
-		// second Enter. The delay ensures the first Enter is processed.
-		secondEnterDelay := time.Duration(d.config.ClearSecondEnterDelayMs) * time.Millisecond
-		if err := sleepCtx(ctx, secondEnterDelay); err != nil {
-			return fmt.Errorf("clear_confirm: wait cancelled: %w", err)
-		}
-
-		// Send second Enter to ensure /clear execution.
-		if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
-			d.log(logLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
-			if attempt < maxAttempts {
-				if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
-					return err
-				}
-				continue
-			}
-			return fmt.Errorf("clear_confirm: %w after %d attempts: %w", ErrSecondEnterFailed, maxAttempts, err)
 		}
 
 		// Poll for confirmation within timeout window
@@ -319,7 +621,7 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 			return err // context cancelled
 		}
 		if confirmed {
-			d.log(logLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
+			d.log(logLevelInfo, "clear_send_done pane=%s attempts_used=%d", paneTarget, attempt)
 			return nil
 		}
 

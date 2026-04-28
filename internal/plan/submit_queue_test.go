@@ -166,10 +166,10 @@ func TestWriteQueueEntries_PropagatesRunOnIntegration(t *testing.T) {
 	if tq.Tasks[0].RunOnMain {
 		t.Errorf("Task.RunOnMain should be false when only RunOnIntegration is set")
 	}
-	// §S0-1: RunOnIntegration は publish_conflict 解決タスク用なので rollout
-	// バケットに分類される必要がある。
-	if got, want := tq.Tasks[0].OperationType, model.OperationTypeRollout; got != want {
-		t.Errorf("Task.OperationType = %q, want %q (RunOnIntegration must classify as rollout for §S0-1 admission)", got, want)
+	// §S0-1: RunOnIntegration は publish_conflict 解決タスク用なので repair
+	// バケットに分類される必要がある (元は rollout だったが rollout 機能廃止に伴い repair へ移行)。
+	if got, want := tq.Tasks[0].OperationType, model.OperationTypeRepair; got != want {
+		t.Errorf("Task.OperationType = %q, want %q (RunOnIntegration must classify as repair for §S0-1 admission)", got, want)
 	}
 }
 

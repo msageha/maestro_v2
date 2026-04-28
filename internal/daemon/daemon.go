@@ -28,7 +28,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
-	"github.com/msageha/maestro_v2/internal/daemon/judge"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -79,10 +78,6 @@ type Daemon struct {
 	admissionCtrl         *admission.Controller
 	fallbackMgr           *fallback.Manager
 	worktreeManager       *WorktreeManager
-	// judgeCaller is intentionally nil in production until a real LLM caller is
-	// wired. Phase-B tests may inject one directly; startup must not install a
-	// stub that can influence rollout winner selection.
-	judgeCaller *judge.Judge
 
 	// Phase C components (grouped in PhaseCManager)
 	phaseC *PhaseCManager

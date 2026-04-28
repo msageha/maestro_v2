@@ -131,7 +131,13 @@ func (d *ReviewDispatcher) nextReviewerModel() string {
 		return ""
 	}
 	idx := d.nextModel.Add(1) - 1
-	return models[int(idx%uint64(len(models)))]
+	// Convert by reducing modulo len(models) FIRST (still uint64) and then
+	// casting; the result is provably in [0, len(models)) so the cast can
+	// never overflow int even on 32-bit platforms. The previous form
+	// (int(idx%uint64(len(models)))) was the same logic but tripped gosec
+	// G115 because it could not statically see the bounds.
+	n := uint64(len(models)) //nolint:gosec // len() of a slice is non-negative; cast is safe.
+	return models[idx%n]
 }
 
 // reviewTask executes the review by invoking the configured Claude model

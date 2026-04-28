@@ -1289,6 +1289,157 @@ func TestR2ResultState_MultipleTasks(t *testing.T) {
 	}
 }
 
+// TestR2ResultState_VerifyPending_NotOverwritten guards against the race
+// surfaced by the 2026-04-28 default-config E2E run. After a worker writes
+// its result file, result_write_handler transitions the task state to
+// verify_pending (terminal-like in §2.1 sense — the verify pipeline owns
+// it next). R2 used to read the worker's already-terminal result and
+// "fix" verify_pending → completed, racing the async verify runner whose
+// applyVerifyOutcome then logged "verify_outcome_skipped task no longer at
+// verify_pending" — silently dropping the verification result.
+//
+// The fix is to make R2 skip verify_pending entirely; R9_VerifyStall
+// remains the dedicated reconciler for genuinely stalled verify_pending
+// entries.
+func TestR2ResultState_VerifyPending_NotOverwritten(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusVerifyPending},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs (verify_pending owned by verify pipeline), got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.TaskStates["task1"] != model.StatusVerifyPending {
+		t.Errorf("task state must remain verify_pending so applyVerifyOutcome can transition it; got %s", updated.TaskStates["task1"])
+	}
+	if _, ok := updated.AppliedResultIDs["task1"]; ok {
+		t.Errorf("applied_result_ids must NOT be set while task is verify_pending; got %s", updated.AppliedResultIDs["task1"])
+	}
+}
+
+// TestR2ResultState_RepairPending_NotOverwritten mirrors the verify_pending
+// guard for the post-verify repair slot. Once verification fails and the
+// task is at repair_pending, the verify pipeline (and the planner's
+// repair-task path) owns the next transition; R2 must not race that
+// pipeline by writing the worker's old completed/failed result over the
+// repair_pending slot.
+func TestR2ResultState_RepairPending_NotOverwritten(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusRepairPending},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs (repair_pending owned by repair pipeline), got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.TaskStates["task1"] != model.StatusRepairPending {
+		t.Errorf("task state must remain repair_pending; got %s", updated.TaskStates["task1"])
+	}
+}
+
+// TestR2ResultState_PausedForReplan_NotOverwritten guards against the
+// regression captured in the 2026-04-27 daemon.log run: with the original
+// guard limited to verify_pending / repair_pending, a paused_for_replan task
+// could still be flipped back to completed/failed by the worker's old
+// terminal result file before the Planner consumed the replan request.
+// Lines 20177–20178 of that log show paused_for_replan -> completed in
+// adjacent entries, which silently erased the §S2-2 Circuit-Breaker handoff.
+//
+// paused_for_replan is the post-repair slot that the Planner owns; R2 must
+// leave it alone the same way it leaves verify_pending and repair_pending.
+func TestR2ResultState_PausedForReplan_NotOverwritten(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusPausedForReplan},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs (paused_for_replan owned by Planner replan path), got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.TaskStates["task1"] != model.StatusPausedForReplan {
+		t.Errorf("task state must remain paused_for_replan so Planner replan can run; got %s", updated.TaskStates["task1"])
+	}
+	if _, ok := updated.AppliedResultIDs["task1"]; ok {
+		t.Errorf("applied_result_ids must NOT be set while task awaits replan; got %s", updated.AppliedResultIDs["task1"])
+	}
+}
+
 func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)

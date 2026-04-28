@@ -259,7 +259,11 @@ func (wm *Manager) stageResolvedForwardMergeFiles(integrationPath string, confli
 			return false, fmt.Errorf("forward-merge daemon-stage invalid conflict path %q", name)
 		}
 		path := filepath.Join(integrationPath, name)
-		data, err := os.ReadFile(path)
+		// name passed the path-traversal guard above (no absolute paths,
+		// no ".." prefix), and integrationPath is the controlled
+		// integration-worktree root, so gosec G304 (file inclusion) does
+		// not apply.
+		data, err := os.ReadFile(path) //nolint:gosec // name guarded above; path rooted at integration worktree
 		if err != nil {
 			if os.IsNotExist(err) {
 				continue

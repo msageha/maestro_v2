@@ -170,6 +170,23 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		task.Attempts++
 		detachTaskSlices(task)
 
+		// Sync command-state with the queue lease at acquisition time.
+		// AcquireTaskLease has just flipped queue.task.Status to in_progress,
+		// so leaving state.TaskStates[task] at `ready` would create the
+		// "invalid_state_transition from=ready to=completed" audit log when
+		// the worker's result_write arrives later (the §2.1 BFS handles the
+		// progression internally, but the audit log is the user-visible
+		// signal of the desync). markTaskDispatched is idempotent for
+		// already-dispatched/running entries, so retry waves do not produce
+		// repeated state writes. State-reader-less environments (legacy
+		// tests) skip silently.
+		if err := qh.markTaskDispatched(task); err != nil {
+			qh.log(LogLevelWarn,
+				"task_dispatched_state_update_failed task=%s command=%s error=%v "+
+					"(queue lease acquired anyway; result_write will route via BFS but audit log will flag the lag)",
+				task.ID, task.CommandID, err)
+		}
+
 		work.dispatches = append(work.dispatches, dispatchItem{
 			Kind:      "task",
 			Task:      task,

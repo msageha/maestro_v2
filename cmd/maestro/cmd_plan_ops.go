@@ -108,8 +108,12 @@ func (a *cliApp) runPlanRebuild(args []string) error {
 //     attempts after a worker has resolved a conflict.
 //   - `maestro plan retry-publish`  (Planner / operator) — retries publish
 //     after the cooldown elapses or after a worker resolves a publish_conflict.
-//   - `maestro plan resolve-conflict` (Planner / operator) — drives the
-//     conflict resolution worker dispatch.
+//   - `maestro plan resolve-conflict` (Planner / operator) — clears a
+//     worker from commit_failed_workers when publish-to-base is blocked by a
+//     stale commit failure. NOT the right command for a phase merge_conflict;
+//     for those the Planner uses `plan add-task --worker-id <worker>` to
+//     dispatch a resolution task and the daemon auto-runs resume_merge once
+//     the worker reports.
 //
 // `unquarantine` remains operator-only, with the reasoning that an operator
 // looking at the quarantine state can decide whether the underlying root
@@ -238,23 +242,49 @@ func (a *cliApp) runPlanRetryPublish(args []string) error {
 	return a.sendPlanCommand("plan retry-publish", maestroDir, params, planCommandTimeout)
 }
 
-// runResolveConflict resolves a worker merge conflict by delegating to the
-// daemon's plan handler with the resolve_conflict operation.
+// runResolveConflict clears a worker from CommitFailedWorkers in the
+// command's worktree state. This is the recovery path for **publish-blocking
+// commit failures** (where the worker's worktree could not be committed
+// during integration), NOT for in-phase merge_conflict signals.
+//
+// 2026-04-28 E2E follow-up: an operator-style invocation by the Planner on a
+// regular merge_conflict was rejected with
+//
+//	plan_resolve_conflict error=integration is already resolved:
+//	worker worker2 is not in commit_failed_workers ...
+//
+// because phase merge_conflicts are surfaced via the merge_conflict signal
+// (Planner → `plan add-task --worker-id <worker>` for the resolution task,
+// then the daemon's AutoRecoverAfterResolution auto-fires resume_merge).
+// This command's job is the narrower "the worker has been verified back to
+// a publishable state, take it off the commit-failed gating list so
+// publish-to-base can proceed" — the wording in the help / docs is now
+// explicit about that scope so future Planner / operator runs do not pick
+// the wrong recovery command for a normal merge conflict.
 //
 // Usage:
 //
 //	maestro plan resolve-conflict \
 //	    --command-id   <id>           # parent command id
-//	    --phase-id     <id>           # phase containing the conflicting merge
-//	    --worker-id    <id>           # worker whose worktree has the conflict
+//	    --phase-id     <id>           # phase whose publish-to-base is blocked
+//	    --worker-id    <id>           # worker pinned in commit_failed_workers
 //	    [--conflicting-files <list>]  # repeat or comma-separated; optional hint
 //
 // Example:
 //
 //	maestro plan resolve-conflict --command-id cmd_42 --phase-id ph_3 \
 //	    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
+//
+// For a normal phase merge_conflict, the Planner instead calls:
+//
+//	maestro plan add-task --command-id cmd_42 --worker-id worker2 \
+//	    --purpose "resolve merge conflict in <files>" ...
 func (a *cliApp) runResolveConflict(args []string) error {
-	cmd := NewCommand("maestro plan resolve-conflict", "maestro plan resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]...")
+	cmd := NewCommand("maestro plan resolve-conflict",
+		"maestro plan resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> "+
+			"[--conflicting-files <path>[,<path>...]]... "+
+			"# clears the worker from commit_failed_workers (publish-blocking); "+
+			"NOT for phase merge_conflict — use 'plan add-task --worker-id <id>' for those")
 	var commandID, phaseID, workerID string
 	var conflictingFiles stringSliceFlag
 	cmd.RequiredString(&commandID, "command-id", "parent command id")

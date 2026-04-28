@@ -580,14 +580,17 @@ func (qh *QueueHandler) runPostScanMaintenance(
 		}
 	}
 
-	// Step 2.5: Result notification retry
-	if qh.resultHandler != nil {
-		n := qh.resultHandler.ScanAllResults()
-		se.scanCounters.NotificationRetries += n
-		if n > 0 {
-			qh.log(LogLevelInfo, "result_notify_scan notified=%d", n)
-		}
-	}
+	// Result notification retry has been moved out of Phase C so the slow
+	// per-result tmux delivery and inline retry budget no longer hold
+	// scanMu.Lock for the full
+	// (maxRetries+1) * delivery_timeout + maxRetries * retry_delay
+	// window. With a Planner pane that returns submit-confirmation
+	// uncertain (or any other slow agent), that wait was directly
+	// blocking every UDS handler that takes scanMu.RLock —
+	// queue_write / plan complete / verify write all surfaced as CLI
+	// timeouts. ScanPhaseExecutor.Execute now invokes
+	// resultHandler.ScanAllResults after Phase C releases scanMu (see
+	// scan_phase_executor.go for the exact ordering).
 
 	// Step 3: Reconciliation (state mutations under scanMu, notifications deferred)
 	var deferredNotifs []DeferredNotification

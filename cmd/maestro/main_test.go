@@ -45,6 +45,39 @@ func TestCLIError_ExitCode(t *testing.T) {
 	}
 }
 
+// TestExitCodes_NoCollision pins the numeric values of every CLI exit code
+// constant. Callers (worker shell wrappers, ops scripts, downstream
+// tooling) branch on `$?`, so accidentally renumbering one of these is a
+// silent break. Update this test deliberately when the contract changes.
+func TestExitCodes_NoCollision(t *testing.T) {
+	t.Parallel()
+	codes := map[string]int{
+		"ExitCodeRetryable":          ExitCodeRetryable,          // 2
+		"ExitCodeSubmitUncertain":    ExitCodeSubmitUncertain,    // 3
+		"ExitCodeFencingEpoch":       ExitCodeFencingEpoch,       // 10
+		"ExitCodeMaxRuntimeExceeded": ExitCodeMaxRuntimeExceeded, // 11
+		"ExitCodeFencingStatus":      ExitCodeFencingStatus,      // 12
+	}
+	want := map[string]int{
+		"ExitCodeRetryable":          2,
+		"ExitCodeSubmitUncertain":    3,
+		"ExitCodeFencingEpoch":       10,
+		"ExitCodeMaxRuntimeExceeded": 11,
+		"ExitCodeFencingStatus":      12,
+	}
+	seen := make(map[int]string)
+	for name, code := range codes {
+		if w, ok := want[name]; ok && code != w {
+			t.Errorf("%s = %d, want %d (renumbering this is a downstream break)", name, code, w)
+		}
+		if existing, dup := seen[code]; dup {
+			t.Errorf("exit code %d is shared by %s and %s — collisions confuse `$?` branches",
+				code, existing, name)
+		}
+		seen[code] = name
+	}
+}
+
 func TestCLIError_ErrorsAs(t *testing.T) {
 	var wrapped error = &CLIError{Code: ExitCodeRetryable, Msg: "wrapped"}
 	var ce *CLIError
@@ -262,6 +295,49 @@ func TestRun_Help(t *testing.T) {
 			code := newCLIApp().run([]string{arg})
 			if code != 0 {
 				t.Errorf("run(%s) = %d, want 0", arg, code)
+			}
+		})
+	}
+}
+
+// TestNormalizeProcessEnvironment_PromotesDumbTERM pins the 2026-04-28
+// retest4 fix that prevents `[ERROR] - (starship::print): Under a
+// 'dumb' terminal (TERM=dumb).` from leaking into CLI output via
+// subprocess spawns inheriting TERM from a claude-code parent that
+// itself sets TERM=dumb. Operator overrides win — explicit non-empty,
+// non-"dumb" values are preserved.
+func TestNormalizeProcessEnvironment_PromotesDumbTERM(t *testing.T) {
+	cases := []struct {
+		name      string
+		set       bool
+		input     string
+		wantTerm  string
+		wantUnset bool
+	}{
+		{name: "dumb_promoted", set: true, input: "dumb", wantTerm: "xterm-256color"},
+		{name: "unset_promoted", set: false, wantTerm: "xterm-256color"},
+		{name: "explicit_value_preserved", set: true, input: "screen-256color", wantTerm: "screen-256color"},
+		{name: "explicit_xterm_preserved", set: true, input: "xterm-color", wantTerm: "xterm-color"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.set {
+				t.Setenv("TERM", tc.input)
+			} else {
+				// t.Setenv only sets; manually unset for the unset case.
+				orig, was := os.LookupEnv("TERM")
+				_ = os.Unsetenv("TERM")
+				t.Cleanup(func() {
+					if was {
+						_ = os.Setenv("TERM", orig)
+					}
+				})
+			}
+
+			normalizeProcessEnvironment()
+
+			if got := os.Getenv("TERM"); got != tc.wantTerm {
+				t.Errorf("TERM = %q, want %q", got, tc.wantTerm)
 			}
 		})
 	}

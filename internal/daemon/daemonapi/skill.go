@@ -14,11 +14,13 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
+// SkillApproveParams is the body of a skill-approve UDS request.
 type SkillApproveParams struct {
 	CandidateID string `json:"candidate_id"`
 	SkillName   string `json:"skill_name,omitempty"`
 }
 
+// SkillRejectParams is the body of a skill-reject UDS request.
 type SkillRejectParams struct {
 	CandidateID string `json:"candidate_id"`
 }
@@ -26,6 +28,7 @@ type SkillRejectParams struct {
 var skillNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
 var nonAlphaNumPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
+// Skill handles skill candidate approval / rejection UDS requests.
 type Skill struct {
 	maestroDir string
 	lockMap    *lock.MutexMap
@@ -33,6 +36,8 @@ type Skill struct {
 	logWarnf   Logf
 }
 
+// NewSkill constructs a Skill handler. lockMap is shared with the daemon
+// so candidate state mutations serialize against other consumers.
 func NewSkill(maestroDir string, lockMap *lock.MutexMap, logInfof, logWarnf Logf) *Skill {
 	return &Skill{
 		maestroDir: maestroDir,
@@ -42,6 +47,9 @@ func NewSkill(maestroDir string, lockMap *lock.MutexMap, logInfof, logWarnf Logf
 	}
 }
 
+// HandleApprove materialises a pending skill candidate into a
+// `<maestroDir>/skills/share/<name>/SKILL.md` entry and marks the
+// candidate approved.
 func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 	var params SkillApproveParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
@@ -72,11 +80,11 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 	}
 
 	skillsDir := filepath.Join(h.maestroDir, "skills", "share")
-	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
+	if err := os.MkdirAll(skillsDir, 0o750); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("create skills directory: %v", err))
 	}
 	skillDir := filepath.Join(skillsDir, skillName)
-	if err := os.Mkdir(skillDir, 0o755); err != nil {
+	if err := os.Mkdir(skillDir, 0o750); err != nil {
 		if os.IsExist(err) {
 			return uds.ErrorResponse(uds.ErrCodeDuplicate, fmt.Sprintf("skill %q already exists; use a different name", skillName))
 		}
@@ -91,7 +99,7 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 		}
 	}()
 
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(formatSkillMarkdown(skillName, candidate.Content)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(formatSkillMarkdown(skillName, candidate.Content)), 0o600); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write SKILL.md: %v", err))
 	}
 
@@ -110,6 +118,8 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 	})
 }
 
+// HandleReject marks a pending skill candidate as rejected so it is no
+// longer surfaced to operators for review.
 func (h *Skill) HandleReject(req *uds.Request) *uds.Response {
 	var params SkillRejectParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {

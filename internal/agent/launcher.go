@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -138,18 +139,391 @@ func Launch(maestroDir string) error {
 	return runIgnoringSIGINT(cmd)
 }
 
-// launchAlternativeRuntime rejects non-claude-code managed roles. Config
-// validation should prevent this path; the launcher keeps the check as defense
-// in depth for stale tmux panes or hand-edited pane variables.
-func launchAlternativeRuntime(agentRuntime, _, role, _ string) error {
-	if role == "orchestrator" || role == "planner" || role == "worker" {
+// launchAlternativeRuntime dispatches non-claude-code runtimes for managed
+// roles. Orchestrator and planner remain hard-rejected: those roles operate
+// directly on the project root with maestro-CLI access, and the existing
+// validate_run_on_main pre-flight is not enough to bound their blast radius.
+// Workers may run codex / gemini freely; the validate_run_on_main pre-flight
+// is the cross-runtime safety net that backstops them.
+func launchAlternativeRuntime(agentRuntime, agentModel, role, systemPrompt string) error {
+	if role == "orchestrator" || role == "planner" {
 		return fmt.Errorf(
 			"role %q cannot run on runtime %q: tool-based role enforcement "+
 				"and policy hooks are only available on claude-code. "+
 				"Configure agents.%s.model to a Claude model (opus, sonnet, haiku)",
 			role, agentRuntime, role)
 	}
+	if role == "worker" {
+		return launchAlternativeWorker(agentRuntime, agentModel, systemPrompt)
+	}
 	return fmt.Errorf("unsupported runtime %q for unmanaged role %q", agentRuntime, role)
+}
+
+// launchAlternativeWorker resolves the runtime command for codex / gemini
+// workers and exec's it.
+func launchAlternativeWorker(agentRuntime, agentModel, systemPrompt string) error {
+	rl := NewRuntimeLauncher()
+	cmdName, args, err := rl.GetCommand(agentRuntime, RuntimeLaunchOptions{
+		Model:  agentModel,
+		Prompt: systemPrompt,
+	})
+	if err != nil {
+		return fmt.Errorf("resolve runtime %q: %w", agentRuntime, err)
+	}
+	binPath, err := exec.LookPath(cmdName)
+	if err != nil {
+		return fmt.Errorf("resolve %s executable: %w", cmdName, err)
+	}
+	env, err := buildAlternativeWorkerEnv(agentRuntime)
+	if err != nil {
+		// Best-effort: log and fall back to the inherited env. The runtime
+		// will simply re-prompt for trust at startup if the override could
+		// not be installed; that is no worse than the pre-fix behaviour.
+		slog.Warn("codex trust pre-config skipped", "error", err)
+		env = os.Environ()
+	}
+
+	cmd := exec.Command(binPath, args...) //nolint:gosec // binPath is resolved via LookPath; args come from the registered RuntimeDef
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return runIgnoringSIGINT(cmd)
+}
+
+// buildAlternativeWorkerEnv returns the env slice to pass to the runtime's
+// exec.Command. For codex it points CODEX_HOME at a per-worker temp dir
+// containing a config.toml that pre-trusts the worker pane's working
+// directory. For other runtimes it falls back to the inherited environment.
+// Callers handle a non-nil error by logging and reverting to os.Environ().
+func buildAlternativeWorkerEnv(agentRuntime string) ([]string, error) {
+	if agentRuntime != model.RuntimeCodex {
+		return os.Environ(), nil
+	}
+	codexHome, err := prepareCodexHomeForCurrentWorker()
+	if err != nil {
+		return nil, err
+	}
+	if codexHome == "" {
+		return os.Environ(), nil
+	}
+	env := os.Environ()
+	// Replace any inherited CODEX_HOME so this worker's overrides win.
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "CODEX_HOME=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	out = append(out, "CODEX_HOME="+codexHome)
+	return out, nil
+}
+
+// prepareCodexHomeForCurrentWorker materialises a per-worker CODEX_HOME so
+// codex skips the first-run "Do you trust the contents of this directory?"
+// prompt in maestro worker panes. codex 0.125.0 still surfaces that prompt
+// in panes opened by tmux even with `--dangerously-bypass-approvals-and-
+// sandbox` set, and the `-c projects."<path>".trust_level="trusted"`
+// command-line override is parsed inconsistently for paths with embedded
+// quotes (the 2026-04 audit reproduced both: codex worker panes idled on
+// the trust prompt while dispatch_task_success was logged). Writing the
+// trust entry into a real config file under a dedicated CODEX_HOME bypasses
+// the `-c` parser entirely and matches the documented codex config schema.
+//
+// Layout:
+//
+//	<CODEX_HOME>/config.toml      ← user's original + appended trust entries
+//	<CODEX_HOME>/<other entries>  ← symlinked from ~/.codex (auth.json,
+//	                                 cache, history, etc.)
+//
+// The dir is keyed by (PID, agent_id) so concurrent workers and concurrent
+// formations do not contend for the same path. We intentionally skip any
+// CODEX_HOME setup when the user has no ~/.codex (codex's own defaults
+// will then apply, including the trust prompt — but in that case the user
+// has never run codex interactively either, so the trust prompt is the
+// expected and correct first-run flow).
+func prepareCodexHomeForCurrentWorker() (string, error) {
+	userCodex := defaultUserCodexHome()
+	if userCodex == "" {
+		return "", nil
+	}
+	if _, err := os.Stat(userCodex); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat user CODEX_HOME %s: %w", userCodex, err)
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("resolve cwd: %w", err)
+	}
+	abs, err := filepath.Abs(cwd)
+	if err != nil {
+		return "", fmt.Errorf("absolute cwd: %w", err)
+	}
+	// Symlink-resolved variant matters on macOS where /tmp ↔ /private/tmp
+	// and /var ↔ /private/var diverge. Trust both forms so codex matches
+	// regardless of which one it canonicalises to.
+	realPath, evalErr := filepath.EvalSymlinks(abs)
+	if evalErr != nil {
+		realPath = abs
+	}
+
+	pid := os.Getpid()
+	agentID, _ := os.LookupEnv("MAESTRO_AGENT_ID") // best-effort tag for debuggability
+	if agentID == "" {
+		agentID = "worker"
+	}
+	tmpRoot := os.TempDir()
+	codexHome := filepath.Join(tmpRoot, fmt.Sprintf("maestro-codex-%d-%s", pid, agentID))
+	if err := os.MkdirAll(codexHome, 0o700); err != nil {
+		return "", fmt.Errorf("create per-worker CODEX_HOME %s: %w", codexHome, err)
+	}
+
+	// Symlink every entry from the user's ~/.codex into ours, EXCEPT
+	// config.toml (which we are about to overwrite with our own copy +
+	// trust appendix). This preserves auth.json, cache, history, vendor
+	// imports, etc. — without those, codex either refuses to launch (no
+	// auth) or behaves degraded.
+	if err := mirrorCodexHomeEntries(userCodex, codexHome); err != nil {
+		return "", err
+	}
+	if err := writeCodexConfigWithTrust(userCodex, codexHome, abs, realPath); err != nil {
+		return "", err
+	}
+	return codexHome, nil
+}
+
+// defaultUserCodexHome returns the CODEX_HOME the user already has (env
+// override wins), or ~/.codex as the documented default. Empty string
+// signals "no user codex home configured" and disables the trust override.
+func defaultUserCodexHome() string {
+	if env := os.Getenv("CODEX_HOME"); env != "" {
+		return env
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".codex")
+}
+
+// mirrorCodexHomeEntries symlinks every direct child of src into dst so the
+// per-worker CODEX_HOME exposes auth, cache, and other state without
+// copying. Existing entries in dst are removed first so reused dirs (same
+// PID + agent_id across launches) refresh stale links. config.toml is
+// excluded because writeCodexConfigWithTrust writes a fresh copy.
+func mirrorCodexHomeEntries(src, dst string) error {
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		return fmt.Errorf("read user codex dir %s: %w", src, err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "config.toml" {
+			continue
+		}
+		linkSrc := filepath.Join(src, entry.Name())
+		linkDst := filepath.Join(dst, entry.Name())
+		// Best-effort cleanup of a stale entry from a prior launch.
+		_ = os.Remove(linkDst)
+		if err := os.Symlink(linkSrc, linkDst); err != nil {
+			return fmt.Errorf("symlink %s -> %s: %w", linkSrc, linkDst, err)
+		}
+	}
+	return nil
+}
+
+// writeCodexConfigWithTrust copies the user's config.toml into the per-
+// worker CODEX_HOME and ensures `[projects."<path>"]` trust entries are
+// present for the worker's logical and symlink-resolved working
+// directories.
+//
+// All existing `[projects.*]` (and `[projects.*.*]`) sections in the
+// user's config are stripped before the trust entries are appended. This
+// is more aggressive than only stripping the exact target path, but it is
+// the only way to avoid TOML duplicate-table errors for the realistic
+// case where the user's config records the same cwd under a different
+// path representation than codex / our launcher canonicalise to. The two
+// representations that diverge in practice on macOS are
+// `/var/folders/...` (returned by `cd` from a shell) and
+// `/private/var/folders/...` (returned by `os.Getwd()` after Go's runtime
+// resolves the leading symlink); a user who ran `codex` interactively in
+// the same dir will have one form on disk and we will write the other,
+// producing a parse error if both are kept.
+//
+// Worker isolation argument: the per-worker CODEX_HOME exists solely so
+// the worker pane can run in its own cwd without a trust prompt. The
+// worker never visits the user's other project paths, so dropping their
+// trust entries from this file is operationally a no-op.
+func writeCodexConfigWithTrust(userCodex, codexHome, logicalPath, realPath string) error {
+	dst := filepath.Join(codexHome, "config.toml")
+	src := filepath.Join(userCodex, "config.toml")
+
+	var data []byte
+	// src points at the user's existing CODEX_HOME/config.toml. The path
+	// is constructed from a controlled application directory plus the
+	// fixed "config.toml" basename, so gosec G304 (file inclusion via
+	// variable) does not apply here.
+	if d, err := os.ReadFile(src); err == nil { //nolint:gosec // controlled CODEX_HOME path; basename fixed
+		data = d
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read user codex config: %w", err)
+	}
+
+	data = stripCodexProjectsSections(data)
+
+	targets := []string{logicalPath}
+	if realPath != "" && realPath != logicalPath {
+		targets = append(targets, realPath)
+	}
+
+	var b bytes.Buffer
+	b.Write(data)
+	if len(data) > 0 && !bytes.HasSuffix(data, []byte("\n")) {
+		b.WriteByte('\n')
+	}
+	b.WriteString("\n# Maestro auto-generated trust entries — any prior [projects.*] sections from the user's config were stripped to avoid TOML duplicate-table errors when path canonicalisation differs.\n")
+	for _, t := range targets {
+		fmt.Fprintf(&b, "[projects.%q]\ntrust_level = %q\n", t, "trusted")
+	}
+
+	if err := os.WriteFile(dst, b.Bytes(), 0o600); err != nil {
+		return fmt.Errorf("write per-worker codex config %s: %w", dst, err)
+	}
+	return nil
+}
+
+// stripCodexProjectsSections removes every standard TOML table whose
+// header begins with `projects.` (e.g. `[projects."/foo"]`,
+// `[projects."/foo".trusted]`) from data, returning the remainder.
+//
+// Array-of-tables headers (`[[projects."..."]]`) are left intact — codex
+// does not use that schema for the trust system today, and we cannot
+// safely fold them into our standard-table appendix. A non-projects
+// header (`[settings]`, `[ui]`, ...) ends any in-progress strip.
+func stripCodexProjectsSections(data []byte) []byte {
+	if len(data) == 0 {
+		return data
+	}
+	var out bytes.Buffer
+	skipping := false
+	// SplitAfter preserves trailing newlines on each line, so writing the
+	// kept lines back verbatim reproduces the user's formatting faithfully.
+	for _, line := range strings.SplitAfter(string(data), "\n") {
+		trimmed := strings.TrimSpace(strings.TrimRight(line, "\r\n"))
+		if isStandardTableHeader(trimmed) {
+			if isProjectsHeader(trimmed) {
+				skipping = true
+				continue
+			}
+			skipping = false
+		}
+		if !skipping {
+			out.WriteString(line)
+		}
+	}
+	return out.Bytes()
+}
+
+// isStandardTableHeader returns true for `[ ... ]` headers, excluding
+// `[[ ... ]]` array-of-tables headers.
+func isStandardTableHeader(s string) bool {
+	return strings.HasPrefix(s, "[") &&
+		strings.HasSuffix(s, "]") &&
+		!strings.HasPrefix(s, "[[")
+}
+
+// isProjectsHeader returns true if s is `[projects.<anything>]` — covers
+// quoted (`"..."`/`'...'`), bare-key, and dotted-key forms. Any header
+// whose trimmed inner content begins with the literal token `projects.`
+// counts; this is intentionally permissive because we want to strip the
+// whole subtree regardless of which TOML quoting form the user wrote.
+func isProjectsHeader(s string) bool {
+	if !isStandardTableHeader(s) {
+		return false
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	return inner == "projects" || strings.HasPrefix(inner, "projects.")
+}
+
+// GCStaleCodexHomes removes <TempDir>/maestro-codex-<pid>-<agent_id>
+// directories whose owning PID is no longer alive. Designed to be invoked
+// once per daemon startup so accumulated tempdirs from prior daemon
+// sessions do not pile up under macOS /var/folders/... or Linux /tmp.
+//
+// Returns (removedCount, errs). errs is non-nil only when an individual
+// removal fails; the GC continues across remaining entries so a single
+// permission error does not block cleanup of the rest. The current daemon's
+// own tempdirs are NOT touched (their PID matches os.Getpid()), so calling
+// this from prepareStartup before any worker pane launches is safe.
+//
+// Naming contract — must match prepareCodexHomeForCurrentWorker:
+//
+//	maestro-codex-<pid>-<agent_id>
+//
+// where <pid> is a positive integer. Anything else under TempDir is
+// ignored.
+func GCStaleCodexHomes() (int, []error) {
+	tmpRoot := os.TempDir()
+	entries, err := os.ReadDir(tmpRoot)
+	if err != nil {
+		return 0, []error{fmt.Errorf("read tmp dir %s: %w", tmpRoot, err)}
+	}
+	var errs []error
+	removed := 0
+	currentPID := os.Getpid()
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "maestro-codex-") {
+			continue
+		}
+		if !entry.IsDir() {
+			continue
+		}
+		rest := strings.TrimPrefix(name, "maestro-codex-")
+		// rest format: "<pid>-<agent_id>"
+		dash := strings.IndexByte(rest, '-')
+		if dash <= 0 {
+			continue // malformed; safer to leave alone
+		}
+		pidStr := rest[:dash]
+		var pid int
+		if _, parseErr := fmt.Sscanf(pidStr, "%d", &pid); parseErr != nil || pid <= 0 {
+			continue
+		}
+		if pid == currentPID {
+			continue // the current daemon's own dirs (not yet created at startup, but be defensive)
+		}
+		if processAlive(pid) {
+			continue // some other live process still owns this dir
+		}
+		target := filepath.Join(tmpRoot, name)
+		if err := os.RemoveAll(target); err != nil {
+			errs = append(errs, fmt.Errorf("remove %s: %w", target, err))
+			continue
+		}
+		removed++
+	}
+	return removed, errs
+}
+
+// processAlive reports whether the given PID is reachable. Uses signal 0,
+// which performs the kernel's permission/existence check without actually
+// delivering a signal. ESRCH (no such process) is the canonical "dead"
+// answer; any other error (EPERM in particular) means the process exists
+// but we are not allowed to signal it — still alive from the GC's
+// perspective.
+func processAlive(pid int) bool {
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	if err := proc.Signal(syscall.Signal(0)); err != nil {
+		return errors.Is(err, syscall.EPERM)
+	}
+	return true
 }
 
 // readPaneVars reads and validates the tmux user variables (agent_id, role, model, runtime)
@@ -202,18 +576,8 @@ func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime st
 // CLI args. HookSettings produces merged JSON containing both Notification
 // disablement and PreToolUse policy hook.
 func applyWorkerPolicy(maestroDir string, args []string) ([]string, error) {
-	implementation := model.PolicyHookImplementationBash
-	if cfg, err := model.LoadConfig(maestroDir); err == nil {
-		implementation = cfg.Agents.Workers.EffectivePolicyHookImplementation()
-	} else {
-		slog.Warn("load worker policy hook implementation failed, using bash", "error", err, "default", implementation)
-	}
-
 	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
-		Implementation: implementation,
-		MaestroBinary:  ResolvedBinaryPath(),
-	})
+	scriptPath, err := pc.WriteHookScript()
 	if err != nil {
 		return nil, fmt.Errorf("write policy hook script: %w", err)
 	}
@@ -562,6 +926,11 @@ func ResolvedLaunchCommand() string {
 	return ResolvedBinaryPath() + " agent launch"
 }
 
+// ResolvedBinaryPath returns the absolute, symlink-resolved path of the
+// currently-running maestro binary, falling back to the literal string
+// "maestro" when the path cannot be determined or no longer exists. The
+// resolved path is used by formation wiring to call the same binary
+// version that started the daemon, defeating PATH-based version skew.
 func ResolvedBinaryPath() string {
 	execPath, err := os.Executable()
 	if err != nil || execPath == "" {
@@ -632,6 +1001,44 @@ func buildLaunchEnvForAgent(base []string, role, maestroDir string) ([]string, e
 		return nil, err
 	}
 	env = setEnv(env, "MAESTRO_DIR", canonicalDir)
+
+	// Default GOCACHE to a project-local path so the agent's `go build`,
+	// `go test`, etc. don't hit `permission denied` against
+	// ~/Library/Caches/go-build inside the claude-code sandbox.
+	// The 2026-04-28 retest2 reported Workers manually re-running with
+	// `GOCACHE=$TMPDIR/go-cache` after the first build failed; pinning a
+	// safe default here removes that workaround. Operators that need a
+	// shared cache (CI, dev shells) can still override by exporting
+	// GOCACHE before launching the daemon — explicit env beats our default.
+	if !envHasKey(env, "GOCACHE") {
+		env = setEnv(env, "GOCACHE", filepath.Join(canonicalDir, "cache", "go-build"))
+	}
+
+	// Force TERM to a usable terminfo entry when the inherited value is
+	// missing or stuck at "dumb". 2026-04-28 retest3 surfaced two noise
+	// modes that both trace back to TERM:
+	//   - starship in the agent pane prints "unable to determine terminal
+	//     type" each time the prompt redraws because it cannot read the
+	//     terminfo capabilities for "dumb";
+	//   - operators monitoring CLI output saw the starship banner mixed
+	//     into the structured maestro output, complicating log parsing.
+	// "xterm-256color" is the broadest-compat entry that ships with
+	// macOS and most Linux distributions; tmux itself rewrites the value
+	// inside its panes to "tmux-256color" on capable systems, so this
+	// only kicks in when the operator's outer shell already lost the
+	// real value (e.g. starting from an SSH session with TERM=dumb).
+	if v := envValue(env, "TERM"); v == "" || v == "dumb" {
+		env = setEnv(env, "TERM", "xterm-256color")
+	}
+	// Move mise's cache to a project-local writable path. The default
+	// ~/.cache/mise often hits "Operation not permitted" inside the
+	// claude-code sandbox (retest3 Planner pane), and the WARN line
+	// every shell init pollutes daemon log captures. Operators using
+	// mise for language version pinning still get the cache benefit —
+	// just under .maestro/cache/mise instead of $HOME/.cache/mise.
+	if !envHasKey(env, "MISE_CACHE_DIR") {
+		env = setEnv(env, "MISE_CACHE_DIR", filepath.Join(canonicalDir, "cache", "mise"))
+	}
 	wrapperDir, err := ensureRoleMaestroWrapper(maestroDir, role)
 	if err != nil {
 		return nil, err
@@ -679,11 +1086,35 @@ func ensureRoleMaestroWrapper(maestroDir, role string) (string, error) {
 		return "", fmt.Errorf("create role wrapper dir: %w", err)
 	}
 	wrapperPath := filepath.Join(wrapperDir, "maestro")
+	// 2026-04-28 E2E: when the launching binary lives in a short-lived path
+	// (e.g. an in-tree build artifact like /repo/maestro that gets removed by
+	// `make clean` or a worktree rotation), the wrapper's hard-coded `exec`
+	// fails with shell exit 126/127 in the middle of a long agent session,
+	// breaking every CLI call (`maestro plan ...`, `maestro queue ...`) the
+	// agent makes. The wrapper now tries the absolute path FIRST (preserves
+	// version-skew protection — same binary that started the formation), and
+	// if that file no longer exists falls back to the PATH-resolved `maestro`.
+	// buildLaunchEnv already prepends the launching binary's directory to PATH,
+	// so when both paths are valid the fallback resolves to the same binary;
+	// when the absolute path has been removed but a stable PATH-installed
+	// `maestro` is still available (e.g. ~/Works/bin/maestro), the agent stays
+	// functional. The warning written to stderr surfaces in the pane and the
+	// agent's own logs so operators can correlate the fallback with a rebuild.
 	body := "#!/bin/sh\n" +
 		"export " + uds.CallerRoleEnv + "=" + shellSingleQuote(role) + "\n" +
 		"export MAESTRO_DIR=" + shellSingleQuote(canonicalDir) + "\n" +
-		"exec " + shellSingleQuote(execPath) + " \"$@\"\n"
-	if err := os.WriteFile(wrapperPath, []byte(body), 0o700); err != nil {
+		"maestro_exec_path=" + shellSingleQuote(execPath) + "\n" +
+		"if [ -x \"$maestro_exec_path\" ]; then\n" +
+		"  exec \"$maestro_exec_path\" \"$@\"\n" +
+		"fi\n" +
+		"echo \"[maestro role wrapper] launching-binary path '$maestro_exec_path' no longer exists; falling back to PATH-resolved maestro (rebuild or worktree rotation may have removed it)\" >&2\n" +
+		"exec maestro \"$@\"\n"
+	// 0o700: the wrapper is a shell script that the agent's pane
+	// invokes by exec, so it MUST carry the owner-execute bit.
+	// gosec G306 prefers 0o600 for general writes but this file is
+	// intentionally executable; the owner-only mode keeps blast
+	// radius minimal.
+	if err := os.WriteFile(wrapperPath, []byte(body), 0o700); err != nil { //nolint:gosec // intentionally executable per the comment above
 		return "", fmt.Errorf("write role wrapper: %w", err)
 	}
 	return wrapperDir, nil
@@ -721,6 +1152,32 @@ func setEnv(env []string, name, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
+}
+
+// envHasKey reports whether env contains an entry beginning with name=.
+// Used by buildLaunchEnvForAgent to defer to operator-supplied defaults
+// for keys like GOCACHE without overwriting an explicit export.
+func envHasKey(env []string, name string) bool {
+	prefix := name + "="
+	for _, e := range env {
+		if strings.HasPrefix(e, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// envValue returns the value of name= in env, or "" if absent. Distinct
+// from envHasKey when the caller needs to make a decision based on the
+// existing value (e.g. "promote TERM=dumb to a real terminfo entry").
+func envValue(env []string, name string) string {
+	prefix := name + "="
+	for _, e := range env {
+		if v, ok := strings.CutPrefix(e, prefix); ok {
+			return v
+		}
+	}
+	return ""
 }
 
 // filterDangerousEnv removes environment variables matching dangerousEnvPrefixes

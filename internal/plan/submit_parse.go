@@ -13,7 +13,15 @@ import (
 // parseInput parses YAML task data from raw bytes without file I/O.
 func parseInput(data []byte) (*SubmitInput, error) {
 	if len(data) > model.DefaultMaxYAMLFileBytes {
-		return nil, fmt.Errorf("input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
+		// Operator-supplied input that exceeds the size limit is a bad
+		// request, not an internal failure. Wrap as planValidationError so
+		// the daemon's plan handler routes it to ErrCodeValidation instead
+		// of ErrCodeInternal — without this, the agent CLI surfaces an
+		// "[INTERNAL_ERROR]" prefix that misleads operators into thinking
+		// the daemon crashed.
+		return nil, &planValidationError{
+			Msg: fmt.Sprintf("input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes),
+		}
 	}
 	// Sanitise invalid backslash escape sequences in double-quoted strings
 	// before parsing. Planner agents may generate YAML with sequences like \!
@@ -22,7 +30,15 @@ func parseInput(data []byte) (*SubmitInput, error) {
 
 	var input SubmitInput
 	if err := yamlutil.SafeUnmarshalStrict(data, &input); err != nil {
-		return nil, fmt.Errorf("parse tasks YAML: %w", err)
+		// YAML strict-decode failures (unknown field, type mismatch, etc.)
+		// are caused by operator input shape, not by a daemon bug. Mirror
+		// the size-limit branch and surface them as validation errors so
+		// the CLI prints `[VALIDATION_ERROR]` and the operator sees the
+		// underlying yaml.v3 message verbatim. The 2026-04-28 E2E pass hit
+		// this exact path with `field worker_id not found in type
+		// plan.TaskInput` and reported INTERNAL_ERROR — that misclassification
+		// is the bug we are fixing here.
+		return nil, &planValidationError{Msg: fmt.Sprintf("parse tasks YAML: %v", err)}
 	}
 	return &input, nil
 }
@@ -63,19 +79,26 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 }
 
 // shouldInsertSystemCommit centralises the policy that determines whether the
-// Planner must inject a __system_commit task into the plan. The task exists to
-// have a Worker run `git commit` after all user tasks finish, which is only
-// meaningful when:
-//   - continuous mode is enabled (otherwise the daemon never re-submits commands), and
-//   - worktree isolation is disabled (when worktrees are enabled, the daemon
-//     commits worktree changes itself during merge/publish, so a Worker-side
-//     commit task is both redundant and harmful).
+// Planner must inject a __system_commit task into the plan. The task exists
+// to have a Worker run `git commit` after all user tasks finish, and the
+// invariant that drives it is "the Worker is editing main directly":
+//
+//   - worktree mode disabled → Worker mutates the main checkout in place;
+//     without an explicit commit task the changes sit dirty after the
+//     command completes (2026-04-28 E2E confirmed `value.go`/`value_test.go`
+//     left uncommitted with `worktree.enabled=false` + `continuous=false`).
+//     Inject __system_commit in this mode regardless of continuous, so the
+//     "completed = work persisted to git history" contract holds for both
+//     single-shot and continuous runs.
+//   - worktree mode enabled → the Daemon commits worktree changes itself
+//     during merge/publish; a Worker-side commit task would race with
+//     that pipeline and is both redundant and harmful.
 //
 // Keeping this single predicate as the sole authority for system_commit
 // insertion prevents the responsibility from drifting between Planner and
 // Daemon (see Critical #2 in reports/repo-audit-20260407.md).
 func shouldInsertSystemCommit(cfg model.Config) bool {
-	return cfg.Continuous.Enabled && !cfg.Worktree.Enabled
+	return !cfg.Worktree.Enabled
 }
 
 func buildSystemCommitTask(blockedByNames []string) TaskInput {

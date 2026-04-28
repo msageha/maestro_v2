@@ -55,8 +55,115 @@ func TestDefaultVerifyConfigForProject_GoUsesGoVet(t *testing.T) {
 	cfg := DefaultVerifyConfigForProject(dir)
 	require.NotNil(t, cfg)
 	assert.Equal(t, []string{"go vet ./..."}, cfg.Build)
+	// Go projects automatically get gosec for Security and go-bench for Performance
+	// so extended_verification.security_check / performance_bench have something
+	// to run without relying on the operator hand-writing verify.yaml.
+	assert.Equal(t, []string{"gosec ./..."}, cfg.Security)
+	assert.Equal(t, []string{"go test -bench=. ./..."}, cfg.Performance)
 	assert.False(t, cfg.IsEmpty())
 	assert.NoError(t, cfg.Validate())
+}
+
+func TestDetectProjectLanguage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		marker string // file to create at projectRoot
+		want   string
+	}{
+		{"empty dir", "", ""},
+		{"go.mod", "go.mod", "go"},
+		{"package.json", "package.json", "node"},
+		{"pyproject.toml", "pyproject.toml", "python"},
+		{"requirements.txt", "requirements.txt", "python"},
+		{"setup.py", "setup.py", "python"},
+		{"Cargo.toml", "Cargo.toml", "rust"},
+		{"Gemfile", "Gemfile", "ruby"},
+		{"pom.xml", "pom.xml", "java"},
+		{"build.gradle", "build.gradle", "java"},
+		{"build.gradle.kts", "build.gradle.kts", "java"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if tt.marker != "" {
+				require.NoError(t, os.WriteFile(filepath.Join(dir, tt.marker), []byte(""), 0o644))
+			}
+			assert.Equal(t, tt.want, DetectProjectLanguage(dir))
+		})
+	}
+}
+
+func TestDetectProjectLanguage_EmptyRoot(t *testing.T) {
+	t.Parallel()
+	assert.Equal(t, "", DetectProjectLanguage(""))
+}
+
+func TestDetectProjectLanguage_GoTakesPrecedenceOverNode(t *testing.T) {
+	// Polyglot repo (Go + Node) classifies as Go because go.mod is probed first.
+	// Operators with this layout should write an explicit verify.yaml.
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(""), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+	assert.Equal(t, "go", DetectProjectLanguage(dir))
+}
+
+func TestDefaultSecurityCommandsForLanguage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		language string
+		want     []string
+	}{
+		{"go", []string{"gosec ./..."}},
+		{"node", []string{"npm audit --audit-level=high"}},
+		{"python", []string{"uvx pip-audit"}},
+		{"rust", []string{"cargo audit"}},
+		{"ruby", []string{"bundle audit check"}},
+		{"java", nil},
+		{"", nil},
+		{"unknown", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.language, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, DefaultSecurityCommandsForLanguage(tt.language))
+		})
+	}
+}
+
+func TestDefaultPerformanceCommandsForLanguage(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		language string
+		want     []string
+	}{
+		{"go", []string{"go test -bench=. ./..."}},
+		{"rust", []string{"cargo bench"}},
+		{"node", nil},
+		{"python", nil},
+		{"ruby", nil},
+		{"", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.language, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, DefaultPerformanceCommandsForLanguage(tt.language))
+		})
+	}
+}
+
+func TestDefaultVerifyConfigForProject_NodePopulatesSecurityNotPerformance(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "package.json"), []byte("{}"), 0o644))
+
+	cfg := DefaultVerifyConfigForProject(dir)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"git diff --check"}, cfg.Build)
+	assert.Equal(t, []string{"npm audit --audit-level=high"}, cfg.Security)
+	assert.Empty(t, cfg.Performance, "node projects have no canonical bench runner")
 }
 
 func TestVerifyConfig_IsEmpty(t *testing.T) {

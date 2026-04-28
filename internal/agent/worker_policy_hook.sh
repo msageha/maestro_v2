@@ -13,45 +13,9 @@ fi
 input="$(cat)"
 tool_name="$(echo "$input" | jq -r '.tool_name // ""')"
 project_root=__PROJECT_ROOT__
-default_policy_bin=__MAESTRO_POLICY_CHECK_BIN__
-
-shadow_policy_check() {
-  local bash_allow="$1"
-  local bash_reason="${2:-}"
-  if [ "${MAESTRO_POLICY_SHADOW:-__MAESTRO_POLICY_SHADOW_DEFAULT__}" != "1" ]; then
-    return 0
-  fi
-
-  local policy_bin="${MAESTRO_POLICY_CHECK_BIN:-$default_policy_bin}"
-  local -a policy_args=("hook" "policy-check" "--project-root" "$project_root")
-  if [ "${run_on_main:-0}" = "1" ]; then
-    policy_args+=("--run-on-main")
-  fi
-
-  local go_output
-  if ! go_output="$(printf '%s' "$input" | "$policy_bin" "${policy_args[@]}" 2>&1)"; then
-    printf 'maestro_policy_shadow_error command=%q error=%q\n' "$policy_bin" "$go_output" >&2
-    return 0
-  fi
-
-  local go_allow
-  go_allow="$(printf '%s' "$go_output" | jq -r '.allow // empty' 2>/dev/null || true)"
-  if [ "$go_allow" != "true" ] && [ "$go_allow" != "false" ]; then
-    printf 'maestro_policy_shadow_error command=%q malformed_output=%q\n' "$policy_bin" "$go_output" >&2
-    return 0
-  fi
-
-  local go_reason
-  go_reason="$(printf '%s' "$go_output" | jq -r '.reason // ""' 2>/dev/null || true)"
-  if [ "$go_allow" != "$bash_allow" ] || { [ "$bash_allow" = "false" ] && [ "$go_reason" != "$bash_reason" ]; }; then
-    printf 'maestro_policy_shadow_divergence bash_allow=%s go_allow=%s bash_reason=%q go_reason=%q tool=%q\n' \
-      "$bash_allow" "$go_allow" "$bash_reason" "$go_reason" "$tool_name" >&2
-  fi
-}
 
 deny() {
   local reason="$1"
-  shadow_policy_check false "$reason"
   jq -nc --arg r "$reason" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$r}}'
   exit 0
 }
@@ -628,5 +592,5 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
 fi
 
 # Allow: no output, exit 0
-shadow_policy_check true ""
+exit 0
 exit 0

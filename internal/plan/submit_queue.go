@@ -131,7 +131,7 @@ func taskOperationType(t TaskInput) string {
 	case t.RunOnMain:
 		return model.OperationTypeVerify
 	case t.RunOnIntegration:
-		return model.OperationTypeRollout
+		return model.OperationTypeRepair
 	default:
 		return ""
 	}

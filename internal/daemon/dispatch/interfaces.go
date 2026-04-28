@@ -36,10 +36,37 @@ type WorktreeResolver interface {
 	// RunOnIntegration task runs. Detached or dirty worktrees are refused
 	// rather than silently dispatched onto (see RCA in worktree.Manager).
 	EnsureIntegrationBranchCheckedOut(commandID string) error
+	// GetIntegrationStatus returns the lifecycle status of the integration
+	// branch for commandID. Implementations return an error wrapping
+	// os.ErrNotExist when the command has no worktree state file (worktree
+	// mode disabled or never tracked), so callers can fall back to permissive
+	// behaviour via errors.Is. Used by the run_on_main pre-flight to reject
+	// verification tasks that arrive before the integration branch has been
+	// published into base — running those would inspect stale main and fail
+	// spuriously.
+	GetIntegrationStatus(commandID string) (model.IntegrationStatus, error)
 }
 
 // ExecutorGetter provides lazy executor access.
 // Satisfied by daemon.ExecutorProvider.
 type ExecutorGetter interface {
 	GetExecutor() (core.AgentExecutor, error)
+}
+
+// TaskAliveChecker abstracts the queue-state probe the dispatcher's
+// inline retry loop uses to short-circuit retries against tasks that have
+// already finished. The retry loop holds the dispatch goroutine for up
+// to retry.task_dispatch_inline_retries * (delay·2^n) seconds; without
+// this probe a worker that completed (or whose lease was revoked) keeps
+// receiving paste→Enter waves until the loop exhausts its budget,
+// burning Claude tokens and risking a duplicate envelope.
+//
+// IsDispatchActive must return false the moment the task is no longer
+// owned by this dispatch attempt — i.e. queue entry is terminal, the
+// lease epoch has been bumped by a fencing reject, or the queue entry
+// is gone. Returning true for "unknown / IO error" preserves the legacy
+// retry behaviour so a transient stat failure does not cause spurious
+// aborts; the next retry sweep will pick up the actual change.
+type TaskAliveChecker interface {
+	IsDispatchActive(workerID, taskID string, expectedLeaseEpoch int) bool
 }

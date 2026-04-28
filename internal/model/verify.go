@@ -67,21 +67,133 @@ func DefaultVerifyConfig() *VerifyConfig {
 // DefaultVerifyConfigForProject returns a minimal verification config
 // appropriate for the project at projectRoot:
 //
-//   - Go (go.mod present at projectRoot): same as DefaultVerifyConfig — `go vet ./...`
+//   - Go (go.mod present at projectRoot): `go vet ./...` for build, plus
+//     language-aware Security/Performance commands.
 //   - empty projectRoot: same as DefaultVerifyConfig (legacy compatibility)
-//   - otherwise: a repository-generic fallback, `git diff --check`. It is not
-//     a language-specific test suite, but it is a real command with a real exit
-//     code and avoids the previous unsafe "zero commands means pass" behaviour.
+//   - other detected languages: language-appropriate Build / Security /
+//     Performance commands (see DefaultSecurityCommandsForProject /
+//     DefaultPerformanceCommandsForProject).
+//   - undetectable languages: a repository-generic fallback,
+//     `git diff --check`. Security/Performance are left empty so that
+//     extended_verification.security_check has no language-specific tool to
+//     fall back to and silently skips, instead of failing every run.
 func DefaultVerifyConfigForProject(projectRoot string) *VerifyConfig {
 	if projectRoot == "" {
 		return DefaultVerifyConfig()
 	}
-	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
-		return DefaultVerifyConfig()
+	lang := DetectProjectLanguage(projectRoot)
+	cfg := &VerifyConfig{
+		Security:    DefaultSecurityCommandsForLanguage(lang),
+		Performance: DefaultPerformanceCommandsForLanguage(lang),
 	}
-	return &VerifyConfig{
-		Build: []string{"git diff --check"},
+	switch lang {
+	case "go":
+		cfg.Build = []string{"go vet ./..."}
+	default:
+		cfg.Build = []string{"git diff --check"}
 	}
+	return cfg
+}
+
+// DetectProjectLanguage inspects marker files at projectRoot to identify the
+// primary language ecosystem. Returns one of:
+//
+//	"go"         → go.mod present
+//	"node"       → package.json present (covers JS/TS)
+//	"python"     → pyproject.toml / requirements.txt / setup.py present
+//	"rust"       → Cargo.toml present
+//	"ruby"       → Gemfile present
+//	"java"       → pom.xml / build.gradle / build.gradle.kts present
+//	""           → none of the above (multi-language repo or unknown stack)
+//
+// Detection is order-sensitive: the first match wins, so polyglot repos with
+// both go.mod and package.json classify as Go. Operators who need different
+// behaviour should write an explicit verify.yaml.
+func DetectProjectLanguage(projectRoot string) string {
+	if projectRoot == "" {
+		return ""
+	}
+	probes := []struct {
+		marker   string
+		language string
+	}{
+		{"go.mod", "go"},
+		{"package.json", "node"},
+		{"pyproject.toml", "python"},
+		{"requirements.txt", "python"},
+		{"setup.py", "python"},
+		{"Cargo.toml", "rust"},
+		{"Gemfile", "ruby"},
+		{"pom.xml", "java"},
+		{"build.gradle", "java"},
+		{"build.gradle.kts", "java"},
+	}
+	for _, p := range probes {
+		if _, err := os.Stat(filepath.Join(projectRoot, p.marker)); err == nil {
+			return p.language
+		}
+	}
+	return ""
+}
+
+// DefaultSecurityCommandsForLanguage returns the standard security-scan
+// command for the given language identifier (as produced by
+// DetectProjectLanguage). Tools listed here require operator install; an
+// unrecognised language returns nil so extended_verification.security_check
+// is a no-op rather than a guaranteed verify failure on non-supported stacks.
+//
+//	go     → gosec ./...                       (github.com/securego/gosec)
+//	node   → npm audit --audit-level=high      (bundled with npm)
+//	python → uvx pip-audit                     (auto-fetches pip-audit via uv;
+//	                                            avoids forcing global install)
+//	rust   → cargo audit                       (RustSec)
+//	ruby   → bundle audit check                (rubysec/bundler-audit)
+//	other  → nil (skip)
+func DefaultSecurityCommandsForLanguage(language string) []string {
+	switch language {
+	case "go":
+		return []string{"gosec ./..."}
+	case "node":
+		return []string{"npm audit --audit-level=high"}
+	case "python":
+		return []string{"uvx pip-audit"}
+	case "rust":
+		return []string{"cargo audit"}
+	case "ruby":
+		return []string{"bundle audit check"}
+	default:
+		return nil
+	}
+}
+
+// DefaultPerformanceCommandsForLanguage returns the standard benchmark
+// command for the given language. Performance benches are only well-defined
+// for languages with a built-in convention; everything else returns nil.
+//
+//	go    → go test -bench=. ./...
+//	rust  → cargo bench
+//	other → nil (skip — no canonical benchmark runner)
+func DefaultPerformanceCommandsForLanguage(language string) []string {
+	switch language {
+	case "go":
+		return []string{"go test -bench=. ./..."}
+	case "rust":
+		return []string{"cargo bench"}
+	default:
+		return nil
+	}
+}
+
+// DefaultSecurityCommandsForProject is a convenience wrapper around
+// DetectProjectLanguage + DefaultSecurityCommandsForLanguage.
+func DefaultSecurityCommandsForProject(projectRoot string) []string {
+	return DefaultSecurityCommandsForLanguage(DetectProjectLanguage(projectRoot))
+}
+
+// DefaultPerformanceCommandsForProject is a convenience wrapper around
+// DetectProjectLanguage + DefaultPerformanceCommandsForLanguage.
+func DefaultPerformanceCommandsForProject(projectRoot string) []string {
+	return DefaultPerformanceCommandsForLanguage(DetectProjectLanguage(projectRoot))
 }
 
 // IsEmpty reports whether the config has no commands in any category.
@@ -210,21 +322,21 @@ func splitVerifyFields(command string) ([]string, error) {
 				haveToken = true
 			}
 		default:
-			switch {
-			case ch == '\'':
+			switch ch {
+			case '\'':
 				inSingle = true
 				haveToken = true
-			case ch == '"':
+			case '"':
 				inDouble = true
 				haveToken = true
-			case ch == '\\':
+			case '\\':
 				i++
 				if i >= len(command) {
 					return nil, fmt.Errorf("trailing escape")
 				}
 				b.WriteByte(command[i])
 				haveToken = true
-			case ch == ' ' || ch == '\t':
+			case ' ', '\t':
 				flush()
 			default:
 				b.WriteByte(ch)
@@ -332,7 +444,10 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("save verify config: close temp: %w", err)
 	}
-	if err := os.Rename(tmpName, path); err != nil {
+	// Both tmpName and path live under the controlled maestroDir layout
+	// (tmp is created via os.CreateTemp in Dir(path)); nothing on either
+	// path is user-controlled, so gosec G703 is a false positive here.
+	if err := os.Rename(tmpName, path); err != nil { //nolint:gosec // controlled maestroDir paths
 		return fmt.Errorf("save verify config: rename: %w", err)
 	}
 	tmpName = "" // Rename succeeded; prevent deferred cleanup from removing the target.

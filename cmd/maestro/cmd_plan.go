@@ -131,11 +131,24 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 }
 
 // runPlanComplete reports command completion to the daemon.
+//
+// 2026-04-28 E2E follow-up: Planner agents reaching the publish step often
+// have a long human-readable summary ready and try `maestro plan complete
+// --summary-file <path>`. The flag did not exist, so the call failed and the
+// agent had to either truncate the summary or paste a multi-kilobyte string
+// onto the CLI argv (which is fragile across tmux paste-buffer + Enter).
+// Mirroring the (--content | --content-file) pattern from `plan add-task` /
+// `plan add-retry-task`, we now accept --summary-file as an alternative
+// source for the summary text. The two flags are mutually exclusive — having
+// both set would create ambiguity about which value the daemon receives —
+// and the file path is read with the same content-size validation as the
+// inline flag.
 func (a *cliApp) runPlanComplete(args []string) error {
-	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> --summary <text>")
-	var commandID, summary string
+	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> (--summary <text> | --summary-file <path>)")
+	var commandID, summary, summaryFile string
 	cmd.RequiredString(&commandID, "command-id", "Parent command ID")
-	cmd.StringVar(&summary, "summary", "", "Completion summary text")
+	cmd.StringVar(&summary, "summary", "", "Completion summary text (mutually exclusive with --summary-file)")
+	cmd.StringVar(&summaryFile, "summary-file", "", "Read completion summary from a file or '-' for stdin (mutually exclusive with --summary)")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -143,6 +156,9 @@ func (a *cliApp) runPlanComplete(args []string) error {
 
 	if err := validate.ID(commandID); err != nil {
 		return cmd.Errorf("invalid --command-id: %v", err)
+	}
+	if err := resolveSummaryFile(cmd, &summary, summaryFile); err != nil {
+		return err
 	}
 	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
 		return cmd.Errorf("%v", err)
@@ -162,6 +178,27 @@ func (a *cliApp) runPlanComplete(args []string) error {
 	}
 
 	return a.sendPlanCommand("plan complete", maestroDir, params, planCommandTimeout)
+}
+
+// resolveSummaryFile resolves --summary-file into the summary string. It
+// rejects mixed sources so the value sent to the daemon has a single
+// obvious origin. Accepts "-" or "/dev/stdin" to read from stdin, matching
+// `plan submit --tasks-file -`; Planner agents previously failed with
+// `open -: no such file or directory` and had to fall back to a temp
+// file. Mirrors resolveContentFile in cmd_plan_tasks.go.
+func resolveSummaryFile(cmd *CommandBuilder, summary *string, summaryFile string) error {
+	if summaryFile == "" {
+		return nil
+	}
+	if *summary != "" {
+		return cmd.Errorf("--summary and --summary-file are mutually exclusive")
+	}
+	b, err := readFlagInputFile("--summary-file", summaryFile, model.DefaultMaxEntryContentBytes)
+	if err != nil {
+		return cmd.Errorf("%v", err)
+	}
+	*summary = string(b)
+	return nil
 }
 
 // sendPlanCommand sends a plan operation to the daemon via UDS.

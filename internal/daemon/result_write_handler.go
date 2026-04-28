@@ -150,6 +150,9 @@ func (h *ResultWriteAPI) SetVerifyAsync(enabled bool) {
 	h.verifyAsync = enabled
 }
 
+// SetAdmissionController wires the admission controller used to gate
+// daemon-owned background verification work. Late-bound from daemon
+// startup because the controller is constructed after the API surface.
 func (h *ResultWriteAPI) SetAdmissionController(ac *admission.Controller) {
 	h.admissionCtrl = ac
 }
@@ -194,12 +197,28 @@ func (h *ResultWriteAPI) maybeAutoRecoverAfterResolution(
 		action, err := h.worktreeManager.AutoRecoverAfterResolution(
 			h.ctx(), params.CommandID, params.Reporter, taskRunOnIntegration)
 		if err != nil {
+			// ErrNoWorktreeState is the expected outcome for any task that
+			// completes after the worktree pipeline has already torn down
+			// (success path: the post-publish cleanup deletes the command's
+			// worktree state file before the run_on_main verification task
+			// reports). There is nothing left to recover, so swallow it
+			// quietly at debug — emitting at warn here drowned operators in
+			// false-positive "auto_recover_after_resolution_failed" lines for
+			// every successful publish. Other errors remain a real recovery
+			// failure (e.g. ResumeMerge git op error) and stay at warn so
+			// they are still surfaced.
+			if errors.Is(err, worktree.ErrNoWorktreeState) {
+				h.logFn(LogLevelDebug,
+					"auto_recover_after_resolution_no_state command=%s reporter=%s task=%s "+
+						"(worktree state already cleaned up; nothing to recover)",
+					params.CommandID, params.Reporter, params.TaskID)
+				return
+			}
 			// AutoRecoverAfterResolution swallows ErrAlreadyResolved and
 			// returns AutoRecoverNone; anything else here is a real
-			// recovery failure (e.g. ResumeMerge git op error). Log loud
-			// enough that operators see it, but do not fail the
-			// result_write — R7 (and the next AutoRecover) can still
-			// retry.
+			// recovery failure. Log loud enough that operators see it, but
+			// do not fail the result_write — R7 (and the next AutoRecover)
+			// can still retry.
 			h.logFn(LogLevelWarn,
 				"auto_recover_after_resolution_failed command=%s reporter=%s task=%s action=%s error=%v "+
 					"(result already committed; reconcile/scan will retry)",
@@ -207,9 +226,22 @@ func (h *ResultWriteAPI) maybeAutoRecoverAfterResolution(
 			return
 		}
 		if action != worktree.AutoRecoverNone {
+			// 2026-04-28 follow-up: distinguish "ResumeMerge ran and the
+			// reporter worker is no longer Resolving" (key=
+			// _completed) from "ResumeMerge ran but tryMergeWorker
+			// deferred the merge until the dispatched resolution task
+			// lands its commit" (key=_deferred). Before this split, both
+			// outcomes printed the same `_completed action=resume_merge`
+			// line and operators misread it as "publish has run" even when
+			// the inner log said deferred. The action value itself encodes
+			// which branch ran: AutoRecoverResumeMergeDeferred → deferred.
+			key := "auto_recover_after_resolution_completed"
+			if action == worktree.AutoRecoverResumeMergeDeferred {
+				key = "auto_recover_after_resolution_deferred"
+			}
 			h.logFn(LogLevelInfo,
-				"auto_recover_after_resolution command=%s reporter=%s task=%s action=%s",
-				params.CommandID, params.Reporter, params.TaskID, action)
+				"%s command=%s reporter=%s task=%s action=%s",
+				key, params.CommandID, params.Reporter, params.TaskID, action)
 		}
 
 	case resultStatus == model.StatusFailed:
@@ -223,6 +255,18 @@ func (h *ResultWriteAPI) maybeAutoRecoverAfterResolution(
 		// genuinely a conflict resolution task.
 		if err := h.worktreeManager.ResetResolvingWorkerToConflict(
 			params.CommandID, params.Reporter); err != nil {
+			// Symmetry with the StatusCompleted branch: a missing worktree
+			// state for a failed task means there is no resolving worker to
+			// reset, which is the expected post-cleanup shape. Suppress the
+			// warn so the failed-task log line is not paired with a noisy
+			// false-positive recovery warning.
+			if errors.Is(err, worktree.ErrNoWorktreeState) {
+				h.logFn(LogLevelDebug,
+					"reset_resolving_worker_no_state command=%s worker=%s "+
+						"(worktree state already cleaned up; nothing to reset)",
+					params.CommandID, params.Reporter)
+				return
+			}
 			h.logFn(LogLevelWarn,
 				"reset_resolving_worker_failed command=%s worker=%s error=%v "+
 					"(R7 will sweep within resolvingStallTimeout)",
@@ -285,6 +329,9 @@ func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) (stri
 	return wd, nil
 }
 
+// ResultWriteParams aliases daemonapi.ResultWriteParams so callers
+// inside the daemon package can keep their existing import surface
+// after the request-decoding logic moved into daemonapi.
 type ResultWriteParams = daemonapi.ResultWriteParams
 
 // recordFallback records worker success/failure for health monitoring.
@@ -297,14 +344,6 @@ func (h *ResultWriteAPI) recordFallback(params ResultWriteParams, resultStatus m
 			fm.RecordFailure(params.Reporter)
 		}
 	}
-}
-
-func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
-	params, resultStatus, errResp := daemonapi.ValidateResultWriteRequest(req)
-	if errResp != nil {
-		return errResp
-	}
-	return h.handleValidatedResultWrite(params, resultStatus)
 }
 
 func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, resultStatus model.Status) *uds.Response {
@@ -519,7 +558,7 @@ func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseA
 	retryTask := phaseAResult.retryTask
 	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 
-	if err := retryHandler.RetryTaskAtomically(retryTask, params.CommandID, params.Reporter); err != nil {
+	if err := retryHandler.RetryTaskAtomically(retryTask, params.TaskID, params.CommandID, params.Reporter); err != nil {
 		h.logFn(LogLevelError, "retry_task_atomic_failed task=%s worker=%s command=%s error=%v",
 			retryTask.ID, params.Reporter, params.CommandID, err)
 	} else {
@@ -556,7 +595,7 @@ func (h *ResultWriteAPI) handleVerifyRepairRegistration(sourceTask *model.Task, 
 			fmt.Sprintf("verify_repair_create_failed: %v", err))
 		return false, model.StatusPausedForReplan
 	}
-	if err := retryHandler.RetryTaskAtomically(repairTask, params.CommandID, params.Reporter); err != nil {
+	if err := retryHandler.RetryTaskAtomically(repairTask, sourceTask.ID, params.CommandID, params.Reporter); err != nil {
 		h.logFn(LogLevelError,
 			"verify_repair_atomic_failed task=%s repair_id=%s worker=%s command=%s error=%v -> paused_for_replan",
 			params.TaskID, repairTask.ID, params.Reporter, params.CommandID, err)

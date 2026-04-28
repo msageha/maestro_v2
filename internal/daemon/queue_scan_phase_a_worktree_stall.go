@@ -151,6 +151,81 @@ func (qh *QueueHandler) allPhasesAndTasksTerminal(commandID string, taskQueues m
 	return true
 }
 
+// stepResolvingWorkerStallDetection — Step 0.7.3b: Detect workers stuck in the
+// `resolving` worktree status longer than the configured stall timeout.
+//
+// The deferred-merge path in worktree.tryMergeWorker leaves a worker at
+// `resolving` until the dispatched __conflict_resolution task reports
+// completion via result_write_handler → AutoRecoverAfterResolution. If that
+// notification never arrives (e.g. an extended tmux signal_delivery_failed
+// cascade prevents notify_worker from being delivered), the worker is silently
+// pinned at `resolving` and the integration branch never advances. This step
+// emits a `worker_resolving_stalled` planner signal once per (command, worker)
+// pair so an operator can intervene with `plan resume_merge` or by clearing
+// the worker manually. The signal index dedups subsequent emissions for the
+// same key, matching the dedup model used by merge_conflict / commit_failed.
+func (qh *QueueHandler) stepResolvingWorkerStallDetection(s *scanState) {
+	if qh.worktreeManager == nil || !qh.config.Worktree.Enabled {
+		return
+	}
+	timeoutMin := qh.config.Worktree.EffectiveStallTimeoutMinutes()
+	if timeoutMin <= 0 {
+		return
+	}
+
+	now := qh.clock.Now()
+	threshold := now.Add(-time.Duration(timeoutMin) * time.Minute)
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
+		}
+		cmdState, err := qh.worktreeManager.GetCommandState(cmd.ID)
+		if err != nil || cmdState == nil {
+			continue
+		}
+		for _, ws := range cmdState.Workers {
+			if ws.Status != model.WorktreeStatusResolving {
+				continue
+			}
+			ref := ws.UpdatedAt
+			if ref == "" {
+				ref = ws.CreatedAt
+			}
+			refTime, err := qh.timeCache.ParseRFC3339(ref)
+			if err != nil {
+				continue
+			}
+			if !refTime.Before(threshold) {
+				continue
+			}
+
+			stalledSince := refTime.UTC().Format(time.RFC3339)
+			nowStr := now.UTC().Format(time.RFC3339)
+			msg := fmt.Sprintf(
+				"[maestro] kind:worker_resolving_stalled command_id:%s worker_id:%s\n"+
+					"reason: resolving status held >= %d minutes (resolution task may not have reported)\n"+
+					"stalled_since: %s\n"+
+					"next_action: inspect worker pane / queue, then run `maestro plan resume-merge --command-id %s` once edits are present",
+				cmd.ID, ws.WorkerID, timeoutMin, stalledSince, cmd.ID,
+			)
+			qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+				Kind:      "worker_resolving_stalled",
+				CommandID: cmd.ID,
+				WorkerID:  ws.WorkerID,
+				Reason:    "resolving_status_held_too_long",
+				Message:   msg,
+				CreatedAt: nowStr,
+				UpdatedAt: nowStr,
+			}, s.signalIndex)
+			qh.log(LogLevelWarn,
+				"worker_resolving_stalled command=%s worker=%s stalled_since=%s threshold_min=%d",
+				cmd.ID, ws.WorkerID, stalledSince, timeoutMin)
+		}
+	}
+}
+
 // stepCheckWorktreeConfigViolations — Step 0.7.4: When AutoCommit/AutoMerge are
 // disabled, warn the operator (via WARN log + planner signal) for any in-progress
 // command whose integration branch has stayed unmerged longer than the configured

@@ -50,8 +50,8 @@ func TestSocketPath_LongMaestroDirUsesFallback(t *testing.T) {
 	if len(sockPath) > maxUnixSocketPathLen {
 		t.Fatalf("fallback socket path too long: %d > %d (%s)", len(sockPath), maxUnixSocketPathLen, sockPath)
 	}
-	if !strings.Contains(sockPath, socketFallbackDirName) {
-		t.Fatalf("fallback path %q should contain %q", sockPath, socketFallbackDirName)
+	if !strings.Contains(sockPath, socketFallbackDirBaseName) {
+		t.Fatalf("fallback path %q should contain %q", sockPath, socketFallbackDirBaseName)
 	}
 }
 

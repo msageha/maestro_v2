@@ -9,12 +9,6 @@ import (
 	"strings"
 )
 
-const (
-	policyHookImplementationBash   = "bash"
-	policyHookImplementationShadow = "shadow"
-	policyHookImplementationGo     = "go"
-)
-
 // PolicyChecker generates PreToolUse hook scripts and settings to technically
 // enforce destructive operation prevention for Worker agents.
 //
@@ -30,14 +24,6 @@ func NewPolicyChecker(maestroDir string) *PolicyChecker {
 	return &PolicyChecker{maestroDir: maestroDir}
 }
 
-// HookScriptOptions selects which worker policy hook implementation is written.
-// Empty fields preserve the production-safe default: the legacy bash policy
-// with shadow comparison disabled.
-type HookScriptOptions struct {
-	Implementation string
-	MaestroBinary  string
-}
-
 // hookScriptPath returns the filesystem path for the policy hook script.
 func (pc *PolicyChecker) hookScriptPath() string {
 	return filepath.Join(pc.maestroDir, "hooks", "worker-policy.sh")
@@ -46,13 +32,6 @@ func (pc *PolicyChecker) hookScriptPath() string {
 // WriteHookScript writes the policy enforcement shell script to disk.
 // Returns the script path. The script is idempotently overwritten.
 func (pc *PolicyChecker) WriteHookScript() (string, error) {
-	return pc.WriteHookScriptWithOptions(HookScriptOptions{Implementation: policyHookImplementationBash})
-}
-
-// WriteHookScriptWithOptions writes the selected worker policy hook script to
-// disk. The default bash implementation remains authoritative until the Go
-// policy reaches full corpus parity.
-func (pc *PolicyChecker) WriteHookScriptWithOptions(opts HookScriptOptions) (string, error) {
 	dir := filepath.Join(pc.maestroDir, "hooks")
 	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a hooks directory
 		return "", fmt.Errorf("create hooks dir: %w", err)
@@ -67,26 +46,7 @@ func (pc *PolicyChecker) WriteHookScriptWithOptions(opts HookScriptOptions) (str
 		maestroDir = resolved
 	}
 	projectRoot := filepath.Dir(maestroDir)
-	maestroBinary := opts.MaestroBinary
-	if maestroBinary == "" {
-		maestroBinary = "maestro"
-	}
-	implementation := opts.Implementation
-	if implementation == "" {
-		implementation = policyHookImplementationBash
-	}
-
-	var script string
-	switch implementation {
-	case policyHookImplementationBash:
-		script = renderBashPolicyScript(projectRoot, maestroBinary, false)
-	case policyHookImplementationShadow:
-		script = renderBashPolicyScript(projectRoot, maestroBinary, true)
-	case policyHookImplementationGo:
-		script = renderGoPolicyWrapper(projectRoot, maestroBinary)
-	default:
-		return "", fmt.Errorf("unknown worker policy hook implementation %q", implementation)
-	}
+	script := renderBashPolicyScript(projectRoot)
 
 	scriptPath := pc.hookScriptPath()
 	if err := os.WriteFile(scriptPath, []byte(script), 0750); err != nil { //nolint:gosec // hook script requires execute permission
@@ -96,54 +56,8 @@ func (pc *PolicyChecker) WriteHookScriptWithOptions(opts HookScriptOptions) (str
 	return scriptPath, nil
 }
 
-func renderBashPolicyScript(projectRoot, maestroBinary string, shadow bool) string {
-	shadowDefault := "0"
-	if shadow {
-		shadowDefault = "1"
-	}
-	script := strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
-	script = strings.ReplaceAll(script, "__MAESTRO_POLICY_CHECK_BIN__", shellQuote(maestroBinary))
-	script = strings.ReplaceAll(script, "__MAESTRO_POLICY_SHADOW_DEFAULT__", shadowDefault)
-	return script
-}
-
-func renderGoPolicyWrapper(projectRoot, maestroBinary string) string {
-	return strings.TrimSpace(fmt.Sprintf(`#!/usr/bin/env bash
-set -euo pipefail
-
-input="$(cat)"
-project_root=%s
-maestro_bin=%s
-
-run_on_main="0"
-if [ -n "${TMUX_PANE:-}" ]; then
-  if command -v tmux >/dev/null 2>&1; then
-    if _flag="$(tmux display-message -t "$TMUX_PANE" -p '#{@run_on_main}' 2>/dev/null)"; then
-      if [ "$_flag" = "1" ]; then
-        run_on_main="1"
-      fi
-    else
-      run_on_main="1"
-    fi
-  else
-    run_on_main="1"
-  fi
-fi
-
-args=("hook" "policy-check" "--project-root" "$project_root")
-if [ "$run_on_main" = "1" ]; then
-  args+=("--run-on-main")
-fi
-
-if ! output="$(printf '%%s' "$input" | "$maestro_bin" "${args[@]}" 2>&1)"; then
-  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Policy hook Go checker failed. Denying for safety."}}'
-  exit 0
-fi
-if command -v jq >/dev/null 2>&1 && [ "$(printf '%%s' "$output" | jq -r '.allow // empty' 2>/dev/null || true)" = "true" ]; then
-  exit 0
-fi
-printf '%%s\n' "$output"
-`, shellQuote(projectRoot), shellQuote(maestroBinary))) + "\n"
+func renderBashPolicyScript(projectRoot string) string {
+	return strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
 }
 
 // hookSettingsJSON is the settings JSON structure for hook overrides.
@@ -208,10 +122,9 @@ func shellQuote(s string) string {
 
 // hookScriptRaw holds the verbatim PreToolUse policy hook source. The shell
 // script lives next to this file as worker_policy_hook.sh so it can be
-// edited with full editor / shell-lint support; F-025 step 1 (decoupling
-// readability from the eventual Go-side rewrite). The string is later run
+// edited with full editor / shell-lint support. The string is later run
 // through strings.TrimSpace + a trailing newline so the on-disk hook script
-// matches byte-for-byte what the previous embedded raw-string produced.
+// ends with exactly one newline.
 //
 //go:embed worker_policy_hook.sh
 var hookScriptRaw string

@@ -55,9 +55,17 @@ type WorkerState struct {
 }
 
 // TaskAssignmentRequest describes a task that needs worker assignment.
+// PinnedWorkerID, when set, forces AssignWorkers to bypass the bloom-based
+// auto-assignment and place the task on the named worker — same shape as
+// the inject path's TargetWorkerID but reachable from the initial-submit
+// route. Surfaced 2026-04-28: Planner agents that try to fan tasks into
+// fixed lanes (e.g. worker1 vs worker2 for separate features) had no
+// way to express that on a fresh plan submit; the YAML schema dropped
+// the field as "unknown" and the call failed with INTERNAL_ERROR.
 type TaskAssignmentRequest struct {
-	Name       string
-	BloomLevel int
+	Name           string
+	BloomLevel     int
+	PinnedWorkerID string
 }
 
 // GetModelForBloomLevel returns the model family name appropriate for the
@@ -152,6 +160,31 @@ func AssignWorkers(
 
 	assignments := make([]WorkerAssignment, 0, len(tasks))
 	for _, task := range tasks {
+		// Pinned-worker fast path: when a TaskInput supplies an explicit
+		// worker_id (e.g. `plan submit` YAML pinning a task to worker1
+		// for a feature lane), skip the bloom-based selector and use the
+		// configured worker model directly. Mirrors the inject.go
+		// TargetWorkerID branch so behaviour is identical regardless of
+		// which CLI/API entry point produced the assignment.
+		if task.PinnedWorkerID != "" {
+			ws, ok := stateMap[task.PinnedWorkerID]
+			if !ok {
+				return nil, fmt.Errorf("%w for task %q: pinned worker %q not configured (workers.count=%d)",
+					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, config.Count)
+			}
+			if ws.PendingCount >= maxPending {
+				return nil, fmt.Errorf("%w for task %q: pinned worker %q at capacity (max_pending_tasks_per_worker=%d)",
+					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, maxPending)
+			}
+			assignments = append(assignments, WorkerAssignment{
+				TaskName: task.Name,
+				WorkerID: ws.WorkerID,
+				Model:    ws.Model,
+			})
+			ws.PendingCount++
+			continue
+		}
+
 		requiredModel := GetModelForBloomLevel(task.BloomLevel, config.Boost)
 		// Honor a bandit / adaptive selector when it picks a model that at
 		// least one worker is configured for; otherwise keep the static

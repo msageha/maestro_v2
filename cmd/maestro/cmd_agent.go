@@ -1,11 +1,46 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// mapAgentExecError maps an agent.Executor result into the CLI error
+// surface used by `maestro agent exec`. Returns nil when the result has
+// no error to surface. Extracted from runAgentExec so the
+// ErrSubmitConfirmUncertain → ExitCodeSubmitUncertain mapping can be
+// unit-tested without standing up a tmux session.
+//
+// The three branches model three distinct outcomes:
+//   - ErrSubmitConfirmUncertain: message was put on the wire but the
+//     visual confirmation probe exhausted. The deliverer marks this
+//     non-retryable to avoid double-submit; the CLI surfaces it with a
+//     dedicated exit code (ExitCodeSubmitUncertain) so scripts can tell
+//     it apart from a hard failure (1) or a retryable transport
+//     error (2).
+//   - result.Retryable: transient transport failure that the caller
+//     can safely retry.
+//   - default: everything else — treated as a generic CLI error.
+func mapAgentExecError(result agent.ExecResult, agentID string) error {
+	if result.Error == nil {
+		return nil
+	}
+	if errors.Is(result.Error, agent.ErrSubmitConfirmUncertain) {
+		return &CLIError{
+			Code: ExitCodeSubmitUncertain,
+			Msg: fmt.Sprintf(
+				"maestro agent exec: %v (message was sent to %s; visual confirmation timed out — inspect the agent pane before re-running, as a re-exec can produce a duplicate submit)",
+				result.Error, agentID),
+		}
+	}
+	if result.Retryable {
+		return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro agent exec: %v", result.Error)}
+	}
+	return fmt.Errorf("maestro agent exec: %w", result.Error)
+}
 
 // runAgent dispatches agent subcommands (launch, exec).
 func runAgent(args []string) error {
@@ -81,11 +116,8 @@ func runAgentExec(args []string) error {
 		Mode:    agent.ExecMode(mode),
 	})
 
-	if result.Error != nil {
-		if result.Retryable {
-			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro agent exec: %v", result.Error)}
-		}
-		return fmt.Errorf("maestro agent exec: %w", result.Error)
+	if err := mapAgentExecError(result, agentID); err != nil {
+		return err
 	}
 
 	if mode == "is_busy" {

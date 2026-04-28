@@ -80,6 +80,7 @@ type QueueDispatcherConfigurer interface {
 	SetEventBus(bus *events.Bus)
 	SetQualityGate(qg dispatch.GateChecker)
 	SetWorktreeManager(wm dispatch.WorktreeResolver)
+	SetTaskAliveChecker(c dispatch.TaskAliveChecker)
 }
 
 // QueueDispatcherOperator defines runtime dispatch and sorting operations.

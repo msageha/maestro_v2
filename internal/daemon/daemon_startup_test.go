@@ -3,14 +3,73 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
+
+// TestCollectNonClaudeWorkers pins the helper that drives the startup
+// advisory log: only codex / gemini workers should be returned, and the
+// output should follow worker number order with the resolved runtime/model
+// label. claude-code workers (default and explicit) are intentionally
+// omitted so the advisory log stays empty for the all-Claude common case.
+func TestCollectNonClaudeWorkers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		wc   model.WorkerConfig
+		want []string
+	}{
+		{
+			name: "all_claude_default_no_advisory",
+			wc:   model.WorkerConfig{Count: 2, DefaultModel: "sonnet"},
+			want: []string{},
+		},
+		{
+			name: "default_codex_two_workers",
+			wc:   model.WorkerConfig{Count: 2, DefaultModel: "codex"},
+			want: []string{"worker1=codex/codex", "worker2=codex/codex"},
+		},
+		{
+			name: "mixed_per_worker_overrides_keep_order",
+			wc: model.WorkerConfig{
+				Count:        3,
+				DefaultModel: "sonnet",
+				Models: map[string]string{
+					"worker1": "gemini-2.5-pro",
+					"worker3": "codex",
+				},
+			},
+			want: []string{"worker1=gemini/gemini-2.5-pro", "worker3=codex/codex"},
+		},
+		{
+			name: "empty_default_and_no_overrides_no_advisory",
+			wc:   model.WorkerConfig{Count: 2},
+			want: []string{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := collectNonClaudeWorkers(tc.wc)
+			if len(tc.want) == 0 {
+				if len(got) != 0 {
+					t.Errorf("got %v, want empty", got)
+				}
+				return
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("got %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
 
 // setupDaemonForStartRuntime creates a daemon with the minimum fields required
 // to call startRuntime() in tests. It wires a real fsnotify watcher and an

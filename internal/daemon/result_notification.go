@@ -9,6 +9,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -55,6 +56,21 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResultWithRetry(commandID, taskID,
 			return nil
 		}
 		lastErr = err
+		// ErrSubmitConfirmUncertain is non-retryable by design (mirrors
+		// deliverPlannerSignal's behaviour in queue_dispatch.go): the
+		// underlying deliverer already burned its 8-attempt probe
+		// budget (~6s) trying to confirm the paste landed in the
+		// Planner pane and gave up. Re-pasting the same envelope risks
+		// a duplicate task_result notification on top of the original
+		// message, while continuing to wait simply multiplies the
+		// scan-blocking window for no semantic gain. Surface the error
+		// immediately so the per-result NotifyAttempts counter
+		// advances and the dead-letter path engages instead of pinning
+		// scan cycles to the same exhausted delivery for the full
+		// inline-retry budget.
+		if errors.Is(err, agent.ErrSubmitConfirmUncertain) {
+			return err
+		}
 	}
 	return lastErr
 }

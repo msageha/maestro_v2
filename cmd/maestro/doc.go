@@ -16,6 +16,10 @@
 //   - task: Manages task heartbeats.
 //   - skill: Lists, approves, and rejects skill candidates.
 //   - dashboard: Regenerates the dashboard.md status file.
-//   - resolve-conflict: Operator command for resolving worker merge conflicts.
+//   - resolve-conflict: Operator command for clearing a worker from
+//     commit_failed_workers when the publish-to-base step is blocked by a
+//     stale commit failure. NOT for in-phase merge_conflict signals — those
+//     are addressed by `plan add-task --worker-id <id>`, which dispatches a
+//     conflict resolution task and lets the daemon auto-run resume_merge.
 //   - daemon: Runs the background daemon process (internal).
 package main

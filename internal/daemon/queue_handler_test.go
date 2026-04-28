@@ -638,6 +638,12 @@ func (m *slowMockExecutor) Close() error {
 	return nil
 }
 
+// RespawnPaneToProjectRoot satisfies the AgentExecutor interface; the
+// slow-mock has no pane state so this is a no-op stub.
+func (m *slowMockExecutor) RespawnPaneToProjectRoot(string) error {
+	return nil
+}
+
 // TestApplySignalResults_KeyMatch verifies that signal delivery results are matched
 // by stable key (commandID+phaseID+kind), not by array index. This catches a bug
 // where stale-signal removal in Phase A compacted the array, causing index mismatch.

@@ -178,6 +178,13 @@ func TestSendAndConfirm_MultilinePastedPlaceholderRetriesEnter(t *testing.T) {
 	mock.currentCommand = "claude"
 	mock.isShell = false
 	mock.captureJoinedSeq = []mockResp{
+		// 2026-04-28 pre-paste baseline capture. The deliverer now
+		// snapshots the pane before SendTextAndSubmit so the submit
+		// probe's content-growth detector starts with a real baseline
+		// instead of waiting for its own first observation. Tests must
+		// supply this entry so the scripted post-paste sequence stays
+		// aligned with what the probe actually sees.
+		{val: "Welcome\n❯ \n"},
 		{val: "Welcome\n❯ [Pasted text #1 +248 lines]\n"},
 		{val: "Working...\n"},
 	}
@@ -285,6 +292,54 @@ func TestSendAndConfirm_SubmitProbeCaptureFailureIsNonRetryable(t *testing.T) {
 	}
 }
 
+// TestSendAndConfirm_ActivityFirstShortCircuitsStalePlaceholder is the
+// regression test for the 2026-04-28 retest7 false-negative cascade. A
+// previous-turn pasted-text line was scrolled into the bottom-N-line search
+// window while the live prompt was already empty and Claude was visibly
+// processing ("Working..."). The old probe ordering checked the
+// pasted-text placeholder first, fired Enter retries at a pane that did not
+// need them, and ran out the 8-attempt budget — surfacing as
+// `submit_confirm pasted_text_still_at_prompt attempts=8` followed by a
+// successful task completion.
+//
+// New ordering: activity check first; once Claude is processing the dispatch
+// is confirmed without further Enter retries even if history holds a stale
+// placeholder.
+func TestSendAndConfirm_ActivityFirstShortCircuitsStalePlaceholder(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{
+		{val: "Welcome\n❯ \n"}, // pre-paste baseline
+		// Post-paste: activity is visible AND the live prompt area is now
+		// empty, but a stale placeholder from a previous turn lingers in
+		// the scrolled-up history. Old logic flagged this as
+		// pasted_text_still_at_prompt and burnt the retry budget; new
+		// logic short-circuits on the activity marker.
+		{val: "❯ [Pasted text #0 +12 lines]\n⏺ Working...\n❯ \n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_retest7",
+		Message: "line one\nline two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected Success=true once activity is visible")
+	}
+	// Crucially: NO retry Enter should have been sent — the new ordering
+	// confirms on activity first, before evaluating the stale placeholder.
+	if callsContain(mock.calls, "SendKeys:Enter") {
+		t.Fatalf("activity-first ordering must NOT fire retry Enter when activity is already visible, calls=%v", mock.calls)
+	}
+}
+
 func TestSubmittedActivityVisible(t *testing.T) {
 	t.Parallel()
 	if !submittedActivityVisible("Thinking\n") {
@@ -317,6 +372,349 @@ func TestSendAndConfirm_SingleLineSkipsSubmitConfirmation(t *testing.T) {
 	}
 }
 
+// TestSendAndConfirm_NonClaudeRuntimeProgressDetectsChange verifies the
+// runtime-agnostic content-change probe used for codex / gemini workers.
+// The Claude Code-specific markers ("Pasted text #" / "Thinking" / "⏺")
+// never appear on those panes, so the deliverer compares pane snapshots
+// over the probe window: any change is treated as evidence that the
+// runtime accepted the input and started rendering, while a fully stable
+// pane indicates a blocking modal swallowed the paste. This is the
+// regression test for the 2026-04 false-positive audit where
+// dispatch_task_success was logged on codex / gemini workers that never
+// actually saw the message.
+func TestSendAndConfirm_NonClaudeRuntimeProgressDetectsChange(t *testing.T) {
+	t.Parallel()
+	for _, rt := range []string{"codex", "gemini"} {
+		rt := rt
+		t.Run(rt+"_changing_pane_succeeds", func(t *testing.T) {
+			t.Parallel()
+			mock := newMockPaneIO()
+			mock.currentCommand = rt
+			mock.isShell = false
+			mock.userVars["runtime"] = rt
+			// Different content per CapturePaneJoined call: simulates a
+			// runtime that is rendering after paste+Enter.
+			mock.joinedContent = []string{
+				"prompt: ▌\n",
+				"prompt: ▌\nthinking…\n",
+			}
+			d := newTestDeliverer(mock)
+
+			result := d.sendAndConfirm(ExecRequest{
+				AgentID: "worker1",
+				TaskID:  "task_001",
+				Message: "first line\nsecond line\nthird line\n",
+				Context: context.Background(),
+			}, "%0")
+
+			if result.Error != nil {
+				t.Fatalf("unexpected error: %v", result.Error)
+			}
+			if !result.Success {
+				t.Error("expected Success=true (pane content changed across probe window)")
+			}
+		})
+
+		t.Run(rt+"_static_pane_marks_uncertain", func(t *testing.T) {
+			t.Parallel()
+			mock := newMockPaneIO()
+			mock.currentCommand = rt
+			mock.isShell = false
+			mock.userVars["runtime"] = rt
+			// Same content on every CapturePaneJoined call: simulates the
+			// codex first-run trust prompt or another blocking modal that
+			// swallowed the paste before the runtime saw it.
+			mock.captureContent = "Do you trust the contents of this directory? [y/N]\n"
+			d := newTestDeliverer(mock)
+
+			result := d.sendAndConfirm(ExecRequest{
+				AgentID: "worker1",
+				TaskID:  "task_001",
+				Message: "first line\nsecond line\nthird line\n",
+				Context: context.Background(),
+			}, "%0")
+
+			if result.Success {
+				t.Error("expected Success=false when pane is static across the probe window")
+			}
+			if result.Error == nil || !errors.Is(result.Error, ErrSubmitConfirmUncertain) {
+				t.Errorf("expected ErrSubmitConfirmUncertain, got: %v", result.Error)
+			}
+		})
+	}
+}
+
+// TestSendAndConfirm_ClaudePaneContentChangeFallbackConfirms covers the
+// 2026-04 codex/gemini E2E regression where Orchestrator → Planner dispatch
+// logged dispatch_command_failed (status=exhausted attempts=8) even though
+// the Planner had finished plan_submit. Root cause: the Claude probe only
+// looked for activity markers ("Thinking", "⏺", …) in the captured 12
+// lines, and missed cases where the marker scrolled past the viewport or
+// rendered between probes. The probe now treats any normalized
+// content-change after the first marker-free, placeholder-free snapshot as
+// confirmation. This test pins that contract.
+func TestSendAndConfirm_ClaudePaneContentChangeFallbackConfirms(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.userVars["runtime"] = model.RuntimeClaudeCode
+	// Two distinct snapshots without any Claude UI marker or pasted-text
+	// placeholder. The probe should adopt the first as a baseline and
+	// flip to confirmed on the second when the hash changes.
+	mock.captureJoinedSeq = []mockResp{
+		{val: "❯ \nstatusline foo\n"},
+		{val: "❯ \nstatusline foo\nrendered output line\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "planner",
+		TaskID:  "task_001",
+		Message: "first line\nsecond line\n",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected Success=true via content-change fallback")
+	}
+}
+
+// TestSendAndConfirm_ClaudePaneStaticContentRemainsExhausted ensures the
+// content-change fallback does not erode the safety net for genuinely
+// stalled panes. Same captures across the full probe window with no
+// markers, no placeholder, and no normalized content change must still
+// surface as exhausted (non-retryable, since blindly resending risks
+// double-submit).
+func TestSendAndConfirm_ClaudePaneStaticContentRemainsExhausted(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.userVars["runtime"] = model.RuntimeClaudeCode
+	// Static content (the same pane snapshot every probe). No marker, no
+	// placeholder, and no advance after normalization → exhausted.
+	mock.captureContent = "❯ \nstatusline foo\n"
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "planner",
+		TaskID:  "task_001",
+		Message: "first line\nsecond line\n",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Success {
+		t.Fatal("expected Success=false for fully static probe window")
+	}
+	if !errors.Is(result.Error, ErrSubmitConfirmUncertain) {
+		t.Fatalf("expected ErrSubmitConfirmUncertain, got %v", result.Error)
+	}
+	if result.Retryable {
+		t.Fatal("static-pane uncertainty must not be retryable (would double-submit)")
+	}
+}
+
+// TestSendAndConfirm_ClaudePlaceholderResetsContentChangeBaseline guards the
+// nuance that triggering a re-Enter on the pasted-text placeholder must
+// restart the content-change observation. Without the reset, the post-Enter
+// snapshot would be compared against the pre-Enter (placeholder-bearing)
+// baseline and any UI redraw would falsely confirm submission. With the
+// reset, the probe re-establishes a baseline AFTER the resend and only
+// confirms once the post-resend pane content actually advances.
+func TestSendAndConfirm_ClaudePlaceholderResetsContentChangeBaseline(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.userVars["runtime"] = model.RuntimeClaudeCode
+	mock.captureJoinedSeq = []mockResp{
+		// Pre-paste baseline (2026-04-28): the deliverer now snapshots
+		// the pane before SendTextAndSubmit so subsequent probes can
+		// detect any post-submit growth from the very first attempt.
+		{val: "Welcome\n❯ \n"},
+		// Probe 1: placeholder visible → resend Enter, baseline reset.
+		{val: "Welcome\n❯ [Pasted text #1 +12 lines]\n"},
+		// Probe 2: placeholder cleared, no marker. Becomes the new baseline.
+		{val: "Welcome\n❯ \n"},
+		// Probe 3: pane now advances (Claude is rendering) → confirmed via
+		// content-change against the post-resend baseline.
+		{val: "Welcome\n❯ \nThinking\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "planner",
+		TaskID:  "task_001",
+		Message: "first line\nsecond line\n",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected Success=true after placeholder retry + content-change confirm")
+	}
+	if !callsContain(mock.calls, "SendKeys:Enter") {
+		t.Fatalf("expected resend Enter on placeholder, calls=%v", mock.calls)
+	}
+}
+
+// TestSendAndConfirm_PrePasteBaselineConfirmsOnFirstProbe pins the
+// 2026-04-28 structural fix for the dispatch_confirm false-negative the
+// E2E run flagged ("worker1 received the prompt and completed, but the
+// daemon emitted submit_confirm probe_budget_exhausted →
+// dispatch_uncertain_assume_running"). With the pre-paste baseline, a
+// pane that grows by even a single line on the very first probe is
+// treated as confirmed — the historical implementation wasted the first
+// probe on baseline capture, so a worker that finished its only visible
+// growth before probe #2 was misclassified as exhausted.
+//
+// Scenario: pre-paste pane has 1 non-blank line ("❯"). Probe #1
+// captures 2 non-blank lines ("❯", "Pasted snippet"); no activity
+// marker, no placeholder. Old logic sets baseline at 2 lines on probe
+// #1, then probes #2..8 see 2 lines and exhaust. New logic sees 2 > 1
+// (vs pre-paste baseline) and confirms immediately.
+func TestSendAndConfirm_PrePasteBaselineConfirmsOnFirstProbe(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.userVars["runtime"] = model.RuntimeClaudeCode
+	mock.captureJoinedSeq = []mockResp{
+		// Pre-paste: empty prompt (1 non-blank line).
+		{val: "❯\n"},
+		// Probe #1: pane has grown by one line (no activity marker, no
+		// placeholder, but content visibly changed). With pre-paste
+		// baseline = 1 line, current = 2 lines → growth detected,
+		// confirmed without waiting for the marker.
+		{val: "❯\npayload-echoed-by-claude\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_pre_paste_pin",
+		Message: "payload-line-one\npayload-line-two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("expected no error from pre-paste baseline confirmation, got: %v", result.Error)
+	}
+	if !result.Success {
+		t.Fatal("expected Success=true (probe #1 should confirm via content_growth vs pre-paste baseline)")
+	}
+}
+
+func TestNormalizeProbeSnapshot(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "trims trailing whitespace per line",
+			in:   "alpha   \nbeta\t\n",
+			want: "alpha\nbeta\n",
+		},
+		{
+			name: "collapses multiple blank lines",
+			in:   "alpha\n\n\n\nbeta\n",
+			want: "alpha\n\nbeta\n",
+		},
+		{
+			name: "strips ANSI escapes",
+			in:   "\x1b[31malpha\x1b[0m\nbeta\n",
+			want: "alpha\nbeta\n",
+		},
+		{
+			name: "preserves real content change",
+			in:   "alpha\nbeta\nrendered\n",
+			want: "alpha\nbeta\nrendered\n",
+		},
+		{
+			name: "empty input returns empty",
+			in:   "",
+			want: "",
+		},
+		{
+			name: "blank-only input returns empty",
+			in:   "\n\n\n",
+			want: "",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := normalizeProbeSnapshot(tt.in); got != tt.want {
+				t.Fatalf("normalizeProbeSnapshot() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCountNonBlankLines(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want int
+	}{
+		{"", 0},
+		{"\n\n\n", 0},
+		{"alpha\nbeta\n", 2},
+		{"alpha\n\nbeta\n", 2},
+		{"alpha\n  \t\nbeta\n", 2},
+		{"alpha\nbeta\ngamma\n", 3},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			if got := countNonBlankLines(tt.in); got != tt.want {
+				t.Fatalf("countNonBlankLines(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSendAndConfirm_DefaultRuntimeKeepsClaudeProbe guards against the
+// runtime gate widening accidentally — claude-code panes (and panes whose
+// @runtime variable is unset, which still default to claude-code) must
+// continue to run the activity probe. Otherwise we'd lose the pasted-text
+// retry that the original probe was added to handle.
+func TestSendAndConfirm_DefaultRuntimeKeepsClaudeProbe(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	// Seed a "submitted" marker so the probe terminates on the first
+	// attempt rather than burning the full budget; the assertion below
+	// only cares that CapturePaneJoined ran at all.
+	mock.captureContent = "❯ \n⏺ Working...\n"
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "first line\nsecond line\n",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !callsContain(mock.calls, "CapturePaneJoined") {
+		t.Fatalf("claude runtime must still run the activity probe, calls=%v", mock.calls)
+	}
+}
+
 func TestPastedTextPlaceholderAtPrompt(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -343,6 +741,25 @@ func TestPastedTextPlaceholderAtPrompt(t *testing.T) {
 			name:    "plain prompt without placeholder",
 			content: "Thinking...\n❯ \n",
 			want:    false,
+		},
+		{
+			// Regression for the 2026-04-28 retest7 false-negative: a stale
+			// "[Pasted text #1 +247 lines]" line from a previous turn is
+			// scrolled into the bottom-N-line search window, and the live
+			// input prompt below it is empty. Old logic would have flagged
+			// this as still-at-prompt; new logic only consults the bottom-
+			// most prompt-marker line.
+			name:    "stale history above empty prompt is ignored",
+			content: "❯ [Pasted text #1 +247 lines]\n⏺ done\n❯ \n",
+			want:    false,
+		},
+		{
+			// Negative side: live prompt carries the placeholder while
+			// history above also has one. Must remain true so the probe
+			// fires the Enter retry on a genuinely-stuck paste.
+			name:    "stale history above live placeholder still detects",
+			content: "❯ [Pasted text #0 +10 lines]\n⏺ done\n❯ [Pasted text #1 +247 lines]\n",
+			want:    true,
 		},
 	}
 	for _, tt := range tests {

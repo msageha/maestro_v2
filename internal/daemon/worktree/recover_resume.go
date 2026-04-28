@@ -349,6 +349,18 @@ func (wm *Manager) attemptResolvedMerges(
 // is reverted to conflict (not active) to prevent infinite re-merge loops.
 // Caller must hold wm.mu.
 func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, ws *model.WorktreeState, commandID, now string) {
+	// Distinguish "arrived already in resolving" from "freshly bumped from
+	// conflict". A worker that arrives in resolving was previously dispatched
+	// a __conflict_resolution task by R7 (R7MergeConflict.Apply ↑). Until that
+	// task lands worker edits in their worktree, merging them would silently
+	// take the *pre-resolution* worker content via `mergeResolvedWorker`'s
+	// `-X theirs` strategy, overwriting the planner-supplied resolution that
+	// is still in flight. We need this flag below to gate that path; freshly
+	// promoted workers (conflict → resolving inline) are a separate scenario
+	// where there is no in-flight resolution task to wait on, so the existing
+	// `-X theirs` behaviour stands.
+	arrivedResolving := ws.Status == model.WorktreeStatusResolving
+
 	// Ensure the worker is in "resolving" status before attempting the merge.
 	// Workers may arrive here in "conflict" status (e.g. ResumeMerge collects
 	// both conflict and resolving workers). The valid transition path is:
@@ -359,6 +371,82 @@ func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, w
 			wm.Log(core.LogLevelWarn, "resume_merge_resolving_transition command=%s worker=%s error=%v",
 				commandID, ws.WorkerID, tErr)
 			return
+		}
+	}
+
+	// Race guard: when a worker arrives already in resolving and has produced
+	// no uncommitted edits, R7's __conflict_resolution task has not yet
+	// reported back. Any non-AutoRecoverAfterResolution caller (operator
+	// `plan auto_recover`, scan-driven AutoRecover, manual `plan resume_merge`)
+	// hitting this state would push commitResolvedWorkerChanges into a no-op
+	// and let mergeResolvedWorker promote the worker via `-X theirs` against
+	// the unchanged worker branch — silently merging the original
+	// pre-resolution content and discarding the resolution before it lands.
+	// Skip the merge here and leave the worker in resolving so the
+	// AutoRecoverAfterResolution hook (fired by the worker's own completion
+	// report) can drive the merge with real edits in the worktree. Workers
+	// that were just bumped from conflict are intentionally not gated: there
+	// is no R7-dispatched resolution to wait on for them, and `-X theirs`
+	// correctly takes their original content.
+	if arrivedResolving {
+		statusOut, statusErr := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
+		if statusErr != nil {
+			// Worktree probe failed — conservatively bail rather than risk a
+			// false-success merge. The next ResumeMerge call will retry once
+			// the worker reports completion (which guarantees the worktree is
+			// reachable for `git status`).
+			wm.Log(core.LogLevelWarn,
+				"resume_merge_resolving_status_check command=%s worker=%s error=%v (skipping; will retry)",
+				commandID, ws.WorkerID, statusErr)
+			return
+		}
+		if strings.TrimSpace(statusOut) == "" {
+			// No uncommitted edits in the worktree. Two sub-cases:
+			//
+			//   (a) Resolution task not yet completed AND the Worker has
+			//       not committed anything itself → defer until
+			//       AutoRecoverAfterResolution fires from the worker's
+			//       completion report.
+			//
+			//   (b) The Worker (typically codex / gemini, which run without
+			//       the Claude-only policy hook and can issue `git commit`
+			//       directly) self-committed the resolution. The worktree
+			//       is clean *because* the edits are already on the worker
+			//       branch HEAD — going through the deferred path would
+			//       leave the worker pinned at resolving forever, since
+			//       the worker has nothing more to commit and
+			//       AutoRecoverAfterResolution's git-status probe would
+			//       loop on the same empty result. Detect (b) by comparing
+			//       the worker branch HEAD with ConflictBranchHead — the
+			//       SHA we snapshotted at conflict detection. If HEAD has
+			//       moved past that snapshot the merge proceeds; the branch
+			//       carries the resolution and -X theirs picks it up as
+			//       the canonical content.
+			advanced, probeErr := wm.workerBranchAdvancedSinceConflict(ws)
+			if probeErr != nil {
+				wm.Log(core.LogLevelWarn,
+					"resume_merge_resolving_head_probe command=%s worker=%s error=%v (deferring; will retry next scan)",
+					commandID, ws.WorkerID, probeErr)
+				return
+			}
+			if !advanced {
+				// "deferred", not "skipped": the merge is intentionally
+				// postponed until the dispatched __conflict_resolution task
+				// reports completion. AutoRecoverAfterResolution (fired by
+				// that very completion report) drives the eventual merge —
+				// the matching `auto_recover_after_resolution_completed
+				// action=resume_merge` log line is what actually moves the
+				// worker to integrated.
+				wm.Log(core.LogLevelInfo,
+					"resume_merge_deferred_resolution_in_flight command=%s worker=%s "+
+						"(no uncommitted edits and worker branch HEAD == ConflictBranchHead; merge will be re-attempted from result_write once the resolution task completes)",
+					commandID, ws.WorkerID)
+				return
+			}
+			wm.Log(core.LogLevelInfo,
+				"resume_merge_resolving_self_committed command=%s worker=%s "+
+					"(worktree clean but worker branch advanced past ConflictBranchHead; treating as completed self-commit and proceeding to merge)",
+				commandID, ws.WorkerID)
 		}
 	}
 
@@ -405,6 +493,46 @@ func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, w
 			commandID, ws.WorkerID, tErr)
 	}
 	wm.Log(core.LogLevelInfo, "resume_merge_worker_integrated command=%s worker=%s", commandID, ws.WorkerID)
+}
+
+// workerBranchAdvancedSinceConflict reports whether the worker branch's HEAD
+// has moved past ConflictBranchHead — the SHA snapshotted by MergeToIntegration
+// at conflict detection time. Used by tryMergeWorker's deferred-merge guard
+// to distinguish two clean-worktree scenarios on a worker that arrived at
+// resolving status:
+//
+//   - HEAD == ConflictBranchHead: the dispatched __conflict_resolution task
+//     has not produced any commit yet → defer the merge until result_write
+//     fires AutoRecoverAfterResolution.
+//   - HEAD past ConflictBranchHead: a non-Claude Worker (codex / gemini that
+//     does not run the Claude policy hook) self-committed the resolution.
+//     The worktree is clean *because* the edits are already on the branch,
+//     so let the merge proceed.
+//
+// Returns advanced=false when ConflictBranchHead is empty so legacy / mid-
+// rollout state files (written before this field existed, or in code paths
+// that did not populate it — e.g. resumed sessions imported from a prior
+// daemon version) fall back to the conservative deferred path.
+// Caller must hold wm.mu.
+func (wm *Manager) workerBranchAdvancedSinceConflict(ws *model.WorktreeState) (bool, error) {
+	if ws.Path == "" {
+		return false, fmt.Errorf("worker %s has no worktree path", ws.WorkerID)
+	}
+	if ws.ConflictBranchHead == "" {
+		// Legacy state without the snapshot — preserve old deferred-only
+		// semantics. False here means tryMergeWorker keeps the worker in
+		// resolving and waits for AutoRecoverAfterResolution.
+		return false, nil
+	}
+	headOut, err := wm.gitOutputInDir(ws.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return false, fmt.Errorf("git rev-parse HEAD in %s: %w", ws.Path, err)
+	}
+	head := strings.TrimSpace(headOut)
+	if head == "" {
+		return false, fmt.Errorf("git rev-parse HEAD in %s: empty output", ws.Path)
+	}
+	return head != ws.ConflictBranchHead, nil
 }
 
 // commitResolvedWorkerChanges commits any uncommitted changes in a

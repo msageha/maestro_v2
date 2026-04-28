@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -19,6 +21,12 @@ type ClaudeProcessManager struct {
 	config    *model.WatcherConfig
 	logger    *log.Logger
 	logLevel  logLevel
+	// dirExists checks whether a path resolves to a real directory. Defaults
+	// to directoryExists (os.Stat). Tests use synthetic paths like
+	// "/project/worktree1" that never exist on the filesystem, so they
+	// override this with a no-op so the stale-cwd detection in
+	// ensureWorkingDir does not force a respawn on every same-cwd call.
+	dirExists func(path string) bool
 }
 
 func newClaudeProcessManager(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *ClaudeProcessManager {
@@ -29,6 +37,7 @@ func newClaudeProcessManager(paneIO PaneIO, paneState *paneStateManager, cfg *mo
 		config:    cfg,
 		logger:    logger,
 		logLevel:  ll,
+		dirExists: directoryExists,
 	}
 }
 
@@ -70,6 +79,13 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 		return fmt.Errorf("%w after re-launch: %w", ErrWaitClaudeReady, waitErr)
 	}
 
+	// Claude is back up; clear any "evicted" sentinel set during a
+	// daemon-driven respawn-to-project-root so subsequent shell
+	// detections in status.go are once again real crash signals.
+	if err := pm.paneState.ResetAgentState(paneTarget); err != nil {
+		pm.log(logLevelWarn, "ensure_claude_running_reset_agent_state agent_id=%s error=%v", agentID, err)
+	}
+
 	pm.log(logLevelInfo, "claude_relaunched agent_id=%s", agentID)
 	return nil
 }
@@ -81,6 +97,16 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 //
 // This is called transparently by the executor before task delivery, so that
 // Workers run in their worktree directory without being aware of worktrees.
+//
+// 2026-04-28: even when the requested cwd matches the tracked cwd, we still
+// re-stat the tracked path. The Phase B publish/cleanup pipeline removes a
+// worktree directory after its worker reports completion, which leaves the
+// pane's @cwd label pointing at a deleted path. Claude Code's Stop hook can
+// then fire from that pane and `posix_spawn '/bin/sh'` surfaces an
+// `ENOENT, no such file or directory` warning (node.js reports the chdir
+// failure as if the binary itself was missing). Forcing a respawn when the
+// tracked cwd no longer exists puts the pane back into a real directory
+// before the next dispatch and silences the spurious warning.
 func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget, workingDir string) error {
 	if workingDir == "" {
 		return nil
@@ -93,12 +119,24 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 
 	// Check current CWD from tmux user variable
 	currentCWD := pm.paneState.GetCWD(paneTarget)
-	if currentCWD == workingDir {
+	dirExists := pm.dirExists
+	if dirExists == nil {
+		dirExists = directoryExists
+	}
+	staleCWD := currentCWD != "" && !dirExists(currentCWD)
+	if currentCWD == workingDir && !staleCWD {
 		pm.log(logLevelDebug, "working_dir unchanged cwd=%s", workingDir)
 		return nil
 	}
 
-	pm.log(logLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
+	if staleCWD {
+		pm.log(logLevelInfo,
+			"working_dir_stale_cwd_respawn pane=%s tracked_cwd=%q new=%q "+
+				"(tracked cwd no longer exists on disk; forcing respawn to flush stale @cwd)",
+			paneTarget, currentCWD, workingDir)
+	} else {
+		pm.log(logLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
+	}
 
 	// Step 1: Kill the current pane process and respawn a fresh shell in the
 	// target working directory.
@@ -111,7 +149,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		}
 		if resetErr := pm.paneState.ResetCWD(paneTarget); resetErr != nil {
 			pm.log(logLevelWarn, "reset_cwd_after_working_dir_failure_failed cwd=%s reset_error=%v original_error=%v", workingDir, resetErr, err)
-			return fmt.Errorf("%w; also failed to reset tracked cwd: %v", err, resetErr)
+			return errors.Join(err, fmt.Errorf("reset tracked cwd failed: %w", resetErr))
 		}
 		pm.log(logLevelWarn, "working_dir_change_incomplete cwd=%s error=%v tracked_cwd_reset=true", workingDir, err)
 		return err
@@ -150,7 +188,65 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		return fmt.Errorf("set tracked cwd after working dir change: %w", err)
 	}
 
+	// Step 7: Clear @agent_state="evicted" if it was set by an earlier
+	// respawn-to-project-root. Claude is now confirmed running again, so
+	// status.go can resume treating shell detections as real crashes.
+	if err := pm.paneState.ResetAgentState(paneTarget); err != nil {
+		pm.log(logLevelWarn, "ensure_working_dir_reset_agent_state cwd=%s error=%v", workingDir, err)
+	}
+
 	pm.log(logLevelInfo, "working_dir_changed cwd=%s", workingDir)
+	return nil
+}
+
+// directoryExists reports whether path resolves to an existing directory on
+// disk. Used by ensureWorkingDir to detect a stale @cwd label whose
+// underlying worktree was cleaned up between dispatches. Errors other than
+// "does not exist" (e.g. permission denied) are treated as "exists" to
+// avoid forcing a respawn on transient filesystem hiccups.
+func directoryExists(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	return info.IsDir()
+}
+
+// respawnToProjectRoot replaces the pane's current process with a fresh
+// shell anchored at the project root. Used by the daemon's Phase B
+// before worktree cleanup to evict the pane from a cwd that's about to
+// be deleted. The cwd tracker is reset so the next ensureWorkingDir call
+// treats the pane as needing a respawn into whatever working dir the
+// next dispatch supplies — that path also re-launches claude, so this
+// helper does not need to relaunch it itself.
+//
+// 2026-04-28 retest2: also sets @agent_state="evicted" so status.go
+// distinguishes "daemon evicted the pane on purpose" (sit in shell, no
+// claude process) from "claude crashed back to shell". Without this
+// flag, `maestro status` flipped the worker to "dead" between cleanup
+// and the next dispatch even though the daemon owns the gap.
+func (pm *ClaudeProcessManager) respawnToProjectRoot(paneTarget, workerID, projectRoot string) error {
+	pm.log(logLevelInfo,
+		"respawn_to_project_root worker=%s pane=%s target=%s "+
+			"(evicting pane from a cwd the daemon is about to delete; "+
+			"prevents Stop hook posix_spawn '/bin/sh' ENOENT)",
+		workerID, paneTarget, projectRoot)
+	if err := pm.paneIO.RespawnPane(paneTarget, projectRoot); err != nil {
+		return fmt.Errorf("%w to project root %s: %w", ErrRespawnPane, projectRoot, err)
+	}
+	if err := pm.paneState.ResetCWD(paneTarget); err != nil {
+		// Resetting the tracker is observability — failure here just means
+		// the next ensureWorkingDir will see a stale @cwd label, which
+		// the stale-cwd guard already handles. Surface at warn so we
+		// notice if it becomes a pattern.
+		pm.log(logLevelWarn, "respawn_to_project_root_reset_cwd_failed pane=%s error=%v", paneTarget, err)
+	}
+	if err := pm.paneState.ResetClearReady(paneTarget); err != nil {
+		pm.log(logLevelWarn, "respawn_to_project_root_reset_clear_ready_failed pane=%s error=%v", paneTarget, err)
+	}
+	if err := pm.paneState.SetAgentState(paneTarget, AgentStateEvicted); err != nil {
+		pm.log(logLevelWarn, "respawn_to_project_root_set_agent_state_failed pane=%s error=%v", paneTarget, err)
+	}
 	return nil
 }
 

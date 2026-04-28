@@ -221,19 +221,66 @@ func (e *Executor) CleanupPaneMutex(paneTarget string) {
 	e.deliverer.removePaneMutex(paneTarget)
 }
 
+// RespawnPaneToProjectRoot kills the agent process inside the worker's
+// tmux pane and respawns the shell into the project root. Phase B uses
+// this just before `git worktree remove` so the pane never holds a cwd
+// the daemon is about to delete — claude-code's Stop hook posix_spawn
+// '/bin/sh' fails with ENOENT when its cwd has been removed, which the
+// 2026-04-28 conflict-recovery E2E run reported as a recurring warning.
+//
+// No-op when the worker pane cannot be located (worker never started, or
+// already torn down). Errors are returned so the caller can decide
+// whether to skip the corresponding cleanup. ensureWorkingDir on the
+// next dispatch will detect the post-respawn shell and re-launch claude,
+// so this is safe to call between turns.
+func (e *Executor) RespawnPaneToProjectRoot(workerID string) error {
+	paneTarget, err := e.paneIO.FindPaneByAgentID(workerID)
+	if err != nil {
+		e.log(logLevelDebug,
+			"respawn_to_project_root_skip worker=%s reason=pane_not_found error=%v",
+			workerID, err)
+		return nil
+	}
+	projectRoot := projectRootFromMaestroDir(e.maestroDir)
+	if projectRoot == "" {
+		// Defensive: maestroDir was unset (newExecutor path used by some
+		// tests). Skip silently rather than respawning into "/" which
+		// would surprise the operator.
+		e.log(logLevelDebug,
+			"respawn_to_project_root_skip worker=%s reason=no_project_root", workerID)
+		return nil
+	}
+	return e.processManager.respawnToProjectRoot(paneTarget, workerID, projectRoot)
+}
+
+// projectRootFromMaestroDir derives the project root from the maestro
+// data directory. The daemon binds maestroDir to "<root>/.maestro", so
+// the parent directory is the project root.
+func projectRootFromMaestroDir(maestroDir string) string {
+	if maestroDir == "" {
+		return ""
+	}
+	return filepath.Dir(maestroDir)
+}
+
 // Default values for WatcherConfig fields when unset or non-positive.
 const (
-	defaultBusyCheckInterval       = 2   // seconds between busy-detection probes
-	defaultBusyCheckMaxRetries     = 30  // max busy-detection retry attempts
-	defaultIdleStableSec           = 5   // seconds of stability before declaring idle
-	defaultCooldownAfterClear      = 3   // seconds to wait after /clear
-	defaultWaitReadyIntervalSec    = 2   // seconds between prompt-readiness polls
-	defaultWaitReadyMaxRetries     = 15  // max prompt-readiness poll attempts
-	defaultClearConfirmTimeoutSec  = 5   // seconds to wait for /clear confirmation
-	defaultClearConfirmPollMs      = 250 // milliseconds between /clear confirmation polls
-	defaultClearMaxAttempts        = 3   // max /clear retry attempts
-	defaultClearRetryBackoffMs     = 500 // milliseconds backoff between /clear retries
-	defaultClearSecondEnterDelayMs = 500 // milliseconds delay before second Enter after /clear
+	defaultBusyCheckInterval      = 2   // seconds between busy-detection probes
+	defaultBusyCheckMaxRetries    = 30  // max busy-detection retry attempts
+	defaultIdleStableSec          = 5   // seconds of stability before declaring idle
+	defaultCooldownAfterClear     = 3   // seconds to wait after /clear
+	defaultWaitReadyIntervalSec   = 2   // seconds between prompt-readiness polls
+	defaultWaitReadyMaxRetries    = 15  // max prompt-readiness poll attempts
+	defaultClearConfirmTimeoutSec = 5   // seconds to wait for /clear confirmation
+	defaultClearConfirmPollMs     = 250 // milliseconds between /clear confirmation polls
+	defaultClearMaxAttempts       = 3   // max /clear retry attempts
+	defaultClearRetryBackoffMs    = 500 // milliseconds backoff between /clear retries
+	// defaultClearSecondEnterDelayMs is retained for backward compatibility with
+	// existing config.yaml files that still set clear_second_enter_delay_ms.
+	// Since 2026-04 clearAndConfirm no longer sends a second Enter (Claude Code 2.x
+	// re-runs /clear when it sees the trailing Enter), so the value is unused at
+	// runtime; only applyDefaults still touches it to keep the field round-trippable.
+	defaultClearSecondEnterDelayMs = 500
 )
 
 func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {

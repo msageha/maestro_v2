@@ -224,16 +224,16 @@ func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int {
 
 // FeatureProfile defines feature flags per complexity level.
 type FeatureProfile struct {
-	CrossAgentReview        *string `yaml:"cross_agent_review,omitempty"`
-	ExploratoryOptimization *bool   `yaml:"exploratory_optimization,omitempty"`
-	EvolutionaryQuality     *bool   `yaml:"evolutionary_quality,omitempty"`
-	AdaptiveModelSelection  *bool   `yaml:"adaptive_model_selection,omitempty"`
-	SelfImprovement         *bool   `yaml:"self_improvement,omitempty"`
-	AdaptiveDepth           *bool   `yaml:"adaptive_depth,omitempty"`
+	CrossAgentReview        *bool `yaml:"cross_agent_review,omitempty"`
+	ExploratoryOptimization *bool `yaml:"exploratory_optimization,omitempty"`
+	EvolutionaryQuality     *bool `yaml:"evolutionary_quality,omitempty"`
+	AdaptiveModelSelection  *bool `yaml:"adaptive_model_selection,omitempty"`
+	SelfImprovement         *bool `yaml:"self_improvement,omitempty"`
+	AdaptiveDepth           *bool `yaml:"adaptive_depth,omitempty"`
 }
 
-// EffectiveCrossAgentReview returns CrossAgentReview, or DefaultCrossAgentReview when unset.
-func (fp FeatureProfile) EffectiveCrossAgentReview() string {
+// EffectiveCrossAgentReview returns CrossAgentReview, defaulting to false when unset.
+func (fp FeatureProfile) EffectiveCrossAgentReview() bool {
 	return effectiveValue(fp.CrossAgentReview, DefaultCrossAgentReview)
 }
 

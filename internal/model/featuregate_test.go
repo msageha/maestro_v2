@@ -35,8 +35,8 @@ func TestDefaultFeatureProfiles(t *testing.T) {
 
 	// Simple level: all features off
 	simple := profiles[ProfileLevelSimple]
-	if simple.EffectiveCrossAgentReview() != "false" {
-		t.Errorf("simple.CrossAgentReview = %q, want false", simple.EffectiveCrossAgentReview())
+	if simple.EffectiveCrossAgentReview() {
+		t.Errorf("simple.CrossAgentReview = %v, want false", simple.EffectiveCrossAgentReview())
 	}
 	if simple.EffectiveExploratoryOptimization() {
 		t.Error("simple.ExploratoryOptimization should be false")
@@ -44,8 +44,8 @@ func TestDefaultFeatureProfiles(t *testing.T) {
 
 	// Standard level: adaptive_model_selection only
 	std := profiles[ProfileLevelStandard]
-	if std.EffectiveCrossAgentReview() != "false" {
-		t.Errorf("standard.CrossAgentReview = %q, want false", std.EffectiveCrossAgentReview())
+	if std.EffectiveCrossAgentReview() {
+		t.Errorf("standard.CrossAgentReview = %v, want false", std.EffectiveCrossAgentReview())
 	}
 	if !std.EffectiveAdaptiveModelSelection() {
 		t.Error("standard.AdaptiveModelSelection should be true")
@@ -56,8 +56,8 @@ func TestDefaultFeatureProfiles(t *testing.T) {
 
 	// Complex level: adaptive_model_selection, cross_agent_review, adaptive_depth
 	cplx := profiles[ProfileLevelComplex]
-	if cplx.EffectiveCrossAgentReview() != "true" {
-		t.Errorf("complex.CrossAgentReview = %q, want true", cplx.EffectiveCrossAgentReview())
+	if !cplx.EffectiveCrossAgentReview() {
+		t.Errorf("complex.CrossAgentReview = %v, want true", cplx.EffectiveCrossAgentReview())
 	}
 	if !cplx.EffectiveAdaptiveModelSelection() {
 		t.Error("complex.AdaptiveModelSelection should be true")
@@ -113,8 +113,8 @@ func TestIsFeatureEnabled(t *testing.T) {
 
 func TestFeatureProfile_Defaults(t *testing.T) {
 	fp := FeatureProfile{}
-	if fp.EffectiveCrossAgentReview() != "false" {
-		t.Errorf("default CrossAgentReview = %q, want false", fp.EffectiveCrossAgentReview())
+	if fp.EffectiveCrossAgentReview() {
+		t.Errorf("default CrossAgentReview = %v, want false", fp.EffectiveCrossAgentReview())
 	}
 	if fp.EffectiveExploratoryOptimization() {
 		t.Error("default ExploratoryOptimization should be false")

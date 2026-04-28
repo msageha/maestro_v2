@@ -24,11 +24,9 @@ func ValidateProfileLevel(s string) bool {
 //	complex:  adaptive_model_selection, cross_agent_review, adaptive_depth
 //	critical: all features enabled
 func DefaultFeatureProfiles() map[string]FeatureProfile {
-	f := "false"
-	tr := "true"
 	return map[string]FeatureProfile{
 		ProfileLevelSimple: {
-			CrossAgentReview:        &f,
+			CrossAgentReview:        ptr.Bool(false),
 			ExploratoryOptimization: ptr.Bool(false),
 			EvolutionaryQuality:     ptr.Bool(false),
 			AdaptiveModelSelection:  ptr.Bool(false),
@@ -36,7 +34,7 @@ func DefaultFeatureProfiles() map[string]FeatureProfile {
 			AdaptiveDepth:           ptr.Bool(false),
 		},
 		ProfileLevelStandard: {
-			CrossAgentReview:        &f,
+			CrossAgentReview:        ptr.Bool(false),
 			ExploratoryOptimization: ptr.Bool(false),
 			EvolutionaryQuality:     ptr.Bool(false),
 			AdaptiveModelSelection:  ptr.Bool(true),
@@ -44,7 +42,7 @@ func DefaultFeatureProfiles() map[string]FeatureProfile {
 			AdaptiveDepth:           ptr.Bool(false),
 		},
 		ProfileLevelComplex: {
-			CrossAgentReview:        &tr,
+			CrossAgentReview:        ptr.Bool(true),
 			ExploratoryOptimization: ptr.Bool(false),
 			EvolutionaryQuality:     ptr.Bool(false),
 			AdaptiveModelSelection:  ptr.Bool(true),
@@ -52,7 +50,7 @@ func DefaultFeatureProfiles() map[string]FeatureProfile {
 			AdaptiveDepth:           ptr.Bool(true),
 		},
 		ProfileLevelCritical: {
-			CrossAgentReview:        &tr,
+			CrossAgentReview:        ptr.Bool(true),
 			ExploratoryOptimization: ptr.Bool(true),
 			EvolutionaryQuality:     ptr.Bool(true),
 			AdaptiveModelSelection:  ptr.Bool(true),
@@ -71,7 +69,7 @@ func IsFeatureEnabled(profiles map[string]FeatureProfile, level string, feature 
 	}
 	switch feature {
 	case "cross_agent_review":
-		return p.EffectiveCrossAgentReview() == "true"
+		return p.EffectiveCrossAgentReview()
 	case "exploratory_optimization":
 		return p.EffectiveExploratoryOptimization()
 	case "evolutionary_quality":

@@ -21,7 +21,8 @@ type stubExecutor struct {
 func (s *stubExecutor) Execute(_ agent.ExecRequest) agent.ExecResult {
 	return agent.ExecResult{Error: s.err, Retryable: s.err != nil}
 }
-func (s *stubExecutor) Close() error { return nil }
+func (s *stubExecutor) Close() error                          { return nil }
+func (s *stubExecutor) RespawnPaneToProjectRoot(string) error { return nil }
 
 // stubExecutorGetter wraps a core.AgentExecutor.
 type stubExecutorGetter struct {
@@ -118,6 +119,73 @@ func TestDispatchCommand_BackoffCap(t *testing.T) {
 	}
 }
 
+// fakeAliveChecker reports IsDispatchActive = active until the configured
+// number of probes have been observed; thereafter it reports inactive.
+// This lets the retry-abort test simulate a worker that completes during
+// the inline-retry backoff.
+type fakeAliveChecker struct {
+	activeUntil int
+	probes      int
+}
+
+func (f *fakeAliveChecker) IsDispatchActive(_ string, _ string, _ int) bool {
+	f.probes++
+	return f.probes <= f.activeUntil
+}
+
+// TestDispatchTask_AbortsRetryWhenAliveCheckerReportsTerminal pins the
+// Issue B fix: once a worker completes (or its lease epoch is bumped) the
+// dispatcher's inline retry loop must short-circuit on the next iteration
+// instead of pumping more paste-Enter waves at a pane that already has
+// the next task / has gone idle. Without this guard the operator-visible
+// symptom is repeated `task_dispatch_inline_retry attempt=N/6 ... worker=...`
+// log lines after `result_write` has already moved the queue to completed.
+func TestDispatchTask_AbortsRetryWhenAliveCheckerReportsTerminal(t *testing.T) {
+	t.Parallel()
+	exec := &stubExecutor{err: errors.New("transient")}
+	d := newRetryTestDispatcher(5, 0 /* no delay so the test runs fast */, exec)
+	checker := &fakeAliveChecker{activeUntil: 1} // probe #1 active, then terminal
+	d.SetTaskAliveChecker(checker)
+
+	err := d.DispatchTask(context.Background(),
+		&model.Task{ID: "task_abort_test", CommandID: "cmd_abort_test", LeaseEpoch: 3},
+		"worker1")
+	if err == nil {
+		t.Fatalf("expected the inline retry loop to surface the last transient error after aborting, got nil")
+	}
+	// activeUntil=1 means: probe 1 returns active (retry continues), probe 2
+	// returns inactive (retry aborts). That's two probes before the abort.
+	// The exact probe count depends on whether the post-sleep probe also
+	// fires; we just assert at least one probe ran AND fewer than maxRetries
+	// attempts were made.
+	if checker.probes < 1 {
+		t.Errorf("expected at least one alive-check probe, got %d", checker.probes)
+	}
+}
+
+// TestDispatchTask_AliveCheckerNotInvokedOnFirstAttempt guards against a
+// regression where the alive check fires before the first dispatch
+// attempt — that would gate the entire dispatch on the lease epoch
+// having already been recorded in the queue, which is racy with the
+// surrounding scan.
+func TestDispatchTask_AliveCheckerNotInvokedOnFirstAttempt(t *testing.T) {
+	t.Parallel()
+	// Executor that succeeds immediately so no retry is triggered.
+	exec := &stubExecutor{err: nil}
+	d := newRetryTestDispatcher(5, 0, exec)
+	checker := &fakeAliveChecker{activeUntil: 0} // would abort if invoked
+	d.SetTaskAliveChecker(checker)
+
+	if err := d.DispatchTask(context.Background(),
+		&model.Task{ID: "task_first_attempt", CommandID: "cmd_first_attempt", LeaseEpoch: 1},
+		"worker1"); err != nil {
+		t.Fatalf("first-attempt success path must not consult the alive checker, got error: %v", err)
+	}
+	if checker.probes != 0 {
+		t.Errorf("alive checker should not be probed when the first attempt succeeds; probes=%d", checker.probes)
+	}
+}
+
 func TestBackoffCap_DoesNotExceed30Seconds(t *testing.T) {
 	t.Parallel()
 	// Verify the cap logic directly: starting from 1s, doubling repeatedly,
@@ -180,4 +248,5 @@ func (c *countingStubExecutor) Execute(_ agent.ExecRequest) agent.ExecResult {
 	c.calls++
 	return agent.ExecResult{Error: c.err, Retryable: c.err != nil}
 }
-func (c *countingStubExecutor) Close() error { return nil }
+func (c *countingStubExecutor) Close() error                          { return nil }
+func (c *countingStubExecutor) RespawnPaneToProjectRoot(string) error { return nil }

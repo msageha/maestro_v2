@@ -282,6 +282,69 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	}
 }
 
+// TestResultHandler_WorkerNotification_SubmitConfirmUncertain_NotRetried
+// pins the inline-retry short-circuit added in result_notification.go for
+// agent.ErrSubmitConfirmUncertain. The Planner deliverer surfaces this
+// error after exhausting its 8-attempt submit probe (~6s). At that point
+// the paste likely already reached the pane, so re-pasting risks a
+// duplicate task_result notification, AND continuing the inline retry
+// loop multiplies the scan-blocking window with no semantic gain.
+//
+// Concretely: with default-config retries=2 and per-attempt timeout=30s,
+// the previous behaviour pinned the periodic-scan goroutine for ~96s on
+// a single uncertain delivery, which directly blocked queue_write /
+// plan_complete / verify_write UDS handlers waiting on scanMu.RLock and
+// surfaced as 30s CLI timeouts (2026-04-29 default-config E2E run).
+func TestResultHandler_WorkerNotification_SubmitConfirmUncertain_NotRetried(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+		Retry: model.RetryConfig{
+			ResultNotifyInlineRetries:       ptr.Int(3), // would burn 4 attempts before fix
+			ResultNotifyInlineRetryDelaySec: ptr.Int(0),
+			ResultNotifyDeliveryTimeoutSec:  ptr.Int(1),
+		},
+	}
+	lockMap := lock.NewMutexMap()
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
+
+	uncertainMock := &mocks.MockExecutor{Result: agent.ExecResult{
+		Success: false,
+		Error:   agent.ErrSubmitConfirmUncertain,
+	}}
+	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return uncertainMock, nil
+	})
+
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:        "res_0000000001_aaaaaaaa",
+				TaskID:    "task_0000000001_bbbbbbbb",
+				CommandID: "cmd_0000000001_cccccccc",
+				Status:    model.StatusCompleted,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	rh.processWorkerResultFile("worker1")
+
+	// Exactly ONE attempt: ErrSubmitConfirmUncertain must short-circuit
+	// the inline retry, not consume the full 4-attempt budget.
+	if len(uncertainMock.Calls) != 1 {
+		t.Errorf("expected 1 attempt (ErrSubmitConfirmUncertain is non-retryable inline), got %d",
+			len(uncertainMock.Calls))
+	}
+}
+
 func TestResultHandler_CommandNotification_Basic(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)

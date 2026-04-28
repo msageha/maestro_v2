@@ -206,8 +206,20 @@ type PhaseInfo = model.PhaseInfo
 type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
 
 // AgentExecutor is the interface for agent message delivery.
+//
+// RespawnPaneToProjectRoot is the lifecycle hook the daemon's Phase B
+// invokes before tearing down a command's worktree directory. The Worker
+// pane's cwd is the worktree path, and removing it out from under a still
+// running claude-code process produces "ENOENT, posix_spawn '/bin/sh'"
+// from any subsequent hook (Stop hook in particular) that node.js runs
+// with the now-deleted cwd. Respawning the pane to the project root
+// before `git worktree remove` keeps the pane in a real directory across
+// the cleanup transition. Implementations MUST be a no-op for unknown
+// worker IDs and tolerate "no pane found" — daemons may call this for
+// workers whose pane was never started.
 type AgentExecutor interface {
 	Execute(req model.ExecRequest) model.ExecResult
+	RespawnPaneToProjectRoot(workerID string) error
 	Close() error
 }
 

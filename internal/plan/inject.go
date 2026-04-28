@@ -251,7 +251,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	state.UpdatedAt = now
 
 	// Write queue entry. §S0-1: tasks injected to resolve publish/merge
-	// conflicts run on the integration worktree and are classified as rollout
+	// conflicts run on the integration worktree and are classified as repair
 	// operations for admission control. RunOnMain は input.go godoc で
 	// "read-only verification tasks that must evaluate the merged state on the
 	// main branch" と定義されているため verify バケットに分類する。両方 false の
@@ -261,7 +261,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	case opts.RunOnMain:
 		opType = model.OperationTypeVerify
 	case opts.RunOnIntegration:
-		opType = model.OperationTypeRollout
+		opType = model.OperationTypeRepair
 	}
 	task := retryQueueTask{
 		taskID:             newTaskID,
@@ -322,13 +322,18 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	}
 
 	if opts.Purpose == "" {
-		return &planValidationError{Msg: "purpose is required"}
+		return &planValidationError{Msg: "purpose is required (pass --purpose <text> or --purpose-file -)"}
 	}
 	if opts.Content == "" {
-		return &planValidationError{Msg: "content is required"}
+		return &planValidationError{Msg: "content is required (pass --content <text> or --content-file -)"}
 	}
+	// 2026-04-28 retest3 follow-up: when the Planner agent's shell quoting
+	// strips a multi-line --acceptance-criteria value, the CLI sends an
+	// empty string and this branch fires. Hint at the stdin form so the
+	// Planner's self-recovery picks the safe path on the second attempt
+	// instead of guessing more shell quoting permutations.
 	if opts.AcceptanceCriteria == "" {
-		return &planValidationError{Msg: "acceptance_criteria is required"}
+		return &planValidationError{Msg: "acceptance_criteria is required (pass --acceptance-criteria <text> or --acceptance-criteria-file -)"}
 	}
 
 	// Bug G: sanity-check minimum lengths for add-task-injected fields.

@@ -77,8 +77,17 @@ type WorktreeState struct {
 	BaseSHA                    string         `yaml:"base_sha"`
 	Status                     WorktreeStatus `yaml:"status"`
 	ConflictResolutionAttempts int            `yaml:"conflict_resolution_attempts,omitempty"`
-	CreatedAt                  string         `yaml:"created_at"`
-	UpdatedAt                  string         `yaml:"updated_at"`
+	// ConflictBranchHead records the worker branch's HEAD SHA at the moment
+	// the merge into integration first detected a conflict. It is set by
+	// MergeToIntegration when the worker transitions to WorktreeStatusConflict
+	// and consulted by tryMergeWorker's deferred-merge guard to detect
+	// non-Claude Workers (codex / gemini) that self-commit the resolution
+	// — those produce a clean worktree but advance the worker branch HEAD
+	// past this snapshot, signalling that the merge can proceed instead of
+	// being deferred forever.
+	ConflictBranchHead string `yaml:"conflict_branch_head,omitempty"`
+	CreatedAt          string `yaml:"created_at"`
+	UpdatedAt          string `yaml:"updated_at"`
 }
 
 // IntegrationState tracks the lifecycle of an integration branch for a command.

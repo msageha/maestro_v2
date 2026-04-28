@@ -33,7 +33,7 @@ type retryQueueTask struct {
 	workerID           string
 	runOnMain          bool
 	runOnIntegration   bool
-	// operationType is the §S0-1 admission classification (verify/repair/rollout).
+	// operationType is the §S0-1 admission classification (verify/repair).
 	// Retry tasks should set this to model.OperationTypeRepair so admission
 	// control counts them against the repair concurrency bucket regardless of
 	// the original task's free-form Purpose string.

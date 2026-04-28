@@ -112,19 +112,32 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	// C-3 Extended Verification
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
-		perspectives := configureVerificationPerspectives(cfg.ExtendedVerification, m.EnsembleVerifier.Perspectives())
+		projectRoot := filepath.Dir(maestroDir)
+		perspectives := configureVerificationPerspectives(cfg.ExtendedVerification, m.EnsembleVerifier.Perspectives(), projectRoot)
 		if err := m.EnsembleVerifier.SetPerspectives(perspectives); err != nil {
 			log(LogLevelWarn, "extended verification perspective config rejected: %v", err)
 		}
 		m.EnsembleVerifier.SetMaxAutoRetries(cfg.ExtendedVerification.EffectiveMaxAutoRetries())
-		log(LogLevelInfo, "ensemble verifier initialized perspectives=%d max_auto_retries=%d",
+		detectedLang := model.DetectProjectLanguage(projectRoot)
+		log(LogLevelInfo, "ensemble verifier initialized perspectives=%d max_auto_retries=%d language=%q",
 			len(m.EnsembleVerifier.Perspectives()),
-			m.EnsembleVerifier.MaxAutoRetries())
+			m.EnsembleVerifier.MaxAutoRetries(),
+			detectedLang)
 		if cfg.ExtendedVerification.EffectiveSecurityCheck() {
-			log(LogLevelInfo, "ensemble verifier security perspective enabled")
+			cmds := model.DefaultSecurityCommandsForLanguage(detectedLang)
+			if len(cmds) == 0 {
+				log(LogLevelWarn, "ensemble verifier security_check enabled but no command available for language=%q (skipping)", detectedLang)
+			} else {
+				log(LogLevelInfo, "ensemble verifier security perspective enabled commands=%v", cmds)
+			}
 		}
 		if cfg.ExtendedVerification.EffectivePerformanceBench() {
-			log(LogLevelInfo, "ensemble verifier performance perspective enabled")
+			cmds := model.DefaultPerformanceCommandsForLanguage(detectedLang)
+			if len(cmds) == 0 {
+				log(LogLevelWarn, "ensemble verifier performance_bench enabled but no command available for language=%q (skipping)", detectedLang)
+			} else {
+				log(LogLevelInfo, "ensemble verifier performance perspective enabled commands=%v", cmds)
+			}
 		}
 	}
 
@@ -177,7 +190,7 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 		profiles := make(map[string]map[string]interface{}, len(cfg.FeatureProfiles))
 		for level, fp := range cfg.FeatureProfiles {
 			profiles[level] = map[string]interface{}{
-				"cross_agent_review":       fp.EffectiveCrossAgentReview() != "false",
+				"cross_agent_review":       fp.EffectiveCrossAgentReview(),
 				"exploratory_optimization": fp.EffectiveExploratoryOptimization(),
 				"evolutionary_quality":     fp.EffectiveEvolutionaryQuality(),
 				"adaptive_model_selection": fp.EffectiveAdaptiveModelSelection(),
@@ -194,7 +207,14 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	return m
 }
 
-func configureVerificationPerspectives(cfg model.ExtendedVerificationConfig, base []verification.Perspective) []verification.Perspective {
+// configureVerificationPerspectives merges the operator-supplied weights into
+// the verifier's base perspectives and conditionally appends security /
+// performance perspectives. Commands are resolved via language detection at
+// projectRoot so non-Go projects do not see Go-only tools advertised. When no
+// language-appropriate command exists, the perspective is omitted entirely
+// rather than added with an empty Commands slice that would silently never
+// execute.
+func configureVerificationPerspectives(cfg model.ExtendedVerificationConfig, base []verification.Perspective, projectRoot string) []verification.Perspective {
 	weights := cfg.EffectivePerspectiveWeights()
 	out := make([]verification.Perspective, 0, len(base)+2)
 	seen := make(map[string]bool, len(base)+2)
@@ -206,26 +226,30 @@ func configureVerificationPerspectives(cfg model.ExtendedVerificationConfig, bas
 		seen[p.Name] = true
 	}
 	if cfg.EffectiveSecurityCheck() && !seen["security"] {
-		weight := weights["security"]
-		if weight == 0 {
-			weight = 0.5
+		if cmds := model.DefaultSecurityCommandsForProject(projectRoot); len(cmds) > 0 {
+			weight := weights["security"]
+			if weight == 0 {
+				weight = 0.5
+			}
+			out = append(out, verification.Perspective{
+				Name:     "security",
+				Commands: cmds,
+				Weight:   weight,
+			})
 		}
-		out = append(out, verification.Perspective{
-			Name:     "security",
-			Commands: []string{"gosec ./..."},
-			Weight:   weight,
-		})
 	}
 	if cfg.EffectivePerformanceBench() && !seen["performance"] {
-		weight := weights["performance"]
-		if weight == 0 {
-			weight = 0.5
+		if cmds := model.DefaultPerformanceCommandsForProject(projectRoot); len(cmds) > 0 {
+			weight := weights["performance"]
+			if weight == 0 {
+				weight = 0.5
+			}
+			out = append(out, verification.Perspective{
+				Name:     "performance",
+				Commands: cmds,
+				Weight:   weight,
+			})
 		}
-		out = append(out, verification.Perspective{
-			Name:     "performance",
-			Commands: []string{"go test -bench=. ./..."},
-			Weight:   weight,
-		})
 	}
 	return out
 }

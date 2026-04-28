@@ -144,7 +144,11 @@ func resolveAndAssignTasks(opts SubmitOptions, tasks []TaskInput) (nameToID map[
 
 	assignReqs := make([]TaskAssignmentRequest, 0, len(tasks))
 	for _, t := range tasks {
-		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
+		assignReqs = append(assignReqs, TaskAssignmentRequest{
+			Name:           t.Name,
+			BloomLevel:     t.BloomLevel,
+			PinnedWorkerID: t.WorkerID,
+		})
 	}
 
 	assignments, err = AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
@@ -265,12 +269,22 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 		return nil, verrs
 	}
 
+	// Worker pin existence: format-only validation lives in
+	// validateTaskFieldsCore; the count-aware existence check happens here so
+	// it runs even on the dry-run path. Without this, `plan submit --dry-run`
+	// reports valid=true for `worker_id: worker99` (2026-04-28 E2E retest2);
+	// the operator only learns the pin is bogus on the real submit.
+	if verr := validateTaskWorkerPins(tasks, opts.Config.Agents.Workers.Count, "tasks"); verr != nil {
+		return nil, verr
+	}
+
 	if opts.DryRun {
 		return &SubmitResult{Valid: true}, nil
 	}
 
-	// Insert __system_commit if continuous.enabled (and worktree mode is off,
-	// since worktree mode delegates commits to the Daemon directly).
+	// Insert __system_commit when worktree mode is off, so the Worker
+	// commits its in-place edits to main before the command terminates.
+	// Worktree mode delegates commits to the Daemon and is exempt.
 	if shouldInsertSystemCommit(opts.Config) {
 		var commitErr error
 		tasks, commitErr = insertSystemCommitTask(tasks)
@@ -353,6 +367,15 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		return nil, err
 	}
 
+	// Worker-pin existence check runs before the dry-run early return so a
+	// phased plan submitted with worker_id: worker99 cannot pass `--dry-run`.
+	for _, p := range phases {
+		fieldPrefix := fmt.Sprintf("phases[%s].tasks", p.Name)
+		if verr := validateTaskWorkerPins(p.Tasks, opts.Config.Agents.Workers.Count, fieldPrefix); verr != nil {
+			return nil, verr
+		}
+	}
+
 	if opts.DryRun {
 		return &SubmitResult{Valid: true}, nil
 	}
@@ -375,8 +398,8 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		return nil, err
 	}
 
-	// Insert __system_commit outside phase structure if continuous enabled
-	// (skipped in worktree mode: Daemon manages commits directly).
+	// Insert __system_commit outside phase structure when worktree mode
+	// is off (skipped in worktree mode: Daemon manages commits directly).
 	var systemCommitTaskID *string
 	if shouldInsertSystemCommit(opts.Config) {
 		var scErr error

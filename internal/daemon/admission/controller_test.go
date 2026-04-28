@@ -9,9 +9,8 @@ import (
 
 func defaultCfg() model.AdmissionControl {
 	return model.AdmissionControl{
-		MaxConcurrentVerify:  2,
-		MaxConcurrentRepair:  1,
-		MaxConcurrentRollout: 1,
+		MaxConcurrentVerify: 2,
+		MaxConcurrentRepair: 1,
 	}
 }
 
@@ -71,7 +70,6 @@ func TestSnapshot_Accuracy(t *testing.T) {
 	snap := c.Snapshot()
 	assert.Equal(t, 2, snap[OpVerify])
 	assert.Equal(t, 1, snap[OpRepair])
-	assert.Equal(t, 0, snap[OpRollout])
 
 	// Mutating the snapshot should not affect the controller.
 	snap[OpVerify] = 99
@@ -79,10 +77,10 @@ func TestSnapshot_Accuracy(t *testing.T) {
 }
 
 // TestClassifyTask_PurposeIgnored locks in the deterministic-classification
-// invariant: even when Purpose contains verify/repair/rollout keywords, an
-// unset OperationType MUST classify as OpUnknown. This guards against the
-// pre-2026 Purpose-substring behaviour that misclassified normal user tasks
-// (e.g. "Repair broken auth flow") into the admission-controlled bucket.
+// invariant: even when Purpose contains verify/repair keywords, an unset
+// OperationType MUST classify as OpUnknown. This guards against the pre-2026
+// Purpose-substring behaviour that misclassified normal user tasks (e.g.
+// "Repair broken auth flow") into the admission-controlled bucket.
 func TestClassifyTask_PurposeIgnored(t *testing.T) {
 	t.Parallel()
 	c := NewController(defaultCfg())
@@ -95,7 +93,6 @@ func TestClassifyTask_PurposeIgnored(t *testing.T) {
 		{name: "verify uppercase", purpose: "VERIFY results"},
 		{name: "verification", purpose: "run verification suite"},
 		{name: "repair", purpose: "repair broken tests"},
-		{name: "rollout", purpose: "rollout new version"},
 		{name: "unknown generic", purpose: "implement feature X"},
 		{name: "empty purpose", purpose: ""},
 	}
@@ -127,12 +124,6 @@ func TestClassifyTask_OperationTypeTakesPrecedence(t *testing.T) {
 			want:          OpRepair,
 		},
 		{
-			name:          "rollout structured field",
-			operationType: model.OperationTypeRollout,
-			purpose:       "any free-form text",
-			want:          OpRollout,
-		},
-		{
 			name:          "verify structured field",
 			operationType: model.OperationTypeVerify,
 			purpose:       "implement feature",
@@ -147,7 +138,7 @@ func TestClassifyTask_OperationTypeTakesPrecedence(t *testing.T) {
 		{
 			name:          "unknown structured field classifies as unknown",
 			operationType: "bogus",
-			purpose:       "rollout v2",
+			purpose:       "v2 deploy",
 			want:          OpUnknown,
 		},
 	}
@@ -182,13 +173,11 @@ func TestReset_ClearsSlots(t *testing.T) {
 	c.TryAcquire(OpVerify)
 	c.TryAcquire(OpVerify)
 	c.TryAcquire(OpRepair)
-	c.TryAcquire(OpRollout)
 
 	c.Reset()
 
 	assert.Equal(t, 0, c.ActiveCount(OpVerify))
 	assert.Equal(t, 0, c.ActiveCount(OpRepair))
-	assert.Equal(t, 0, c.ActiveCount(OpRollout))
 
 	// After reset we should be able to acquire again.
 	assert.True(t, c.TryAcquire(OpVerify))
@@ -199,8 +188,8 @@ func TestRecordInFlight(t *testing.T) {
 	t.Parallel()
 	c := NewController(defaultCfg())
 
-	// Pre-populate some slots that should be cleared.
-	c.TryAcquire(OpRollout)
+	// Pre-populate a slot that should be cleared by RecordInFlight.
+	c.TryAcquire(OpRepair)
 
 	// Tasks must declare OperationType structurally; Purpose is only a
 	// human-readable hint and MUST NOT influence admission classification.
@@ -214,8 +203,7 @@ func TestRecordInFlight(t *testing.T) {
 	c.RecordInFlight(tasks)
 
 	assert.Equal(t, 2, c.ActiveCount(OpVerify))
-	assert.Equal(t, 1, c.ActiveCount(OpRepair))
-	assert.Equal(t, 0, c.ActiveCount(OpRollout), "rollout should be 0 after reset by RecordInFlight")
+	assert.Equal(t, 1, c.ActiveCount(OpRepair), "repair active count should reflect only the in-flight task after reset")
 }
 
 func TestRecordInFlight_PreservesBackgroundSlots(t *testing.T) {
@@ -245,7 +233,6 @@ func TestOpType_String(t *testing.T) {
 	}{
 		{OpVerify, "verify"},
 		{OpRepair, "repair"},
-		{OpRollout, "rollout"},
 		{OpUnknown, "unknown"},
 		{OpType(99), "unknown"},
 	}

@@ -10,9 +10,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // stateSaveTimeout is the maximum duration allowed for a SaveState call
@@ -104,6 +105,12 @@ func newLogSuppressor(window time.Duration, burst int) *logSuppressor {
 
 // newLogSuppressorWithClock is the test-only constructor that injects a
 // custom now() function. Mirrors newLogSuppressor in every other respect.
+//
+// linters' unused checker flags this as dead because it has no
+// production caller, but retry_test.go relies on it for deterministic
+// time-windowed assertions. Keep it as test infrastructure.
+//
+//nolint:unused // test-only helper consumed by retry_test.go
 func newLogSuppressorWithClock(window time.Duration, burst int, nowFn func() time.Time) *logSuppressor {
 	s := newLogSuppressor(window, burst)
 	s.nowFn = nowFn

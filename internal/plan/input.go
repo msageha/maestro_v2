@@ -26,6 +26,14 @@ type TaskInput struct {
 	DefinitionOfDone   []string                 `yaml:"definition_of_done,omitempty"`
 	OperationType      string                   `yaml:"operation_type,omitempty"`
 
+	// WorkerID, when set, pins this task to the named worker (e.g.
+	// "worker1") instead of relying on bloom-derived auto-assignment.
+	// Mirrors the `plan add-task --worker-id` flag so a single Planner
+	// can express the same lane intent on a fresh submit. Validated at
+	// submit time against agents.workers.count; an unknown worker
+	// surfaces as a VALIDATION_ERROR.
+	WorkerID string `yaml:"worker_id,omitempty"`
+
 	// RunOnMain instructs the dispatcher to run this task in the main working
 	// directory instead of the worker's worktree. Use for read-only verification
 	// tasks that must evaluate the merged state on the main branch.

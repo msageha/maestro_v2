@@ -19,6 +19,15 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// PublishToBase merges the integration branch for commandID into the
+// configured base branch, advancing IntegrationStatus from merged →
+// published. publishMessage is used as the merge commit message; an
+// empty value falls back to the default commit message format.
+//
+// The publish step is idempotent: callers that observe a transient
+// failure (network, lock contention) may retry without rolling back the
+// merge state because the manager re-reads the integration status
+// before issuing the next push.
 func (wm *Manager) PublishToBase(commandID string, publishMessage string) (returnErr error) {
 	if err := validateIDs(commandID); err != nil {
 		return err

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -20,17 +21,19 @@ const dabUnset = -1
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
 func (a *cliApp) runPlanAddRetryTask(args []string) error {
-	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> (--content <text>|--content-file <path>) --acceptance-criteria <text> --bloom-level <n> --expected-paths <path> [--expected-paths <path>...] [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]...")
-	var commandID, retryOf, purpose, content, contentFile, acceptanceCriteria string
+	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> (--purpose <text>|--purpose-file <path>) (--content <text>|--content-file <path>) (--acceptance-criteria <text>|--acceptance-criteria-file <path>) --bloom-level <n> --expected-paths <path> [--expected-paths <path>...] [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]...")
+	var commandID, retryOf, purpose, purposeFile, content, contentFile, acceptanceCriteria, acceptanceCriteriaFile string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var blockedBy, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
 
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.StringVar(&retryOf, "retry-of", "", "Task ID of the failed task to retry")
 	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the retry task")
+	cmd.StringVar(&purposeFile, "purpose-file", "", "Read purpose from a file or '-' for stdin (mutually exclusive with --purpose)")
 	cmd.StringVar(&content, "content", "", "Task content for the retry task")
-	cmd.StringVar(&contentFile, "content-file", "", "Read task content for the retry task from a file")
+	cmd.StringVar(&contentFile, "content-file", "", "Read task content for the retry task from a file or '-' for stdin")
 	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the retry task")
+	cmd.StringVar(&acceptanceCriteriaFile, "acceptance-criteria-file", "", "Read acceptance criteria from a file or '-' for stdin (mutually exclusive with --acceptance-criteria)")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
 	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required by REQUIREMENTS.md §S3-1)")
@@ -40,13 +43,19 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && retryOf != "" && purpose != "" && (content != "" || contentFile != "") && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && retryOf != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && bloomLevel != 0 && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}
+	if err := resolvePurposeFile(cmd, &purpose, purposeFile); err != nil {
+		return err
+	}
 	if err := resolveContentFile(cmd, &content, contentFile); err != nil {
+		return err
+	}
+	if err := resolveAcceptanceCriteriaFile(cmd, &acceptanceCriteria, acceptanceCriteriaFile); err != nil {
 		return err
 	}
 
@@ -87,17 +96,19 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
-	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> (--content <text>|--content-file <path>) --acceptance-criteria <text> --bloom-level <n> --expected-paths <path>... [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]... [--required] [--run-on-main]")
-	var commandID, purpose, content, contentFile, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> (--purpose <text>|--purpose-file <path>) (--content <text>|--content-file <path>) (--acceptance-criteria <text>|--acceptance-criteria-file <path>) --bloom-level <n> --expected-paths <path>... [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]... [--required] [--run-on-main]")
+	var commandID, purpose, purposeFile, content, contentFile, acceptanceCriteria, acceptanceCriteriaFile, personaHint, workerID, targetPhase, idempotencyKey string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var required, runOnMain, runOnIntegration bool
 	var blockedBy, toolsHint, constraints, skillRefs, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
 
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the task")
+	cmd.StringVar(&purposeFile, "purpose-file", "", "Read purpose from a file or '-' for stdin (mutually exclusive with --purpose)")
 	cmd.StringVar(&content, "content", "", "Task content")
-	cmd.StringVar(&contentFile, "content-file", "", "Read task content from a file")
+	cmd.StringVar(&contentFile, "content-file", "", "Read task content from a file or '-' for stdin")
 	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the task")
+	cmd.StringVar(&acceptanceCriteriaFile, "acceptance-criteria-file", "", "Read acceptance criteria from a file or '-' for stdin (mutually exclusive with --acceptance-criteria)")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
 	cmd.BoolVar(&runOnMain, "run-on-main", false, "Run task in main branch directory instead of worker worktree (for read-only verification tasks)")
@@ -117,13 +128,19 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && purpose != "" && (content != "" || contentFile != "") && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && bloomLevel != 0 && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}
+	if err := resolvePurposeFile(cmd, &purpose, purposeFile); err != nil {
+		return err
+	}
 	if err := resolveContentFile(cmd, &content, contentFile); err != nil {
+		return err
+	}
+	if err := resolveAcceptanceCriteriaFile(cmd, &acceptanceCriteria, acceptanceCriteriaFile); err != nil {
 		return err
 	}
 
@@ -183,19 +200,76 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 
 // resolveContentFile resolves --content-file into content. It rejects mixed
 // sources so the value sent to the daemon has a single obvious origin.
+// Accepts "-" or "/dev/stdin" to read from stdin, mirroring
+// `plan submit --tasks-file -`. Planner agents that build long task content
+// programmatically rely on the stdin form to avoid stuffing multi-kilobyte
+// payloads onto argv.
 func resolveContentFile(cmd *CommandBuilder, content *string, contentFile string) error {
-	if contentFile == "" {
+	return resolveTextOrFile(cmd, "--content", "--content-file", content, contentFile)
+}
+
+// resolveAcceptanceCriteriaFile is the analogue of resolveContentFile for
+// --acceptance-criteria-file. The 2026-04-28 retest2 caught a Planner
+// agent attempting `--acceptance-criteria-file` on the assumption it
+// would mirror --content-file; the flag did not exist, so the call
+// failed and the agent fell back to argv quoting (which then hit a
+// shell quote error on a multi-line value). Adding the file form
+// removes both failure modes.
+func resolveAcceptanceCriteriaFile(cmd *CommandBuilder, acceptance *string, acceptanceFile string) error {
+	return resolveTextOrFile(cmd, "--acceptance-criteria", "--acceptance-criteria-file", acceptance, acceptanceFile)
+}
+
+// resolvePurposeFile is the analogue for --purpose-file. The Planner
+// rarely needs multi-line purposes, but adding it keeps the
+// (--X | --X-file) shape consistent across the task-injection flags
+// so future operator surprises are limited to value-shape errors only.
+func resolvePurposeFile(cmd *CommandBuilder, purpose *string, purposeFile string) error {
+	return resolveTextOrFile(cmd, "--purpose", "--purpose-file", purpose, purposeFile)
+}
+
+// resolveTextOrFile centralises the (--X | --X-file) mutual-exclusivity
+// + readFlagInputFile pattern so adding a new "or-file" variant only
+// requires a thin wrapper above. Mirrors the shape resolveSummaryFile
+// already uses for `plan complete`.
+func resolveTextOrFile(cmd *CommandBuilder, textFlag, fileFlag string, target *string, filePath string) error {
+	if filePath == "" {
 		return nil
 	}
-	if *content != "" {
-		return cmd.Errorf("--content and --content-file are mutually exclusive")
+	if *target != "" {
+		return cmd.Errorf("%s and %s are mutually exclusive", textFlag, fileFlag)
 	}
-	b, err := os.ReadFile(contentFile)
+	b, err := readFlagInputFile(fileFlag, filePath, model.DefaultMaxEntryContentBytes)
 	if err != nil {
-		return cmd.Errorf("read --content-file: %v", err)
+		return cmd.Errorf("%v", err)
 	}
-	*content = string(b)
+	*target = string(b)
 	return nil
+}
+
+// readFlagInputFile reads a CLI flag's file argument, supporting "-" and
+// "/dev/stdin" as stdin sources. Stdin reads are bounded by maxStdinBytes+1
+// so a runaway pipe cannot exhaust memory; size enforcement is otherwise
+// delegated to the post-read validate.ContentLength check on the caller.
+// File reads are unbounded here because the operator picked the path and
+// the CLI process is short-lived.
+func readFlagInputFile(flagName, path string, maxStdinBytes int) ([]byte, error) {
+	if path == "-" || path == "/dev/stdin" {
+		b, err := io.ReadAll(io.LimitReader(os.Stdin, int64(maxStdinBytes)+1))
+		if err != nil {
+			return nil, fmt.Errorf("read %s from stdin: %w", flagName, err)
+		}
+		if len(b) > maxStdinBytes {
+			return nil, fmt.Errorf("%s stdin input exceeds maximum size of %d bytes", flagName, maxStdinBytes)
+		}
+		return b, nil
+	}
+	// path is the operator-supplied file location; reading it is the
+	// documented behaviour. gosec G304 is a false positive in this context.
+	b, err := os.ReadFile(path) //nolint:gosec // operator-supplied flag path
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", flagName, err)
+	}
+	return b, nil
 }
 
 // buildDefinitionOfAbort assembles a *model.DefinitionOfAbort from the

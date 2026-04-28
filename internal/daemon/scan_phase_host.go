@@ -62,6 +62,34 @@ func (qh *QueueHandler) executeDeferredReconcileNotifications(notifications []De
 	qh.log(LogLevelWarn, "reconciler_notifications_failed count=%d", len(failed))
 }
 
+// runPostScanResultNotifications drives the per-result notification
+// retry sweep (formerly Phase C step 2.5). Phase C used to call
+// resultHandler.ScanAllResults under scanMu.Lock, which meant a slow
+// Planner pane could hold the lock for the full inline-retry budget
+// (default 3 attempts × delivery_timeout + 2 × retry_delay) and starve
+// queue_write / plan_complete / verify_write UDS handlers waiting on
+// scanMu.RLock — the symptom users observed as 30-second CLI timeouts
+// despite the daemon eventually reporting success.
+//
+// Running this AFTER periodicScanPhaseC releases scanMu means:
+//   - the notification path holds only its own per-result lockMap key
+//     ("result:<worker>"), not scanMu, so UDS writes can proceed in
+//     parallel even when the Planner is unresponsive;
+//   - state mutations from Phase C are already flushed to disk, so the
+//     notification scan sees the freshest results;
+//   - the surrounding scanRunMu still serializes successive scan cycles,
+//     so notifications and the next Phase A do not interleave.
+func (qh *QueueHandler) runPostScanResultNotifications(se *ScanPhaseExecutor) {
+	if qh.resultHandler == nil {
+		return
+	}
+	n := qh.resultHandler.ScanAllResults()
+	se.scanCounters.NotificationRetries += n
+	if n > 0 {
+		qh.log(LogLevelInfo, "result_notify_scan notified=%d", n)
+	}
+}
+
 func (qh *QueueHandler) runPeriodicWorktreeGC() {
 	if qh.worktreeManager == nil {
 		return

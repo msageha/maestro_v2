@@ -553,10 +553,10 @@ func TestSignal_ComputeBackoff(t *testing.T) {
 		attempts int
 		baseSec  int // base value before jitter
 	}{
-		{1, 5},   // 5 * 2^0 = 5
-		{2, 10},  // 5 * 2^1 = 10
-		{3, 20},  // 5 * 2^2 = 20
-		{4, 40},  // 5 * 2^3 = 40
+		{1, 2},   // first 3 attempts use the fast 2s base
+		{2, 4},   // 2 * 2^1 = 4
+		{3, 8},   // 2 * 2^2 = 8
+		{4, 40},  // after attempt 3, standard 5s base resumes: 5 * 2^3 = 40
 		{5, 60},  // 5 * 2^4 = 80, capped at scan_interval=60
 		{10, 60}, // capped
 	}

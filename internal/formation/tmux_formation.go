@@ -467,6 +467,9 @@ func sendStartupDialogKeys(pane string) error {
 
 func startupDialogKeys(role, content string) []string {
 	normalized := normalizeStartupDialogContent(content)
+	if startupDialogContentReady(normalized) {
+		return nil
+	}
 	if strings.Contains(normalized, bypassPermissionsDialogMarker) {
 		return []string{"2", "Enter"}
 	}
@@ -487,12 +490,19 @@ func isManagedAgentRole(role string) bool {
 
 func startupDialogVisible(content string) bool {
 	normalized := normalizeStartupDialogContent(content)
+	if startupDialogContentReady(normalized) {
+		return false
+	}
 	return strings.Contains(normalized, bypassPermissionsDialogMarker) ||
 		strings.Contains(normalized, workspaceTrustDialogMarker)
 }
 
 func normalizeStartupDialogContent(content string) string {
 	return strings.Join(strings.Fields(content), " ")
+}
+
+func startupDialogContentReady(normalized string) bool {
+	return strings.Contains(strings.ToLower(normalized), "bypass permissions on")
 }
 
 func captureStartupDialogContent(pane string) (string, error) {
@@ -548,7 +558,10 @@ func StartTrustDialogAcceptor(maestroDir string) {
 	if len(panes) == 0 {
 		return
 	}
-	slog.Info("daemon: starting trust dialog acceptor", "panes_count", len(panes))
+	// len(panes) is an int derived from filtered slog input; there is no
+	// tainted string here, so gosec G706's log-injection warning does not
+	// apply.
+	slog.Info("daemon: starting trust dialog acceptor", "panes_count", len(panes)) //nolint:gosec // panes_count is an int, not a tainted string
 	autoAcceptTrustDialog(panes)
 }
 
@@ -560,9 +573,11 @@ func StartTrustDialogAcceptor(maestroDir string) {
 //
 // Timing: polls start 5 s after launch (enough for the first startup-dialog
 // auto-accept pass to run and for fast failures to return to the shell) and
-// continue every 2 s for up to 12 s total (6 attempts). Agents that take longer
-// to initialise are not falsely flagged because the condition is "is a shell?",
-// not "is a claude prompt?".
+// continue every 2 s for about a minute. Claude Code startup dialogs can remain
+// visible for tens of seconds while trust / bypass-permissions state is being
+// persisted, especially when four worker panes start at once. The check must
+// therefore outlive the common first-start dialog window instead of rolling the
+// formation back while auto-accept is still making progress.
 //
 // The daemon's ensureClaudeRunning provides ongoing recovery after a healthy
 // launch; this check keeps startup fail-closed when agents exit immediately.
@@ -570,7 +585,7 @@ func checkAgentsLaunched(panes []string) error {
 	const (
 		initialDelay = 5 * time.Second
 		pollInterval = 2 * time.Second
-		maxAttempts  = 6
+		maxAttempts  = 30
 	)
 
 	time.Sleep(initialDelay)

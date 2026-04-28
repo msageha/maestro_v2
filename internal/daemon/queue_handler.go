@@ -100,6 +100,17 @@ type QueueHandler struct {
 	// bandit, fingerprint DB, etc.) to the dispatch pipeline. Wired via
 	// SetPhaseCManager after daemon startup; nil-safe at all call sites.
 	phaseC *PhaseCManager
+
+	// consecutiveCascadeBreakScans tracks how many recent scan ticks ended
+	// with the signal cascade-break tripped. Persists across scans (the
+	// per-tick signalCascadeTracker is local to stepDeliverSignals) so the
+	// daemon can surface the meta-circuit "tmux delivery has been degraded
+	// for N consecutive ticks" instead of only the per-tick message. The
+	// historical R-2 gap from the 2026-04 review was that single-tick
+	// cascade-break did not escalate when the underlying tmux degradation
+	// persisted across many ticks; this counter is the primitive an
+	// operator-facing meta-circuit reads.
+	consecutiveCascadeBreakScans atomic.Int32
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -133,6 +144,14 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, components.dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se
 	qh.scanRunMu = &se.scanRunMu
+	// Inline-retry abort hook: lets the dispatcher's per-task retry loop
+	// short-circuit when the queue entry is no longer in_progress at the
+	// expected lease epoch. Wired here (rather than via a SetXxx setter)
+	// because qh and dispatcher are both visible to NewQueueHandler and
+	// the relationship is intrinsic — the dispatcher belongs to qh.
+	if qh.dispatcher != nil {
+		qh.dispatcher.SetTaskAliveChecker(newQueueTaskAliveChecker(qh))
+	}
 	for _, opt := range opts {
 		opt(qh)
 	}

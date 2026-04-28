@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/daemon/verification"
 )
 
 // newTestRealRunner constructs a RealVerifyRunner with a discard logger and a
@@ -90,8 +92,28 @@ func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	if !out.Passed {
 		t.Fatalf("expected pass, got %+v", out)
 	}
-	if len(rr.seen) != 1 || rr.seen[0] != "go vet ./..." {
-		t.Errorf("expected single fallback command 'go vet ./...', got %v", rr.seen)
+	// DefaultVerifyConfigForProject now populates Build + Security + Performance
+	// for Go projects so extended_verification.security_check / performance_bench
+	// have language-appropriate tools to run by default. The Go fallback must
+	// still include `go vet ./...` as Build; Security/Performance are advisory
+	// extras that may or may not be wired by the operator's verify.yaml.
+	wantCmds := map[string]bool{
+		"go vet ./...":           false,
+		"gosec ./...":            false,
+		"go test -bench=. ./...": false,
+	}
+	for _, c := range rr.seen {
+		if _, ok := wantCmds[c]; ok {
+			wantCmds[c] = true
+		}
+	}
+	if !wantCmds["go vet ./..."] {
+		t.Errorf("Go fallback must execute `go vet ./...`; saw=%v", rr.seen)
+	}
+	for cmd, executed := range wantCmds {
+		if !executed {
+			t.Errorf("expected Go fallback to include %q, got %v", cmd, rr.seen)
+		}
 	}
 }
 
@@ -601,5 +623,152 @@ func TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo(t *testing.T) 
 	}
 	if len(rr.seen) != 0 {
 		t.Fatalf("verify commands should not run after expected_paths check failure, got %v", rr.seen)
+	}
+}
+
+// TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands pins
+// the Phase C-3 wiring: when extended_verification configures perspectives
+// (security / performance) and the verify snapshot does not list those
+// categories, the runner must execute the perspectives' commands so the
+// security gate actually runs. Before the wiring fix, EnsembleVerifier
+// was constructed in PhaseCManager but never consulted; operators saw
+// "ensemble verifier security perspective enabled" in the startup log
+// while no security command was ever invoked.
+func TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	// Snapshot only configures Build — Security/Performance are absent so
+	// the EnsembleVerifier must supply them.
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo build1
+`)
+
+	v := verification.NewVerifier()
+	if err := v.SetPerspectives([]verification.Perspective{
+		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
+		{Name: "security", Commands: []string{"echo sec1"}, Weight: 1.0},
+		{Name: "performance", Commands: []string{"echo perf1"}, Weight: 1.0},
+	}); err != nil {
+		t.Fatalf("SetPerspectives: %v", err)
+	}
+	r.SetEnsembleVerifier(v)
+
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass, got %+v", out)
+	}
+
+	wantContain := []string{"echo build1", "echo sec1", "echo perf1"}
+	for _, want := range wantContain {
+		found := false
+		for _, c := range rr.seen {
+			if c == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected runner to invoke %q (perspective should augment missing snapshot category); seen=%v", want, rr.seen)
+		}
+	}
+}
+
+// TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun pins the
+// per-perspective weight semantics: a non-critical perspective (weight
+// < 1.0) that fails must NOT abort the run. The legacy fail-fast path
+// short-circuited on the first non-zero exit regardless of perspective
+// weight, so an "advisory" security finding immediately failed verify
+// and routed the task to repair_pending — defeating the point of weight
+// configuration.
+func TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo b1
+`)
+
+	v := verification.NewVerifier()
+	if err := v.SetPerspectives([]verification.Perspective{
+		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
+		{Name: "security", Commands: []string{"echo sec_advisory"}, Weight: 0.5},
+	}); err != nil {
+		t.Fatalf("SetPerspectives: %v", err)
+	}
+	r.SetEnsembleVerifier(v)
+
+	rr := &recordingRunner{
+		results: map[string]struct {
+			output   string
+			exitCode int
+			err      error
+		}{
+			"echo sec_advisory": {output: "advisory finding", exitCode: 1},
+		},
+	}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass — advisory perspective failure must not fail the run, got %+v", out)
+	}
+
+	// Both commands must have run; advisory failure does not short-circuit.
+	if len(rr.seen) != 2 {
+		t.Errorf("expected both build and advisory security commands to run, got %v", rr.seen)
+	}
+}
+
+// TestRealVerifyRunner_EnsembleCriticalFailureFailsRun mirrors the
+// advisory test above but with a critical perspective (weight >= 1.0):
+// a failure of a critical perspective must fail-fast and route the task
+// to repair_pending.
+func TestRealVerifyRunner_EnsembleCriticalFailureFailsRun(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo b1
+`)
+
+	v := verification.NewVerifier()
+	if err := v.SetPerspectives([]verification.Perspective{
+		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
+		{Name: "security", Commands: []string{"echo sec_critical"}, Weight: 1.0},
+	}); err != nil {
+		t.Fatalf("SetPerspectives: %v", err)
+	}
+	r.SetEnsembleVerifier(v)
+
+	rr := &recordingRunner{
+		results: map[string]struct {
+			output   string
+			exitCode int
+			err      error
+		}{
+			"echo sec_critical": {output: "critical finding", exitCode: 2},
+		},
+	}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected fail — critical perspective failure must fail the run, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "category=security") {
+		t.Errorf("expected reason to include category=security, got %q", out.Reason)
 	}
 }

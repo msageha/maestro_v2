@@ -2,11 +2,46 @@ package daemon
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// setWorkerResolvingForTest mutates the on-disk worktree state so the named
+// worker is in the resolving status, with UpdatedAt back-dated to updatedAt.
+// Used by stepResolvingWorkerStallDetection tests to drive the stall path.
+func setWorkerResolvingForTest(t *testing.T, maestroDir, commandID, workerID, updatedAt string) {
+	t.Helper()
+	path := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read worktree state: %v", err)
+	}
+	var state model.WorktreeCommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse worktree state: %v", err)
+	}
+	found := false
+	for i := range state.Workers {
+		if state.Workers[i].WorkerID == workerID {
+			state.Workers[i].Status = model.WorktreeStatusResolving
+			state.Workers[i].UpdatedAt = updatedAt
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("worker %s not found in worktree state", workerID)
+	}
+	if err := yamlutil.AtomicWrite(path, state); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+}
 
 // stallTestSetup wires a QueueHandler with worktree manager + state reader,
 // seeds a single command with one terminal task and one terminal phase, and
@@ -228,6 +263,127 @@ func TestStepWorktreeStallDetection_NoPhasesFiresAfterTimeout(t *testing.T) {
 	}
 	if !state.Integration.StallSignaled {
 		t.Errorf("StallSignaled flag was not persisted")
+	}
+}
+
+// resolvingStallTestSetup wires a QueueHandler + scanState with one command
+// whose worker1 is in resolving status, back-dated to workerUpdatedAt. The
+// integration status is left at active because resolving stall is independent
+// of integration-branch stall.
+func resolvingStallTestSetup(t *testing.T, workerUpdatedAt string) (*QueueHandler, *scanState) {
+	t.Helper()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: true}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+	setWorkerResolvingForTest(t, maestroDir, "cmd1", "worker1", workerUpdatedAt)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s := &scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{
+						ID:        "cmd1",
+						Status:    model.StatusInProgress,
+						CreatedAt: now,
+						UpdatedAt: now,
+					},
+				},
+			},
+		},
+		tasks:       makeTaskQueues(nil),
+		taskDirty:   make(map[string]bool),
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: make(map[signalKey]struct{}),
+	}
+	return qh, s
+}
+
+func TestStepResolvingWorkerStallDetection_FiresAfterTimeout(t *testing.T) {
+	t.Parallel()
+	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	qh, s := resolvingStallTestSetup(t, past)
+
+	qh.stepResolvingWorkerStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 1 {
+		t.Fatalf("expected 1 signal, got %d", len(s.signals.Data.Signals))
+	}
+	sig := s.signals.Data.Signals[0]
+	if sig.Kind != "worker_resolving_stalled" {
+		t.Errorf("kind = %q, want worker_resolving_stalled", sig.Kind)
+	}
+	if sig.CommandID != "cmd1" {
+		t.Errorf("command_id = %q, want cmd1", sig.CommandID)
+	}
+	if sig.WorkerID != "worker1" {
+		t.Errorf("worker_id = %q, want worker1", sig.WorkerID)
+	}
+	if sig.Reason != "resolving_status_held_too_long" {
+		t.Errorf("reason = %q, want resolving_status_held_too_long", sig.Reason)
+	}
+}
+
+func TestStepResolvingWorkerStallDetection_DoesNotFireWithinTimeout(t *testing.T) {
+	t.Parallel()
+	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	qh, s := resolvingStallTestSetup(t, recent)
+
+	qh.stepResolvingWorkerStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 0 {
+		t.Fatalf("expected 0 signals (within timeout), got %d", len(s.signals.Data.Signals))
+	}
+}
+
+func TestStepResolvingWorkerStallDetection_DedupsRepeatedScans(t *testing.T) {
+	t.Parallel()
+	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	qh, s := resolvingStallTestSetup(t, past)
+
+	qh.stepResolvingWorkerStallDetection(s)
+	qh.stepResolvingWorkerStallDetection(s) // second pass — must dedup via signalIndex
+
+	if len(s.signals.Data.Signals) != 1 {
+		t.Fatalf("expected 1 signal after dedup, got %d", len(s.signals.Data.Signals))
+	}
+}
+
+func TestStepResolvingWorkerStallDetection_IgnoresNonResolvingWorkers(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: true}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+	// Default writeWorktreeState leaves worker1 in WorktreeStatusActive.
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	s := &scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{
+						ID:        "cmd1",
+						Status:    model.StatusInProgress,
+						CreatedAt: now,
+						UpdatedAt: now,
+					},
+				},
+			},
+		},
+		tasks:       makeTaskQueues(nil),
+		taskDirty:   make(map[string]bool),
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: make(map[signalKey]struct{}),
+	}
+
+	qh.stepResolvingWorkerStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 0 {
+		t.Fatalf("expected 0 signals for non-resolving workers, got %d", len(s.signals.Data.Signals))
 	}
 }
 

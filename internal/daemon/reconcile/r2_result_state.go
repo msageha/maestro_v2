@@ -92,6 +92,53 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				if model.IsTerminal(currentStatus) {
 					continue
 				}
+				// Verification pipeline ownership guard.
+				//
+				// verify_pending is the §2.1 state machine slot for "worker
+				// completed; quality gate is in flight". The result file
+				// shows the worker's reported status (typically completed
+				// or failed), so naively comparing
+				// "result terminal vs state non-terminal" misclassifies
+				// verify_pending as a stuck-task and overwrites it with
+				// the worker's reported terminal status. Empirically (the
+				// 2026-04-28 default-config E2E run) this raced with the
+				// async verify runner: R2 wrote completed first,
+				// applyVerifyOutcome then logged
+				// "verify_outcome_skipped task no longer at verify_pending"
+				// and the verify result was silently dropped. The same
+				// failure mode applies to repair_pending — that slot is
+				// owned by the post-verify repair task path.
+				//
+				// R9_VerifyStall is the dedicated reconciler for stalled
+				// verify_pending entries; it transitions to repair_pending
+				// once the configured stall threshold elapses, so verify
+				// pipeline state never gets stuck even with R2 stepping
+				// back here.
+				if currentStatus == model.StatusVerifyPending || currentStatus == model.StatusRepairPending {
+					run.Log(core.LogLevelDebug,
+						"R2 skip_verify_pipeline command=%s task=%s result_status=%s state_status=%s "+
+							"(verification/repair pipeline owns this slot — applyVerifyOutcome / R9_VerifyStall handle it)",
+						commandID, re.TaskID, re.Status, currentStatus)
+					continue
+				}
+				// paused_for_replan is a Planner-handoff slot (§S2-2 Circuit
+				// Breaker / max_repair exhaustion). The worker may still emit
+				// a terminal result file for the original attempt — typically
+				// the failed result that *triggered* the replan in the first
+				// place — but accepting it here would silently flip the task
+				// back to completed/failed and erase the Planner's "must
+				// replan" hint. The 2026-04-27 daemon.log captured exactly
+				// that race (paused_for_replan -> completed in adjacent log
+				// lines). The repair-pipeline guard above protects only the
+				// pre-replan slots; this clause covers the post-replan slot
+				// so Planner replan can run to completion.
+				if currentStatus == model.StatusPausedForReplan {
+					run.Log(core.LogLevelDebug,
+						"R2 skip_paused_for_replan command=%s task=%s result_status=%s state_status=%s "+
+							"(awaiting Planner replan — original-attempt result must not overwrite this slot)",
+						commandID, re.TaskID, re.Status, currentStatus)
+					continue
+				}
 
 				run.Log(core.LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
 					commandID, re.TaskID, re.Status, currentStatus)

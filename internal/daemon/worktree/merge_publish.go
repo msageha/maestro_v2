@@ -422,6 +422,14 @@ func (wm *Manager) handleWorkerMergeConflict(
 		}
 	}
 
+	// Pin the worker branch HEAD at the moment of conflict detection. The
+	// deferred-merge guard in tryMergeWorker uses this to distinguish a
+	// non-Claude Worker that self-committed the resolution (HEAD advances
+	// past this snapshot, worktree clean) from a Worker whose
+	// __conflict_resolution task is still in flight (HEAD unchanged,
+	// worktree clean). Without it, self-commit Workers would loop forever
+	// on the deferred branch.
+	ws.ConflictBranchHead = mc.TheirsRef
 	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
 		wm.Log(core.LogLevelWarn, "merge_conflict_transition command=%s worker=%s error=%v",
 			commandID, workerID, tErr)

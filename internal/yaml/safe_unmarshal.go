@@ -2,6 +2,7 @@ package yaml
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 
@@ -53,7 +54,7 @@ func safeUnmarshal(data []byte, out any, strict bool) error {
 	dec := yamlv3.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(strict)
 	if err := dec.Decode(out); err != nil {
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			return nil
 		}
 		return err

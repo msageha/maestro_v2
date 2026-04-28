@@ -273,6 +273,18 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 			}
 			return nil
 		}
+		// ErrSubmitConfirmUncertain is non-retryable by design: the deliverer
+		// already burned an 8-attempt probe budget (~6s) trying to confirm the
+		// paste reached the planner pane. Re-dispatching the same envelope
+		// would risk a duplicate plan_submit on top of the original message,
+		// so the deliverer surfaces it with Retryable=false. Inline retries
+		// only multiply the probe budget without changing the outcome — exit
+		// the loop immediately and let applySignalResults dead-letter the
+		// signal so the queue does not respawn the same exhausted delivery on
+		// every scan.
+		if errors.Is(err, agent.ErrSubmitConfirmUncertain) {
+			return err
+		}
 		lastErr = err
 	}
 	return lastErr

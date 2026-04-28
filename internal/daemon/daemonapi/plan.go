@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
@@ -15,7 +17,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type validationFormatter interface {
@@ -29,6 +30,10 @@ type codedFormatter interface {
 	ErrorCode() string
 }
 
+// PlanRecoveryWorktreeManager is the subset of the worktree manager API
+// the plan handler exercises for the operator-facing recovery commands.
+// Defined here (rather than imported from worktree) so tests can supply
+// a stub without dragging in the full manager.
 type PlanRecoveryWorktreeManager interface {
 	Unquarantine(commandID string, reason string) error
 	ResumeMerge(ctx context.Context, commandID string) error
@@ -37,6 +42,9 @@ type PlanRecoveryWorktreeManager interface {
 	ResolveConflict(commandID, phaseID, workerID string) error
 }
 
+// Plan handles plan-domain UDS requests (submit, complete, add_task,
+// add_retry_task, rebuild) and the operator-only worktree recovery
+// commands.
 type Plan struct {
 	maestroDir       string
 	executor         core.PlanExecutor
@@ -49,6 +57,12 @@ type Plan struct {
 	logWarnf         Logf
 }
 
+// NewPlan constructs a Plan handler. lock/unlock guard plan executor
+// invocation; commandStatePath resolves a command's state file (so the
+// quarantine guard can read it without depending on a daemon import);
+// publishQueue is invoked after each successful mutation so reconcilers
+// pick up the change on the next scan; logInfof/logWarnf are the
+// structured loggers the handler emits diagnostic events through.
 func NewPlan(
 	maestroDir string,
 	lock func(),
@@ -69,14 +83,26 @@ func NewPlan(
 	}
 }
 
+// SetExecutor wires the PlanExecutor backend after construction. The
+// late-binding is required because the executor depends on Phase B
+// services that are wired during daemon initComponents.
 func (h *Plan) SetExecutor(pe core.PlanExecutor) {
 	h.executor = pe
 }
 
+// SetWorktreeManager wires the worktree-recovery backend used by the
+// operator-only `plan unquarantine` / `plan resume-merge` /
+// `plan retry-publish` / `plan auto-recover` / `plan resolve-conflict`
+// requests. May be nil when worktree mode is disabled, in which case
+// those operations return UDS errors without touching state.
 func (h *Plan) SetWorktreeManager(wm PlanRecoveryWorktreeManager) {
 	h.worktreeManager = wm
 }
 
+// Handle dispatches the plan UDS request to the appropriate executor or
+// worktree-recovery method. The caller-role gate is enforced per
+// operation; quarantine state blocks plan-mutation operations so the
+// daemon never adds tasks to a stalled merge phase.
 func (h *Plan) Handle(req *uds.Request) *uds.Response {
 	var params struct {
 		Operation string          `json:"operation"`
@@ -204,7 +230,10 @@ func (h *Plan) rejectPlanMutationWhenQuarantined(operation string, data json.Raw
 	}
 
 	path := filepath.Join(h.maestroDir, "state", "worktrees", p.CommandID+".yaml")
-	dataBytes, err := os.ReadFile(path)
+	// p.CommandID has been validated via validate.ID above, and path is
+	// rooted at the controlled maestroDir, so gosec G304 (file inclusion
+	// via variable) does not apply here.
+	dataBytes, err := os.ReadFile(path) //nolint:gosec // CommandID validated; path rooted at maestroDir
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil

@@ -5,10 +5,11 @@ import (
 	"io"
 	"os"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // runVerify dispatches verify subcommands.

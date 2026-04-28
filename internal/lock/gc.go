@@ -15,8 +15,8 @@ import (
 // duration are eligible for removal.
 const DefaultLockGCAge = 7 * 24 * time.Hour
 
-// LockGCStats summarises the outcome of a single GCStaleLockFiles run.
-type LockGCStats struct {
+// GCStats summarises the outcome of a single GCStaleLockFiles run.
+type GCStats struct {
 	// Scanned is the total number of regular files inspected (excluding
 	// symlinks and protected entries).
 	Scanned int
@@ -56,16 +56,16 @@ type LockGCStats struct {
 // while a new caller creates a fresh inode at the same path — splitting the
 // mutex.
 //
-// All failures are returned as zero entries in LockGCStats and surfaced to
+// All failures are returned as zero entries in GCStats and surfaced to
 // the caller via the logf hook (logf may be nil to silence).
 //
 // `protect` should include the daemon's own primary lock (e.g. daemon.lock)
 // because that file is held by the running daemon while GC runs.
-func GCStaleLockFiles(dir string, maxAge time.Duration, protect []string, logf func(format string, args ...any)) (LockGCStats, error) {
+func GCStaleLockFiles(dir string, maxAge time.Duration, protect []string, logf func(format string, args ...any)) (GCStats, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	var stats LockGCStats
+	var stats GCStats
 
 	entries, err := os.ReadDir(dir)
 	if err != nil {

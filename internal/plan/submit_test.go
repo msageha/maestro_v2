@@ -28,6 +28,13 @@ func testConfig() model.Config {
 		Limits: model.LimitsConfig{
 			MaxPendingTasksPerWorker: 10,
 		},
+		// Match the production template default (worktree.enabled=true)
+		// so submit-side tests do not see __system_commit injected by
+		// shouldInsertSystemCommit, which now fires whenever worktree mode
+		// is off (2026-04-28: closed the dirty-main footgun for single-shot
+		// runs). Tests that intentionally exercise worktree=false override
+		// this field explicitly.
+		Worktree: model.WorktreeConfig{Enabled: true},
 	}
 }
 
@@ -140,6 +147,114 @@ tasks:
 	}
 	if !strings.Contains(err.Error(), "field acceptence_criteria not found") {
 		t.Fatalf("expected strict YAML unknown-field error, got: %v", err)
+	}
+	// 2026-04-28 follow-up: the typed wrapper is what makes the daemon's
+	// plan handler route this error to ErrCodeValidation. Before this,
+	// `field XXX not found` surfaced as `[INTERNAL_ERROR]` because the
+	// plain fmt.Errorf wrap missed the type assertion in
+	// daemonapi/plan.go. Pinning the *planValidationError shape here so
+	// future refactors don't silently regress the operator-facing error
+	// classification.
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError so daemon classifies as VALIDATION_ERROR, got %T: %v", err, err)
+	}
+}
+
+// TestSubmit_DryRunRejectsUnknownWorkerID pins the 2026-04-28 retest2
+// follow-up: `plan submit --dry-run` was returning {"valid": true} for
+// a task tagged `worker_id: worker99` even when only 2 workers were
+// configured. The format-only check inside validateTaskFieldsCore could
+// not catch this — `worker99` matches the workerN regex but does not
+// reference a real slot. The fix runs validateTaskWorkerPins before the
+// dry-run early return so the operator sees the existence error from
+// the same place the real submit reports it.
+func TestSubmit_DryRunRejectsUnknownWorkerID(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	cfg := testConfig() // workers.count=2
+
+	writePlannerQueue(t, maestroDir, "cmd_test_dry_pin", model.StatusInProgress)
+
+	tasksFile := writeTasksFile(t, withDefaultRequiredFields([]TaskInput{
+		{
+			Name:               "feature_a",
+			Purpose:            "do thing",
+			Content:            "implement",
+			AcceptanceCriteria: "passes",
+			BloomLevel:         2,
+			Required:           true,
+			WorkerID:           "worker99", // beyond configured count
+		},
+	}))
+
+	_, err := Submit(SubmitOptions{
+		CommandID:  "cmd_test_dry_pin",
+		TasksFile:  tasksFile,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+		DryRun:     true,
+	})
+	if err == nil {
+		t.Fatal("expected dry-run to reject worker_id beyond workers.count")
+	}
+	var verrs *ValidationErrors
+	if !errors.As(err, &verrs) {
+		t.Fatalf("expected *ValidationErrors so daemon classifies as VALIDATION_ERROR, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "worker99") {
+		t.Errorf("error %q does not name the offending worker_id", err.Error())
+	}
+}
+
+// TestParseInput_AcceptsWorkerID pins that the worker_id pinning field
+// added 2026-04-28 actually decodes off the YAML wire. Before this, a
+// Planner-supplied worker_id was rejected by SafeUnmarshalStrict as
+// "unknown field" and the call surfaced as INTERNAL_ERROR — the exact
+// regression flagged in the conflict-recovery E2E run.
+func TestParseInput_AcceptsWorkerID(t *testing.T) {
+	parsed, err := parseInput([]byte(`
+tasks:
+  - name: feature_a
+    purpose: ship feature a
+    content: implement A
+    acceptance_criteria: A passes tests
+    bloom_level: 2
+    required: true
+    worker_id: worker1
+    expected_paths: ["."]
+    definition_of_abort:
+      max_repair_count: 2
+      max_wall_clock_sec: 300
+`))
+	if err != nil {
+		t.Fatalf("parseInput: %v", err)
+	}
+	if len(parsed.Tasks) != 1 || parsed.Tasks[0].WorkerID != "worker1" {
+		t.Fatalf("worker_id not propagated: tasks=%+v", parsed.Tasks)
+	}
+}
+
+// TestParseInput_OversizedInputIsValidationError pins that input size
+// rejection is also surfaced as a validation error, not an internal one.
+// Before the 2026-04-28 fix, this case used plain fmt.Errorf and the
+// daemon mislabelled it as INTERNAL_ERROR — same misclassification as the
+// strict-decode path.
+func TestParseInput_OversizedInputIsValidationError(t *testing.T) {
+	oversized := make([]byte, model.DefaultMaxYAMLFileBytes+1)
+	for i := range oversized {
+		oversized[i] = ' '
+	}
+	_, err := parseInput(oversized)
+	if err == nil {
+		t.Fatal("expected size-limit error")
+	}
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum size") {
+		t.Errorf("error %q does not mention size limit", err.Error())
 	}
 }
 
@@ -967,10 +1082,13 @@ func TestSubmit_PhaseFill_ConstraintViolation(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemCommit verifies that __system_commit insertion is
-// gated on both continuous mode AND worktree mode being disabled. The latter
-// is critical: in worktree mode the Daemon commits worktree changes itself,
-// so a Worker-side commit task is redundant and harmful.
+// TestShouldInsertSystemCommit pins the (post-2026-04-28) invariant that
+// __system_commit insertion is driven solely by worktree mode being
+// disabled. Continuous mode is independent: a single-shot run with
+// worktree.enabled=false still needs the commit task, otherwise the
+// Worker's in-place edits to main stay dirty after `completed`. The
+// previous predicate gated insertion on continuous=true, which is the
+// footgun we are fixing here.
 func TestShouldInsertSystemCommit(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -978,7 +1096,7 @@ func TestShouldInsertSystemCommit(t *testing.T) {
 		worktree   bool
 		want       bool
 	}{
-		{"continuous off, worktree off", false, false, false},
+		{"continuous off, worktree off", false, false, true},
 		{"continuous on,  worktree off", true, false, true},
 		{"continuous off, worktree on", false, true, false},
 		{"continuous on,  worktree on", true, true, false},

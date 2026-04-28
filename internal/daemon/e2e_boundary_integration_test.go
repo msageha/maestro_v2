@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -994,6 +997,132 @@ func TestE2E_SignalCreationAndDelivery(t *testing.T) {
 	}
 	if staleCount > 0 {
 		t.Errorf("expected 0 stale signals after successful delivery, got %d", staleCount)
+	}
+}
+
+type countingE2EExecutor struct {
+	mu    sync.Mutex
+	calls []agent.ExecRequest
+}
+
+func (e *countingE2EExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
+	e.mu.Lock()
+	e.calls = append(e.calls, req)
+	e.mu.Unlock()
+	return agent.ExecResult{Success: true}
+}
+
+func (e *countingE2EExecutor) Close() error { return nil }
+
+func (e *countingE2EExecutor) countPlannerSignal(kind, commandID string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	count := 0
+	kindNeedle := "kind:" + kind
+	statusNeedle := "status:" + kind
+	commandNeedle := "command_id:" + commandID
+	for _, call := range e.calls {
+		if call.AgentID == "planner" &&
+			(strings.Contains(call.Message, kindNeedle) || strings.Contains(call.Message, statusNeedle)) &&
+			strings.Contains(call.Message, commandNeedle) {
+			count++
+		}
+	}
+	return count
+}
+
+// TestE2E_LongWorkerCompletion_DoesNotRepeatPlannerSignal exercises the
+// long-running-worker shape: several scan cycles pass while the worker task is
+// still in_progress, then the worker reports completed, and more scans run.
+// The Planner must receive the resulting awaiting_fill signal exactly once,
+// not once per subsequent scan cycle.
+func TestE2E_LongWorkerCompletion_DoesNotRepeatPlannerSignal(t *testing.T) {
+	e := newE2EDaemon(t)
+	exec := &countingE2EExecutor{}
+	daemon.E2ESetExecutorFactory(e, func(string, model.WatcherConfig, string) (daemon.AgentExecutor, error) {
+		return exec, nil
+	})
+
+	_ = daemon.E2EWriteCommand(t, e, "long worker signal repeat guard")
+	e.PeriodicScan()
+	cq := daemon.E2EReadCommandQueue(t, e)
+	commandID := cq.Commands[0].ID
+
+	phasesFile := writePhasesYAML(t, []phaseInputYAML{
+		{
+			Name: "research",
+			Type: "concrete",
+			Tasks: []taskInputYAML{
+				{
+					Name: "long_task", Purpose: "long worker task", Content: "work for a while",
+					AcceptanceCriteria: "done", BloomLevel: 3, Required: true,
+				},
+			},
+		},
+		{
+			Name:            "implementation",
+			Type:            "deferred",
+			DependsOnPhases: []string{"research"},
+			Constraints: &constraintInputYAML{
+				MaxTasks: 3, AllowedBloomLevels: []int{1, 2, 3, 4, 5, 6}, TimeoutMinutes: 30,
+			},
+		},
+	})
+
+	resp := callPlanSubmit(t, e, commandID, phasesFile)
+	sr := extractSubmitResult(t, resp)
+
+	var researchTask submitTaskResult
+	for _, p := range sr.Phases {
+		if p.Name == "research" && len(p.Tasks) > 0 {
+			researchTask = p.Tasks[0]
+			break
+		}
+	}
+	if researchTask.TaskID == "" {
+		t.Fatal("research task not found")
+	}
+
+	e.PeriodicScan() // dispatch the worker task
+	for i := 0; i < 3; i++ {
+		e.PeriodicScan()
+	}
+	if got := exec.countPlannerSignal("awaiting_fill", commandID); got != 0 {
+		t.Fatalf("planner signal delivered while worker task was still running: got %d", got)
+	}
+
+	tq := daemon.E2EReadTaskQueue(t, e, researchTask.Worker)
+	var epoch int
+	for _, qt := range tq.Tasks {
+		if qt.ID == researchTask.TaskID {
+			epoch = qt.LeaseEpoch
+			break
+		}
+	}
+	if epoch == 0 {
+		t.Fatal("dispatched research task epoch not found")
+	}
+	daemon.E2EWriteResult(t, e, researchTask.Worker, researchTask.TaskID, commandID, "completed", "long task done", epoch)
+
+	for i := 0; i < 3; i++ {
+		e.PeriodicScan()
+	}
+	if got := exec.countPlannerSignal("awaiting_fill", commandID); got != 1 {
+		t.Fatalf("awaiting_fill planner deliveries after completion = %d, want 1", got)
+	}
+
+	sq := daemon.E2EReadPlannerSignals(t, e)
+	for _, sig := range sq.Signals {
+		if sig.CommandID == commandID {
+			t.Fatalf("expected no pending signals after successful delivery, got kind=%s attempts=%d", sig.Kind, sig.Attempts)
+		}
+	}
+
+	for i := 0; i < 3; i++ {
+		e.PeriodicScan()
+	}
+	if got := exec.countPlannerSignal("awaiting_fill", commandID); got != 1 {
+		t.Fatalf("awaiting_fill planner deliveries after extra scans = %d, want still 1", got)
 	}
 }
 

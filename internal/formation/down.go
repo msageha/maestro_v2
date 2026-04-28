@@ -156,6 +156,20 @@ func restoreServerOptions(maestroDir string) {
 
 	for name, value := range options {
 		if err := tmux.SetServerOption(name, value); err != nil {
+			// Killing the maestro session via tmux.KillSession can take the
+			// tmux server down with it (last session = server exits). Any
+			// SetServerOption call that races into the post-kill window
+			// surfaces "no server running", which is classified as
+			// tmux.ErrTmuxServer. Restoration of options on a non-existent
+			// server is a no-op by design — log at debug so the down
+			// summary stays clean instead of emitting a non-actionable
+			// warning every time. Other errors (validation, IPC) keep the
+			// warning so genuine restoration failures stay visible.
+			if errors.Is(err, tmux.ErrTmuxServer) {
+				slog.Debug("restoreServerOptions: server already gone after KillSession; skipping",
+					"name", name, "value", value)
+				continue
+			}
 			slog.Warn("restoreServerOptions: set option failed", "name", name, "value", value, "error", err)
 		}
 	}

@@ -663,26 +663,28 @@ func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 		_ = wm.saveState(commandID, st)
 	}()
 
-	// Worker2 resolves: writes merged content (includes both sides).
-	// The worker has ALREADY committed — simulating a real agent that
-	// commits its own changes via Bash git commands.
+	// Worker2 resolves: writes merged content (includes both sides) into
+	// their worktree as uncommitted edits. This matches production worker
+	// policy (templates/instructions/worker.md: workers must not run
+	// `git add` / `git commit` themselves; the daemon commits via
+	// commitResolvedWorkerChanges from inside ResumeMerge).
+	//
+	// History note: this test previously self-committed via shell git
+	// commands. That path was incompatible with the in-flight resolution
+	// race guard added in tryMergeWorker (a clean worktree on a worker that
+	// arrived already in resolving status now means "resolution task is
+	// still in flight" and is intentionally skipped). The non-self-commit
+	// shape exercises the same `-X theirs` strategy this test cares about
+	// because commitResolvedWorkerChanges produces a fresh commit before
+	// mergeResolvedWorker runs.
 	resolved := "first\nsecond\n"
 	if err := os.WriteFile(filepath.Join(wt2, "ADD_ADD.txt"), []byte(resolved), 0644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("git", "add", "-A")
-	cmd.Dir = wt2
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git add: %v\n%s", err, out)
-	}
-	cmd = exec.Command("git", "commit", "-m", "resolve conflict")
-	cmd.Dir = wt2
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git commit: %v\n%s", err, out)
-	}
 
-	// ResumeMerge — with -X theirs, git should resolve the add/add
-	// conflict automatically by preferring the worker's committed version.
+	// ResumeMerge — daemon commits worker2's uncommitted resolution and
+	// then merges the now-fresh worker branch into integration with
+	// -X theirs to handle the add/add conflict.
 	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
@@ -706,7 +708,7 @@ func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 
 	// Verify resolved content on integration branch.
 	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
-	cmd = exec.Command("git", "show", "HEAD:ADD_ADD.txt")
+	cmd := exec.Command("git", "show", "HEAD:ADD_ADD.txt")
 	cmd.Dir = integrationPath
 	showOut, err := cmd.Output()
 	if err != nil {
@@ -714,6 +716,235 @@ func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 	}
 	if string(showOut) != resolved {
 		t.Errorf("integration ADD_ADD.txt = %q, want %q", string(showOut), resolved)
+	}
+}
+
+// TestResumeMerge_SkipsResolvingWithoutEdits is the regression test for the
+// race where a non-AutoRecoverAfterResolution caller fires ResumeMerge while
+// R7's __conflict_resolution task is still in flight. Production behaviour
+// (templates/instructions/worker.md) is that workers leave conflict
+// resolutions as uncommitted edits, so an arrived-resolving worker with a
+// clean worktree means the resolution task has not produced any result yet.
+// Without the gate inside tryMergeWorker, mergeResolvedWorker would commit
+// nothing in commitResolvedWorkerChanges, fall through with the unchanged
+// worker branch, and merge the *pre-resolution* content via -X theirs —
+// silently overwriting the resolution. The gate keeps the worker in
+// resolving so the worker's eventual result_write triggers the proper
+// AutoRecoverAfterResolution path.
+func TestResumeMerge_SkipsResolvingWithoutEdits(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_inflight_skip"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wt1, _ := wm.GetWorkerPath(commandID, "worker1")
+	wt2, _ := wm.GetWorkerPath(commandID, "worker2")
+
+	if err := os.WriteFile(filepath.Join(wt1, "INFLIGHT.txt"), []byte("worker1 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 add INFLIGHT.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "INFLIGHT.txt"), []byte("worker2 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 add INFLIGHT.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	// Simulate R7 dispatching the resolution task: worker2 transitions to
+	// resolving, but the actual resolution task has not yet completed —
+	// worker2's worktree therefore has no uncommitted edits.
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		ws := wm.findWorker(st, "worker2")
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge: %v", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState after resume: %v", err)
+	}
+
+	// The race guard must keep worker2 in resolving rather than promoting
+	// it to integrated using the unchanged (pre-resolution) branch.
+	for _, ws := range state.Workers {
+		if ws.WorkerID != "worker2" {
+			continue
+		}
+		if ws.Status != model.WorktreeStatusResolving {
+			t.Errorf("worker2 status = %q, want resolving (in-flight resolution must not be merged)", ws.Status)
+		}
+	}
+
+	// Integration must not flip to merged on a half-baked resolution.
+	if state.Integration.Status == model.IntegrationStatusMerged {
+		t.Errorf("integration status = merged but worker2's resolution was still in flight")
+	}
+
+	// Worker2 then completes the resolution by leaving merged content as
+	// uncommitted edits (production worker policy). A subsequent ResumeMerge
+	// — same call shape, but now the worktree has real edits — must drive
+	// the worker to integrated.
+	resolved := "worker1 wins\nworker2 wins\n"
+	if err := os.WriteFile(filepath.Join(wt2, "INFLIGHT.txt"), []byte(resolved), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge after edits: %v", err)
+	}
+
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState after second resume: %v", err)
+	}
+	for _, ws := range state.Workers {
+		if ws.WorkerID == "worker2" && ws.Status != model.WorktreeStatusIntegrated {
+			t.Errorf("worker2 status = %q, want integrated after resolution edits", ws.Status)
+		}
+	}
+	if state.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("integration status = %q, want merged after resolution edits", state.Integration.Status)
+	}
+
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	cmd := exec.Command("git", "show", "HEAD:INFLIGHT.txt")
+	cmd.Dir = integrationPath
+	showOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git show INFLIGHT.txt: %v", err)
+	}
+	if string(showOut) != resolved {
+		t.Errorf("integration INFLIGHT.txt = %q, want %q", string(showOut), resolved)
+	}
+}
+
+// TestResumeMerge_ResolvingSelfCommit_ProgressesToIntegrated covers the
+// non-Claude Worker path where the Worker (codex / gemini) self-commits the
+// conflict resolution before the daemon's commitResolvedWorkerChanges runs.
+// The original deferred guard treated "clean worktree on a resolving worker"
+// as "resolution task still in flight" — but with a self-commit the worktree
+// is clean *because* the resolution is already on the worker branch HEAD.
+// Without distinguishing these two cases the worker would be pinned at
+// resolving forever (deferred → no edits to commit → deferred again).
+//
+// The fix compares HEAD against ws.ConflictBranchHead (the worker branch
+// SHA snapshotted at conflict detection): when HEAD has advanced past it,
+// treat the worker as having completed the resolution and proceed with
+// the merge.
+func TestResumeMerge_ResolvingSelfCommit_ProgressesToIntegrated(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_self_commit"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wt1, _ := wm.GetWorkerPath(commandID, "worker1")
+	wt2, _ := wm.GetWorkerPath(commandID, "worker2")
+
+	if err := os.WriteFile(filepath.Join(wt1, "SELFCOMMIT.txt"), []byte("worker1 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 add SELFCOMMIT.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "SELFCOMMIT.txt"), []byte("worker2 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 add SELFCOMMIT.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	// Simulate R7 dispatching the resolution task.
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		ws := wm.findWorker(st, "worker2")
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+
+	// Worker self-commits the resolution directly — the worktree is left
+	// clean by the time ResumeMerge runs. This is the codex / gemini
+	// behaviour we have to support: those agents do not run under the
+	// Claude policy hook so they can issue `git commit` themselves.
+	resolved := "worker1 wins\nworker2 wins\n"
+	if err := os.WriteFile(filepath.Join(wt2, "SELFCOMMIT.txt"), []byte(resolved), 0644); err != nil {
+		t.Fatal(err)
+	}
+	addCmd := exec.Command("git", "add", "SELFCOMMIT.txt")
+	addCmd.Dir = wt2
+	if out, err := addCmd.CombinedOutput(); err != nil {
+		t.Fatalf("worker self-commit (git add): %v: %s", err, out)
+	}
+	commitCmd := exec.Command("git",
+		"-c", "user.email=worker2@test", "-c", "user.name=worker2",
+		"commit", "-m", "worker2 self-commit resolution")
+	commitCmd.Dir = wt2
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("worker self-commit (git commit): %v: %s", err, out)
+	}
+
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge: %v", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	for _, ws := range state.Workers {
+		if ws.WorkerID != "worker2" {
+			continue
+		}
+		if ws.Status != model.WorktreeStatusIntegrated {
+			t.Errorf("worker2 status = %q, want integrated (self-commit must unblock the merge)", ws.Status)
+		}
+	}
+	if state.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("integration status = %q, want merged", state.Integration.Status)
+	}
+
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	showCmd := exec.Command("git", "show", "HEAD:SELFCOMMIT.txt")
+	showCmd.Dir = integrationPath
+	showOut, err := showCmd.Output()
+	if err != nil {
+		t.Fatalf("git show SELFCOMMIT.txt: %v", err)
+	}
+	if string(showOut) != resolved {
+		t.Errorf("integration SELFCOMMIT.txt = %q, want %q", string(showOut), resolved)
 	}
 }
 

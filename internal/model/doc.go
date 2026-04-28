@@ -12,9 +12,8 @@
 //     entity IS at a single instant. Read by humans and consumed by
 //     reconcilers as a discrete value. Examples: Status (queue tasks),
 //     PlanStatus, PhaseStatus, ContinuousStatus, ReviewStatus,
-//     WorktreeStatus, IntegrationStatus, RolloutState (legacy alias —
-//     functions like a Status). The valid transitions are encoded by
-//     ValidateCommandTaskQueueTransition / similar helpers.
+//     WorktreeStatus, IntegrationStatus. The valid transitions are encoded
+//     by ValidateCommandTaskQueueTransition / similar helpers.
 //   - State — a struct aggregating multiple fields that together describe
 //     an entity's persisted snapshot. Always serialised to YAML. Examples:
 //     CommandState, WorktreeState, IntegrationState, WorktreeCommandState,
@@ -32,9 +31,4 @@
 //   - When adding a new pipeline segment that is not a Status enum value,
 //     consider whether it is genuinely a new Phase or just another value
 //     in PhaseStatus / Status before forking the vocabulary.
-//
-// Historical exceptions retained for backwards compatibility:
-//
-//   - RolloutState is an enum (would be RolloutStatus under the rule above)
-//     because removing the alias would break persisted YAML payloads.
 package model

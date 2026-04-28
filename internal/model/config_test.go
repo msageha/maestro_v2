@@ -96,62 +96,6 @@ func TestValidate_WorkerCountExceedsMax(t *testing.T) {
 	}
 }
 
-func TestValidate_WorkerPolicyHookImplementation(t *testing.T) {
-	// These three values are always accepted: empty (defaults to bash), bash,
-	// and shadow. `go` is gated behind PolicyHookGoEscapeHatchEnv until parity
-	// is reached, so it is exercised separately below.
-	for _, implementation := range []string{
-		"",
-		PolicyHookImplementationBash,
-		PolicyHookImplementationShadow,
-	} {
-		t.Run("valid_"+implementation, func(t *testing.T) {
-			cfg := validConfig()
-			cfg.Agents.Workers.PolicyHookImplementation = implementation
-			if err := cfg.Validate(); err != nil {
-				t.Fatalf("Validate() error = %v", err)
-			}
-		})
-	}
-
-	t.Run("go_rejected_without_escape_hatch", func(t *testing.T) {
-		t.Setenv(PolicyHookGoEscapeHatchEnv, "")
-		cfg := validConfig()
-		cfg.Agents.Workers.PolicyHookImplementation = PolicyHookImplementationGo
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error for go without escape hatch")
-		}
-		if !strings.Contains(err.Error(), "agents.workers.policy_hook_implementation") {
-			t.Fatalf("expected policy_hook_implementation in error, got: %v", err)
-		}
-		if !strings.Contains(err.Error(), PolicyHookGoEscapeHatchEnv) {
-			t.Fatalf("expected escape hatch env name in error, got: %v", err)
-		}
-	})
-
-	t.Run("go_accepted_with_escape_hatch", func(t *testing.T) {
-		t.Setenv(PolicyHookGoEscapeHatchEnv, "1")
-		cfg := validConfig()
-		cfg.Agents.Workers.PolicyHookImplementation = PolicyHookImplementationGo
-		if err := cfg.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v", err)
-		}
-	})
-
-	t.Run("invalid_value_rejected", func(t *testing.T) {
-		cfg := validConfig()
-		cfg.Agents.Workers.PolicyHookImplementation = "python"
-		err := cfg.Validate()
-		if err == nil {
-			t.Fatal("expected error for invalid policy hook implementation")
-		}
-		if !strings.Contains(err.Error(), "agents.workers.policy_hook_implementation") {
-			t.Fatalf("expected policy_hook_implementation in error, got: %v", err)
-		}
-	})
-}
-
 func TestValidate_NegativeRetryFields(t *testing.T) {
 	cfg := validConfig()
 	cfg.Retry.CommandDispatch = -1
@@ -361,24 +305,40 @@ func TestValidate_OrchestratorPlannerRejectsNonClaudeCodeRuntime(t *testing.T) {
 	}
 }
 
-// TestValidate_WorkersRejectNonClaudeCodeRuntime confirms that workers fail
-// closed on runtimes that cannot enforce Maestro's worker policy hooks.
-func TestValidate_WorkersRejectNonClaudeCodeRuntime(t *testing.T) {
-	models := []string{"codex", "gemini", "gemini-2.5-pro"}
-	for _, m := range models {
-		t.Run(m, func(t *testing.T) {
+// TestValidate_WorkersAcceptNonClaudeRuntime confirms codex / gemini are
+// accepted for the worker role. The validate_run_on_main pre-flight is the
+// cross-runtime safety net for destructive content; orchestrator and
+// planner remain claude-code only.
+func TestValidate_WorkersAcceptNonClaudeRuntime(t *testing.T) {
+	for _, m := range []string{"codex", "gemini-2.5-pro"} {
+		t.Run("worker_"+m, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Agents.Workers.DefaultModel = m
 			cfg.Agents.Workers.Models = map[string]string{"worker1": m}
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected worker model %q to be accepted, got: %v", m, err)
+			}
+		})
+	}
+
+	// Orchestrator / planner remain rejected: those roles operate on the
+	// project root and the validate_run_on_main pre-flight does not bound
+	// their blast radius.
+	for _, role := range []string{"orchestrator", "planner"} {
+		t.Run("role_"+role+"_still_rejected", func(t *testing.T) {
+			cfg := validConfig()
+			switch role {
+			case "orchestrator":
+				cfg.Agents.Orchestrator.Model = "codex"
+			case "planner":
+				cfg.Agents.Planner.Model = "codex"
+			}
 			err := cfg.Validate()
 			if err == nil {
-				t.Fatalf("expected workers to reject model %q", m)
+				t.Fatalf("expected %s rejection for non-claude runtime", role)
 			}
-			if !strings.Contains(err.Error(), "agents.workers.default_model") {
-				t.Errorf("expected default_model in error, got: %v", err)
-			}
-			if !strings.Contains(err.Error(), "agents.workers.models.worker1") {
-				t.Errorf("expected worker override in error, got: %v", err)
+			if !strings.Contains(err.Error(), "agents."+role+".model") {
+				t.Errorf("expected %s.model in error, got: %v", role, err)
 			}
 		})
 	}
@@ -409,25 +369,18 @@ func TestValidate_AdmissionControl_Defaults(t *testing.T) {
 	if v := ac.EffectiveMaxConcurrentRepair(); v != 1 {
 		t.Errorf("expected default repair=1, got %d", v)
 	}
-	if v := ac.EffectiveMaxConcurrentRollout(); v != 1 {
-		t.Errorf("expected default rollout=1, got %d", v)
-	}
 }
 
 func TestValidate_AdmissionControl_Configured(t *testing.T) {
 	ac := AdmissionControl{
-		MaxConcurrentVerify:  4,
-		MaxConcurrentRepair:  2,
-		MaxConcurrentRollout: 3,
+		MaxConcurrentVerify: 4,
+		MaxConcurrentRepair: 2,
 	}
 	if v := ac.EffectiveMaxConcurrentVerify(); v != 4 {
 		t.Errorf("expected verify=4, got %d", v)
 	}
 	if v := ac.EffectiveMaxConcurrentRepair(); v != 2 {
 		t.Errorf("expected repair=2, got %d", v)
-	}
-	if v := ac.EffectiveMaxConcurrentRollout(); v != 3 {
-		t.Errorf("expected rollout=3, got %d", v)
 	}
 }
 
@@ -446,11 +399,6 @@ func TestValidate_AdmissionControl_NegativeValues(t *testing.T) {
 			"negative repair",
 			func(c *Config) { c.AdmissionControl.MaxConcurrentRepair = -1 },
 			"admission_control.max_concurrent_repair",
-		},
-		{
-			"negative rollout",
-			func(c *Config) { c.AdmissionControl.MaxConcurrentRollout = -1 },
-			"admission_control.max_concurrent_rollout",
 		},
 	}
 	for _, tt := range tests {

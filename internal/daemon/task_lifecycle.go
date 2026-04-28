@@ -64,6 +64,55 @@ func (qh *QueueHandler) markTaskReady(task *model.Task) error {
 	}
 }
 
+// markTaskDispatched advances the command-state task entry into the
+// `dispatched` slot at the moment the queue lease is acquired, closing
+// the synchronization gap between queue.task.Status (in_progress) and
+// state.TaskStates[task] (which used to lag at `ready` until
+// markTaskRunning fired in applyTaskDispatchResult.onSuccess).
+//
+// Without this hop the result_write audit logs spurious
+// `invalid_state_transition from=ready to=completed` lines whenever the
+// dispatch attempt reaches the worker before markTaskRunning runs (or
+// fails entirely, in which case markTaskRunning never runs at all). The
+// state machine's BFS still routes ready → completed via the
+// intermediate states, so the prior behaviour was functionally correct
+// — the desync was just visible in the audit feed.
+//
+// Idempotent for already-dispatched / running / repair_pending entries
+// so callers can invoke it on every lease acquisition. Terminal entries
+// are left alone (the lease should never have been acquired in that
+// case; we log nothing here and rely on the caller's own guards).
+func (qh *QueueHandler) markTaskDispatched(task *model.Task) error {
+	if task == nil {
+		return nil
+	}
+	if qh == nil || qh.dependencyResolver == nil || !qh.dependencyResolver.HasStateReader() {
+		return nil
+	}
+	current, err := qh.dependencyResolver.GetStateManager().GetTaskState(task.CommandID, task.ID)
+	if err != nil {
+		if errors.Is(err, model.ErrTaskNotFound) || errors.Is(err, model.ErrStateNotFound) {
+			return nil
+		}
+		return fmt.Errorf("load task state for %s/%s: %w", task.CommandID, task.ID, err)
+	}
+	switch current {
+	case model.StatusPending:
+		return qh.advanceTaskLifecycle(task, model.StatusPlanned, model.StatusReady, model.StatusDispatched)
+	case model.StatusPlanned, model.StatusPausedForReplan, model.StatusPausedForHuman:
+		return qh.advanceTaskLifecycle(task, model.StatusReady, model.StatusDispatched)
+	case model.StatusReady:
+		return qh.advanceTaskLifecycle(task, model.StatusDispatched)
+	case model.StatusDispatched, model.StatusRunning, model.StatusRepairPending:
+		return nil
+	default:
+		if model.IsTerminal(current) {
+			return nil
+		}
+		return fmt.Errorf("task %s/%s is %s, cannot mark dispatched", task.CommandID, task.ID, current)
+	}
+}
+
 func (qh *QueueHandler) markTaskRunning(task *model.Task) error {
 	if task == nil {
 		return nil

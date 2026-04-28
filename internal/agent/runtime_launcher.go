@@ -15,13 +15,26 @@ type RuntimeDef struct {
 
 // RuntimeLaunchOptions contains optional parameters for building launch commands.
 type RuntimeLaunchOptions struct {
-	Model  string // Model name (e.g. "opus", "sonnet")
-	Prompt string // Ignored for claude-code; prompts are passed by buildLaunchArgs.
+	Model string // Model name (e.g. "opus", "sonnet", "gemini-2.5-pro")
+	// Prompt is the system / role prompt assembled by buildSystemPrompt.
+	// For claude-code this field is ignored: buildLaunchArgs feeds the
+	// prompt via --append-system-prompt / --system-prompt directly. For
+	// codex / gemini there is no equivalent system-prompt flag (verified
+	// against codex 0.125.0 and gemini-cli main; both treat first-class
+	// system instructions as a file-discovery feature, not a CLI flag),
+	// so the prompt is injected as the runtime's "initial interactive
+	// prompt" — `-i / --prompt-interactive` for gemini-cli and the
+	// positional [PROMPT] for codex. That makes it a user turn rather
+	// than a system turn, but it is still consumed by the agent as
+	// framing before the dispatcher pastes the first task envelope, so
+	// role guidance reaches the worker.
+	Prompt string
 }
 
 // RuntimeLauncher resolves the supported managed-agent runtime command.
-// Managed roles currently support claude-code only; non-claude runtimes are
-// rejected by config validation and again by Launch as defense in depth.
+// claude-code is the default; codex and gemini are registered as worker
+// runtimes (orchestrator / planner remain claude-code only — see
+// launchAlternativeRuntime).
 type RuntimeLauncher struct {
 	runtimes       map[string]RuntimeDef
 	defaultRuntime string
@@ -35,6 +48,41 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 	}
 	rl.runtimes[model.RuntimeClaudeCode] = RuntimeDef{
 		Command: "claude",
+	}
+	// codex (interactive REPL). `--dangerously-bypass-approvals-and-sandbox`
+	// is required for two reasons that came out of the 2026-04 audit:
+	//
+	//  1. The previous `--sandbox workspace-write` mode blocked Unix-socket
+	//     `connect(2)` to the daemon (.maestro/daemon.sock or its
+	//     /tmp/maestro-uds-<uid>/ fallback), so workers could edit files
+	//     but could never call `maestro result write` — the daemon never
+	//     received task completion and the command stalled forever. Per
+	//     codex's own docs, the sandbox blocks IPC to anything outside the
+	//     workspace allowlist.
+	//
+	//  2. The first-run "Do you trust the contents of this directory?"
+	//     trust prompt is gated by sandbox/approval mode and would
+	//     otherwise stop the worker pane on the very first launch. The
+	//     bypass flag short-circuits the trust check the same way it
+	//     short-circuits per-command approvals.
+	//
+	// codex has no .maestro/state read deny, no maestro-CLI escape-hatch
+	// deny, and no PreToolUse interception. The validate_run_on_main
+	// pre-flight is the cross-runtime safety net for destructive content.
+	rl.runtimes[model.RuntimeCodex] = RuntimeDef{
+		Command: "codex",
+		Args:    []string{"--dangerously-bypass-approvals-and-sandbox"},
+	}
+	// gemini (interactive REPL). `--yolo` (a.k.a. `--approval-mode yolo`)
+	// auto-approves every WriteFile/Edit/Shell tool call. Without it gemini
+	// pauses on every tool action waiting for an interactive Allow click,
+	// and the maestro worker pane has no human at the keyboard. gemini-cli
+	// has no equivalent of codex's bypass flag, so the validate_run_on_main
+	// pre-flight is the only cross-runtime safety net for destructive
+	// content.
+	rl.runtimes[model.RuntimeGemini] = RuntimeDef{
+		Command: "gemini",
+		Args:    []string{"--yolo"},
 	}
 	return rl
 }
@@ -58,11 +106,46 @@ func (rl *RuntimeLauncher) GetCommand(runtime string, opts RuntimeLaunchOptions)
 
 // buildRuntimeArgs constructs runtime-specific CLI arguments.
 // Each runtime may interpret model/prompt options differently.
+//
+// Claude-code: --model selects the model. The system prompt is NOT routed
+// through this helper; buildLaunchArgs handles --(append-)system-prompt
+// directly so we honour the role-specific base_prompt_mode.
+//
+// Codex: --model selects the model. The system prompt — when supplied —
+// becomes codex's positional [PROMPT], which the runtime treats as the
+// first user turn. Codex 0.125.0 has no --system-prompt / --instructions
+// equivalent, so dropping the prompt entirely (as the previous revision
+// did) silently lost role guidance for codex workers. The positional-
+// prompt fallback is the documented seed for interactive sessions.
+//
+// Gemini: --model selects the model. The system prompt — when supplied —
+// is passed via -i / --prompt-interactive, which seeds the interactive
+// REPL with the prompt while keeping the worker pane interactive. The
+// non-interactive --prompt / -p flag is intentionally NOT used because it
+// drives gemini in headless mode and exits immediately, which would tear
+// the worker pane down.
 func buildRuntimeArgs(runtime string, def RuntimeDef, opts RuntimeLaunchOptions) []string {
 	args := make([]string, len(def.Args))
 	copy(args, def.Args)
-	if runtime == model.RuntimeClaudeCode && opts.Model != "" {
-		args = append(args, "--model", opts.Model)
+	switch runtime {
+	case model.RuntimeClaudeCode:
+		if opts.Model != "" {
+			args = append(args, "--model", opts.Model)
+		}
+	case model.RuntimeCodex:
+		if opts.Model != "" {
+			args = append(args, "--model", opts.Model)
+		}
+		if opts.Prompt != "" {
+			args = append(args, opts.Prompt)
+		}
+	case model.RuntimeGemini:
+		if opts.Model != "" {
+			args = append(args, "--model", opts.Model)
+		}
+		if opts.Prompt != "" {
+			args = append(args, "--prompt-interactive", opts.Prompt)
+		}
 	}
 	return args
 }

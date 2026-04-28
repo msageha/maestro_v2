@@ -168,7 +168,18 @@ func classifyError(op, stderr string, err error) *Error {
 	case strings.Contains(lower, "session not found") ||
 		strings.Contains(lower, "can't find session") ||
 		strings.Contains(lower, "no such session") ||
-		strings.Contains(lower, "no sessions"):
+		strings.Contains(lower, "no sessions") ||
+		// "no current target" / "no current client" / "no current session"
+		// are emitted by tmux when a target-bearing command (kill-session,
+		// list-windows, etc.) is asked to operate on an implicit current
+		// target while no client is attached and no exact-match candidate
+		// exists. Treat them as "session-equivalent missing" so idempotent
+		// callers (KillSession, cleanup paths) succeed instead of bubbling
+		// up a misleading ErrKindCommand. See issue: tmux cleanup not
+		// idempotent when session is already gone.
+		strings.Contains(lower, "no current target") ||
+		strings.Contains(lower, "no current client") ||
+		strings.Contains(lower, "no current session"):
 		kind = ErrKindSession
 	case strings.Contains(lower, "can't find pane") ||
 		strings.Contains(lower, "no such pane") ||
@@ -198,8 +209,23 @@ func contextErrorKind(err error) ErrorKind {
 }
 
 // bufSeq generates unique buffer names to prevent race conditions when
-// multiple goroutines call SendTextAndSubmit concurrently.
+// multiple goroutines call SendTextAndSubmit concurrently within a single
+// process.
 var bufSeq atomic.Int64
+
+// bufNamePID is captured once at process start so every buffer name baked
+// in this process carries the PID of the daemon that owns the paste. tmux
+// buffers are scoped to the tmux server (NOT to the maestro process), so
+// two daemons sharing a tmux server would otherwise collide on
+// `maestro-msg-1`, `maestro-msg-2`, … and silently overwrite each other's
+// load-buffer payload before paste-buffer fires. The 2026-04 audit
+// reproduced this end-to-end: a gemini-formation Planner pasted the
+// codex-formation's command because the codex daemon's load-buffer landed
+// in the same tmux buffer slot just before gemini's paste-buffer ran.
+// PIDs are unique across all running processes on the same host, so the
+// per-PID prefix makes `maestro-msg-<pid>-<seq>` globally unique on the
+// shared tmux server.
+var bufNamePID = os.Getpid()
 
 // SendTextAndSubmit sends multi-line text to a pane using paste-buffer for
 // reliable delivery, then sends Enter to submit. This avoids character-by-character
@@ -209,7 +235,9 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 		return fmt.Errorf("message size %d exceeds maximum %d bytes", len(text), maxMessageSize)
 	}
 
-	bufName := fmt.Sprintf("maestro-msg-%d", bufSeq.Add(1))
+	// Buffer names MUST be globally unique on the tmux server. See
+	// bufNamePID for the PID-prefix rationale.
+	bufName := fmt.Sprintf("maestro-msg-%d-%d", bufNamePID, bufSeq.Add(1))
 
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
 	loadCtx, loadCancel := context.WithTimeout(ctx, defaultCmdTimeout)
@@ -607,10 +635,22 @@ func FindPaneByAgentID(agentID string) (string, error) {
 // The command text is sent in literal mode (-l) to prevent tmux from
 // interpreting special key sequences (e.g., C-a, M-x). Enter is sent
 // separately as a key press to submit the command.
+//
+// Each invocation emits a debug-log entry to tmux_debug.log including the
+// command and pane target. This is the canonical wire-level counter for
+// "how many times did the daemon push a command into a pane" — independent
+// of how the runtime renders the result in its transcript. The 2026-04-27
+// E2E run reported "/clear" appearing twice in Claude Code's pane
+// transcript per task transition; cross-checking SendCommand entries
+// against transcript occurrences is what distinguishes a true double-send
+// (one tmux call per visible "/clear" → bug) from a Claude Code rendering
+// quirk (one tmux call per task transition, two visible "/clear" lines
+// → cosmetic).
 func SendCommand(paneTarget, command string) error {
 	if len(command) > maxMessageSize {
 		return fmt.Errorf("command size %d exceeds maximum %d bytes", len(command), maxMessageSize)
 	}
+	debugLog("SendCommand pane=%s command=%q", paneTarget, command)
 	// Send command text literally (no special key interpretation).
 	if err := SendKeys(paneTarget, "-l", command); err != nil {
 		return err
@@ -700,7 +740,8 @@ func CreateSessionWithServerOptions(windowName string, serverOptions map[string]
 	debugLog("CreateSessionWithServerOptions session=%s window=%s options=%v",
 		GetSessionName(), windowName, serverOptions)
 
-	args := []string{"new-session", "-d", "-s", GetSessionName(), "-n", windowName}
+	args := make([]string, 0, 6+5*len(serverOptions))
+	args = append(args, "new-session", "-d", "-s", GetSessionName(), "-n", windowName)
 	for name, value := range serverOptions {
 		args = append(args, ";", "set-option", "-s", name, value)
 	}
@@ -827,10 +868,29 @@ func runCtx(ctx context.Context, args ...string) error {
 			return &Error{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
 		classified := classifyError(args[0], stderr, err)
-		debugLog("runCtx ERROR args=%v kind=%s stderr=%q", args, classified.Kind, stderr)
+		debugLog("runCtx %s args=%v kind=%s stderr=%q", debugLevelForErrorKind(classified.Kind), args, classified.Kind, stderr)
 		return classified
 	}
 	return nil
+}
+
+// debugLevelForErrorKind selects the prefix used by debugLog for a
+// classified tmux error. Idempotent-cleanup failures (no session, no
+// server) are the load-bearing case for `maestro up`'s pre-cleanup and
+// `maestro down`'s post-kill restore: callers explicitly handle these
+// via errors.Is(err, ErrTmuxSession/ErrTmuxServer) and continue. The
+// 2026-04-28 retest4 reader saw these in tmux_debug.log as "ERROR" and
+// questioned whether the cleanup succeeded; demoting to "DEBUG" matches
+// the actual severity. Genuine failures (timeout, IPC, command missing,
+// classified as Generic / Timeout / Cancelled / Conflict) still log as
+// ERROR so post-mortem analysis surfaces them.
+func debugLevelForErrorKind(kind ErrorKind) string {
+	switch kind {
+	case ErrKindSession, ErrKindServer:
+		return "DEBUG"
+	default:
+		return "ERROR"
+	}
 }
 
 // outputCtx executes a tmux command that returns output, with context support and error classification.

@@ -11,6 +11,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
@@ -283,6 +284,200 @@ func TestApplyTaskDispatchResult_Success(t *testing.T) {
 	}
 	if qh.scanExecutor.scanCounters.TasksDispatched != 1 {
 		t.Errorf("TasksDispatched = %d, want 1", qh.scanExecutor.scanCounters.TasksDispatched)
+	}
+}
+
+// TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning is
+// the regression guard for the 2026-04-27 single-worker E2E run. After a
+// long task1 (~70s) completed, task2 dispatch raised
+// ErrSubmitConfirmUncertain because the deliverer's 6-second probe
+// exhausted without seeing a Claude UI marker — even though the worker had
+// already received the prompt and was actively writing the task's expected
+// output to its worktree. The previous code released the lease on every
+// non-retryable failure, which let the next scan re-dispatch the same task
+// (epoch 2, then epoch 3) and corrupted the run: the worker's eventual
+// result_write hit FENCING_REJECT because the queue entry had bounced back
+// to "pending" during a lease_release window. The fix treats
+// ErrSubmitConfirmUncertain as an "assumed delivered" outcome on the task
+// path: lease retained, task remains in_progress, lease epoch unchanged,
+// markTaskRunning advances the extended state machine, and
+// TasksDispatchedUncertain (rather than TasksDispatched or LeaseReleases)
+// is incremented so operators can monitor probe false-negative rates
+// separately. If the worker really didn't receive (rare), the dispatch
+// lease TTL is the recovery boundary — hasExpiredLeases picks up
+// in_progress tasks past their TTL via the standard expired-lease path.
+func TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
+
+	maestroDir := testutil.SetupDirFixPerms(t)
+	cfg := model.Config{
+		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
+		Queue:   model.QueueConfig{PriorityAgingSec: 60},
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.clock = &fixedClock{now: now}
+	qh.scanExecutor.scanCounters = metrics.ScanCounters{}
+
+	owner := "worker1"
+	queueFile := "/fake/worker1.yaml"
+	taskQueues := map[string]*taskQueueEntry{
+		queueFile: {
+			Queue: model.TaskQueue{
+				Tasks: []model.Task{
+					{
+						ID:             "t1",
+						CommandID:      "cmd1",
+						Status:         model.StatusInProgress,
+						LeaseEpoch:     3,
+						LeaseOwner:     &owner,
+						LeaseExpiresAt: &expiresAt,
+					},
+				},
+			},
+		},
+	}
+	taskDirty := map[string]bool{}
+
+	dr := dispatchResult{
+		Item: dispatchItem{
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3,
+			ExpiresAt: expiresAt,
+		},
+		Success: false,
+		Error:   fmt.Errorf("dispatch wrapped: %w", agent.ErrSubmitConfirmUncertain),
+	}
+
+	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+
+	got := taskQueues[queueFile].Queue.Tasks[0]
+	if got.Status != model.StatusInProgress {
+		t.Errorf("task.Status = %s, want in_progress (uncertain dispatch must NOT bounce back to pending — would FENCING_REJECT the worker's eventual result_write)", got.Status)
+	}
+	if got.LeaseOwner == nil || *got.LeaseOwner != owner {
+		t.Errorf("task.LeaseOwner = %v, want %q (lease MUST be retained to suppress same-task re-dispatch on the next scan)", got.LeaseOwner, owner)
+	}
+	if got.LeaseExpiresAt == nil || *got.LeaseExpiresAt != expiresAt {
+		t.Errorf("task.LeaseExpiresAt = %v, want %q (lease TTL preserved so hasExpiredLeases recovery still triggers if the worker truly didn't receive)", got.LeaseExpiresAt, expiresAt)
+	}
+	if got.LeaseEpoch != 3 {
+		t.Errorf("task.LeaseEpoch = %d, want 3 unchanged", got.LeaseEpoch)
+	}
+	if !taskDirty[queueFile] {
+		t.Error("expected taskDirty[queueFile]=true so the assumed-running state persists across the scan flush")
+	}
+	if qh.scanExecutor.scanCounters.LeaseReleases != 0 {
+		t.Errorf("LeaseReleases = %d, want 0 (lease retained, not released)", qh.scanExecutor.scanCounters.LeaseReleases)
+	}
+	if qh.scanExecutor.scanCounters.TasksDispatched != 0 {
+		t.Errorf("TasksDispatched = %d, want 0 (assumed dispatches use the separate TasksDispatchedUncertain counter)", qh.scanExecutor.scanCounters.TasksDispatched)
+	}
+	if qh.scanExecutor.scanCounters.TasksDispatchedUncertain != 1 {
+		t.Errorf("TasksDispatchedUncertain = %d, want 1", qh.scanExecutor.scanCounters.TasksDispatchedUncertain)
+	}
+}
+
+// TestApplyTaskDispatchResult_PublishPending_PreservesRetryBudget pins down
+// the publish-pending timing-gate path. The planner can queue a
+// run_on_main verification task at the same time as the merge phase that
+// produces the build artefact; if the dispatcher reaches it before
+// integration → base publish completes, validateRunOnMainPublishGuard
+// returns ErrRunOnMainBeforePublish.
+//
+// Before the fix, the failure fell through to the generic dispatch-failure
+// branch: lease released and Attempts (incremented at lease-acquire time
+// in collectPendingTaskDispatches) retained. Each scan that hit the
+// publish guard burned one Attempt against retry.task_dispatch_attempts,
+// so a verification task that just needed to wait one or two scan cycles
+// for publish to complete could dead-letter spuriously.
+//
+// The fix releases the lease (so other tasks can dispatch) but rolls back
+// the Attempts increment so the retry budget is preserved. This matches
+// the documented semantics: ErrRunOnMainBeforePublish is a *timing gate*
+// that resolves naturally when publish completes, not a real failure.
+func TestApplyTaskDispatchResult_PublishPending_PreservesRetryBudget(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
+
+	maestroDir := testutil.SetupDirFixPerms(t)
+	cfg := model.Config{
+		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
+		Queue:   model.QueueConfig{PriorityAgingSec: 60},
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.clock = &fixedClock{now: now}
+	qh.scanExecutor.scanCounters = metrics.ScanCounters{}
+
+	owner := "worker1"
+	queueFile := "/fake/worker1.yaml"
+	// Attempts=2 simulates two prior dispatch waves that each hit the
+	// publish guard. The collect phase increments to 3 before this dispatch
+	// result is applied, so we record that pre-state to assert the rollback
+	// is correct.
+	const attemptsAfterCollect = 3
+	taskQueues := map[string]*taskQueueEntry{
+		queueFile: {
+			Queue: model.TaskQueue{
+				Tasks: []model.Task{
+					{
+						ID:             "t1",
+						CommandID:      "cmd1",
+						Status:         model.StatusInProgress,
+						LeaseEpoch:     3,
+						LeaseOwner:     &owner,
+						LeaseExpiresAt: &expiresAt,
+						RunOnMain:      true,
+						Attempts:       attemptsAfterCollect,
+					},
+				},
+			},
+		},
+	}
+	taskDirty := map[string]bool{}
+
+	dr := dispatchResult{
+		Item: dispatchItem{
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3,
+			ExpiresAt: expiresAt,
+		},
+		Success: false,
+		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrRunOnMainBeforePublish),
+	}
+
+	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+
+	got := taskQueues[queueFile].Queue.Tasks[0]
+	if got.Status == model.StatusFailed {
+		t.Errorf("task.Status = %s; publish-pending must NOT be terminal (publish completes naturally)", got.Status)
+	}
+	if got.LeaseOwner != nil {
+		t.Errorf("task.LeaseOwner = %v, want nil (lease must be released so other tasks can dispatch)", got.LeaseOwner)
+	}
+	if got.LeaseExpiresAt != nil {
+		t.Errorf("task.LeaseExpiresAt = %v, want nil after release", got.LeaseExpiresAt)
+	}
+	if got.Attempts != attemptsAfterCollect-1 {
+		t.Errorf("task.Attempts = %d, want %d (rollback of the lease-acquire increment so the retry budget is preserved)",
+			got.Attempts, attemptsAfterCollect-1)
+	}
+	if !taskDirty[queueFile] {
+		t.Error("expected taskDirty[queueFile]=true so the rollback persists across the scan flush")
+	}
+	if qh.scanExecutor.scanCounters.LeaseReleases != 1 {
+		t.Errorf("LeaseReleases = %d, want 1 (lease released, just no failure attribution)",
+			qh.scanExecutor.scanCounters.LeaseReleases)
+	}
+	if qh.scanExecutor.scanCounters.TasksDispatched != 0 {
+		t.Errorf("TasksDispatched = %d, want 0 (publish-pending is not a successful dispatch)",
+			qh.scanExecutor.scanCounters.TasksDispatched)
 	}
 }
 

@@ -463,6 +463,68 @@ func TestCollectWorktreePhaseMerges_ActiveTaskNotCompleted(t *testing.T) {
 	}
 }
 
+func TestCollectWorktreePhaseMerges_SuppressesCommitFailedWorkerUntilRecoveryCompletes(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusFailed)
+	markCommitFailedWorkerForTest(t, maestroDir, "cmd1", "worker1", "2026-01-01T00:10:00Z")
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {{
+			ID:        "t1",
+			CommandID: "cmd1",
+			Status:    model.StatusCompleted,
+			CreatedAt: "2026-01-01T00:00:00Z",
+			UpdatedAt: "2026-01-01T00:05:00Z",
+		}},
+	})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 0 {
+		t.Fatalf("expected no merge retry before recovery task completes, got %d: %+v", len(items), items)
+	}
+
+	tqs = makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{
+				ID:        "t1",
+				CommandID: "cmd1",
+				Status:    model.StatusCompleted,
+				CreatedAt: "2026-01-01T00:00:00Z",
+				UpdatedAt: "2026-01-01T00:05:00Z",
+			},
+			{
+				ID:        "t_recovery",
+				CommandID: "cmd1",
+				Status:    model.StatusCompleted,
+				CreatedAt: "2026-01-01T00:11:00Z",
+				UpdatedAt: "2026-01-01T00:11:30Z",
+			},
+		},
+	})
+
+	items = qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected merge retry after recovery task completes, got %d: %+v", len(items), items)
+	}
+	if got := items[0].WorkerIDs; len(got) != 1 || got[0] != "worker1" {
+		t.Fatalf("WorkerIDs = %v, want [worker1]", got)
+	}
+}
+
 // TestCollectWorktreePhaseMerges_FailedPhaseNotMerged verifies that a failed
 // phase is never collected for merging even if its status is not "completed".
 func TestCollectWorktreePhaseMerges_FailedPhaseNotMerged(t *testing.T) {

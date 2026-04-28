@@ -376,7 +376,17 @@ func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
 		t.Fatal("expected error for nonexistent ref, got nil")
 	}
 
-	if elapsed > 300*time.Millisecond {
-		t.Errorf("gitOutputWithRetry took %v, expected fast return for permanent error", elapsed)
+	// The retry policy backs off via gitOutputBackoff, which on attempt #2
+	// alone sleeps gitOutputBackoffBase (default 200ms). A clean
+	// no-retry path runs git exactly once, so even a worst-case loaded
+	// CI runner finishes in well under one full retry cycle (200ms +
+	// process spawn). 1.5s leaves ample headroom for parallel git tests
+	// while still detecting an extra retry: a single retry would burn
+	// ≥ 200ms backoff plus another git exec, pushing total runtime past
+	// the bound only when a regression actually re-enters the loop.
+	// Earlier 300ms cap intermittently failed under parallel git load on
+	// macOS — see retest8 flaky failure report.
+	if elapsed > 1500*time.Millisecond {
+		t.Errorf("gitOutputWithRetry took %v, expected fast return for permanent error (no retry)", elapsed)
 	}
 }

@@ -30,6 +30,11 @@ func bridgeTestConfig() model.Config {
 		Limits: model.LimitsConfig{
 			MaxPendingTasksPerWorker: 10,
 		},
+		// Match production template default (worktree.enabled=true). The
+		// 2026-04-28 fix to shouldInsertSystemCommit injects __system_commit
+		// whenever worktree mode is off, so leaving the zero value here would
+		// silently grow every plan in this package by an extra task.
+		Worktree: model.WorktreeConfig{Enabled: true},
 	}
 }
 

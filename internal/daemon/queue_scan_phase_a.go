@@ -30,6 +30,7 @@ func (qh *QueueHandler) executePhaseASteps(s *scanState) {
 	qh.stepWorktreeFastTrackCleanup(s)
 	qh.stepWorktreeOrphanCleanup(s)
 	qh.stepWorktreeStallDetection(s)
+	qh.stepResolvingWorkerStallDetection(s)
 	qh.stepCheckWorktreeConfigViolations(s)
 	qh.stepPlannerSignals(s)
 	qh.stepPreemptiveRenewal(s)

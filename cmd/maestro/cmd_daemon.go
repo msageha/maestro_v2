@@ -133,11 +133,11 @@ func runDaemon(args []string) error {
 
 func writeVerifyStatusWarning(maestroDir string) error {
 	stateDir := filepath.Join(maestroDir, "state")
-	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
 		return err
 	}
 	data := []byte("schema_version: 1\nfile_type: verify_status\nmode: skipped\nreason: verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1\n")
-	return os.WriteFile(filepath.Join(stateDir, "verify_status.yaml"), data, 0o644)
+	return os.WriteFile(filepath.Join(stateDir, "verify_status.yaml"), data, 0o600)
 }
 
 func clearVerifyStatusWarning(maestroDir string) error {

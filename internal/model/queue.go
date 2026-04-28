@@ -110,7 +110,7 @@ type Task struct {
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
 	// OperationType classifies the task for §S0-1 admission control. Permitted
-	// values are OperationTypeVerify / Repair / Rollout, or empty for normal
+	// values are OperationTypeVerify / Repair, or empty for normal
 	// (unconstrained) tasks. Classification is deterministic and explicit:
 	// when this field is empty the admission controller treats the task as
 	// OpUnknown (i.e. unconstrained), regardless of any keywords that happen
@@ -120,7 +120,7 @@ type Task struct {
 	// admission-controlled bucket — the contract is locked in by
 	// internal/daemon/admission/controller_test.go::TestClassifyTask_PurposeIgnored.
 	// Planner / retry handler should therefore populate this field explicitly
-	// for verify / repair / rollout tasks.
+	// for verify / repair tasks.
 	OperationType string `yaml:"operation_type,omitempty" json:"operation_type,omitempty"`
 }
 
@@ -128,9 +128,8 @@ type Task struct {
 // the admission Controller's OpType.String() output so YAML round-trips and
 // classifier lookups stay consistent.
 const (
-	OperationTypeVerify  = "verify"
-	OperationTypeRepair  = "repair"
-	OperationTypeRollout = "rollout"
+	OperationTypeVerify = "verify"
+	OperationTypeRepair = "repair"
 )
 
 // GetDoneConditions は完了条件を返す。

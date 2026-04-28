@@ -515,6 +515,27 @@ func (wm *Manager) GetCommandState(commandID string) (*model.WorktreeCommandStat
 	return wm.loadState(commandID)
 }
 
+// GetIntegrationStatus returns the lifecycle status of the integration
+// branch for commandID. Returns os.ErrNotExist when no worktree state file
+// exists (legacy / non-worktree mode).
+//
+// This method exists so that the dispatcher can pre-flight RunOnMain tasks
+// and reject the dispatch when integration has not yet been published into
+// base. Callers must treat os.ErrNotExist as "no enforcement applies",
+// because worktree-disabled commands intentionally have no state file.
+func (wm *Manager) GetIntegrationStatus(commandID string) (model.IntegrationStatus, error) {
+	if err := validateIDs(commandID); err != nil {
+		return "", err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return "", err
+	}
+	return state.Integration.Status, nil
+}
+
 // HasWorktrees checks if worktrees exist for a given command.
 func (wm *Manager) HasWorktrees(commandID string) bool {
 	if err := validateIDs(commandID); err != nil {

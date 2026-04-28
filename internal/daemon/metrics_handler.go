@@ -73,5 +73,9 @@ func atomicWriteText(path string, content string) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
-	return os.Rename(tmpName, path)
+	// tmpName and path both live under the controlled maestroDir layout
+	// (CreateTemp keyed by Dir(path)). gosec G703 (path traversal via
+	// taint) cannot apply here because no user-controlled fragment is
+	// concatenated into either path.
+	return os.Rename(tmpName, path) //nolint:gosec // both paths are derived from a controlled maestroDir
 }

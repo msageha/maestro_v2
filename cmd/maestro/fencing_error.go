@@ -97,7 +97,10 @@ func emitFencingStderrEnvelope(resp *uds.Response, w io.Writer) bool {
 	if w == nil {
 		w = os.Stderr
 	}
-	fmt.Fprintln(w, string(out))
+	// Diagnostic output to a TTY/log writer; failure to write is not a
+	// recoverable error (the original CLI error is still propagated by the
+	// caller), but ignoring the return tripped errcheck.
+	_, _ = fmt.Fprintln(w, string(out))
 	return true
 }
 

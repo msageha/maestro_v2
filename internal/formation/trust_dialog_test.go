@@ -93,6 +93,26 @@ func TestStartupDialogKeys_ManagedRoleWithoutKnownDialogSendsNothing(t *testing.
 	}
 }
 
+func TestStartupDialogKeys_ReadyPromptSuppressesStaleDialogScrollback(t *testing.T) {
+	t.Parallel()
+	content := `
+  WARNING: Claude Code running in
+  Bypass Permissions mode
+
+  ╭─── Claude Code v2.1.96 ─╮
+  │ Welcome back mzk!       │
+  ╰─────────────────────────╯
+  ❯
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+`
+	if got := startupDialogKeys("worker", content); got != nil {
+		t.Fatalf("startupDialogKeys() = %#v, want nil once prompt is ready", got)
+	}
+	if startupDialogVisible(content) {
+		t.Fatal("startupDialogVisible() = true, want false once prompt is ready")
+	}
+}
+
 func TestStartupDialogKeys_WorkerTrustDialogEnterOnly(t *testing.T) {
 	t.Parallel()
 	content := `Is this a project you created or one you trust?`

@@ -31,7 +31,8 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 
 // Dispatcher handles priority sorting, agent_executor dispatch, quality gate
 // evaluation, worktree path resolution, and event publication.
-// mu protects eventBus, qualityGate, worktreeManager, gateEvaluator.
+// mu protects eventBus, qualityGate, worktreeManager, gateEvaluator,
+// taskAliveChecker.
 type Dispatcher struct {
 	maestroDir   string
 	config       model.Config
@@ -42,10 +43,11 @@ type Dispatcher struct {
 	execProvider ExecutorGetter
 	mu           sync.RWMutex
 
-	eventBus        *events.Bus
-	qualityGate     GateChecker
-	gateEvaluator   PreTaskGateEvaluator
-	worktreeManager WorktreeResolver
+	eventBus         *events.Bus
+	qualityGate      GateChecker
+	gateEvaluator    PreTaskGateEvaluator
+	worktreeManager  WorktreeResolver
+	taskAliveChecker TaskAliveChecker
 }
 
 // New creates a new Dispatcher.
@@ -83,6 +85,22 @@ func (disp *Dispatcher) SetWorktreeManager(wm WorktreeResolver) {
 	disp.mu.Lock()
 	defer disp.mu.Unlock()
 	disp.worktreeManager = wm
+}
+
+// SetTaskAliveChecker wires the queue-state probe the inline retry loop
+// consults before each retry attempt. Late-bound from daemon startup
+// because the QueueHandler that backs the checker is created after the
+// dispatcher.
+func (disp *Dispatcher) SetTaskAliveChecker(c TaskAliveChecker) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.taskAliveChecker = c
+}
+
+func (disp *Dispatcher) getTaskAliveChecker() TaskAliveChecker {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.taskAliveChecker
 }
 
 // getEventBus returns the event bus with proper synchronization.
@@ -235,6 +253,19 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		return err
 	}
 
+	// run_on_main timing guard: reject RunOnMain dispatches that arrive
+	// before the integration branch has been published into base. The
+	// planner sometimes queues main-branch verification alongside the merge
+	// phase that produces the artefact; without this gate the worker reads
+	// stale main and fails for no actionable reason. Skips silently for
+	// worktree-disabled daemons (resolver == nil).
+	if err := validateRunOnMainPublishGuard(task, disp.getWorktreeManager()); err != nil {
+		disp.dl.Logf(core.LogLevelError,
+			"dispatch_task_run_on_main_before_publish id=%s worker=%s command=%s error=%v",
+			task.ID, workerID, task.CommandID, err)
+		return err
+	}
+
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
 		return err
 	}
@@ -277,12 +308,35 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 	retryDelay := time.Duration(disp.config.Retry.EffectiveTaskDispatchInlineRetryDelaySec()) * time.Second
 
 	var lastErr error
+	checker := disp.getTaskAliveChecker()
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
+			// Before sleeping for the backoff, short-circuit if the queue
+			// entry is no longer this dispatcher's to drive: a worker that
+			// completed in parallel, a fencing-bumped lease epoch, or a
+			// queue entry that was removed entirely all mean further
+			// paste-Enter waves would corrupt state. checker == nil
+			// preserves legacy behaviour for tests that don't wire one.
+			if checker != nil && !checker.IsDispatchActive(workerID, task.ID, task.LeaseEpoch) {
+				disp.dl.Logf(core.LogLevelInfo,
+					"task_dispatch_retry_aborted_terminal id=%s worker=%s attempt=%d/%d "+
+						"(queue entry no longer in_progress at expected lease epoch — worker likely finished or was preempted)",
+					task.ID, workerID, attempt, maxRetries+1)
+				return lastErr
+			}
 			disp.dl.Logf(core.LogLevelInfo, "task_dispatch_inline_retry attempt=%d/%d id=%s worker=%s error=%v",
 				attempt+1, maxRetries+1, task.ID, workerID, lastErr)
 			if err := sleepWithContext(ctx, retryDelay); err != nil {
 				return ctx.Err()
+			}
+			// Re-check after the sleep: a worker can complete during the
+			// backoff window itself, especially when retryDelay has grown
+			// to maxBackoffDuration.
+			if checker != nil && !checker.IsDispatchActive(workerID, task.ID, task.LeaseEpoch) {
+				disp.dl.Logf(core.LogLevelInfo,
+					"task_dispatch_retry_aborted_terminal_post_sleep id=%s worker=%s attempt=%d/%d",
+					task.ID, workerID, attempt, maxRetries+1)
+				return lastErr
 			}
 			retryDelay = retryDelay * 2 // exponential backoff
 			if retryDelay > maxBackoffDuration {

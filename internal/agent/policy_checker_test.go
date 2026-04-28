@@ -64,60 +64,6 @@ func TestPolicyChecker_WriteHookScript_Idempotent(t *testing.T) {
 	}
 }
 
-func TestPolicyChecker_WriteHookScriptWithOptions_ShadowMode(t *testing.T) {
-	dir := t.TempDir()
-	pc := NewPolicyChecker(dir)
-
-	path, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
-		Implementation: policyHookImplementationShadow,
-		MaestroBinary:  "/tmp/maestro-test",
-	})
-	if err != nil {
-		t.Fatalf("WriteHookScriptWithOptions failed: %v", err)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read hook script: %v", err)
-	}
-	script := string(content)
-	if !strings.Contains(script, "MAESTRO_POLICY_SHADOW:-1") {
-		t.Error("shadow mode should enable shadow comparison by default")
-	}
-	if !strings.Contains(script, "default_policy_bin='/tmp/maestro-test'") {
-		t.Error("shadow mode should embed the selected maestro binary")
-	}
-	if !strings.Contains(script, "maestro_policy_shadow_divergence") {
-		t.Error("shadow mode should log divergences")
-	}
-}
-
-func TestPolicyChecker_WriteHookScriptWithOptions_GoWrapper(t *testing.T) {
-	dir := t.TempDir()
-	pc := NewPolicyChecker(dir)
-
-	path, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
-		Implementation: policyHookImplementationGo,
-		MaestroBinary:  "/tmp/maestro-test",
-	})
-	if err != nil {
-		t.Fatalf("WriteHookScriptWithOptions failed: %v", err)
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read hook script: %v", err)
-	}
-	script := string(content)
-	if !strings.Contains(script, "args=(\"hook\" \"policy-check\"") {
-		t.Error("go wrapper should delegate to maestro hook policy-check")
-	}
-	if strings.Contains(script, "Blocked command containing backtick") {
-		t.Error("go wrapper should not contain legacy bash policy rules")
-	}
-	if !strings.Contains(script, "Policy hook Go checker failed. Denying for safety.") {
-		t.Error("go wrapper should fail closed if the checker cannot run")
-	}
-}
-
 func TestPolicyChecker_HookSettings_ValidJSON(t *testing.T) {
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)

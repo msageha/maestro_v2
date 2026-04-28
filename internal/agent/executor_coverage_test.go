@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -269,6 +270,128 @@ func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 	}
 }
 
+// TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady pins the 2026-04-28
+// (round 2) follow-up to the Stop hook posix_spawn '/bin/sh' ENOENT
+// regression. The first fix added a stale-cwd probe to ensureWorkingDir,
+// but that only fires at the next dispatch — claude-code's Stop hook can
+// run between turns, while the worktree dir is being removed. Phase B
+// now invokes RespawnPaneToProjectRoot before each `git worktree
+// remove`, so the pane lands in the project root (a guaranteed-stable
+// directory) before the cleanup's rm hits its old cwd.
+//
+// The pane is respawned, the @cwd label is reset (so the next
+// ensureWorkingDir call is forced into a fresh respawn for the new
+// task's worktree), and clear_ready is reset (paste-buffer mutex needs a
+// re-acknowledged ready prompt before /clear runs again).
+func TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.userVars["cwd"] = "/project/.maestro/worktrees/cmd_X/worker1"
+	mock.userVars["clear_ready"] = "1"
+	exec, buf := newCovExecutor(mock)
+	exec.maestroDir = "/project/.maestro"
+
+	if err := exec.RespawnPaneToProjectRoot("worker1"); err != nil {
+		t.Fatalf("RespawnPaneToProjectRoot: %v", err)
+	}
+
+	wantTarget := "RespawnPane:/project"
+	foundRespawn := false
+	for _, call := range mock.calls {
+		if call == wantTarget {
+			foundRespawn = true
+		}
+	}
+	if !foundRespawn {
+		t.Errorf("expected %q, calls=%v", wantTarget, mock.calls)
+	}
+	if mock.userVars["cwd"] != "" {
+		t.Errorf("cwd not reset, got %q", mock.userVars["cwd"])
+	}
+	if mock.userVars["clear_ready"] != "" {
+		t.Errorf("clear_ready not reset, got %q", mock.userVars["clear_ready"])
+	}
+	if !strings.Contains(buf.String(), "respawn_to_project_root") {
+		t.Errorf("expected respawn_to_project_root info log, got: %s", buf.String())
+	}
+	// 2026-04-28 retest2: respawn must mark the pane as "evicted" so
+	// status.go does not flip the worker to "dead" while it sits in
+	// shell waiting for the next dispatch.
+	if got := mock.userVars["agent_state"]; got != "evicted" {
+		t.Errorf("agent_state = %q, want \"evicted\"", got)
+	}
+}
+
+// TestRespawnPaneToProjectRoot_PaneNotFoundIsNoOp pins fail-open behaviour
+// for the case where the worker has no live pane (claude never started,
+// or the pane was already torn down). Phase B should be free to call
+// this for every worker associated with the command without worrying
+// about whether each pane actually exists.
+func TestRespawnPaneToProjectRoot_PaneNotFoundIsNoOp(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.findPaneErr = fmt.Errorf("pane not found")
+	exec, _ := newCovExecutor(mock)
+	exec.maestroDir = "/project/.maestro"
+
+	if err := exec.RespawnPaneToProjectRoot("worker1"); err != nil {
+		t.Fatalf("expected no error when pane missing, got: %v", err)
+	}
+	for _, call := range mock.calls {
+		if strings.HasPrefix(call, "RespawnPane:") {
+			t.Errorf("expected no respawn when pane is missing, got: %v", mock.calls)
+		}
+	}
+}
+
+// TestEnsureWorkingDir_StaleCwdForcesRespawn pins the 2026-04-28 fix for the
+// "Stop hook posix_spawn ENOENT '/bin/sh'" warning seen in the E2E run.
+// The Phase B publish/cleanup pipeline removes a worktree directory shortly
+// after a Worker reports completion, which leaves the pane's tracked @cwd
+// pointing at a deleted path. When claude-code's Stop hook then tries to
+// spawn /bin/sh from that pane, node.js reports the chdir failure as an
+// ENOENT on the binary itself. ensureWorkingDir now stat's the tracked cwd
+// even when the requested path matches, and forces a respawn when the
+// directory is missing so the pane lands somewhere real before the next
+// dispatch.
+func TestEnsureWorkingDir_StaleCwdForcesRespawn(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.userVars["cwd"] = "/project/worktree-deleted"
+	// Provide the responses RespawnAndRelaunch needs — same shape as
+	// TestEnsureWorkingDir_RespawnAndRelaunch — so the respawn path runs
+	// to completion when the stale-cwd branch fires.
+	mock.getCmdSeq = []mockResp{{val: "bash"}}
+	mock.isShellSeq = []bool{true}
+	mock.capturePaneSeq = []mockResp{{val: "output\n ❯ \n"}}
+	exec, buf := newCovExecutor(mock)
+	// Override the default test stub (which always reports "exists") so the
+	// tracked cwd looks deleted from disk while the requested cwd is still
+	// the same string.
+	exec.processManager.dirExists = func(string) bool { return false }
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	err := exec.processManager.ensureWorkingDir(ctx, "%0", "/project/worktree-deleted")
+	if err != nil {
+		t.Fatalf("expected stale-cwd respawn to succeed, got: %v", err)
+	}
+
+	foundRespawn := false
+	for _, call := range mock.calls {
+		if call == "RespawnPane:/project/worktree-deleted" {
+			foundRespawn = true
+		}
+	}
+	if !foundRespawn {
+		t.Errorf("expected RespawnPane to fire even though tracked cwd matches workingDir, calls: %v", mock.calls)
+	}
+	if !strings.Contains(buf.String(), "working_dir_stale_cwd_respawn") {
+		t.Errorf("expected stale-cwd info log, got buffer: %s", buf.String())
+	}
+}
+
 // === M3: clearAndConfirm retry tests ===
 
 func TestClearAndConfirm_SendCommandFailsAllAttempts(t *testing.T) {
@@ -360,22 +483,87 @@ func TestClearAndConfirm_SuccessOnFirstAttempt(t *testing.T) {
 	}
 }
 
-func TestClearAndConfirm_SendKeysFailsRetries(t *testing.T) {
+// TestClearAndConfirm_SendsClearExactlyOncePerAttempt is the regression
+// guard for the 2026-04-27 doubled-/clear bug. clearAndConfirm used to
+// follow SendCommand("/clear") with a second SendKeys("Enter") to handle a
+// completion-prompt UX that older Claude Code releases displayed for slash
+// commands. Claude Code 2.x executes /clear immediately on the first Enter
+// and treats the trailing Enter as "re-run last command", so the worker
+// pane logged TWO /clear executions on every task transition. The fix
+// removes the second Enter unconditionally; this test pins that contract by
+// asserting that SendCommand("/clear") is the only call recorded against
+// the mock when the post-clear poller confirms processing on the first
+// attempt — no SendKeys with bare "Enter" should appear.
+func TestClearAndConfirm_SendsClearExactlyOncePerAttempt(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
-	// SendCommand succeeds, but SendKeys (second Enter) fails
-	mock.sendKeysErr = fmt.Errorf("sendkeys error")
+	// Pre-clear capture differs from post-clear capture so the poller's
+	// hash-changed criterion is satisfied on the first poll, then the
+	// second poll returns identical content for stability.
+	mock.captureJoinedSeq = []mockResp{
+		{val: "before-clear"}, // pre-clear snapshot
+		{val: "❯ \n"},         // poll 1: /clear text gone, hash changed
+		{val: "❯ \n"},         // poll 2: stable → confirmed
+	}
 
 	exec, _ := newCovExecutor(mock)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := exec.clearAndConfirm(ctx, "%0")
-	if err == nil {
-		t.Fatal("expected error when SendKeys fails")
+	if err := exec.clearAndConfirm(ctx, "%0"); err != nil {
+		t.Fatalf("expected success, got: %v", err)
 	}
-	if !errors.Is(err, ErrSecondEnterFailed) {
-		t.Errorf("unexpected error: %v", err)
+
+	if got := len(mock.sentCmds); got != 1 || mock.sentCmds[0] != "/clear" {
+		t.Fatalf("expected exactly one SendCommand(\"/clear\") call, got %v", mock.sentCmds)
+	}
+	for _, call := range mock.calls {
+		if call == "SendKeys:Enter" {
+			t.Fatalf("clearAndConfirm must not send a bare Enter after /clear (would re-run /clear in Claude Code 2.x), calls=%v", mock.calls)
+		}
+	}
+}
+
+// TestClearAndConfirm_LogsExactlyOneSendInvocationOnSuccess pins the
+// observability contract added during the 2026-04-27 doubled-/clear pane
+// investigation. The pane transcript shows "/clear" twice per task
+// transition; to distinguish a true double-send from a Claude Code
+// rendering quirk, clearAndConfirm emits a `clear_send_invocation` INFO
+// log immediately before each underlying SendCommand("/clear"). Operators
+// grep this token in agent_executor.log: one entry per visible "/clear" in
+// the pane → real bug, one entry per task transition (with two visible
+// "/clear" lines) → cosmetic. This test guards both directions:
+//
+//  1. Exactly one `clear_send_invocation` line per attempt on the success
+//     path (no off-by-one or accidental loop multiplier),
+//  2. Exactly one `clear_send_done` line on the success path (we don't
+//     accidentally emit the begin/done pair twice).
+func TestClearAndConfirm_LogsExactlyOneSendInvocationOnSuccess(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.captureJoinedSeq = []mockResp{
+		{val: "before-clear"},
+		{val: "❯ \n"},
+		{val: "❯ \n"},
+	}
+
+	exec, buf := newCovExecutor(mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := exec.clearAndConfirm(ctx, "%0"); err != nil {
+		t.Fatalf("expected success, got: %v", err)
+	}
+
+	logs := buf.String()
+	if got := strings.Count(logs, "clear_send_invocation"); got != 1 {
+		t.Fatalf("expected exactly one clear_send_invocation log on success, got %d. Full log:\n%s", got, logs)
+	}
+	if got := strings.Count(logs, "clear_send_done"); got != 1 {
+		t.Fatalf("expected exactly one clear_send_done log on success, got %d. Full log:\n%s", got, logs)
+	}
+	if got := strings.Count(logs, "clear_send_begin"); got != 1 {
+		t.Fatalf("expected exactly one clear_send_begin log per call, got %d. Full log:\n%s", got, logs)
 	}
 }
 

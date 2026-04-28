@@ -224,6 +224,30 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return nil
 	}
 
+	// Conflict / partial_merge gate: while a worker is in Conflict or
+	// Resolving status, the resume-merge pipeline owns the integration
+	// branch. Re-entering Phase B's MergeToIntegration with the *remaining*
+	// (non-conflict) workers can:
+	//
+	//   - Re-attempt phase merges that already succeeded once (the conflict
+	//     blocked MarkPhaseMerged so the phase is still collected on every
+	//     scan), pinning each fresh merge_conflict signal to the *first*
+	//     unmerged phase rather than the phase the worker belongs to.
+	//   - Re-emit duplicate merge_conflict signals after the previous one was
+	//     delivered and dropped, because Phase C upserts against the in-memory
+	//     queue only.
+	//
+	// AutoRecover / ResumeMerge / AutoRecoverAfterResolution are still able
+	// to drive recovery through wm.signalStore + tryMergeWorker — Phase B's
+	// general auto-merge collector is the wrong path while the integration
+	// is in a recovery state, so we step out and let the resolver pipeline
+	// run uncontested.
+	if (cmdState.Integration.Status == model.IntegrationStatusConflict ||
+		cmdState.Integration.Status == model.IntegrationStatusPartialMerge) &&
+		hasConflictOrResolvingWorker(cmdState.Workers) {
+		return nil
+	}
+
 	// Build workerID → task purpose map from task queues
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
 	workerExpectedPaths := buildWorkerExpectedPaths(commandID, taskQueues)
@@ -245,6 +269,7 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 	// `resolving → committed` transition guard, records a `commit_failed`
 	// signal, and blocks publishing even after the resolution task succeeded.
 	workerIDs := eligibleWorkerIDsForAutoCommit(cmdState.Workers)
+	workerIDs = qh.filterWorkersAwaitingCommitRecovery(commandID, workerIDs, cmdState, taskQueues)
 	if len(workerIDs) == 0 {
 		return nil
 	}
@@ -602,6 +627,7 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	// See eligibleWorkerIDsForAutoCommit — Conflict/Resolving workers are owned
 	// by ResumeMerge and must not be auto-committed here.
 	workerIDs := eligibleWorkerIDsForAutoCommit(cmdState.Workers)
+	workerIDs = qh.filterWorkersAwaitingCommitRecovery(commandID, workerIDs, cmdState, taskQueues)
 	if len(workerIDs) == 0 {
 		return nil
 	}
@@ -613,6 +639,19 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 		WorkerPurposes:      workerPurposes,
 		WorkerExpectedPaths: buildWorkerExpectedPaths(commandID, taskQueues),
 	}}
+}
+
+// hasConflictOrResolvingWorker reports whether any worker in workers is in
+// Conflict or Resolving status — i.e., the resume-merge pipeline currently
+// owns the integration branch and Phase B's auto-commit + merge collector
+// must yield to avoid duplicate merge attempts and stale-phase signal pinning.
+func hasConflictOrResolvingWorker(workers []model.WorktreeState) bool {
+	for _, ws := range workers {
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			return true
+		}
+	}
+	return false
 }
 
 // eligibleWorkerIDsForAutoCommit returns the worker IDs that Phase B's
@@ -633,4 +672,78 @@ func eligibleWorkerIDsForAutoCommit(workers []model.WorktreeState) []string {
 		ids = append(ids, ws.WorkerID)
 	}
 	return ids
+}
+
+// filterWorkersAwaitingCommitRecovery suppresses duplicate commit_failed
+// signals while a planner-driven recovery task is still pending.
+//
+// A commit policy failure leaves the worker's dirty worktree intact and records
+// the worker in CommitFailedWorkers. Without this gate, every scan retries the
+// same failed commit, removes the successfully delivered signal, then re-emits
+// an identical commit_failed signal on the next scan. Once the Planner adds a
+// recovery task and that task completes after the marker timestamp, the worker
+// becomes eligible for one fresh auto-commit attempt.
+func (qh *QueueHandler) filterWorkersAwaitingCommitRecovery(
+	commandID string,
+	workerIDs []string,
+	cmdState *model.WorktreeCommandState,
+	taskQueues map[string]*taskQueueEntry,
+) []string {
+	if cmdState == nil || len(cmdState.CommitFailedWorkers) == 0 || len(workerIDs) == 0 {
+		return workerIDs
+	}
+	markerTime, err := time.Parse(time.RFC3339, cmdState.UpdatedAt)
+	if err != nil {
+		// If the marker timestamp is corrupt, keep the old fail-open behavior:
+		// retrying is preferable to permanently stalling a command.
+		return workerIDs
+	}
+	failed := make(map[string]struct{}, len(cmdState.CommitFailedWorkers))
+	for _, workerID := range cmdState.CommitFailedWorkers {
+		failed[workerID] = struct{}{}
+	}
+	filtered := make([]string, 0, len(workerIDs))
+	for _, workerID := range workerIDs {
+		if _, isCommitFailed := failed[workerID]; !isCommitFailed {
+			filtered = append(filtered, workerID)
+			continue
+		}
+		if qh.workerHasCompletedTaskAfter(commandID, workerID, markerTime, taskQueues) {
+			filtered = append(filtered, workerID)
+			continue
+		}
+		qh.log(LogLevelDebug,
+			"worktree_commit_retry_suppressed command=%s worker=%s reason=awaiting_commit_recovery",
+			commandID, workerID)
+	}
+	return filtered
+}
+
+func (qh *QueueHandler) workerHasCompletedTaskAfter(
+	commandID, workerID string,
+	after time.Time,
+	taskQueues map[string]*taskQueueEntry,
+) bool {
+	for queueFile, tqEntry := range taskQueues {
+		if strings.TrimSuffix(filepath.Base(queueFile), ".yaml") != workerID {
+			continue
+		}
+		for _, task := range tqEntry.Queue.Tasks {
+			if task.CommandID != commandID || task.Status != model.StatusCompleted {
+				continue
+			}
+			ts := task.UpdatedAt
+			if ts == "" {
+				ts = task.CreatedAt
+			}
+			completedAt, err := time.Parse(time.RFC3339, ts)
+			if err != nil {
+				continue
+			}
+			if completedAt.After(after) {
+				return true
+			}
+		}
+	}
+	return false
 }

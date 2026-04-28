@@ -9,6 +9,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
+// QueueWriteParams is the decoded body of a queue-write UDS request.
+// One struct covers all four queue targets (command / task /
+// notification / cancel-request); fields not relevant to the active
+// target are zero-valued and ignored by the dispatch func.
 type QueueWriteParams struct {
 	Target             string                   `json:"target"`
 	Type               string                   `json:"type"`
@@ -36,8 +40,12 @@ type QueueWriteParams struct {
 	SystemCaller       string                   `json:"system_caller,omitempty"`
 }
 
+// QueueWriteFunc is the per-target backend a QueueWrite handler routes
+// to once role and parameters have been validated.
 type QueueWriteFunc func(QueueWriteParams) *uds.Response
 
+// QueueWrite handles UDS queue-write requests by dispatching to the
+// per-target backend (command / task / notification / cancel-request).
 type QueueWrite struct {
 	command       QueueWriteFunc
 	task          QueueWriteFunc
@@ -45,6 +53,10 @@ type QueueWrite struct {
 	cancelRequest QueueWriteFunc
 }
 
+// NewQueueWrite constructs a QueueWrite handler bound to the four
+// per-target backends. Any of the funcs may be nil; in that case the
+// matching request type returns a clear "not implemented" error rather
+// than panicking on a nil call.
 func NewQueueWrite(command, task, notification, cancelRequest QueueWriteFunc) *QueueWrite {
 	return &QueueWrite{
 		command:       command,
@@ -54,6 +66,8 @@ func NewQueueWrite(command, task, notification, cancelRequest QueueWriteFunc) *Q
 	}
 }
 
+// Handle decodes the request body, applies the role policy for the
+// requested target, and forwards to the appropriate backend func.
 func (h *QueueWrite) Handle(req *uds.Request) *uds.Response {
 	var params QueueWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {

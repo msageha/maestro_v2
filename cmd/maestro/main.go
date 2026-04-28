@@ -17,6 +17,23 @@ const maestroDirEnv = "MAESTRO_DIR"
 // MAX_RUNTIME_EXCEEDED, and retryable agent exec errors.
 const ExitCodeRetryable = 2
 
+// ExitCodeSubmitUncertain is returned by `maestro agent exec` when the
+// underlying tmux submit-confirmation probe exhausts its budget without
+// observing either an activity marker or a content-growth signal. The
+// message has already been pasted + Enter-submitted to the pane; the
+// daemon-side dispatcher treats this same condition as non-retryable
+// (queue_dispatch.go) to avoid the double-submit risk that re-delivering
+// the envelope would create. Surfacing it as a distinct CLI exit code
+// (instead of the generic `1`) lets scripts and humans tell "delivery
+// likely succeeded but unverified" apart from "delivery actually failed",
+// which is the UX problem reported when the orchestrator processed an
+// `--with-clear` exec that looked failed at the shell level.
+//
+// Re-running the same `agent exec` after a `3` is the wrong recovery —
+// it can put two copies of the prompt in the agent. Inspect the agent
+// pane (or the daemon log if dispatched via queue) before deciding.
+const ExitCodeSubmitUncertain = 3
+
 // Fencing exit codes (F-019 step 2).
 //
 // These let the Worker shell wrapper (templates/instructions/worker.md) and
@@ -29,6 +46,7 @@ const ExitCodeRetryable = 2
 //   - 0   success
 //   - 1   generic CLI error
 //   - 2   ExitCodeRetryable (legacy alias kept for backwards compat)
+//   - 3   ExitCodeSubmitUncertain (agent exec submit-confirm exhausted)
 //   - 64-78  sysexits.h convention
 //   - 126/127 shell "command invoked / not found" semantics
 //   - 128+N  signal-terminated processes
@@ -94,7 +112,27 @@ func (m *modeSetter) Set(string) error { *m.target = m.val; return nil }
 func (m *modeSetter) IsBoolFlag() bool { return true }
 
 func main() {
+	normalizeProcessEnvironment()
 	os.Exit(newCLIApp().run(os.Args[1:]))
+}
+
+// normalizeProcessEnvironment promotes a missing or `dumb` TERM to a real
+// terminfo entry so subshells that maestro (CLI or daemon) spawns do not
+// inherit a degraded prompt environment from the parent. The 2026-04-28
+// retest4 reported `[ERROR] - (starship::print): Under a 'dumb' terminal
+// (TERM=dumb).` mixing into CLI output every invocation — a noise source
+// the operator could not silence from outside maestro because
+// claude-code propagates TERM=dumb to the maestro process. Setting the
+// var here is process-local: the operator's interactive shell is
+// untouched, and any explicit TERM the operator exports still wins.
+//
+// Mirrors the agent-pane normalisation in
+// internal/agent/launcher.go:buildLaunchEnvForAgent so the rule is
+// consistent across the CLI, daemon, and tmux-launched agent panes.
+func normalizeProcessEnvironment() {
+	if t := os.Getenv("TERM"); t == "" || t == "dumb" {
+		_ = os.Setenv("TERM", "xterm-256color")
+	}
 }
 
 func (a *cliApp) run(args []string) int {
@@ -131,8 +169,6 @@ func (a *cliApp) run(args []string) int {
 		err = a.runSkill(args[1:])
 	case "verify":
 		err = a.runVerify(args[1:])
-	case "hook":
-		err = a.runHook(args[1:])
 	case "dashboard":
 		err = a.runDashboard(args[1:])
 	case "version":
@@ -170,7 +206,11 @@ func findMaestroDir() (string, error) {
 		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
 			dir = resolved
 		}
-		info, err := os.Stat(dir)
+		// dir originates from MAESTRO_DIR env var, abs-resolved and
+		// symlink-resolved above. The Stat is pure metadata access and
+		// cannot itself traverse outside the resolved path. gosec G703
+		// is a false positive here.
+		info, err := os.Stat(dir) //nolint:gosec // dir already resolved
 		if err != nil {
 			return "", fmt.Errorf("%s: stat %q: %w", maestroDirEnv, dir, err)
 		}
@@ -224,19 +264,18 @@ Agent Commands (CLI → Daemon):
   queue write <target> [options]   Write to queue
   result write <reporter> [options] Write result
   plan submit [options]            Submit task plan
-  plan complete [options]          Report command completion
+  plan complete [options]          Report command completion (--summary <text> | --summary-file <path>)
   plan add-retry-task [options]    Replace failed task
   plan request-cancel [options]    Request cancellation
   plan rebuild [options]           Rebuild state from results
   plan recover [options]           Auto-select worktree recovery action
-  plan resolve-conflict [options]  Resolve a worker merge conflict
+  plan resolve-conflict [options]  Clear a publish-blocking commit_failed worker (NOT for phase merge_conflict — for those, use plan add-task)
   verify write [options]           Write command-scoped verify config
 
 Internal:
   daemon            Run daemon process
   agent launch      Launch agent in tmux pane
   agent exec        Send message to agent
-  hook policy-check Evaluate Worker PreToolUse policy JSON
   task heartbeat    Send heartbeat for an active task
 
 Skill Management:
@@ -252,6 +291,9 @@ Utilities:
   help               Show this help
 
 Examples:
+  # Clear a worker from commit_failed_workers after manually fixing publish-blocking state.
+  # NOT the right command for an in-phase merge_conflict — use 'plan add-task --worker-id <id>'
+  # to dispatch a conflict resolution task; the daemon then auto-runs resume_merge.
   maestro plan resolve-conflict --command-id cmd_42 --phase-id ph_3 \
       --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 

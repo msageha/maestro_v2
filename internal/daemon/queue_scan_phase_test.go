@@ -30,12 +30,12 @@ import (
 func TestCheckCommandTasksTerminal(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name             string
-		queues           map[string][]model.Task
-		commandID        string
-		wantAllTerminal  bool
-		wantHasFailed    bool
-		ignoreHasFailed  bool // some legacy cases only assert allTerminal
+		name            string
+		queues          map[string][]model.Task
+		commandID       string
+		wantAllTerminal bool
+		wantHasFailed   bool
+		ignoreHasFailed bool // some legacy cases only assert allTerminal
 	}{
 		{
 			name: "all completed",
@@ -716,6 +716,24 @@ func writeWorktreeState(t *testing.T, maestroDir, commandID string, integrationS
 	}
 }
 
+func markCommitFailedWorkerForTest(t *testing.T, maestroDir, commandID, workerID, updatedAt string) {
+	t.Helper()
+	path := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	var state model.WorktreeCommandState
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read worktree state: %v", err)
+	}
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		t.Fatalf("parse worktree state: %v", err)
+	}
+	state.CommitFailedWorkers = []string{workerID}
+	state.UpdatedAt = updatedAt
+	if err := yamlutil.AtomicWrite(path, state); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+}
+
 func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates map[string]model.Status, phases []model.Phase) {
 	t.Helper()
 	var requiredIDs []string
@@ -880,11 +898,16 @@ func TestCollectImplicitWorktreeMerge_AlreadyMerged(t *testing.T) {
 }
 
 // TestCollectImplicitWorktreeMerge_FiltersConflictResolvingWorkers verifies
-// that Conflict/Resolving workers are excluded from the WorkerIDs list
-// returned by the Phase A collector. Those workers are owned by the
-// resume-merge pipeline and must not flow into Phase B's auto-commit path,
-// where the `resolving → committed` transition guard would reject them and
-// record a spurious commit_failed signal (regression of the 2026-04 audit).
+// that the Phase A collector yields to the resume-merge pipeline when the
+// integration is in a recovery state and there are workers in
+// Conflict/Resolving. Those workers are owned by ResumeMerge /
+// AutoRecoverAfterResolution; running Phase B's auto-commit + auto-merge in
+// parallel would re-attempt unrelated workers' merges (pinning fresh
+// merge_conflict signals to the wrong phase) and risk promoting a
+// pre-resolution worker branch to integrated. The gate added in
+// collectWorktreePhaseMerges suppresses the entire merge collection in this
+// state — Phase B simply does nothing for the command until the recovery
+// pipeline drives the integration back to a non-recovery status.
 func TestCollectImplicitWorktreeMerge_FiltersConflictResolvingWorkers(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -921,12 +944,8 @@ func TestCollectImplicitWorktreeMerge_FiltersConflictResolvingWorkers(t *testing
 	tqs := makeTaskQueues(map[string][]model.Task{"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}}})
 
 	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
-	if len(items) != 1 {
-		t.Fatalf("expected 1 implicit merge item, got %d", len(items))
-	}
-	got := items[0].WorkerIDs
-	if len(got) != 1 || got[0] != "worker1" {
-		t.Errorf("WorkerIDs = %v, want [worker1] (resolving/conflict workers must be filtered)", got)
+	if items != nil {
+		t.Fatalf("expected nil items while integration is in partial_merge with conflict/resolving workers (resume-merge pipeline owns recovery), got %v", items)
 	}
 }
 

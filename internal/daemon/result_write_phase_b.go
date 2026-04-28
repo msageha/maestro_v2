@@ -121,11 +121,19 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 }
 
 func validateReportedResultTransition(existing, recorded model.Status) error {
-	// A running worker reports a logical terminal result. Phase B then routes
-	// running -> verify_pending -> completed via AdvanceTaskState, so the direct
-	// running -> completed edge is expected at the result-write boundary.
-	if existing == model.StatusRunning && recorded == model.StatusCompleted {
-		return nil
+	// A worker that has been handed an in-progress queue entry can land at
+	// any of the dispatch-pipeline states (ready / dispatched / running)
+	// depending on how far the daemon's lifecycle hops have caught up
+	// when it reports completion. Phase B routes the recorded terminal
+	// status through the §2.1 verify_pending → completed/repair pipeline
+	// via AdvanceTaskState's BFS, so all of these "still-progressing"
+	// sources are expected at the result-write boundary and are NOT a
+	// state-machine violation worth waking an operator over.
+	if recorded == model.StatusCompleted || recorded == model.StatusFailed {
+		switch existing {
+		case model.StatusReady, model.StatusDispatched, model.StatusRunning:
+			return nil
+		}
 	}
 	return model.ValidateTaskStateTransition(existing, recorded)
 }

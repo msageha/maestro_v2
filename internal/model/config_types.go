@@ -121,11 +121,10 @@ func (l LearningsConfig) EffectiveTTLHours() int { return l.TTLHours }
 
 // --- AdmissionControl ---
 
-// AdmissionControl controls concurrency limits for verify/repair/rollout phases.
+// AdmissionControl controls concurrency limits for verify/repair phases.
 type AdmissionControl struct {
-	MaxConcurrentVerify  int `yaml:"max_concurrent_verify"`
-	MaxConcurrentRepair  int `yaml:"max_concurrent_repair"`
-	MaxConcurrentRollout int `yaml:"max_concurrent_rollout"`
+	MaxConcurrentVerify int `yaml:"max_concurrent_verify"`
+	MaxConcurrentRepair int `yaml:"max_concurrent_repair"`
 }
 
 // EffectiveMaxConcurrentVerify returns MaxConcurrentVerify, or DefaultMaxConcurrentVerify when zero.
@@ -136,11 +135,6 @@ func (a AdmissionControl) EffectiveMaxConcurrentVerify() int {
 // EffectiveMaxConcurrentRepair returns MaxConcurrentRepair, or DefaultMaxConcurrentRepair when zero.
 func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
 	return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair)
-}
-
-// EffectiveMaxConcurrentRollout returns MaxConcurrentRollout, or DefaultMaxConcurrentRollout when zero.
-func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
-	return effectiveNonZero(a.MaxConcurrentRollout, DefaultMaxConcurrentRollout)
 }
 
 // --- Fallback ---

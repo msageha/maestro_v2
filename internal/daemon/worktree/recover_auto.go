@@ -28,8 +28,20 @@ const (
 	// published, quarantined, or in an in-flight transition).
 	AutoRecoverNone AutoRecoverAction = ""
 	// AutoRecoverResumeMerge indicates that AutoRecover dispatched to
-	// ResumeMerge for a conflict / partial_merge / failed-with-workers state.
+	// ResumeMerge AND the merge actually progressed — at least one resolving
+	// worker was promoted out of WorktreeStatusResolving (to Integrated, or
+	// Active in the legacy fallback).
 	AutoRecoverResumeMerge AutoRecoverAction = "resume_merge"
+	// AutoRecoverResumeMergeDeferred indicates that AutoRecover dispatched
+	// ResumeMerge but the inner tryMergeWorker took the
+	// resume_merge_deferred_resolution_in_flight path: the reporter worker
+	// is still in Resolving with no committed edits yet, so the merge will
+	// be re-attempted from a future result_write once the dispatched
+	// __conflict_resolution task lands its commit. Operators reading the
+	// 2026-04-28 E2E logs misread "completed action=resume_merge" as
+	// "publish has run" — this distinct outcome is what lets the caller
+	// log "deferred" instead.
+	AutoRecoverResumeMergeDeferred AutoRecoverAction = "resume_merge_deferred"
 	// AutoRecoverRetryPublish indicates that AutoRecover dispatched to
 	// RetryPublish for a publish_failed state whose NextPublishRetryAt
 	// backoff has elapsed.
@@ -208,6 +220,19 @@ func (wm *Manager) tryMergeConflictResolutionRecovery(
 			return AutoRecoverNone, nil
 		}
 		return AutoRecoverResumeMerge, err
+	}
+	// Post-state probe: ResumeMerge's tryMergeWorker may have hit the
+	// "deferred" branch (worker arrived in Resolving with zero committed
+	// edits because the dispatched __conflict_resolution task has not
+	// landed yet). In that branch tryMergeWorker returns without flipping
+	// the worker out of Resolving. Re-reading the state lets us return a
+	// distinct AutoRecoverResumeMergeDeferred outcome so result_write_handler
+	// logs "deferred", not "completed". GetCommandState reacquires wm.mu
+	// after ResumeMerge releases it; failures here fall through to the
+	// optimistic AutoRecoverResumeMerge so we never lose the upstream
+	// "we did dispatch a recovery" signal due to a transient state-load error.
+	if post, perr := wm.GetCommandState(commandID); perr == nil && workerIsResolving(post, reporterWorkerID) {
+		return AutoRecoverResumeMergeDeferred, nil
 	}
 	return AutoRecoverResumeMerge, nil
 }

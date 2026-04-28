@@ -97,3 +97,25 @@ func (m *paneStateManager) GetCWD(paneTarget string) string {
 	v, _ := m.paneIO.GetUserVar(paneTarget, "cwd")
 	return v
 }
+
+// AgentStateEvicted is the @agent_state value the daemon writes after
+// respawning a worker pane to the project root for worktree cleanup.
+// status.go honours this sentinel so `maestro status` does not flip the
+// worker to "dead" while it sits in shell between cleanup and the next
+// dispatch — the agent process is intentionally not running, not crashed.
+const AgentStateEvicted = "evicted"
+
+// SetAgentState writes the @agent_state user variable on the pane. The
+// daemon uses it to signal "the lack of a live agent process here is
+// intentional" so live-process probes (status.go) can distinguish a
+// daemon-driven eviction from a crash. Empty state means "normal".
+func (m *paneStateManager) SetAgentState(paneTarget, state string) error {
+	return m.paneIO.SetUserVar(paneTarget, "agent_state", state)
+}
+
+// ResetAgentState clears @agent_state. Called after ensureClaudeRunning
+// re-launches the agent so subsequent shell detections are once again
+// real crash signals.
+func (m *paneStateManager) ResetAgentState(paneTarget string) error {
+	return m.paneIO.SetUserVar(paneTarget, "agent_state", "")
+}

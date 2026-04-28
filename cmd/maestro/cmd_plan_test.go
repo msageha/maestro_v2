@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -483,6 +485,34 @@ func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(s) > 0 && stringContains(s, substr))
 }
 
+// withStdin swaps os.Stdin for a pipe carrying input for the duration of
+// fn. Tests that exercise readFlagInputFile via the dash form rely on
+// this helper because the production code reads os.Stdin directly to
+// match the `plan submit --tasks-file -` shape Planner agents already
+// trust. The pipe writer runs on a goroutine so a write larger than the
+// kernel pipe buffer does not deadlock.
+func withStdin(t *testing.T, input string, fn func()) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	orig := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() {
+		os.Stdin = orig
+		_ = r.Close()
+	})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_, _ = w.Write([]byte(input))
+		_ = w.Close()
+	}()
+	fn()
+	<-done
+}
+
 func stringContains(s, substr string) bool {
 	for i := 0; i <= len(s)-len(substr); i++ {
 		if s[i:i+len(substr)] == substr {
@@ -547,6 +577,121 @@ func TestRunPlanComplete_SummaryTooLong(t *testing.T) {
 	if !containsStr(ce.Msg, "exceeds maximum size") {
 		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
 	}
+}
+
+// TestRunPlanComplete_SummaryFile pins the --summary-file flag added in
+// 2026-04-28. The Planner agent reaching plan_complete with a long
+// human-readable summary used to fail with an "unknown flag" error because
+// only the inline --summary form was accepted; the agent then either
+// truncated the message or pasted multi-kilobyte text directly onto the CLI
+// argv (which is unreliable across tmux paste-buffer + Enter). The flag now
+// mirrors the (--content | --content-file) shape from plan add-task. This
+// test validates: file content is loaded, --summary and --summary-file are
+// mutually exclusive, and a missing file produces a clear error rather than
+// silently sending an empty summary to the daemon.
+func TestRunPlanComplete_SummaryFile(t *testing.T) {
+	t.Run("loads_summary_from_file", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "summary.txt")
+		if err := os.WriteFile(path, []byte("multi\nline\nsummary"), 0o600); err != nil {
+			t.Fatalf("write summary file: %v", err)
+		}
+		// runPlanComplete attempts a daemon RPC; we can't fully run it
+		// without a daemon. Use resolveSummaryFile directly to validate
+		// the flag parsing layer (the same helper runPlanComplete invokes).
+		var summary string
+		if err := resolveSummaryFile(NewCommand("test", "test"), &summary, path); err != nil {
+			t.Fatalf("resolveSummaryFile returned error: %v", err)
+		}
+		if summary != "multi\nline\nsummary" {
+			t.Errorf("summary = %q, want loaded file content", summary)
+		}
+	})
+
+	t.Run("rejects_summary_and_summary_file_together", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "summary.txt")
+		if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
+			t.Fatalf("write summary file: %v", err)
+		}
+		summary := "inline-value"
+		err := resolveSummaryFile(NewCommand("test", "test"), &summary, path)
+		if err == nil {
+			t.Fatal("expected error when both --summary and --summary-file are set")
+		}
+		if !containsStr(err.Error(), "mutually exclusive") {
+			t.Errorf("error %q does not mention mutual exclusion", err.Error())
+		}
+	})
+
+	t.Run("missing_file_surfaces_read_error", func(t *testing.T) {
+		var summary string
+		err := resolveSummaryFile(NewCommand("test", "test"), &summary, "/non/existent/path")
+		if err == nil {
+			t.Fatal("expected error for missing file")
+		}
+		if !containsStr(err.Error(), "read --summary-file") {
+			t.Errorf("error %q does not mention read --summary-file", err.Error())
+		}
+	})
+
+	t.Run("empty_summaryfile_path_is_noop", func(t *testing.T) {
+		summary := "preserved"
+		if err := resolveSummaryFile(NewCommand("test", "test"), &summary, ""); err != nil {
+			t.Fatalf("expected no error when --summary-file is empty, got: %v", err)
+		}
+		if summary != "preserved" {
+			t.Errorf("summary = %q, want untouched value", summary)
+		}
+	})
+
+	// 2026-04-28 E2E follow-up: Planner agents pipe long summaries on
+	// stdin via `maestro plan complete --summary-file -`. The dash form
+	// silently fell through to os.ReadFile("-"), which surfaced as
+	// "open -: no such file or directory" and forced a temp-file
+	// fallback. Mirroring `plan submit --tasks-file -`, "-" and
+	// "/dev/stdin" now consume os.Stdin directly so the agent's primary
+	// path succeeds without a workaround.
+	t.Run("dash_reads_stdin", func(t *testing.T) {
+		withStdin(t, "piped\nsummary\n", func() {
+			var summary string
+			if err := resolveSummaryFile(NewCommand("test", "test"), &summary, "-"); err != nil {
+				t.Fatalf("resolveSummaryFile(-): %v", err)
+			}
+			if summary != "piped\nsummary\n" {
+				t.Errorf("summary = %q, want stdin contents", summary)
+			}
+		})
+	})
+
+	t.Run("dev_stdin_reads_stdin", func(t *testing.T) {
+		withStdin(t, "alt-stdin", func() {
+			var summary string
+			if err := resolveSummaryFile(NewCommand("test", "test"), &summary, "/dev/stdin"); err != nil {
+				t.Fatalf("resolveSummaryFile(/dev/stdin): %v", err)
+			}
+			if summary != "alt-stdin" {
+				t.Errorf("summary = %q, want /dev/stdin contents", summary)
+			}
+		})
+	})
+
+	t.Run("stdin_overflow_is_rejected", func(t *testing.T) {
+		oversized := make([]byte, model.DefaultMaxEntryContentBytes+1)
+		for i := range oversized {
+			oversized[i] = 'x'
+		}
+		withStdin(t, string(oversized), func() {
+			var summary string
+			err := resolveSummaryFile(NewCommand("test", "test"), &summary, "-")
+			if err == nil {
+				t.Fatal("expected overflow error from stdin reader")
+			}
+			if !containsStr(err.Error(), "exceeds maximum size") {
+				t.Errorf("error = %q, want overflow message", err.Error())
+			}
+		})
+	})
 }
 
 // TestBuildDefinitionOfAbort_RejectsNonPositive ensures the definition_of_abort
@@ -716,6 +861,83 @@ func TestResolveContentFile_RejectsMixedSources(t *testing.T) {
 	if !containsStr(err.Error(), "mutually exclusive") {
 		t.Fatalf("error = %q", err.Error())
 	}
+}
+
+// TestResolveAcceptanceCriteriaFile_ReadsFile pins the
+// --acceptance-criteria-file flag added 2026-04-28 retest2 follow-up.
+// The Planner agent attempted this flag (assuming symmetry with
+// --content-file), the call failed with "unknown flag", and the agent
+// then fell back to argv quoting which hit a shell quote error on the
+// multi-line value. Adding the file form removes both failure modes.
+func TestResolveAcceptanceCriteriaFile_ReadsFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ac.txt")
+	if err := os.WriteFile(path, []byte("must compile\nand pass tests"), 0o600); err != nil {
+		t.Fatalf("write acceptance file: %v", err)
+	}
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+	var ac string
+	if err := resolveAcceptanceCriteriaFile(cmd, &ac, path); err != nil {
+		t.Fatalf("resolveAcceptanceCriteriaFile: %v", err)
+	}
+	if ac != "must compile\nand pass tests" {
+		t.Errorf("acceptance = %q, want loaded file content", ac)
+	}
+}
+
+// TestResolveAcceptanceCriteriaFile_RejectsMixedSources symmetry with
+// --content-file: only one source is allowed so the value sent to the
+// daemon has a single obvious origin.
+func TestResolveAcceptanceCriteriaFile_RejectsMixedSources(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ac.txt")
+	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
+		t.Fatalf("write acceptance file: %v", err)
+	}
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+	ac := "inline-value"
+	err := resolveAcceptanceCriteriaFile(cmd, &ac, path)
+	if err == nil {
+		t.Fatal("expected mixed-source error")
+	}
+	if !containsStr(err.Error(), "mutually exclusive") {
+		t.Errorf("error %q does not mention mutual exclusion", err.Error())
+	}
+}
+
+// TestResolvePurposeFile_DashReadsStdin pins the matching stdin path on
+// --purpose-file. Same readFlagInputFile underneath, so a smoke test is
+// enough to lock the wire-up.
+func TestResolvePurposeFile_DashReadsStdin(t *testing.T) {
+	withStdin(t, "purpose via pipe", func() {
+		cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+		var purpose string
+		if err := resolvePurposeFile(cmd, &purpose, "-"); err != nil {
+			t.Fatalf("resolvePurposeFile(-): %v", err)
+		}
+		if purpose != "purpose via pipe" {
+			t.Errorf("purpose = %q, want stdin contents", purpose)
+		}
+	})
+}
+
+// TestResolveContentFile_DashReadsStdin pins the stdin fall-through added
+// alongside resolveSummaryFile's dash support: Planner agents that pipe
+// task content through `plan add-task --content-file -` would otherwise
+// hit "open -: no such file or directory" the same way plan complete
+// did. Both flag helpers share readFlagInputFile, so a single regression
+// test per call site is enough.
+func TestResolveContentFile_DashReadsStdin(t *testing.T) {
+	withStdin(t, "task body via pipe", func() {
+		cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+		content := ""
+		if err := resolveContentFile(cmd, &content, "-"); err != nil {
+			t.Fatalf("resolveContentFile(-): %v", err)
+		}
+		if content != "task body via pipe" {
+			t.Errorf("content = %q, want stdin contents", content)
+		}
+	})
 }
 
 func TestRunPlanRequestCancel_InvalidCommandID(t *testing.T) {

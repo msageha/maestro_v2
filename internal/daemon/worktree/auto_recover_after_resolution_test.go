@@ -3,6 +3,8 @@ package worktree
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -308,6 +310,82 @@ func TestAutoRecoverAfterResolution_Quarantined_NoOp(t *testing.T) {
 	}
 	if action != AutoRecoverNone {
 		t.Fatalf("action = %q, want %q (quarantined must require operator)", action, AutoRecoverNone)
+	}
+}
+
+// TestAutoRecoverAfterResolution_Merge_DeferredWhenResolutionInFlight pins
+// the new (2026-04-28) AutoRecoverResumeMergeDeferred outcome. When the
+// resolving worker has not yet committed the resolution edits to its
+// worktree, ResumeMerge takes the resume_merge_deferred_resolution_in_flight
+// branch and returns nil without flipping the worker out of Resolving.
+// AutoRecoverAfterResolution must surface that as
+// AutoRecoverResumeMergeDeferred — not the historical AutoRecoverResumeMerge —
+// so result_write_handler can log "auto_recover_after_resolution_deferred"
+// instead of the misleading "_completed action=resume_merge" line that the
+// E2E run reported as 紛らわしい.
+func TestAutoRecoverAfterResolution_Merge_DeferredWhenResolutionInFlight(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_auto_recover_deferred"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Build the same conflict shape used by TestResumeMerge_SkipsResolvingWithoutEdits:
+	// both workers commit divergent edits to the same file, MergeToIntegration
+	// turns worker2 into conflict, and we then flip worker2 to resolving
+	// without committing the resolution. ResumeMerge from this state must
+	// take the deferred branch.
+	wt1, _ := wm.GetWorkerPath(commandID, "worker1")
+	wt2, _ := wm.GetWorkerPath(commandID, "worker2")
+
+	if err := os.WriteFile(filepath.Join(wt1, "DEFER.txt"), []byte("worker1 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 add DEFER.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "DEFER.txt"), []byte("worker2 wins\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 add DEFER.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		ws := wm.findWorker(st, "worker2")
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+
+	action, err := wm.AutoRecoverAfterResolution(context.Background(), commandID, "worker2", false)
+	if err != nil {
+		t.Fatalf("AutoRecoverAfterResolution: %v", err)
+	}
+	if action != AutoRecoverResumeMergeDeferred {
+		t.Fatalf("action = %q, want %q (worker still resolving with no committed edits → deferred)",
+			action, AutoRecoverResumeMergeDeferred)
+	}
+
+	// Sanity: the deferred outcome implies the worker is still in resolving;
+	// the resolution task report (next AutoRecoverAfterResolution call) will
+	// drive the merge once edits land.
+	got, _ := wm.GetCommandState(commandID)
+	for _, ws := range got.Workers {
+		if ws.WorkerID == "worker2" && ws.Status != model.WorktreeStatusResolving {
+			t.Errorf("worker2 status = %q, want resolving (deferred branch must not flip status)", ws.Status)
+		}
 	}
 }
 

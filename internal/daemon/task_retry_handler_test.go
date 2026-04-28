@@ -609,7 +609,7 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 	}
 
 	// Execute: Register retry task
-	err := handler.RegisterRetryTaskInState(retryTask, commandID)
+	err := handler.RegisterRetryTaskInState(retryTask, "task_original", commandID)
 	if err != nil {
 		t.Fatalf("RegisterRetryTaskInState failed: %v", err)
 	}
@@ -779,7 +779,7 @@ func TestRetryIdempotency(t *testing.T) {
 		t.Fatalf("CreateRetryTask failed: %v", err)
 	}
 
-	if err := handler.RegisterRetryTaskInState(retryTask1, commandID); err != nil {
+	if err := handler.RegisterRetryTaskInState(retryTask1, originalTask.ID, commandID); err != nil {
 		t.Fatalf("RegisterRetryTaskInState failed: %v", err)
 	}
 
@@ -793,7 +793,7 @@ func TestRetryIdempotency(t *testing.T) {
 		t.Fatalf("CreateRetryTask failed: %v", err)
 	}
 
-	if err := handler.RegisterRetryTaskInState(retryTask2, commandID); err != nil {
+	if err := handler.RegisterRetryTaskInState(retryTask2, originalTask.ID, commandID); err != nil {
 		t.Fatalf("RegisterRetryTaskInState failed: %v", err)
 	}
 
@@ -899,7 +899,7 @@ func TestConcurrentRetryCreation(t *testing.T) {
 				return
 			}
 
-			if err := handler.RegisterRetryTaskInState(retryTask, commandID); err != nil {
+			if err := handler.RegisterRetryTaskInState(retryTask, originalTask.ID, commandID); err != nil {
 				errors <- err
 				return
 			}
@@ -1506,8 +1506,8 @@ func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
 		Status:    model.StatusPending,
 	}
 
-	// Execute: Register retry task
-	err := handler.RegisterRetryTaskInState(retryTask, commandID)
+	// Execute: Register retry task (predecessor "task_002" exists in state).
+	err := handler.RegisterRetryTaskInState(retryTask, "task_002", commandID)
 	if err != nil {
 		t.Fatalf("RegisterRetryTaskInState failed: %v", err)
 	}
@@ -1637,7 +1637,7 @@ func TestRetryTaskAtomically_Success(t *testing.T) {
 		Status:    model.StatusPending,
 	}
 
-	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	err := handler.RetryTaskAtomically(retryTask, "t_orig", commandID, workerID)
 	if err != nil {
 		t.Fatalf("RetryTaskAtomically failed: %v", err)
 	}
@@ -1694,7 +1694,7 @@ func TestRetryTaskAtomically_StateFailure(t *testing.T) {
 		Status:    model.StatusPending,
 	}
 
-	err := handler.RetryTaskAtomically(retryTask, commandID, "worker1")
+	err := handler.RetryTaskAtomically(retryTask, "t_orig", commandID, "worker1")
 	if err == nil {
 		t.Fatal("expected error when state directory doesn't exist")
 	}
@@ -1747,7 +1747,7 @@ func TestRetryTaskAtomically_QueueFailureRollsBackState(t *testing.T) {
 		Status:    model.StatusPending,
 	}
 
-	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	err := handler.RetryTaskAtomically(retryTask, "t_orig", commandID, workerID)
 	if err == nil {
 		t.Fatal("expected error when queue directory is read-only")
 	}
@@ -1836,7 +1836,7 @@ func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testin
 
 	// Pre-register the task so the state lock registration succeeds even with
 	// read-only dir (updateYAMLFile succeeds because file already has the entry).
-	if err := handler.RegisterRetryTaskInState(retryTask, commandID); err != nil {
+	if err := handler.RegisterRetryTaskInState(retryTask, "t_orig", commandID); err != nil {
 		t.Fatalf("pre-register: %v", err)
 	}
 
@@ -1846,7 +1846,7 @@ func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testin
 	}
 	defer os.Chmod(stateDir, 0755)
 
-	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	err := handler.RetryTaskAtomically(retryTask, "t_orig", commandID, workerID)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -2058,4 +2058,265 @@ func TestIsAbortByMaxRepair(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRegisterRetryTaskInState_RequiredAndPhaseRewire verifies the fix for
+// the cmd_1777330979_d3c29242530906ac post-mortem: a daemon-side retry task
+// must replace the predecessor in RequiredTaskIDs and join the predecessor's
+// phase (reopening the phase if it was already failed). Without this rewire,
+// state_reader.isKnownTaskID rejects the retry every scan, producing a
+// task_ready_state_update_failed log loop that leaves the retry orphaned in
+// the worker queue.
+func TestRegisterRetryTaskInState_RequiredAndPhaseRewire(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_rewire"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	predecessorID := "task_predecessor"
+	otherRequiredID := "task_other_required"
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{otherRequiredID, predecessorID},
+			TaskStates: map[string]model.Status{
+				predecessorID:   model.StatusFailed,
+				otherRequiredID: model.StatusCompleted,
+			},
+			TaskDependencies: map[string][]string{
+				predecessorID: {otherRequiredID},
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase_impl",
+					Name:    "implementation",
+					Status:  model.PhaseStatusFailed,
+					TaskIDs: []string{otherRequiredID, predecessorID},
+				},
+			},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_rewire",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+
+	if err := handler.RegisterRetryTaskInState(retryTask, predecessorID, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState: %v", err)
+	}
+
+	// Reload state.
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+
+	// RequiredTaskIDs: predecessor swapped, other required preserved.
+	if !slicesEqual(got.RequiredTaskIDs, []string{otherRequiredID, retryTask.ID}) {
+		t.Errorf("RequiredTaskIDs = %v, want [%s %s]",
+			got.RequiredTaskIDs, otherRequiredID, retryTask.ID)
+	}
+
+	// Phase membership: retry appended; predecessor preserved (per planner-side semantics).
+	phase := got.Phases[0]
+	if !slicesEqual(phase.TaskIDs, []string{otherRequiredID, predecessorID, retryTask.ID}) {
+		t.Errorf("phase.TaskIDs = %v, want [%s %s %s]",
+			phase.TaskIDs, otherRequiredID, predecessorID, retryTask.ID)
+	}
+	if phase.Status != model.PhaseStatusActive {
+		t.Errorf("phase.Status = %s, want active (failed→active reopen)", phase.Status)
+	}
+	if phase.ReopenedAt == nil {
+		t.Error("phase.ReopenedAt should be set after reopen")
+	}
+	if phase.CompletedAt != nil {
+		t.Error("phase.CompletedAt should be cleared after reopen")
+	}
+
+	// TaskStates: retry registered as planned.
+	if got.TaskStates[retryTask.ID] != model.StatusPlanned {
+		t.Errorf("TaskStates[%s] = %s, want planned", retryTask.ID, got.TaskStates[retryTask.ID])
+	}
+
+	// TaskDependencies inherited.
+	if !slicesEqual(got.TaskDependencies[retryTask.ID], []string{otherRequiredID}) {
+		t.Errorf("TaskDependencies[%s] = %v, want [%s]",
+			retryTask.ID, got.TaskDependencies[retryTask.ID], otherRequiredID)
+	}
+
+	// RetryLineage links new ID back to predecessor.
+	if got.RetryLineage[retryTask.ID] != predecessorID {
+		t.Errorf("RetryLineage[%s] = %q, want %s",
+			retryTask.ID, got.RetryLineage[retryTask.ID], predecessorID)
+	}
+}
+
+// TestRegisterRetryTaskInState_OptionalMembershipPreserved verifies that a
+// retry of an optional task stays in OptionalTaskIDs (does not get promoted
+// to required).
+func TestRegisterRetryTaskInState_OptionalMembershipPreserved(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_optional"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	predecessorID := "task_optional_predecessor"
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			OptionalTaskIDs: []string{predecessorID},
+			TaskStates: map[string]model.Status{
+				predecessorID: model.StatusFailed,
+			},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_optional",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+	if err := handler.RegisterRetryTaskInState(retryTask, predecessorID, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState: %v", err)
+	}
+
+	stateData, _ := os.ReadFile(statePath)
+	var got model.CommandState
+	_ = yamlv3.Unmarshal(stateData, &got)
+
+	if len(got.RequiredTaskIDs) != 0 {
+		t.Errorf("RequiredTaskIDs unexpectedly populated: %v", got.RequiredTaskIDs)
+	}
+	if !slicesEqual(got.OptionalTaskIDs, []string{retryTask.ID}) {
+		t.Errorf("OptionalTaskIDs = %v, want [%s]", got.OptionalTaskIDs, retryTask.ID)
+	}
+}
+
+// TestRollbackRetryTaskFromState_RestoresPredecessor verifies that a failed
+// queue-add rolls back the membership/phase rewire so the predecessor
+// regains its slot in RequiredTaskIDs.
+func TestRollbackRetryTaskFromState_RestoresPredecessor(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_rollback_rewire"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+
+	predecessorID := "task_pre_rollback"
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{predecessorID},
+			TaskStates: map[string]model.Status{
+				predecessorID: model.StatusFailed,
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p_rb",
+					Name:    "rb",
+					Status:  model.PhaseStatusFailed,
+					TaskIDs: []string{predecessorID},
+				},
+			},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_rb",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+	if err := handler.RegisterRetryTaskInState(retryTask, predecessorID, commandID); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	if err := handler.rollbackRetryTaskFromState(retryTask.ID, predecessorID, commandID); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	stateData, _ := os.ReadFile(statePath)
+	var got model.CommandState
+	_ = yamlv3.Unmarshal(stateData, &got)
+
+	if !slicesEqual(got.RequiredTaskIDs, []string{predecessorID}) {
+		t.Errorf("RequiredTaskIDs after rollback = %v, want [%s]", got.RequiredTaskIDs, predecessorID)
+	}
+	if _, exists := got.TaskStates[retryTask.ID]; exists {
+		t.Errorf("retry task should be removed from TaskStates after rollback")
+	}
+	if _, exists := got.RetryLineage[retryTask.ID]; exists {
+		t.Errorf("retry task should be removed from RetryLineage after rollback")
+	}
+	phase := got.Phases[0]
+	if !slicesEqual(phase.TaskIDs, []string{predecessorID}) {
+		t.Errorf("phase.TaskIDs after rollback = %v, want [%s]", phase.TaskIDs, predecessorID)
+	}
+	if phase.ReopenedAt != nil {
+		t.Errorf("phase.ReopenedAt should be cleared after rollback, got %v", *phase.ReopenedAt)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

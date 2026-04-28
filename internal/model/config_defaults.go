@@ -71,9 +71,8 @@ const (
 	DefaultLearningsInjectCount      = 5
 
 	// AdmissionControl
-	DefaultMaxConcurrentVerify  = 2
-	DefaultMaxConcurrentRepair  = 1
-	DefaultMaxConcurrentRollout = 1
+	DefaultMaxConcurrentVerify = 2
+	DefaultMaxConcurrentRepair = 1
 
 	// VerifyDaemonConfig
 	// DefaultVerifyStallThresholdSec is the verify_pending stall window after
@@ -139,7 +138,7 @@ const (
 	DefaultComplexMaxFiles  = 30
 
 	// FeatureProfile
-	DefaultCrossAgentReview = "false"
+	DefaultCrossAgentReview = false
 
 	// RetryConfig — signal inline retry
 	DefaultSignalInlineRetries       = 2

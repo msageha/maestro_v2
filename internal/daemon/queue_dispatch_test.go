@@ -539,7 +539,8 @@ func (e *undecidedResultExecutor) Execute(_ agent.ExecRequest) agent.ExecResult 
 		Retryable: true,
 	}
 }
-func (e *undecidedResultExecutor) Close() error { return nil }
+func (e *undecidedResultExecutor) Close() error                          { return nil }
+func (e *undecidedResultExecutor) RespawnPaneToProjectRoot(string) error { return nil }
 
 func TestIsAgentBusy_UndecidedPromoteToIdle(t *testing.T) {
 	t.Parallel()

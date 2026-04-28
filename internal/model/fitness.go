@@ -1,8 +1,6 @@
 package model
 
 import (
-	"context"
-	"fmt"
 	"time"
 )
 
@@ -104,78 +102,6 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 	}
 
 	return 0
-}
-
-// SelectWinner returns the winning candidate index.
-// If all candidates are equivalent, it returns isTie=true and winnerIndex=0.
-// For an empty candidate set, it returns winnerIndex=-1 and isTie=false.
-func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex int, isTie bool) {
-	if len(candidates) == 0 {
-		return -1, false
-	}
-	if len(candidates) == 1 {
-		return 0, false
-	}
-
-	best := 0
-	allTie := true
-
-	for i := 1; i < len(candidates); i++ {
-		cmp := candidates[best].Compare(candidates[i], th)
-		if cmp > 0 {
-			// candidates[i] wins.
-			best = i
-			allTie = false
-		} else if cmp < 0 {
-			// candidates[best] wins.
-			allTie = false
-		}
-	}
-
-	if allTie && len(candidates) > 1 {
-		return 0, true
-	}
-
-	// Re-check that best wins or ties against every candidate.
-	for i := 0; i < len(candidates); i++ {
-		if i == best {
-			continue
-		}
-		cmp := candidates[best].Compare(candidates[i], th)
-		if cmp > 0 {
-			// Per-axis margin comparisons are non-strict, so boundary inputs
-			// can break transitivity. Treat the inconsistency as a tie instead
-			// of panicking and let the judge resolve it.
-			return 0, true
-		}
-	}
-
-	return best, allTie
-}
-
-// ResolveWinner calls SelectWinner and uses judge only when the mechanical
-// FitnessScore comparison ties. Without a judge, or when judge returns an
-// error, index 0 remains the deterministic fallback.
-func ResolveWinner(scores []FitnessScore, thresholds FitnessThresholds, judge JudgeFunc) (winnerIdx int, judgeUsed bool, err error) {
-	winner, isTie := SelectWinner(scores, thresholds)
-
-	if !isTie {
-		return winner, false, nil
-	}
-
-	if judge == nil {
-		return winner, false, nil
-	}
-
-	decision, judgeErr := judge(context.Background(), scores, nil)
-	if judgeErr != nil {
-		return winner, false, judgeErr
-	}
-
-	if decision.WinnerIndex == nil {
-		return winner, false, fmt.Errorf("judge returned nil WinnerIndex")
-	}
-	return *decision.WinnerIndex, true, nil
 }
 
 func abs(n int) int {

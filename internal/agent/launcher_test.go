@@ -8,6 +8,69 @@ import (
 	"testing"
 )
 
+// TestEnsureRoleMaestroWrapper_PATHFallback pins the 2026-04-28 fix for the
+// "in-tree build artifact disappears mid-run" failure mode. Earlier the
+// generated wrapper script `exec`'d the absolute path resolved at startup
+// (e.g. /repo/maestro). When that path was removed by a rebuild or
+// worktree rotation, every subsequent CLI call from the agent died with
+// shell exit 126/127. The wrapper now tests the absolute path with `[ -x
+// ... ]` first and falls back to PATH-resolved `maestro` (the launching
+// binary's directory is already prepended to PATH by buildLaunchEnv, so
+// the same binary is picked when both are valid). This test reads the
+// generated wrapper script and asserts the structural pieces are present;
+// integration coverage is provided by the full agent E2E run.
+func TestEnsureRoleMaestroWrapper_PATHFallback(t *testing.T) {
+	maestroDir := t.TempDir()
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			wrapperDir, err := ensureRoleMaestroWrapper(maestroDir, role)
+			if err != nil {
+				t.Fatalf("ensureRoleMaestroWrapper(%q): %v", role, err)
+			}
+			body, err := os.ReadFile(filepath.Join(wrapperDir, "maestro"))
+			if err != nil {
+				t.Fatalf("read wrapper script: %v", err)
+			}
+			script := string(body)
+
+			// The absolute-path branch must still be tried first to preserve
+			// version-skew protection for the common case where the binary is
+			// stable across the agent's lifetime.
+			if !strings.Contains(script, `if [ -x "$maestro_exec_path" ]; then`) {
+				t.Errorf("wrapper missing absolute-path probe; script=\n%s", script)
+			}
+			if !strings.Contains(script, `exec "$maestro_exec_path" "$@"`) {
+				t.Errorf("wrapper missing absolute-path exec; script=\n%s", script)
+			}
+
+			// PATH fallback branch — required for Issue 1 recovery.
+			if !strings.Contains(script, `exec maestro "$@"`) {
+				t.Errorf("wrapper missing PATH-resolved fallback exec; script=\n%s", script)
+			}
+
+			// The fallback must announce itself so operators can correlate
+			// the recovery with a rebuild / worktree rotation.
+			if !strings.Contains(script, "[maestro role wrapper]") {
+				t.Errorf("wrapper missing operator-visible warning prefix; script=\n%s", script)
+			}
+			if !strings.Contains(script, "no longer exists") {
+				t.Errorf("wrapper missing 'no longer exists' marker on fallback; script=\n%s", script)
+			}
+
+			// The role and MAESTRO_DIR exports must still be set on every
+			// path so the fallback binary inherits the same trust boundary
+			// and config root as the absolute-path exec.
+			if !strings.Contains(script, "export MAESTRO_AGENT_ROLE=") {
+				t.Errorf("wrapper missing MAESTRO_AGENT_ROLE export; script=\n%s", script)
+			}
+			if !strings.Contains(script, "export MAESTRO_DIR=") {
+				t.Errorf("wrapper missing MAESTRO_DIR export; script=\n%s", script)
+			}
+		})
+	}
+}
+
 func TestAllowedToolsByRole(t *testing.T) {
 	tests := []struct {
 		role      string
@@ -1021,4 +1084,125 @@ func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestBuildLaunchEnvForAgent_DefaultsGOCACHE pins the 2026-04-28 retest2
+// fix for the Worker `go build` permission failure inside claude-code's
+// sandbox. The Worker hit "permission denied" against the default
+// ~/Library/Caches/go-build path on every fresh run. The launcher now
+// defaults GOCACHE to a project-local path so go-toolchain commands run
+// under the agent never fall back to a sandboxed user-cache directory
+// that's likely to be denied. Operator overrides via an inherited
+// `GOCACHE=...` export must still win, otherwise CI/dev shell setups
+// that share a global cache would lose their cache reuse silently.
+func TestBuildLaunchEnvForAgent_DefaultsGOCACHE(t *testing.T) {
+	t.Run("default_points_under_maestro_dir", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		envMap := envSliceToMap(env)
+		want := filepath.Join(envMap["MAESTRO_DIR"], "cache", "go-build")
+		if envMap["GOCACHE"] != want {
+			t.Errorf("GOCACHE = %q, want %q", envMap["GOCACHE"], want)
+		}
+	})
+
+	t.Run("operator_override_wins", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent(
+			[]string{"PATH=/usr/bin", "GOCACHE=/shared/go-build"},
+			"worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		if got := envSliceToMap(env)["GOCACHE"]; got != "/shared/go-build" {
+			t.Errorf("GOCACHE = %q, want operator override /shared/go-build", got)
+		}
+	})
+}
+
+func envSliceToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			m[parts[0]] = parts[1]
+		}
+	}
+	return m
+}
+
+// TestBuildLaunchEnvForAgent_NormalizesNoisyEnv pins the 2026-04-28 retest3
+// environment-noise suppression. The retest reported two issues in agent
+// panes that both stem from inherited env:
+//   - TERM=dumb caused starship to spam "unable to determine terminal
+//     type" into the CLI/pane output;
+//   - the default ~/.cache/mise path was sandbox-denied so mise emitted
+//     "Operation not permitted" cache-write WARNs every shell init.
+//
+// Both noise sources are configurable via env, so the launcher now
+// normalises them when no operator override is present. Operators that
+// pin TERM or MISE_CACHE_DIR in their dev shell still win — explicit
+// inheritance must beat our defaults.
+func TestBuildLaunchEnvForAgent_NormalizesNoisyEnv(t *testing.T) {
+	t.Run("term_dumb_promoted_to_xterm", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin", "TERM=dumb"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		if got := envSliceToMap(env)["TERM"]; got != "xterm-256color" {
+			t.Errorf("TERM = %q, want \"xterm-256color\" so starship can render", got)
+		}
+	})
+
+	t.Run("term_unset_gets_default", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		if got := envSliceToMap(env)["TERM"]; got != "xterm-256color" {
+			t.Errorf("TERM = %q, want \"xterm-256color\" default", got)
+		}
+	})
+
+	t.Run("term_real_value_preserved", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin", "TERM=screen-256color"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		if got := envSliceToMap(env)["TERM"]; got != "screen-256color" {
+			t.Errorf("TERM = %q, want operator-supplied value preserved", got)
+		}
+	})
+
+	t.Run("mise_cache_dir_under_maestro", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		envMap := envSliceToMap(env)
+		want := filepath.Join(envMap["MAESTRO_DIR"], "cache", "mise")
+		if envMap["MISE_CACHE_DIR"] != want {
+			t.Errorf("MISE_CACHE_DIR = %q, want %q", envMap["MISE_CACHE_DIR"], want)
+		}
+	})
+
+	t.Run("mise_cache_operator_override_wins", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent(
+			[]string{"PATH=/usr/bin", "MISE_CACHE_DIR=/shared/mise-cache"},
+			"worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		if got := envSliceToMap(env)["MISE_CACHE_DIR"]; got != "/shared/mise-cache" {
+			t.Errorf("MISE_CACHE_DIR = %q, want operator override preserved", got)
+		}
+	})
 }

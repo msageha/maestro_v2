@@ -2,6 +2,10 @@ package daemon
 
 import "github.com/msageha/maestro_v2/internal/tmux"
 
+// AgentStatusSink abstracts per-pane status updates so the daemon can
+// signal "this agent is no longer working" without depending on a
+// concrete tmux backend. Tests inject a recording stub; production
+// wires tmuxAgentStatusSink which writes the @status user variable.
 type AgentStatusSink interface {
 	SetIdle(agentID string, logFn logFunc)
 }

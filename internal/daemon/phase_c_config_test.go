@@ -1,12 +1,30 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/daemon/complexity"
 	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// makeGoProjectMaestroDir creates a fake project root with a go.mod marker
+// so DetectProjectLanguage() returns "go" and the security/performance
+// perspectives have language-appropriate commands to attach.
+func makeGoProjectMaestroDir(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatalf("write go.mod: %v", err)
+	}
+	maestroDir := filepath.Join(root, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+		t.Fatalf("mkdir maestro: %v", err)
+	}
+	return maestroDir
+}
 
 func TestNewPhaseCManager_WiresExtendedVerificationConfig(t *testing.T) {
 	t.Parallel()
@@ -26,7 +44,7 @@ func TestNewPhaseCManager_WiresExtendedVerificationConfig(t *testing.T) {
 		},
 	}
 
-	m := newPhaseCManager(cfg, t.TempDir(), []string{"sonnet"}, discardDaemonLog)
+	m := newPhaseCManager(cfg, makeGoProjectMaestroDir(t), []string{"sonnet"}, discardDaemonLog)
 	if m.EnsembleVerifier == nil {
 		t.Fatalf("expected EnsembleVerifier to be initialized")
 	}
@@ -44,6 +62,39 @@ func TestNewPhaseCManager_WiresExtendedVerificationConfig(t *testing.T) {
 	for name, want := range map[string]float64{"build": 0.75, "security": 0.6, "performance": 0.4} {
 		if got, ok := seen[name]; !ok || got != want {
 			t.Fatalf("perspective %q weight=%v present=%t, want %v", name, got, ok, want)
+		}
+	}
+}
+
+// TestNewPhaseCManager_SkipsLanguageSpecificPerspectivesForUnknownProjects
+// verifies that security/performance perspectives are NOT added for projects
+// without a recognised language marker (the cmd_1777330979 root cause: gosec
+// running against non-Go projects fails every verify).
+func TestNewPhaseCManager_SkipsLanguageSpecificPerspectivesForUnknownProjects(t *testing.T) {
+	t.Parallel()
+	enabled := true
+	cfg := model.Config{
+		ExtendedVerification: model.ExtendedVerificationConfig{
+			Enabled:          &enabled,
+			SecurityCheck:    &enabled,
+			PerformanceBench: &enabled,
+		},
+	}
+
+	// No marker files at the temp project root → DetectProjectLanguage returns "".
+	root := t.TempDir()
+	maestroDir := filepath.Join(root, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+		t.Fatalf("mkdir maestro: %v", err)
+	}
+
+	m := newPhaseCManager(cfg, maestroDir, []string{"sonnet"}, discardDaemonLog)
+	if m.EnsembleVerifier == nil {
+		t.Fatalf("expected EnsembleVerifier to be initialized")
+	}
+	for _, p := range m.EnsembleVerifier.Perspectives() {
+		if p.Name == "security" || p.Name == "performance" {
+			t.Errorf("perspective %q must not be attached when project language is unknown (commands=%v)", p.Name, p.Commands)
 		}
 	}
 }

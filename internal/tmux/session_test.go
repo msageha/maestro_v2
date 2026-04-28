@@ -2,6 +2,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +15,36 @@ import (
 
 	"github.com/stretchr/testify/require"
 )
+
+func TestClassifyError_SessionEquivalentMessages(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"session not found",
+		"can't find session: maestro-foo",
+		"no such session",
+		"no sessions",
+		// Newly-classified messages: tmux returns these when a target-bearing
+		// command runs against an implicit/empty target (e.g. kill-session
+		// after the session is already gone). Treating them as
+		// session-equivalent keeps idempotent callers like KillSession from
+		// reporting cleanup failure.
+		"no current target",
+		"no current client",
+		"no current session",
+	}
+	for _, stderr := range cases {
+		t.Run(stderr, func(t *testing.T) {
+			t.Parallel()
+			cls := classifyError("kill-session", stderr, fmt.Errorf("exit status 1"))
+			if cls.Kind != ErrKindSession {
+				t.Fatalf("classifyError(%q) kind = %v, want ErrKindSession", stderr, cls.Kind)
+			}
+			if !errors.Is(cls, ErrTmuxSession) {
+				t.Fatalf("classifyError(%q) should match ErrTmuxSession via errors.Is", stderr)
+			}
+		})
+	}
+}
 
 // testSessionSeq provides unique suffixes for test session names.
 var testSessionSeq atomic.Int64
@@ -297,6 +328,24 @@ func waitForShell(t *testing.T, paneTarget string) {
 	}, 5*time.Second, 250*time.Millisecond, "shell prompt not detected in pane %s", paneTarget)
 }
 
+// TestBufNamePID_IncludesProcessPID pins the cross-process tmux buffer
+// uniqueness invariant. tmux buffers live on the tmux server, NOT inside
+// the maestro process, so two daemons sharing the same tmux server (one
+// per formation) would otherwise both emit `maestro-msg-1`, race on
+// `tmux load-buffer -b maestro-msg-1`, and silently overwrite each other's
+// payload before paste-buffer fired. The 2026-04 audit reproduced this:
+// a gemini-formation Planner pasted a codex-formation command because
+// codex's load-buffer landed in the same buffer slot just before
+// gemini's paste-buffer ran. The PID prefix makes the buffer name
+// globally unique across daemons on the same host.
+func TestBufNamePID_IncludesProcessPID(t *testing.T) {
+	t.Parallel()
+	if bufNamePID != os.Getpid() {
+		t.Errorf("bufNamePID = %d, want os.Getpid() = %d (PID prefix is the cross-daemon collision guard)",
+			bufNamePID, os.Getpid())
+	}
+}
+
 func TestSendTextAndSubmit(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
@@ -413,5 +462,35 @@ func TestSetSessionOption(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "off") {
 		t.Errorf("expected destroy-unattached off, got %s", strings.TrimSpace(string(out)))
+	}
+}
+
+// TestDebugLevelForErrorKind pins the 2026-04-28 retest4 fix that
+// demotes tmux runCtx debugLog prefix from "ERROR" to "DEBUG" when the
+// classified error is an idempotent-cleanup case the caller explicitly
+// handles. Without this, tmux_debug.log surfaced lines like:
+//
+//	runCtx ERROR args=[kill-session ...] kind=session stderr="can't find session"
+//
+// for `maestro up`'s pre-cleanup of a non-existent session — confusing
+// log readers because the ERROR prefix was louder than the actual
+// outcome (cleanup was a no-op, exactly as designed).
+func TestDebugLevelForErrorKind(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		kind ErrorKind
+		want string
+	}{
+		{ErrKindSession, "DEBUG"}, // can't find session — idempotent kill
+		{ErrKindServer, "DEBUG"},  // no server running — idempotent restore
+		{ErrKindPane, "ERROR"},    // pane not found — usually a real bug
+		{ErrKindTimeout, "ERROR"}, // genuine slowness, must surface
+		{ErrKindCommand, "ERROR"}, // catch-all for tmux failures
+		{ErrKindCanceled, "ERROR"},
+	}
+	for _, tc := range cases {
+		if got := debugLevelForErrorKind(tc.kind); got != tc.want {
+			t.Errorf("debugLevelForErrorKind(%v) = %q, want %q", tc.kind, got, tc.want)
+		}
 	}
 }

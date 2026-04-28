@@ -98,7 +98,7 @@ func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response 
 		case params.RunOnMain:
 			operationType = model.OperationTypeVerify
 		case params.RunOnIntegration:
-			operationType = model.OperationTypeRollout
+			operationType = model.OperationTypeRepair
 		}
 	}
 	tq.Tasks = append(tq.Tasks, model.Task{
@@ -230,7 +230,7 @@ func validateQueueWriteTaskSchemaParams(params QueueWriteParams) *uds.Response {
 	}
 
 	switch params.OperationType {
-	case "", model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout:
+	case "", model.OperationTypeVerify, model.OperationTypeRepair:
 		return nil
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid operation_type: %q", params.OperationType))

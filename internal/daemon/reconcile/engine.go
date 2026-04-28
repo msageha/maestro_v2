@@ -51,7 +51,10 @@ func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 
 	for pass := 0; pass < maxReconcilePasses; pass++ {
 		run := newRun(&e.deps)
-		var passRepairs []Repair
+		// Prealloc: the upper bound is unknown (each pattern emits
+		// 0..n repairs) but len(e.patterns) is a defensible lower
+		// bound; growing past that costs an extra append-grow at most.
+		passRepairs := make([]Repair, 0, len(e.patterns))
 
 		for _, p := range e.patterns {
 			outcome := p.Apply(run)

@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -280,9 +281,16 @@ func r9RegisterRepairTask(run *Run, statePath, commandID, workerID string, task 
 	if err := r1AddTaskToQueue(run, workerID, task); err != nil {
 		if rollbackErr := r9RollbackRepairTaskState(run, statePath, commandID, task.ID); rollbackErr != nil {
 			if markErr := r9MarkRetryEnqueueFailed(run, statePath, commandID, workerID, task.ID); markErr != nil {
-				return fmt.Errorf("queue add failed: %w; state rollback failed: %v; mark retry enqueue failed: %v", err, rollbackErr, markErr)
+				return errors.Join(
+					fmt.Errorf("queue add failed: %w", err),
+					fmt.Errorf("state rollback failed: %w", rollbackErr),
+					fmt.Errorf("mark retry enqueue failed: %w", markErr),
+				)
 			}
-			return fmt.Errorf("queue add failed: %w; state rollback failed: %v; marked retry_enqueue_failed", err, rollbackErr)
+			return errors.Join(
+				fmt.Errorf("queue add failed: %w", err),
+				fmt.Errorf("state rollback failed: %w; marked retry_enqueue_failed", rollbackErr),
+			)
 		}
 		return err
 	}

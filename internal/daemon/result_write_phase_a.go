@@ -266,19 +266,18 @@ func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResu
 
 	// If task is already terminal with same status, treat as idempotent success
 	if model.IsTerminal(queueTask.Status) {
-		if queueTask.Status == resultStatus {
-			for _, r := range rf.Results {
-				if r.TaskID == params.TaskID {
-					return taskIdx, r.ID, nil
-				}
-			}
-			// Terminal in queue but no result entry — proceed to write result
-			// and re-save the same terminal queue status below.
-			return taskIdx, "", nil
-		} else {
+		if queueTask.Status != resultStatus {
 			return -1, "", &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already terminal with status %s in queue", params.TaskID, queueTask.Status)}
 		}
+		for _, r := range rf.Results {
+			if r.TaskID == params.TaskID {
+				return taskIdx, r.ID, nil
+			}
+		}
+		// Terminal in queue but no result entry — proceed to write result
+		// and re-save the same terminal queue status below.
+		return taskIdx, "", nil
 	}
 
 	// Fencing: task must be in_progress.

@@ -63,14 +63,14 @@ agents:
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "append"
-    # policy_hook_implementation: Worker PreToolUse policy hook の実装
-    # type: string | default: "bash" | range: "bash", "shadow", "go"
-    # "shadow" は bash で enforcement しつつ Go 判定との差分を stderr に記録する移行検証モード。
-    policy_hook_implementation: "bash"
     # models: Worker ごとのモデルオーバーライド (worker_id -> model_name)
     # type: map[string]string | default: なし | range: 制限なし
-    models: {}
-    # boost: Worker のブースト (高速) モード有効化
+    models:
+      worker1: "sonnet"
+      worker2: "sonnet"
+      worker3: "opus"
+      worker4: "opus"
+    # boost: Worker のブーストモード有効化
     # type: bool | default: false | range: true/false
     boost: false
 
@@ -259,7 +259,7 @@ logging:
 circuit_breaker:
   # enabled: サーキットブレーカーの有効化フラグ (opt-in)
   # type: bool | default: false | range: true/false
-  enabled: false
+  enabled: true
   # max_consecutive_failures: トリップするまでの連続失敗しきい値
   # type: *int | default: 3 (DefaultCBMaxConsecutiveFailures) | range: >= 0
   max_consecutive_failures: 3
@@ -275,7 +275,7 @@ circuit_breaker:
 learnings:
   # enabled: 学習知見の蓄積有効化フラグ (opt-in)
   # type: bool | default: false | range: true/false
-  enabled: false
+  enabled: true
   # max_entries: 蓄積する学習知見の上限件数
   # type: *int | default: 100 (DefaultLearningsMaxEntries) | range: >= 0
   max_entries: 100
@@ -330,8 +330,8 @@ worktree:
   stall_cleanup_after: "10m"
   commit_policy:
     # max_files: 1コミットあたりの最大ステージングファイル数 (0=無制限)
-    # type: *int | default: 60 (DefaultCommitMaxFiles) | range: >= 0
-    max_files: 60
+    # type: *int | default: 100 (DefaultCommitMaxFiles) | range: >= 0
+    max_files: 100
     # require_gitignore: .gitignore の存在を要求する
     # type: bool | default: false | range: true/false
     require_gitignore: true
@@ -376,7 +376,6 @@ skills:
     min_commands: 2
 
 # --- Quality Gates ---
-# 品質ゲートの設定。
 quality_gates:
   # enabled: 品質ゲートの有効化フラグ
   # type: bool | default: false | range: true/false
@@ -404,19 +403,17 @@ verify:
   stall_threshold_sec: 600
 
 # --- Admission Control ---
-# verify/repair/rollout フェーズの同時実行数制限。
-# 全フィールド省略可: 値を書かなければ DefaultMaxConcurrent* (config_defaults.go)
-# が自動適用される。下記ブロック全体をコメントアウトしたままで運用 OK。
-# admission_control:
-#   # max_concurrent_verify: 検証フェーズの最大同時実行数
-#   # type: int | default: 2 (DefaultMaxConcurrentVerify) | range: >= 0
-#   max_concurrent_verify: 2
-#   # max_concurrent_repair: 修復フェーズの最大同時実行数
-#   # type: int | default: 1 (DefaultMaxConcurrentRepair) | range: >= 0
-#   max_concurrent_repair: 1
-#   # max_concurrent_rollout: ロールアウトフェーズの最大同時実行数
-#   # type: int | default: 1 (DefaultMaxConcurrentRollout) | range: >= 0
-#   max_concurrent_rollout: 1
+# verify/repair フェーズの同時実行数制限。
+# admission.NewController() が起動時に EffectiveMaxConcurrent* を読み出して
+# slot 制御を駆動する (daemon_startup.go)。値はそれぞれの default と同等で、
+# 必要に応じて増減する。0 を設定すると無制限になる。
+admission_control:
+  # max_concurrent_verify: 検証フェーズの最大同時実行数
+  # type: int | default: 2 (DefaultMaxConcurrentVerify) | range: >= 0
+  max_concurrent_verify: 2
+  # max_concurrent_repair: 修復フェーズの最大同時実行数
+  # type: int | default: 1 (DefaultMaxConcurrentRepair) | range: >= 0
+  max_concurrent_repair: 1
 
 # --- Fallback ---
 # Worker の連続失敗時の縮退動作制御。
@@ -436,201 +433,195 @@ fallback:
 
 # --- Review ---
 # 非同期ヘテロジニアスモデルによるコードレビュー。
-# 全フィールド省略可: 既定では無効 (enabled=false)。下記ブロック全体を
-# コメントアウトしたままで運用 OK。
-# review:
-#   # enabled: レビュー機能の有効化フラグ
-#   # type: bool | default: false | range: true/false
-#   enabled: false
-#   # models: レビューに使用するモデルリスト
-#   # type: []string | default: [] | range: 制限なし
-#   models: []
-#   # min_bloom_level: 最小 Bloom レベル
-#   # type: *int | default: 2 (DefaultReviewMinBloomLevel) | range: >= 0
-#   min_bloom_level: 2
-#   # max_concurrent_reviews: 最大同時レビュー数
-#   # type: *int | default: 2 (DefaultReviewMaxConcurrentReviews) | range: >= 0
-#   max_concurrent_reviews: 2
-#   # timeout_sec: レビュータイムアウト (秒)
-#   # type: *int | default: 300 (DefaultReviewTimeoutSec) | range: >= 0
-#   timeout_sec: 300
+# enabled: true にすると newReviewCoordinator() が起動し、対象タスクのレビューを
+# dispatch する (daemon_startup.go: review_coordinator.go)。利用するモデルを
+# models に並べる必要がある (空のままでは review が走らない)。
+review:
+  # enabled: レビュー機能の有効化フラグ (opt-in)
+  # type: bool | default: false | range: true/false
+  enabled: true
+  # models: レビューに使用するモデルリスト (例: ["sonnet"], ["opus"])
+  # type: []string | default: [] | range: 制限なし
+  models: ["codex"]
+  # min_bloom_level: レビュー対象の最小 Bloom レベル (これ未満はスキップ)
+  # type: *int | default: 2 (DefaultReviewMinBloomLevel) | range: >= 0
+  min_bloom_level: 2
+  # max_concurrent_reviews: 最大同時レビュー数
+  # type: *int | default: 2 (DefaultReviewMaxConcurrentReviews) | range: >= 0
+  max_concurrent_reviews: 2
+  # timeout_sec: レビュータイムアウト (秒)
+  # type: *int | default: 300 (DefaultReviewTimeoutSec) | range: >= 0
+  timeout_sec: 300
 
-# --- Rollout ---
-# 複数候補の並列実行と勝者選定。
-# EXPERIMENTAL: production multi-candidate dispatcher が未接続のため、
-# enabled: true は config 検証で拒否される。下記ブロック全体をコメントアウト
-# したまま (= enabled=false) で運用すること。
-# rollout:
-#   # enabled: ロールアウト機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # max_concurrent: 最大同時ロールアウトグループ数
-#   # type: *int | default: 2 | range: >= 0
-#   max_concurrent: 2
-#   # max_parallel_per_task: タスクあたりの最大並列候補数
-#   # type: *int | default: 2 | range: >= 0
-#   max_parallel_per_task: 2
-#   # min_bloom_level: ロールアウト対象の最小 Bloom レベル
-#   # type: *int | default: 4 | range: >= 0
-#   min_bloom_level: 4
-#   # max_expected_paths: 最大期待パス数
-#   # type: *int | default: 10 | range: >= 0
-#   max_expected_paths: 10
-#   # min_failure_count: ロールアウト対象の最小失敗回数
-#   # type: *int | default: 1 | range: >= 0
-#   min_failure_count: 1
-
-# --- Judge ---
-# ロールアウト候補の Tie-breaking 判定。
-# EXPERIMENTAL: production LLM caller が未接続のため、enabled: true は
-# config 検証で拒否される。下記ブロック全体をコメントアウトしたまま運用すること。
-# judge:
-#   # enabled: Judge 機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # model: Judge に使用するモデル
-#   # type: *string | default: "opus" | range: 制限なし
-#   model: "opus"
-#   # timeout_sec: Judge タイムアウト (秒)
-#   # type: *int | default: 60 | range: >= 0
-#   timeout_sec: 60
-
-# =============================================================================
-# Advanced / Experimental (C-1 ~ C-8)
-# 以下はオプショナルな拡張機能。必要に応じてコメントを外して有効化する。
-# =============================================================================
-
-# --- C-1: Evolution ---
+# --- Evolution ---
 # 進化的品質改善機能。
-# evolution:
-#   # enabled: 進化機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # max_mutations_per_round: 1ラウンドあたりの最大変異数
-#   # type: *int | default: 3 (DefaultMaxMutationsPerRound) | range: 制限なし
-#   max_mutations_per_round: 3
-#   # novelty_threshold: 新規性しきい値
-#   # type: *float64 | default: 0.99 (DefaultNoveltyThreshold) | range: 制限なし
-#   novelty_threshold: 0.99
-#   # strategies: 使用する戦略リスト
-#   # type: []string | default: ["diff", "full", "cross"] | range: 制限なし
-#   strategies: ["diff", "full", "cross"]
+evolution:
+  # enabled: 進化機能の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # max_mutations_per_round: 1ラウンドあたりの最大変異数
+  # type: *int | default: 3 (DefaultMaxMutationsPerRound) | range: 制限なし
+  max_mutations_per_round: 3
+  # novelty_threshold: 新規性しきい値
+  # type: *float64 | default: 0.99 (DefaultNoveltyThreshold) | range: 制限なし
+  novelty_threshold: 0.99
+  # strategies: 使用する戦略リスト
+  # type: []string | default: ["diff", "full", "cross"] | range: 制限なし
+  strategies: ["diff", "full", "cross"]
 
-# --- C-2: Bandit (Adaptive Model Selection) ---
+# --- Bandit (Adaptive Model Selection) ---
 # UCB1 ベースの適応的モデル選択機能。
-# bandit:
-#   # enabled: バンディット機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # exploration_coefficient: 探索係数 (UCB1)
-#   # type: *float64 | default: 1.41 (DefaultExplorationCoeff) | range: 制限なし
-#   exploration_coefficient: 1.41
-#   # min_samples_before_use: 使用開始前の最小サンプル数
-#   # type: *int | default: 10 (DefaultMinSamplesBeforeUse) | range: 制限なし
-#   min_samples_before_use: 10
-#   # decay_factor: 減衰係数
-#   # type: *float64 | default: 0.95 (DefaultDecayFactor) | range: 制限なし
-#   decay_factor: 0.95
-#   # trace_data_requirement: トレースデータ要件
-#   # type: *int | default: 50 (DefaultTraceDataRequirement) | range: 制限なし
-#   trace_data_requirement: 50
+bandit:
+  # enabled: バンディット機能の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # exploration_coefficient: 探索係数 (UCB1)
+  # type: *float64 | default: 1.41 (DefaultExplorationCoeff) | range: 制限なし
+  exploration_coefficient: 1.41
+  # min_samples_before_use: 使用開始前の最小サンプル数
+  # type: *int | default: 10 (DefaultMinSamplesBeforeUse) | range: 制限なし
+  min_samples_before_use: 10
+  # decay_factor: 減衰係数
+  # type: *float64 | default: 0.95 (DefaultDecayFactor) | range: 制限なし
+  decay_factor: 0.95
+  # trace_data_requirement: トレースデータ要件
+  # type: *int | default: 50 (DefaultTraceDataRequirement) | range: 制限なし
+  trace_data_requirement: 50
 
-# --- C-3: Extended Verification ---
+# --- Extended Verification ---
 # 拡張検証パースペクティブ機能。
-# extended_verification:
-#   # enabled: 拡張検証の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # security_check: セキュリティチェックの有効化
-#   # type: *bool | default: false | range: true/false
-#   security_check: false
-#   # performance_bench: パフォーマンスベンチマークの有効化
-#   # type: *bool | default: false | range: true/false
-#   performance_bench: false
-#   # perspective_weights: パースペクティブの重みマップ
-#   # type: map[string]float64 | default: {"build": 1.0, "test": 1.0, "security": 0.5} | range: 制限なし
-#   perspective_weights:
-#     build: 1.0
-#     test: 1.0
-#     security: 0.5
-#   # max_auto_retries: 自動リトライの最大回数
-#   # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
-#   max_auto_retries: 2
+# security_check / performance_bench はマーカーファイル (go.mod, package.json,
+# pyproject.toml, Cargo.toml, Gemfile, pom.xml/build.gradle 等) でプロジェクトの
+# 言語を自動判定し、対応するツールを起動する:
+#   go     → gosec ./...                   / go test -bench=. ./...
+#   node   → npm audit --audit-level=high  / (未対応)
+#   python → uvx pip-audit                 / (未対応)
+#   rust   → cargo audit                   / cargo bench
+#   ruby   → bundle audit check            / (未対応)
+#   その他 → スキップ (verify を fail させない)
+# 言語に対応するツールが手元にインストールされていない場合は当該検証コマンド
+# だけが fail する。`verify.yaml` を書けば言語別 default を上書きできる。
+extended_verification:
+  # enabled: 拡張検証の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: true
+  # security_check: セキュリティチェックの有効化 (言語別ツールに自動マップ)
+  # type: *bool | default: false | range: true/false
+  security_check: true
+  # performance_bench: パフォーマンスベンチマークの有効化 (go / rust のみ)
+  # type: *bool | default: false | range: true/false
+  performance_bench: false
+  # perspective_weights: パースペクティブの重みマップ
+  # weight >= 1.0 の perspective が fail すると全体 FAIL (critical)
+  # weight <  1.0 は score を下げるが全体 fail にはしない (advisory)
+  # type: map[string]float64 | default: {"build": 1.0, "test": 1.0, "security": 0.5} | range: 制限なし
+  perspective_weights:
+    build: 1.0
+    test: 1.0
+    security: 0.5
+  # max_auto_retries: 自動リトライの最大回数
+  # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
+  max_auto_retries: 2
 
-# --- C-4: Search ---
+# --- Search ---
 # 探索ベース最適化 (Alpha-Beta, Thompson Sampling)。
-# search:
-#   # enabled: 探索機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # max_depth: 探索の最大深さ
-#   # type: *int | default: 3 (DefaultSearchMaxDepth) | range: 制限なし
-#   max_depth: 3
-#   # max_branching: 最大分岐数
-#   # type: *int | default: 4 (DefaultMaxBranching) | range: 制限なし
-#   max_branching: 4
-#   # prune_threshold: 枝刈りしきい値
-#   # type: *float64 | default: 0.3 (DefaultPruneThreshold) | range: 制限なし
-#   prune_threshold: 0.3
-#   # thompson_alpha: Thompson Sampling の alpha パラメータ
-#   # type: *float64 | default: 1.0 (DefaultThompsonAlpha) | range: 制限なし
-#   thompson_alpha: 1.0
-#   # thompson_beta: Thompson Sampling の beta パラメータ
-#   # type: *float64 | default: 1.0 (DefaultThompsonBeta) | range: 制限なし
-#   thompson_beta: 1.0
+search:
+  # enabled: 探索機能の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # max_depth: 探索の最大深さ
+  # type: *int | default: 3 (DefaultSearchMaxDepth) | range: 制限なし
+  max_depth: 3
+  # max_branching: 最大分岐数
+  # type: *int | default: 4 (DefaultMaxBranching) | range: 制限なし
+  max_branching: 4
+  # prune_threshold: 枝刈りしきい値
+  # type: *float64 | default: 0.3 (DefaultPruneThreshold) | range: 制限なし
+  prune_threshold: 0.3
+  # thompson_alpha: Thompson Sampling の alpha パラメータ
+  # type: *float64 | default: 1.0 (DefaultThompsonAlpha) | range: 制限なし
+  thompson_alpha: 1.0
+  # thompson_beta: Thompson Sampling の beta パラメータ
+  # type: *float64 | default: 1.0 (DefaultThompsonBeta) | range: 制限なし
+  thompson_beta: 1.0
 
-# --- C-5: Self-Improvement ---
+# --- Self-Improvement ---
 # プロンプト・ペルソナの自己改善機能。
-# self_improvement:
-#   # enabled: 自己改善機能の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   # targets: 改善対象リスト
-#   # type: []string | default: ["planner_prompt", "persona", "worker_prompt"] | range: 制限なし
-#   targets: ["planner_prompt", "persona", "worker_prompt"]
-#   # exclude_targets: 改善対象から除外するリスト
-#   # type: []string | default: ["fitness", "daemon_logic", "circuit_breaker"] | range: 制限なし
-#   exclude_targets: ["fitness", "daemon_logic", "circuit_breaker"]
-#   # archive_max_size: アーカイブの最大サイズ
-#   # type: *int | default: 100 (DefaultArchiveMaxSize) | range: 制限なし
-#   archive_max_size: 100
+self_improvement:
+  # enabled: 自己改善機能の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # targets: 改善対象リスト
+  # type: []string | default: ["planner_prompt", "persona", "worker_prompt"] | range: 制限なし
+  targets: ["planner_prompt", "persona", "worker_prompt"]
+  # exclude_targets: 改善対象から除外するリスト
+  # type: []string | default: ["fitness", "daemon_logic", "circuit_breaker"] | range: 制限なし
+  exclude_targets: ["fitness", "daemon_logic", "circuit_breaker"]
+  # archive_max_size: アーカイブの最大サイズ
+  # type: *int | default: 100 (DefaultArchiveMaxSize) | range: 制限なし
+  archive_max_size: 100
 
-# --- C-6: Complexity ---
+# --- Complexity ---
 # 適応的計算深度制御。
-# complexity:
-#   # enabled: 複雑度適応の有効化フラグ
-#   # type: *bool | default: false | range: true/false
-#   enabled: false
-#   thresholds:
-#     # simple_max_files: "simple" 判定の最大ファイル数
-#     # type: *int | default: 3 (DefaultSimpleMaxFiles) | range: 制限なし
-#     simple_max_files: 3
-#     # standard_max_files: "standard" 判定の最大ファイル数
-#     # type: *int | default: 10 (DefaultStandardMaxFiles) | range: 制限なし
-#     standard_max_files: 10
-#     # complex_max_files: "complex" 判定の最大ファイル数
-#     # type: *int | default: 30 (DefaultComplexMaxFiles) | range: 制限なし
-#     complex_max_files: 30
+complexity:
+  # enabled: 複雑度適応の有効化フラグ (opt-in)
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  thresholds:
+    # simple_max_files: "simple" 判定の最大ファイル数
+    # type: *int | default: 3 (DefaultSimpleMaxFiles) | range: 制限なし
+    simple_max_files: 3
+    # standard_max_files: "standard" 判定の最大ファイル数
+    # type: *int | default: 10 (DefaultStandardMaxFiles) | range: 制限なし
+    standard_max_files: 10
+    # complex_max_files: "complex" 判定の最大ファイル数
+    # type: *int | default: 30 (DefaultComplexMaxFiles) | range: 制限なし
+    complex_max_files: 30
 
-# --- C-7: Feature Profiles ---
+# --- Feature Profiles ---
 # 複雑度レベル別の機能フラグプロファイル (キー名がプロファイル識別子)。
-# feature_profiles:
-#   # <profile_name>:
-#   #   # cross_agent_review: クロスエージェントレビューの設定
-#   #   # type: *string | default: "false" (DefaultCrossAgentReview) | range: 制限なし
-#   #   cross_agent_review: "false"
-#   #   # exploratory_optimization: 探索的最適化の有効化
-#   #   # type: *bool | default: false | range: true/false
-#   #   exploratory_optimization: false
-#   #   # evolutionary_quality: 進化的品質改善の有効化
-#   #   # type: *bool | default: false | range: true/false
-#   #   evolutionary_quality: false
-#   #   # adaptive_model_selection: 適応的モデル選択の有効化
-#   #   # type: *bool | default: false | range: true/false
-#   #   adaptive_model_selection: false
-#   #   # self_improvement: 自己改善の有効化
-#   #   # type: *bool | default: false | range: true/false
-#   #   self_improvement: false
-#   #   # adaptive_depth: 適応的深度制御の有効化
-#   #   # type: *bool | default: false | range: true/false
-#   #   adaptive_depth: false
+# 値は SSOT である daemon/featuregate.Evaluator.DefaultProfiles と
+# model.DefaultFeatureProfiles を反映した既定値。空 ({}) にすると daemon は
+# Evaluator の内蔵デフォルトプロファイルを使用する。
+# 標準キー: simple / standard / complex / critical
+feature_profiles:
+  simple:
+    # cross_agent_review: クロスエージェントレビューの有効化
+    # type: *bool | default: false (DefaultCrossAgentReview) | range: true/false
+    cross_agent_review: false
+    # exploratory_optimization: 探索的最適化の有効化
+    # type: *bool | default: false | range: true/false
+    exploratory_optimization: false
+    # evolutionary_quality: 進化的品質改善の有効化
+    # type: *bool | default: false | range: true/false
+    evolutionary_quality: false
+    # adaptive_model_selection: 適応的モデル選択の有効化
+    # type: *bool | default: false | range: true/false
+    adaptive_model_selection: false
+    # self_improvement: 自己改善の有効化
+    # type: *bool | default: false | range: true/false
+    self_improvement: false
+    # adaptive_depth: 適応的深度制御の有効化
+    # type: *bool | default: false | range: true/false
+    adaptive_depth: false
+  standard:
+    cross_agent_review: false
+    exploratory_optimization: false
+    evolutionary_quality: false
+    adaptive_model_selection: false
+    self_improvement: false
+    adaptive_depth: false
+  complex:
+    cross_agent_review: true
+    exploratory_optimization: false
+    evolutionary_quality: false
+    adaptive_model_selection: true
+    self_improvement: false
+    adaptive_depth: true
+  critical:
+    cross_agent_review: true
+    exploratory_optimization: true
+    evolutionary_quality: true
+    adaptive_model_selection: true
+    self_improvement: true
+    adaptive_depth: true

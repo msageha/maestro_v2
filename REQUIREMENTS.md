@@ -57,8 +57,7 @@ typecheck: [command]
 
 ### Priority S0: 安全に止まれる最小制御面（システムの命綱）
 
-- [S0-1] Admission Control（リソースと並行実行の管理）: Daemonは、Worker数だけでなく「同時Verify数」「同時Repair数」「同時Rollout
-数」を厳格に管理する [MUST]。
+- [S0-1] Admission Control（リソースと並行実行の管理）: Daemonは、Worker数だけでなく「同時Verify数」「同時Repair数」を厳格に管理する [MUST]。
 - [S0-2] Single-worker Fallback（単一ワーカー縮退動作の保証）: マルチモデルや並列機能がエラーを起こした場合でも、システム全体を停止
 させず Planner → 1 Worker → Verify → Repair の最小ループに縮退して動作継続可能なアーキテクチャとする [MUST]。
 
@@ -108,13 +107,8 @@ only レビュアー」としてアサインする [SHOULD]。
 
 ### Priority B: 群知能の限定解禁（AI Scientistスウォーム）
 
-- [B-1] 厳格な条件付き Multi-rollout: 以下の条件を すべて満たす場合のみ、同一タスクを複数の独立したWorktreeで並列実行(最大2並列から
-開始)させる [MAY]。
-    1. command-scoped verify config が定義され実行可能であること。
-    2. 単一Worker実行またはRepairで一定回数失敗している、またはBloom Taxonomy高難度であること。
-    3. expected_paths が過度に広すぎない（リポジトリ全体に及ばない）こと。
-- [B-2] Judge（裁定者）の「Tie-breaker」限定利用: Multi-rolloutの勝者はS1-2の機械的Fitnessで決定する。最優秀LLM（Judge）の介入は、
-「機械スコアが Tie (同点) の場合」に単一候補を採択する Tie-breaker としてのみ許可する [MUST]。
+> **NOTE**: B-1 (Multi-rollout) と B-2 (Judge) は production 配線が完了せず本番採用しない方針となった。実装パッケージ (`internal/daemon/rollout`, `internal/daemon/judge`) およびそれらに紐付く Config (`rollout`, `judge`) と `OperationTypeRollout` は廃止済み。将来的に並列候補生成を再導入する場合は別途要件再定義からやり直す。
+
 - [B-3] Graph-based Schedulingの高度化 (将来拡張): 簡易ヒューリスティック(A-4)の運用実績蓄積後、グラフ彩色やシンボル単位の競合予測
 アルゴリズムの導入を検討する [MAY]。
 
@@ -188,7 +182,7 @@ Phase A–B の Planner 7 責務に加え Phase C で追加される判断負荷
 | 3. Frankenstein マージ禁止 | C-4 の探索的実装は独立 Worktree で実行し、勝者を丸ごと採用。合成は行わない。**整合** |
 | 4. Worker 間の直接通信禁止 | C-7 のマルチランタイムも Daemon 経由の Hub-and-Spoke 型を維持。**整合** |
 | 5. 共有可変状態の導入禁止 | C-5 の学習知見 DB は Daemon が一元管理し、Agent は ReadOnly で参照。**整合** |
-| 6. Verify 不可タスクへの Multi-rollout 禁止 | C-4 の探索的実装は verify.yaml 必須を前提とする。**整合** |
+| 6. Verify 不可タスクへの Multi-rollout 禁止 | Multi-rollout 自体が廃止済 (B-1/B-2 削除)。C-4 の探索的実装は verify.yaml 必須を前提とする。**整合** |
 | 7. 初期段階での Embedding RAG・Bandit 禁止 | C-2 の UCB バンディットは Phase C（Phase S 完了後）で導入するため、§6-7 の「最初から」の制約と矛盾しない。ただし Phase S の Trace ログ蓄積（S3）が前提条件となる [MUST]。**整合** |
 
 ———
@@ -202,18 +196,18 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 本フェーズは既存アーキテクチャとの親和性および実装難易度に基づき、以下の3段階で実装する。
 
 - **Phase C-α（既存拡張）**: C-2, C-3 — config/verify.yaml/learnings の拡張で実装可能
-- **Phase C-β（新規基盤）**: C-1, C-6 — Multi-rollout 拡張、複雑度推定基盤が必要
+- **Phase C-β（新規基盤）**: C-1, C-6 — 進化的フレームワーク基盤、複雑度推定基盤が必要
 - **Phase C-γ（長期研究）**: C-4, C-5 — 探索木管理、自己改善フレームワークが必要
 
 ### C-1: Evolutionary Code Quality（進化的コード品質改善）[Phase C-β]
 
-**概要**: Multi-rollout（B-1）を進化的フレームワークに拡張し、変異→評価→選択サイクルによるコード品質の反復改善を実現する。
+**概要**: 単一 worktree 内で変異→評価→選択サイクルによるコード品質の反復改善を実現する。
 
 **研究対応**:
 - ShinkaEvolve: LLM を変異演算子として活用し、diff/full/cross の3種変異パッチを生成。島モデルによる集団管理
 - Darwin Gödel Machine (DGM): アーカイブベース選択により、過去の成功パターンを stepping stone として保持
 
-**統合方法**: 既存 Multi-rollout 基盤（B-1）を進化的フレームワークとして拡張する。worktree を進化島、Fitness 関数（S1-2）を適応度関数として再利用し、rollout 数を条件付きで増加させる。
+**統合方法**: 既存 worktree を進化島として再利用し、Fitness 関数（S1-2）を適応度関数として活用する。なお B-1 (Multi-rollout) は廃止済みのため、並列候補生成ではなく逐次的な変異・評価サイクルで運用する。
 
 **具体的機能**:
 - [C-1-1] 変異戦略の多様化: Worker に対し diff（差分パッチ）、full（全体再生成）、cross（複数候補の交叉）の3種の変異パッチ生成を指示可能とする [SHOULD]。変異種別の選択は Planner が過去の Fitness 結果に基づき決定する。
@@ -272,13 +266,13 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 - AB-MCTS: 「Wider or Deeper?」を Thompson Sampling で動的選択。Alpha-Beta 枝刈りによる低ポテンシャルブランチの早期削減
 - AI Scientist v2: Progressive Agentic Tree Search による複数実験パスの並列探索
 
-**統合方法**: Multi-rollout（B-1）を木構造探索に拡張する。Planner が探索戦略（展開・枝刈り判断）を管理し、各 worktree が探索ノードとして機能する。
+**統合方法**: 単一 worktree 上で逐次的に候補を展開する木構造探索として実装する (B-1 Multi-rollout は廃止のため並列展開ではない)。Planner が探索戦略（展開・枝刈り判断）を管理する。
 
 **具体的機能**:
-- [C-4-1] 探索木管理: 各 worktree を探索ノードとし、Planner が展開（新ノード生成）と枝刈り（低スコアノード打切り）を判断する探索木構造を導入する [MAY]。ノード間の親子関係は Planner が管理し、Worker 間の直接通信は発生しない。
+- [C-4-1] 探索木管理: 各探索ノードを worktree 上のチェックポイントとして扱い、Planner が展開（新ノード生成）と枝刈り（低スコアノード打切り）を判断する探索木構造を導入する [MAY]。ノード間の親子関係は Planner が管理し、Worker 間の直接通信は発生しない。
 - [C-4-2] Thompson Sampling による探索戦略: 「幅（新アプローチの探索）」と「深さ（既存アプローチの改善）」の選択を Thompson Sampling で確率的に決定する [MAY]。探索の多様性と収束のバランスを自動調整する。
 - [C-4-3] Alpha-Beta 枝刈り: Fitness 関数（S1-2）のスコアに基づき、一定閾値を下回るブランチを早期に打ち切る [MAY]。リソース消費を抑制しつつ、有望な候補に計算資源を集中させる。
-- [C-4-4] Judge（B-2）との連携: 探索木の最終候補選択において、機械的 Fitness が Tie の場合に限り Judge 機構を Tie-breaker として活用する [MUST]。B-2 の制約を継承する。
+- [C-4-4] 機械的 Tie 解消: 探索木の最終候補選択において Fitness が Tie の場合は、決定論的なフォールバック（最初に到達した候補を採用）で解消する [MUST]。Judge (B-2) は廃止済みのため LLM 介入は行わない。
 
 **Anti-Requirements 整合**:
 - §6-4 準拠: 探索ノード（Worker）間の直接通信を禁止する。全てのノード間情報伝達は Planner（Hub）経由の Hub-and-Spoke 型とする
@@ -476,15 +470,15 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
     - LLMは build/lint/test/typecheck の結果を覆してはならない。補助的説明やTie-breakのみを行う。
 2. LLM同士の多数決の採用禁止 [MUST NOT]
     - 賢くない多数派（Dumb Majority）に引っ張られるのを防ぐため、判断は常にコンパイラ・テストに委ねる。
-3. Judgeによる複数候補の合成（Frankenstein マージ）禁止 [MUST NOT]
+3. 複数候補の合成（Frankenstein マージ）禁止 [MUST NOT]
     - 複数モデルのコードをLLMに切り貼りさせる統合は論理破綻の温床となるため、常に「1つのWorktreeを丸ごと採用（Winner-takes-all）」
-    とする。
+    とする。Judge (B-2) は廃止済のため LLM による Tie-breaking も行わない。
 4. Worker（Agent）間の直接通信禁止 [MUST NOT]
     - 隔離性と制御可能性を損なうため、常にDaemonを介した非同期通信（Hub-and-Spoke型）を維持する。
 5. 共有可変状態（Typed Contract Blackboard等）の導入禁止 [MUST NOT]
     - 認識の同期は、Plannerによる「インターフェースの先行定義とReadOnly参照」で解決する。
-6. Verify不可のタスクに対するMulti-rollout禁止 [MUST NOT]
-    - 成功基準が曖昧な状態で群知能を回すことは、高コストな乱数発生器に過ぎないため発火させない。
+6. Verify不可のタスクに対する並列候補生成（Multi-rollout）禁止 [MUST NOT]
+    - 成功基準が曖昧な状態で群知能を回すことは、高コストな乱数発生器に過ぎないため発火させない。なお B-1 (Multi-rollout) 自体は本実装では廃止済み。将来再導入する場合も本制約を継承する。
 7. 最初からの Embedding (ベクトル) RAG や Bandit アルゴリズムの実装禁止 [MUST NOT]
     - Traceログや古典的タグ検索での効果測定（S3）が回るまでは、高度な自己学習アルゴリズムの実装は見送る。
 
@@ -501,7 +495,7 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
 - Phase A 完了基準:
     - 異種モデル Reviewer の指摘事項がマージをブロックせず、かつその採用率がデータとして蓄積されていること。
 - Phase B 完了基準:
-    - 条件を満たしたMulti-rolloutタスクにおいて、LLMの主観によらず、定義されたFitness関数によって勝者が自動的に選定されること。
+    - **B-1/B-2 は廃止**（production 配線完了せず）。Multi-rollout・Judge は将来再導入時に再要件化する。B-3 (Graph-based Scheduling) は将来拡張として残置。
 - Phase C 責務境界完了基準:
     - §4.5.1 の責務境界原則（決定論的処理の Daemon 集約・Agent 責務の意味的判断限定・Daemon 前処理パターン）が、Phase C 全機能（C-1〜C-8）の設計・実装において遵守されていること。
     - C-1〜C-8 の各機能について「判断主体」と「実行主体」が §4.5.2 のマトリクスに従い実装されていること。
@@ -514,7 +508,7 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
     - 適応的モデル選択（C-2）が稼働し、Trace JSONL のタスク結果データに基づきモデル割当が動的に最適化されていること。デフォルトモデルへの縮退が正常に動作すること。
     - 自律的検証改善ループ（C-3）が verification フェーズに統合され、2回以上の自律的改善サイクル（検証→修正→再検証）を完了できること。検証カバレッジの拡大方向でのみ改善を行い、基準の緩和が発生しないこと。
 - Phase C-β 完了基準:
-    - 進化的コード品質改善（C-1）が Multi-rollout（B-1）と統合され、変異→評価→選択の進化的サイクルが機能すること。S1-2 の Fitness 関数による機械的選定が維持されていること。
+    - 進化的コード品質改善（C-1）の変異→評価→選択サイクルが単一 worktree 上で機能すること。S1-2 の Fitness 関数による機械的選定が維持されていること。
     - Fitness 関数（S1-2）にコード品質スコア軸が追加され、静的解析ツール出力に基づく機械的評価が稼働していること。
     - 適応的計算深度（C-6）により、bloom_level に応じたサブタスク分割粒度の動的調整が機能すること。definition_of_abort の閾値を超えないこと。
 - Phase C-γ 完了基準:

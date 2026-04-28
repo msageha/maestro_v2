@@ -1,5 +1,8 @@
-// Package-level documentation lives in doc.go (including the F-049 naming
-// convention for Status / State / Phase).
+// Package model holds the configuration types and state-machine status
+// values shared across maestro_v2. Detailed package-level documentation
+// lives in doc.go (including the F-049 naming convention for
+// Status / State / Phase); this file only re-asserts the package
+// directive in the form revive's package-comments check expects.
 package model
 
 // Config is the root configuration structure loaded from config.yaml.
@@ -23,8 +26,6 @@ type Config struct {
 	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
 	Fallback           Fallback             `yaml:"fallback"`
 	Review             ReviewConfig         `yaml:"review"`
-	Rollout            RolloutConfig        `yaml:"rollout"`
-	Judge              JudgeConfig          `yaml:"judge"`
 
 	// C-1 Evolution
 	Evolution EvolutionConfig `yaml:"evolution,omitempty"`
@@ -128,39 +129,17 @@ func (a AgentConfig) EffectiveBasePromptMode() string {
 
 // WorkerConfig holds configuration for worker agents.
 type WorkerConfig struct {
-	Count                    int               `yaml:"count"`
-	DefaultModel             string            `yaml:"default_model"`
-	Models                   map[string]string `yaml:"models,omitempty"`
-	Boost                    bool              `yaml:"boost"`
-	BasePromptMode           string            `yaml:"base_prompt_mode"`
-	PolicyHookImplementation string            `yaml:"policy_hook_implementation,omitempty"`
+	Count          int               `yaml:"count"`
+	DefaultModel   string            `yaml:"default_model"`
+	Models         map[string]string `yaml:"models,omitempty"`
+	Boost          bool              `yaml:"boost"`
+	BasePromptMode string            `yaml:"base_prompt_mode"`
 }
-
-const (
-	// PolicyHookImplementationBash keeps the existing bash hook as the
-	// authoritative Worker PreToolUse policy.
-	PolicyHookImplementationBash = "bash"
-	// PolicyHookImplementationShadow keeps bash enforcement and compares the
-	// Go policy result in stderr-only shadow mode.
-	PolicyHookImplementationShadow = "shadow"
-	// PolicyHookImplementationGo writes the thin wrapper that delegates
-	// directly to `maestro hook policy-check`.
-	PolicyHookImplementationGo = "go"
-)
 
 // EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
 // Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
 func (w WorkerConfig) EffectiveBasePromptMode() string {
 	return effectiveBasePromptMode(w.BasePromptMode)
-}
-
-// EffectivePolicyHookImplementation returns the selected worker policy hook
-// implementation, defaulting to bash for migration safety.
-func (w WorkerConfig) EffectivePolicyHookImplementation() string {
-	if w.PolicyHookImplementation == "" {
-		return PolicyHookImplementationBash
-	}
-	return w.PolicyHookImplementation
 }
 
 // --- ContinuousConfig ---
@@ -202,11 +181,18 @@ type WatcherConfig struct {
 	WaitReadyMaxRetries  int     `yaml:"wait_ready_max_retries"`
 
 	// Clear confirmation settings (used by clearAndConfirm)
-	ClearConfirmTimeoutSec  int `yaml:"clear_confirm_timeout_sec"`   // Per-attempt confirmation window (default 5s)
-	ClearConfirmPollMs      int `yaml:"clear_confirm_poll_ms"`       // Polling interval within confirmation window (default 250ms)
-	ClearMaxAttempts        int `yaml:"clear_max_attempts"`          // Total send attempts including initial (default 3)
-	ClearRetryBackoffMs     int `yaml:"clear_retry_backoff_ms"`      // Base backoff between attempts; doubles each retry (default 500ms)
-	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
+	ClearConfirmTimeoutSec int `yaml:"clear_confirm_timeout_sec"` // Per-attempt confirmation window (default 5s)
+	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
+	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
+	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
+	// Deprecated since 2026-04: clearAndConfirm no longer sends a second Enter
+	// after /clear. Older Claude Code releases displayed a completion prompt for
+	// slash commands and required confirmation, but Claude Code 2.x executes
+	// /clear immediately on the first Enter and treats a trailing Enter as
+	// "re-run last command" — causing /clear to fire twice per task transition.
+	// The field is kept so existing config.yaml files continue to validate; the
+	// value is ignored by clearAndConfirm.
+	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"`
 
 	// Shell readiness timeout for formation startup (default 10s)
 	ShellReadyTimeoutSec int `yaml:"shell_ready_timeout_sec"`

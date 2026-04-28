@@ -4,19 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
-
-// PolicyHookGoEscapeHatchEnv guards `policy_hook_implementation: "go"` until
-// the Go policy validator (internal/validate/policy.go) reaches full corpus
-// parity with worker_policy_hook.sh. Setting this variable to "1" allows the
-// `"go"` value to pass config validation; it MUST only be set by parity-test
-// drivers and operators who accept the regression risk documented in
-// docs/maestro-review/F-025-migration-plan.md (Step 7 / Step 8 gating).
-const PolicyHookGoEscapeHatchEnv = "MAESTRO_POLICY_HOOK_ALLOW_GO_UNSAFE"
 
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
 // Returns a joined error containing all validation failures with field paths.
@@ -37,8 +28,6 @@ func (c Config) Validate() error {
 	c.validateAdmissionControl(&errs)
 	c.validateFallback(&errs)
 	c.validateReview(&errs)
-	c.validateRollout(&errs)
-	c.validateJudge(&errs)
 	c.validateQualityGates(&errs)
 	c.validateWorktree(&errs)
 	c.validateExperimental(&errs)
@@ -63,37 +52,6 @@ func (c Config) validateProject(errs *[]error) {
 func (c Config) validateAgents(errs *[]error) {
 	if c.Agents.Workers.Count < MinWorkers || c.Agents.Workers.Count > MaxWorkers {
 		*errs = append(*errs, fmt.Errorf("agents.workers.count: must be between %d and %d", MinWorkers, MaxWorkers))
-	}
-	switch c.Agents.Workers.PolicyHookImplementation {
-	case "", PolicyHookImplementationBash, PolicyHookImplementationShadow:
-		// always accepted
-	case PolicyHookImplementationGo:
-		// `go` is gated behind an explicit unsafe-override env var until the
-		// Go policy validator reaches full parity with worker_policy_hook.sh.
-		// Without the gate, selecting `go` silently disables the majority of
-		// Tier1/Tier2 safety rules that are not yet translated to Go (see
-		// docs/maestro-review/F-025-migration-plan.md). Default `bash` and
-		// `shadow` cover the production-safe operating modes; the gate exists
-		// for parity-test drivers, not end users.
-		if os.Getenv(PolicyHookGoEscapeHatchEnv) != "1" {
-			*errs = append(*errs, fmt.Errorf(
-				"agents.workers.policy_hook_implementation: %q is gated until the Go validator reaches parity with worker_policy_hook.sh "+
-					"(only ~10 of the bash hook's rules are translated; selecting it would silently disable the rest). "+
-					"Use %q (default) or %q for production. "+
-					"Parity-test drivers may set %s=1 to bypass this check; see docs/maestro-review/F-025-migration-plan.md",
-				PolicyHookImplementationGo,
-				PolicyHookImplementationBash,
-				PolicyHookImplementationShadow,
-				PolicyHookGoEscapeHatchEnv,
-			))
-		}
-	default:
-		*errs = append(*errs, fmt.Errorf(
-			"agents.workers.policy_hook_implementation: must be one of %q, %q, or %q",
-			PolicyHookImplementationBash,
-			PolicyHookImplementationShadow,
-			PolicyHookImplementationGo,
-		))
 	}
 	if !isValidModelName(c.Agents.Orchestrator.Model) {
 		*errs = append(*errs, fmt.Errorf("agents.orchestrator.model: invalid model name %q", c.Agents.Orchestrator.Model))
@@ -133,22 +91,6 @@ func (c Config) validateAgents(errs *[]error) {
 				"(only claude-code enforces tool restrictions; codex/gemini have no equivalent guardrail). "+
 				"Set agents.planner.model to a Claude model such as opus, sonnet, or haiku",
 			r))
-	}
-	if r, _ := ParseRuntimeFromModel(c.Agents.Workers.DefaultModel); r != RuntimeClaudeCode {
-		*errs = append(*errs, fmt.Errorf(
-			"agents.workers.default_model: runtime %q is not supported for worker roles "+
-				"(only claude-code enforces worker tool restrictions and policy hooks). "+
-				"Set agents.workers.default_model to a Claude model such as sonnet, opus, or haiku",
-			r))
-	}
-	for workerID, m := range c.Agents.Workers.Models {
-		if r, _ := ParseRuntimeFromModel(m); r != RuntimeClaudeCode {
-			*errs = append(*errs, fmt.Errorf(
-				"agents.workers.models.%s: runtime %q is not supported for worker roles "+
-					"(only claude-code enforces worker tool restrictions and policy hooks). "+
-					"Set the worker model to a Claude model such as sonnet, opus, or haiku",
-				workerID, r))
-		}
 	}
 }
 
@@ -281,9 +223,6 @@ func (c Config) validateAdmissionControl(errs *[]error) {
 	if c.AdmissionControl.MaxConcurrentRepair < 0 {
 		*errs = append(*errs, fmt.Errorf("admission_control.max_concurrent_repair: must be >= 0"))
 	}
-	if c.AdmissionControl.MaxConcurrentRollout < 0 {
-		*errs = append(*errs, fmt.Errorf("admission_control.max_concurrent_rollout: must be >= 0"))
-	}
 }
 
 func (c Config) validateFallback(errs *[]error) {
@@ -307,36 +246,6 @@ func (c Config) validateReview(errs *[]error) {
 	}
 	if c.Review.TimeoutSec != nil && *c.Review.TimeoutSec < 0 {
 		*errs = append(*errs, fmt.Errorf("review.timeout_sec: must be >= 0"))
-	}
-}
-
-func (c Config) validateRollout(errs *[]error) {
-	if c.Rollout.Enabled != nil && *c.Rollout.Enabled {
-		*errs = append(*errs, fmt.Errorf("rollout.enabled: production rollout dispatcher is not wired; leave disabled"))
-	}
-	if c.Rollout.MaxConcurrent != nil && *c.Rollout.MaxConcurrent < 0 {
-		*errs = append(*errs, fmt.Errorf("rollout.max_concurrent: must be >= 0"))
-	}
-	if c.Rollout.MaxParallelPerTask != nil && *c.Rollout.MaxParallelPerTask < 0 {
-		*errs = append(*errs, fmt.Errorf("rollout.max_parallel_per_task: must be >= 0"))
-	}
-	if c.Rollout.MinBloomLevel != nil && *c.Rollout.MinBloomLevel < 0 {
-		*errs = append(*errs, fmt.Errorf("rollout.min_bloom_level: must be >= 0"))
-	}
-	if c.Rollout.MaxExpectedPaths != nil && *c.Rollout.MaxExpectedPaths < 0 {
-		*errs = append(*errs, fmt.Errorf("rollout.max_expected_paths: must be >= 0"))
-	}
-	if c.Rollout.MinFailureCount != nil && *c.Rollout.MinFailureCount < 0 {
-		*errs = append(*errs, fmt.Errorf("rollout.min_failure_count: must be >= 0"))
-	}
-}
-
-func (c Config) validateJudge(errs *[]error) {
-	if c.Judge.Enabled != nil && *c.Judge.Enabled {
-		*errs = append(*errs, fmt.Errorf("judge.enabled: production LLM judge is not wired; leave disabled"))
-	}
-	if c.Judge.TimeoutSec != nil && *c.Judge.TimeoutSec < 0 {
-		*errs = append(*errs, fmt.Errorf("judge.timeout_sec: must be >= 0"))
 	}
 }
 

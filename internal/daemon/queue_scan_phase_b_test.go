@@ -9,6 +9,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -59,6 +60,7 @@ func (m *mockDispatcher) SortPendingNotifications(ntfs []model.Notification) []i
 func (m *mockDispatcher) SetEventBus(bus *events.Bus)                              {}
 func (m *mockDispatcher) SetQualityGate(qg dispatch.GateChecker)                   {}
 func (m *mockDispatcher) SetWorktreeManager(wm dispatch.WorktreeResolver)          {}
+func (m *mockDispatcher) SetTaskAliveChecker(c dispatch.TaskAliveChecker)          {}
 
 // newPhaseBTestQueueHandler creates a minimal QueueHandler with a captured log buffer.
 func newPhaseBTestQueueHandler(t *testing.T, logBuf *bytes.Buffer) *QueueHandler {
@@ -181,18 +183,84 @@ func TestTrackPartialDispatch_Partial(t *testing.T) {
 
 	// Verify logging
 	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, "phase_b_partial_dispatch: total=6 succeeded=4 failed=2") {
+	if !strings.Contains(logOutput, "phase_b_partial_dispatch: total=6 succeeded=4 failed=2 uncertain=0") {
 		t.Errorf("log missing summary line: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, "phase_b_partial_dispatch_detail: kind=command succeeded=1 failed=1") {
+	if !strings.Contains(logOutput, "phase_b_partial_dispatch_detail: kind=command succeeded=1 failed=1 uncertain=0") {
 		t.Errorf("log missing command detail: %s", logOutput)
 	}
-	if !strings.Contains(logOutput, "phase_b_partial_dispatch_detail: kind=task succeeded=2 failed=1") {
+	if !strings.Contains(logOutput, "phase_b_partial_dispatch_detail: kind=task succeeded=2 failed=1 uncertain=0") {
 		t.Errorf("log missing task detail: %s", logOutput)
 	}
 	// notification had 0 failures, should NOT appear in detail log
 	if strings.Contains(logOutput, "kind=notification") {
 		t.Errorf("log should not contain notification detail when notification had no failures: %s", logOutput)
+	}
+}
+
+// TestTrackPartialDispatch_UncertainOnlyDoesNotEscalate is the regression
+// test for the 2026-04-28 retest8 false-positive WARN. A worker pane that
+// fails the submit-confirm probe but receives the paste fine produces a
+// dispatchResult with Success=false and Error wrapping ErrSubmitConfirmUncertain.
+// The new bucketing keeps that out of the failed count, so when the rest
+// of the batch succeeded the operator-facing log stays at INFO. WARN is
+// reserved for genuine delivery failures.
+func TestTrackPartialDispatch_UncertainOnlyDoesNotEscalate(t *testing.T) {
+	t.Parallel()
+	var logBuf bytes.Buffer
+	qh := newPhaseBTestQueueHandler(t, &logBuf)
+
+	result := &phaseBResult{
+		dispatches: []dispatchResult{
+			{Item: dispatchItem{Kind: "task"}, Success: true},
+			{Item: dispatchItem{Kind: "task"}, Success: false, Error: fmt.Errorf("wrapped: %w", agent.ErrSubmitConfirmUncertain)},
+		},
+	}
+
+	qh.trackPartialDispatch(result)
+
+	if len(result.recoveryHints) != 0 {
+		t.Errorf("uncertain-only batch must NOT emit a partial-dispatch recovery hint, got %d hint(s)", len(result.recoveryHints))
+	}
+	logOutput := logBuf.String()
+	if strings.Contains(logOutput, "phase_b_partial_dispatch:") {
+		t.Errorf("uncertain-only batch must NOT emit phase_b_partial_dispatch WARN: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "phase_b_dispatch_with_uncertain") {
+		t.Errorf("uncertain-only batch must emit INFO summary phase_b_dispatch_with_uncertain: %s", logOutput)
+	}
+	if !strings.Contains(logOutput, "uncertain=1") {
+		t.Errorf("INFO summary must report uncertain=1: %s", logOutput)
+	}
+}
+
+// TestTrackPartialDispatch_MixedFailedAndUncertain pins the WARN-with-bucket
+// path: when a batch contains BOTH a real failure AND an uncertain entry,
+// the WARN must surface and uncertain count must be reported separately.
+func TestTrackPartialDispatch_MixedFailedAndUncertain(t *testing.T) {
+	t.Parallel()
+	var logBuf bytes.Buffer
+	qh := newPhaseBTestQueueHandler(t, &logBuf)
+
+	result := &phaseBResult{
+		dispatches: []dispatchResult{
+			{Item: dispatchItem{Kind: "task"}, Success: true},
+			{Item: dispatchItem{Kind: "task"}, Success: false, Error: fmt.Errorf("genuine task failure")},
+			{Item: dispatchItem{Kind: "task"}, Success: false, Error: fmt.Errorf("submit uncertain: %w", agent.ErrSubmitConfirmUncertain)},
+		},
+	}
+
+	qh.trackPartialDispatch(result)
+
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, "phase_b_partial_dispatch: total=3 succeeded=1 failed=1 uncertain=1") {
+		t.Errorf("mixed batch summary missing or wrong: %s", logOutput)
+	}
+	if len(result.recoveryHints) != 1 {
+		t.Fatalf("expected 1 hint, got %d", len(result.recoveryHints))
+	}
+	if !strings.Contains(result.recoveryHints[0], "uncertain=1") {
+		t.Errorf("hint must report uncertain=1: %s", result.recoveryHints[0])
 	}
 }
 
@@ -478,5 +546,123 @@ func TestStepDispatchWork_PartialDispatch_Integration(t *testing.T) {
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "phase_b_partial_dispatch:") {
 		t.Errorf("expected partial dispatch warning in log: %s", logOutput)
+	}
+}
+
+// TestSignalCascadeTracker_TripsAtThreshold pins the cascade break behaviour
+// added to absorb extended tmux degradation: once threshold consecutive
+// failures occur in the same scan tick, the tracker reports broken=true and
+// remains broken until discarded. A success in between resets the counter
+// only while still unbroken; once tripped the tracker is sticky for the tick.
+func TestSignalCascadeTracker_TripsAtThreshold(t *testing.T) {
+	t.Parallel()
+	tr := signalCascadeTracker{threshold: 3}
+
+	if tr.recordFailure() {
+		t.Fatalf("first failure should not trip threshold=3 tracker")
+	}
+	if tr.recordFailure() {
+		t.Fatalf("second failure should not trip threshold=3 tracker")
+	}
+	tr.recordSuccess() // resets while not yet broken
+	if tr.isBroken() {
+		t.Fatalf("intermittent success must keep tracker unbroken")
+	}
+	if tr.recordFailure() {
+		t.Fatalf("first failure after reset should not re-trip threshold=3 tracker")
+	}
+	if tr.recordFailure() {
+		t.Fatalf("second failure after reset should not trip threshold=3 tracker")
+	}
+	if !tr.recordFailure() {
+		t.Fatalf("third consecutive failure must trip threshold=3 tracker")
+	}
+	if !tr.isBroken() {
+		t.Fatalf("isBroken must report true after threshold reached")
+	}
+	// Sticky: a late success does not un-break the tracker for the rest of
+	// the scan tick.
+	tr.recordSuccess()
+	if !tr.isBroken() {
+		t.Fatalf("recordSuccess after broken must NOT clear broken flag")
+	}
+}
+
+// TestSignalCascadeTracker_DisabledWhenThresholdZero pins that a zero or
+// negative threshold leaves the tracker permanently unbroken — the operator
+// can fall back to "old behaviour" if a future config knob exposes the value.
+func TestSignalCascadeTracker_DisabledWhenThresholdZero(t *testing.T) {
+	t.Parallel()
+	tr := signalCascadeTracker{threshold: 0}
+	for i := 0; i < 100; i++ {
+		if tr.recordFailure() {
+			t.Fatalf("threshold=0 must never trip; tripped at i=%d", i)
+		}
+	}
+	if tr.isBroken() {
+		t.Fatalf("threshold=0 tracker should never report broken")
+	}
+}
+
+// TestRecordCascadeBreakOutcome_AccumulatesAcrossScans pins the cross-scan
+// meta-circuit added for the 2026-04 R-2 finding: per-tick cascade-break
+// caps log/CPU spend within a scan, but a long-tail tmux-server outage that
+// trips break every tick should escalate to ERROR after a few consecutive
+// trips so the operator sees the degradation above the per-tick WARN noise.
+//
+// The recovery branch must clear the counter exactly once when a successful
+// scan tick (any signal delivered, no break) lands.
+func TestRecordCascadeBreakOutcome_AccumulatesAcrossScans(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+
+	// Three consecutive broken ticks: counter climbs to 3 (== threshold).
+	for i := 1; i <= sustainedCascadeBreakThreshold; i++ {
+		qh.recordCascadeBreakOutcome(true, 5)
+		if got := qh.consecutiveCascadeBreakScans.Load(); int(got) != i {
+			t.Fatalf("after %d broken ticks, counter = %d, want %d", i, got, i)
+		}
+	}
+
+	// One more broken tick still climbs (no automatic clamp); the ERROR
+	// log fires every tick from threshold onward.
+	qh.recordCascadeBreakOutcome(true, 5)
+	if got := qh.consecutiveCascadeBreakScans.Load(); int(got) != sustainedCascadeBreakThreshold+1 {
+		t.Fatalf("counter must keep counting past threshold, got %d", got)
+	}
+
+	// A clean tick clears the counter.
+	qh.recordCascadeBreakOutcome(false, 5)
+	if got := qh.consecutiveCascadeBreakScans.Load(); got != 0 {
+		t.Fatalf("clean tick must reset counter, got %d", got)
+	}
+}
+
+// TestRecordCascadeBreakOutcome_NoSignalsHoldsCounter pins that an empty
+// scan tick (totalSignals == 0) is a no-op for the counter. We cannot tell
+// "tmux healthy but quiet" from "tmux broken; cascade-break suppressed
+// everything" without a delivery attempt, so the counter stays at its
+// previous value.
+func TestRecordCascadeBreakOutcome_NoSignalsHoldsCounter(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+
+	// Bring counter up to 2 via two broken ticks.
+	qh.recordCascadeBreakOutcome(true, 3)
+	qh.recordCascadeBreakOutcome(true, 3)
+	if got := qh.consecutiveCascadeBreakScans.Load(); got != 2 {
+		t.Fatalf("setup: expected counter=2, got %d", got)
+	}
+
+	// Empty tick must NOT clear the counter even though tripped=false.
+	qh.recordCascadeBreakOutcome(false, 0)
+	if got := qh.consecutiveCascadeBreakScans.Load(); got != 2 {
+		t.Fatalf("no-signals tick must hold counter steady, got %d", got)
+	}
+
+	// First non-empty clean tick clears it.
+	qh.recordCascadeBreakOutcome(false, 1)
+	if got := qh.consecutiveCascadeBreakScans.Load(); got != 0 {
+		t.Fatalf("non-empty clean tick must reset counter, got %d", got)
 	}
 }

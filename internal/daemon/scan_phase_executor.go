@@ -16,6 +16,7 @@ type scanPhaseHost interface {
 	executePhaseBSteps(ctx context.Context, pa *phaseAResult, result *phaseBResult)
 	executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseAResult, pb phaseBResult) []DeferredNotification
 	executeDeferredReconcileNotifications(notifications []DeferredNotification)
+	runPostScanResultNotifications(se *ScanPhaseExecutor)
 	runPeriodicWorktreeGC()
 }
 
@@ -80,6 +81,16 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	pa := se.periodicScanPhaseA()
 	pb := se.periodicScanPhaseB(ctx, pa)
 	deferredNotifs := se.periodicScanPhaseC(pa, pb)
+
+	// Result notification retry — runs OUTSIDE scanMu so the per-result
+	// inline retry budget (which can block multiple seconds when the
+	// Planner pane is slow / unresponsive) does not stall queue write,
+	// plan complete, or verify write UDS handlers waiting for
+	// scanMu.RLock. The function is goroutine-safe via per-result
+	// "result:<worker>" locks; running it after Phase C also lets it
+	// observe state mutations Phase C just committed (e.g., a freshly
+	// terminated task whose result still needs to be notified).
+	se.host.runPostScanResultNotifications(se)
 
 	// Execute deferred reconciler notifications outside scanMu.Lock
 	// to avoid blocking queue writes during slow tmux I/O.

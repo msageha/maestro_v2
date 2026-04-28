@@ -108,6 +108,132 @@ func TestCheckDaemon_NotRunning(t *testing.T) {
 	}
 }
 
+func TestGetSignalsStatus_NoFile(t *testing.T) {
+	dir := t.TempDir()
+	if got := getSignalsStatus(dir); got != nil {
+		t.Errorf("missing planner_signals.yaml must yield nil, got %+v", got)
+	}
+}
+
+func TestGetSignalsStatus_EmptyQueue(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "queue")
+	if err := os.Mkdir(queueDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `schema_version: 1
+file_type: "planner_signal_queue"
+signals: []
+`
+	if err := os.WriteFile(filepath.Join(queueDir, "planner_signals.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := getSignalsStatus(dir)
+	if got == nil {
+		t.Fatal("expected non-nil status for empty queue, got nil")
+	}
+	if got.Total != 0 {
+		t.Errorf("Total: got %d, want 0", got.Total)
+	}
+	if got.MaxAttempts != 0 || got.LastAttemptAt != "" || got.LastError != "" {
+		t.Errorf("empty queue must yield zero-valued fields, got %+v", got)
+	}
+}
+
+func TestGetSignalsStatus_AggregatesAttemptsAndPicksMostRecent(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "queue")
+	if err := os.Mkdir(queueDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Two signals: one with higher Attempts but older LastAttemptAt; one
+	// with smaller Attempts but more recent LastAttemptAt + a LastError.
+	// LastAttemptAt picks the most recent timestamp; LastError must follow
+	// that same entry, not the entry with the highest Attempts.
+	content := `schema_version: 1
+file_type: "planner_signal_queue"
+signals:
+  - kind: "merge_conflict"
+    command_id: "cmd1"
+    phase_id: "ph1"
+    message: "stale"
+    attempts: 9
+    last_attempt_at: "2026-04-27T10:00:00Z"
+    next_attempt_at: "2026-04-27T10:05:00Z"
+    last_error: "older failure"
+    created_at: "2026-04-27T09:00:00Z"
+    updated_at: "2026-04-27T10:00:00Z"
+  - kind: "commit_failed"
+    command_id: "cmd2"
+    phase_id: "ph2"
+    message: "recent"
+    attempts: 3
+    last_attempt_at: "2026-04-28T10:00:00Z"
+    next_attempt_at: "2026-04-28T10:05:00Z"
+    last_error: "tmux load-buffer timeout"
+    created_at: "2026-04-28T09:00:00Z"
+    updated_at: "2026-04-28T10:00:00Z"
+`
+	if err := os.WriteFile(filepath.Join(queueDir, "planner_signals.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := getSignalsStatus(dir)
+	if got == nil {
+		t.Fatal("expected non-nil status, got nil")
+	}
+	if got.Total != 2 {
+		t.Errorf("Total: got %d, want 2", got.Total)
+	}
+	if got.MaxAttempts != 9 {
+		t.Errorf("MaxAttempts: got %d, want 9", got.MaxAttempts)
+	}
+	if got.LastAttemptAt != "2026-04-28T10:00:00Z" {
+		t.Errorf("LastAttemptAt: got %q, want most-recent timestamp", got.LastAttemptAt)
+	}
+	if got.LastError != "tmux load-buffer timeout" {
+		t.Errorf("LastError: got %q, want LastError of most-recent entry", got.LastError)
+	}
+	if !got.Degraded {
+		t.Errorf("Degraded: must be true when MaxAttempts (9) >= threshold (%d)", signalDegradationAttemptsThreshold)
+	}
+}
+
+// TestGetSignalsStatus_LowAttemptsNotDegraded pins the negative side of the
+// degraded flag: a signal with Attempts well below the threshold (e.g. one
+// retry after a transient hiccup) must not flip status to degraded, so the
+// flag remains a real "tmux delivery is stuck" indicator instead of noise
+// every operator sees.
+func TestGetSignalsStatus_LowAttemptsNotDegraded(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "queue")
+	if err := os.Mkdir(queueDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	content := `schema_version: 1
+file_type: "planner_signal_queue"
+signals:
+  - kind: "merge_conflict"
+    command_id: "cmd1"
+    phase_id: "ph1"
+    message: "ok"
+    attempts: 2
+    last_attempt_at: "2026-04-28T10:00:00Z"
+    next_attempt_at: "2026-04-28T10:05:00Z"
+    created_at: "2026-04-28T09:00:00Z"
+    updated_at: "2026-04-28T10:00:00Z"
+`
+	if err := os.WriteFile(filepath.Join(queueDir, "planner_signals.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := getSignalsStatus(dir)
+	if got == nil {
+		t.Fatal("expected non-nil status, got nil")
+	}
+	if got.Degraded {
+		t.Errorf("Degraded: must be false when MaxAttempts (2) < threshold (%d)", signalDegradationAttemptsThreshold)
+	}
+}
+
 func TestPrintStatus_DoesNotPanic(t *testing.T) {
 	// Verify printing works without panicking for all cases
 	s := formationStatus{
@@ -123,4 +249,47 @@ func TestPrintStatus_DoesNotPanic(t *testing.T) {
 		{Name: "planner", Pending: 3, InProgress: 1},
 	}
 	printStatus(s)
+}
+
+// TestParseAgentStatusLines_EvictedNotDead pins the 2026-04-28 retest2
+// follow-up: when the daemon respawns a worker pane to project root for
+// worktree cleanup, it sets @agent_state="evicted" so `maestro status`
+// can distinguish "intentionally between turns" from "crashed back to
+// shell". Before this fix every successful command ended with the
+// worker rows showing "dead" in the dashboard until the next dispatch.
+func TestParseAgentStatusLines_EvictedNotDead(t *testing.T) {
+	isShell := func(cmd string) bool { return cmd == "zsh" || cmd == "bash" }
+
+	cases := []struct {
+		name       string
+		line       string
+		wantStatus string
+	}{
+		{
+			name:       "shell_with_evicted_state_renders_idle_evicted",
+			line:       "worker1\tworker\tsonnet\tidle\tzsh\tclaude_code\tevicted",
+			wantStatus: "idle (evicted)",
+		},
+		{
+			name:       "shell_without_evicted_state_renders_dead",
+			line:       "worker1\tworker\tsonnet\tidle\tzsh\tclaude_code\t",
+			wantStatus: "dead",
+		},
+		{
+			name:       "claude_running_keeps_status_field_value",
+			line:       "worker1\tworker\tsonnet\tbusy\tnode\tclaude_code\tevicted",
+			wantStatus: "busy",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := parseAgentStatusLines([]string{tc.line}, isShell)
+			if len(got) != 1 {
+				t.Fatalf("expected 1 row, got %d", len(got))
+			}
+			if got[0].Status != tc.wantStatus {
+				t.Errorf("Status = %q, want %q", got[0].Status, tc.wantStatus)
+			}
+		})
+	}
 }

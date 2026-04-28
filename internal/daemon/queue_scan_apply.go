@@ -132,6 +132,86 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							"destructive_content_terminate_invalid task=%s from=%s to=failed reason=%v",
 							task.ID, task.Status, err)
 					}
+
+					// ErrRunOnMainBeforePublish is a *timing gate*, not a real
+					// dispatch failure: the planner queued the run_on_main
+					// verification before the integration → base publish step
+					// finished, so the worker would have read stale main if
+					// dispatched. The publish completes naturally during the
+					// merge phase, after which the same task can be dispatched
+					// successfully.
+					//
+					// Treating this like a normal dispatch failure (lease
+					// release + Attempts retained) was wrong on two fronts:
+					// (1) Attempts is incremented at lease-acquire time in
+					// queue_scan_collect.go, so each scan that hits the
+					// publish guard burned one retry against
+					// retry.task_dispatch_attempts and could dead-letter the
+					// verification before publish even ran; and (2) the
+					// `var ErrRunOnMainBeforePublish` doc comment claimed
+					// "non-retryable", which is the opposite of what we want
+					// — the task SHOULD retry once publish lands.
+					//
+					// Fix: roll back the lease-acquire Attempts increment so
+					// the retry budget is preserved, release the lease so
+					// other tasks can be dispatched in this scan, and log at
+					// info level (this is normal until publish completes; an
+					// operator only needs to investigate if the same task
+					// stays publish-pending across many scans, which the
+					// max_in_progress_min and command-level timeout already
+					// surface separately).
+					if errors.Is(dr.Error, dispatch.ErrRunOnMainBeforePublish) {
+						qh.log(LogLevelInfo,
+							"dispatch_deferred_publish_pending type=task id=%s command=%s lease_epoch=%d "+
+								"(run_on_main task waits for integration→base publish; lease released, attempts not consumed) error=%v",
+							task.ID, task.CommandID, task.LeaseEpoch, dr.Error)
+						if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+							qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
+						}
+						// Roll back the Attempts increment from
+						// collectPendingTaskDispatches: this dispatch attempt
+						// never reached the worker, so it must not count
+						// against the retry budget.
+						if task.Attempts > 0 {
+							task.Attempts--
+						}
+						qh.scanExecutor.scanCounters.LeaseReleases++
+						return
+					}
+
+					// ErrSubmitConfirmUncertain: the deliverer's submit-probe
+					// budget exhausted without seeing a Claude UI marker. In the
+					// 2026-04-27 single-worker E2E run the worker had ALREADY
+					// received the task prompt and was actively writing the
+					// task's expected output to the worktree by the time this
+					// failure surfaced — the probe was over-cautious, not the
+					// runtime. Releasing the lease in that state caused the next
+					// scan to re-dispatch the same task (epoch 2, then epoch 3),
+					// and the worker's eventual result_write hit FENCING_REJECT
+					// because the queue entry had bounced back to "pending"
+					// during the lease_release window. Treat this case
+					// symmetrically to dispatch success: keep the lease, mark the
+					// task running, count it as an "assumed" dispatch via
+					// TasksDispatchedUncertain so operators can monitor probe
+					// false-negative rates separately from confirmed dispatches.
+					// If the worker truly didn't receive (rare), the lease will
+					// expire after the dispatch lease TTL (5 min default) and
+					// hasExpiredLeases picks it up via the standard expired-
+					// in_progress recovery path — same recovery the daemon
+					// already runs for crashed workers.
+					if errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain) {
+						qh.log(LogLevelWarn,
+							"dispatch_uncertain_assume_running type=task id=%s command=%s lease_epoch=%d error=%v "+
+								"(lease retained; worker likely received the prompt — re-dispatch deferred until lease TTL expires)",
+							task.ID, task.CommandID, task.LeaseEpoch, dr.Error)
+						if err := qh.markTaskRunning(task); err != nil {
+							qh.log(LogLevelError, "task_running_state_update_failed task=%s command=%s error=%v",
+								task.ID, task.CommandID, err)
+						}
+						qh.scanExecutor.scanCounters.TasksDispatchedUncertain++
+						return
+					}
+
 					qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
 					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 						qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
@@ -355,6 +435,22 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 
 		errStr := dlErr.Error()
 		sig.LastError = &errStr
+
+		// Fast-path dead letter: ErrSubmitConfirmUncertain is non-retryable
+		// by contract (re-dispatching risks a double plan_submit on top of
+		// the original message). Without this gate the signal would sit in
+		// the queue burning the inline probe budget every scan cycle and
+		// surface as repeated "submit confirmation uncertain status=exhausted
+		// attempts=8" log lines pinned to the same (kind, phase, worker).
+		// Drop it on the first non-retryable result instead.
+		if errors.Is(dlErr, agent.ErrSubmitConfirmUncertain) {
+			qh.log(LogLevelWarn,
+				"signal_dead_letter_non_retryable kind=%s command=%s phase=%s attempts=%d reason=submit_confirm_uncertain (non-retryable; manual planner inspection required)",
+				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts)
+			qh.scanExecutor.scanCounters.SignalDeadLetters++
+			*dirty = true
+			continue
+		}
 
 		// Dead letter: drop signal after max retry attempts
 		maxAttempts := qh.config.Retry.SignalDispatch

@@ -538,3 +538,94 @@ func TestAssignWorkers_BoostMode(t *testing.T) {
 // (banditModelSelector). The plan-side duplicate selector was removed when
 // the test coverage migrated; see internal/daemon/model_selector_test.go
 // for warm-up, trace-requirement, and fallback behavior.
+
+// TestAssignWorkers_PinnedWorkerHonored pins the (2026-04-28) PinnedWorkerID
+// shortcut: when TaskAssignmentRequest names a configured worker, the
+// bloom-derived auto-assignment is bypassed and the task lands on that
+// worker regardless of load. This is the path Planner agents use when
+// fanning two parallel tasks into worker1 / worker2 lanes from a fresh
+// plan submit; before this field existed they had to either tolerate
+// non-deterministic auto-assignment or fall back to plan add-task per
+// worker after the initial submit.
+func TestAssignWorkers_PinnedWorkerHonored(t *testing.T) {
+	config := model.WorkerConfig{
+		Count:        2,
+		DefaultModel: "sonnet",
+		Models:       map[string]string{"worker2": "opus"},
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+		{WorkerID: "worker2", Model: "opus"},
+	}
+	// Bloom level 2 normally maps to sonnet → worker1, so pinning to
+	// worker2 (opus) is a real override.
+	tasks := []TaskAssignmentRequest{
+		{Name: "feature_a", BloomLevel: 2, PinnedWorkerID: "worker2"},
+	}
+
+	got, err := AssignWorkers(config, limits, workers, tasks)
+	if err != nil {
+		t.Fatalf("AssignWorkers: %v", err)
+	}
+	if len(got) != 1 || got[0].WorkerID != "worker2" {
+		t.Fatalf("assignment = %+v, want pinned to worker2", got)
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("model = %q, want opus (worker2's configured model)", got[0].Model)
+	}
+}
+
+// TestAssignWorkers_PinnedWorkerUnknown rejects a typo in worker_id with a
+// clear error rather than silently falling back to auto-assignment. The
+// fallback would mask Planner bugs (e.g. "wroker1" → autopicked worker1
+// anyway) and erode the determinism the pinning feature is meant to
+// guarantee.
+func TestAssignWorkers_PinnedWorkerUnknown(t *testing.T) {
+	config := model.WorkerConfig{Count: 2, DefaultModel: "sonnet"}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+		{WorkerID: "worker2", Model: "sonnet"},
+	}
+	tasks := []TaskAssignmentRequest{
+		{Name: "t1", BloomLevel: 2, PinnedWorkerID: "worker99"},
+	}
+
+	_, err := AssignWorkers(config, limits, workers, tasks)
+	if err == nil {
+		t.Fatal("expected error for unknown pinned worker")
+	}
+	if !errors.Is(err, ErrNoAvailableWorker) {
+		t.Errorf("err = %v, want ErrNoAvailableWorker", err)
+	}
+	if !strings.Contains(err.Error(), "worker99") {
+		t.Errorf("error %q does not name the offending worker", err.Error())
+	}
+}
+
+// TestAssignWorkers_PinnedWorkerAtCapacity surfaces capacity pressure
+// instead of silently picking another worker — pinning is a deterministic
+// contract the Planner relies on; any auto-fallback would defeat it.
+func TestAssignWorkers_PinnedWorkerAtCapacity(t *testing.T) {
+	config := model.WorkerConfig{Count: 2, DefaultModel: "sonnet"}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 1}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet", PendingCount: 1},
+		{WorkerID: "worker2", Model: "sonnet"},
+	}
+	tasks := []TaskAssignmentRequest{
+		{Name: "t1", BloomLevel: 2, PinnedWorkerID: "worker1"},
+	}
+
+	_, err := AssignWorkers(config, limits, workers, tasks)
+	if err == nil {
+		t.Fatal("expected capacity error for pinned worker")
+	}
+	if !errors.Is(err, ErrNoAvailableWorker) {
+		t.Errorf("err = %v, want ErrNoAvailableWorker", err)
+	}
+	if !strings.Contains(err.Error(), "capacity") {
+		t.Errorf("error %q does not mention capacity", err.Error())
+	}
+}

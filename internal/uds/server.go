@@ -54,6 +54,9 @@ func (e *UnixSocketUnavailableError) Error() string {
 
 func (e *UnixSocketUnavailableError) Unwrap() error { return e.Err }
 
+// Is implements errors.Is so callers can match against the
+// ErrUnixSocketUnavailable sentinel without unwrapping the concrete
+// type by hand.
 func (e *UnixSocketUnavailableError) Is(target error) bool {
 	return target == ErrUnixSocketUnavailable
 }

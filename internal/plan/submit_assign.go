@@ -61,7 +61,11 @@ func processConcretePhases(opts SubmitOptions, phases []PhaseInput) (*concretePh
 
 		var assignReqs []TaskAssignmentRequest
 		for _, t := range phase.Tasks {
-			assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
+			assignReqs = append(assignReqs, TaskAssignmentRequest{
+				Name:           t.Name,
+				BloomLevel:     t.BloomLevel,
+				PinnedWorkerID: t.WorkerID,
+			})
 		}
 
 		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs, WithModelSelector(opts.ModelSelector))

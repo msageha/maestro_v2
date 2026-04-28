@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // ReviewCoordinator owns the review dispatch pipeline: dispatching reviews for
@@ -79,25 +80,40 @@ func (rc *ReviewCoordinator) SetWorktreeManager(wm *WorktreeManager) {
 	rc.worktreeManager = wm
 }
 
-// MonitorResults drains the dispatcher's results channel and records each
-// result in the usefulness tracker. Runs until the channel is closed (by
-// Close during shutdown).
+// MonitorResults drains the dispatcher's results channel, persists each
+// result to the per-task audit-trail YAML, and records it in the usefulness
+// tracker. Runs until the channel is closed (by Close during shutdown).
+//
+// Reviews are advisory by design: IsAdvisory=true is hard-coded in the
+// dispatcher, so findings never gate task completion. Without persistence,
+// the full Finding bodies (severity, file path, message, suggested fix)
+// would only live in memory — operators reviewing a regression would have
+// to scrape daemon.log to recover what the reviewer flagged. The 2026-04-28
+// E2E run hit exactly that gap ("finding 本文の保存先も見つけにくい状態だった"),
+// so each result is now mirrored to .maestro/state/reviews/<task_id>.yaml
+// before any tracker bookkeeping. The persistence path is observability;
+// failures are logged at warn and never propagate to the dispatch loop.
 func (rc *ReviewCoordinator) MonitorResults() {
 	for result := range rc.dispatcher.Results() {
-		rc.log(LogLevelInfo, "review_result_received request=%s model=%s status=%s findings=%d",
-			result.RequestID, result.ReviewerModel, result.Status, len(result.Findings))
+		taskID := extractTaskIDFromRequestID(result.RequestID)
+		info, ok := rc.popRequest(taskID)
+		var commandID string
+		if ok {
+			commandID = info.commandID
+		}
+
+		auditPath := rc.persistReviewResult(taskID, commandID, result)
+
+		rc.log(LogLevelInfo, "review_result_received request=%s model=%s status=%s findings=%d audit_file=%s",
+			result.RequestID, result.ReviewerModel, result.Status, len(result.Findings), auditPath)
 
 		if rc.tracker == nil {
 			continue
 		}
 
-		taskID := extractTaskIDFromRequestID(result.RequestID)
-
-		info, ok := rc.popRequest(taskID)
-
 		if !ok {
-			rc.log(LogLevelWarn, "review_result_orphaned request=%s task=%s (no matching dispatch record)",
-				result.RequestID, taskID)
+			rc.log(LogLevelWarn, "review_result_orphaned request=%s task=%s (no matching dispatch record; audit_file=%s)",
+				result.RequestID, taskID, auditPath)
 			continue
 		}
 
@@ -114,6 +130,85 @@ func (rc *ReviewCoordinator) MonitorResults() {
 			rc.log(LogLevelWarn, "usefulness_record_failed request=%s error=%v", result.RequestID, err)
 		}
 	}
+}
+
+// TaskReviewLog is the on-disk audit trail for advisory review results
+// associated with a single task. The file lives at
+// .maestro/state/reviews/<task_id>.yaml and aggregates one entry per
+// reviewer model — re-running the same reviewer overwrites its prior
+// entry rather than appending duplicates, so operators see "the latest
+// verdict from each reviewer" without having to dedupe manually.
+type TaskReviewLog struct {
+	SchemaVersion int                  `yaml:"schema_version"`
+	FileType      string               `yaml:"file_type"`
+	TaskID        string               `yaml:"task_id"`
+	CommandID     string               `yaml:"command_id,omitempty"`
+	Results       []model.ReviewResult `yaml:"results"`
+}
+
+// taskReviewLogPath returns the YAML file used to persist advisory review
+// results for a single task. The reviews/ subdirectory under maestro_dir
+// is created on demand by persistReviewResult.
+func (rc *ReviewCoordinator) taskReviewLogPath(taskID string) string {
+	return filepath.Join(rc.maestroDir, "state", "reviews", taskID+".yaml")
+}
+
+// persistReviewResult mirrors a single review result into the task's
+// audit-trail YAML file. Existing entries for the same reviewer model are
+// replaced in place; new reviewer models are appended. The function is
+// best-effort: every error is logged at warn and the path is still
+// returned (callers use it as a breadcrumb in their own logs).
+func (rc *ReviewCoordinator) persistReviewResult(taskID, commandID string, result model.ReviewResult) string {
+	path := rc.taskReviewLogPath(taskID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		rc.log(LogLevelWarn, "review_persist_mkdir_failed task=%s error=%v", taskID, err)
+		return path
+	}
+
+	var rec TaskReviewLog
+	switch data, err := os.ReadFile(path); { //nolint:gosec // path is constructed from validated taskID under maestroDir
+	case err == nil:
+		if uerr := yamlv3.Unmarshal(data, &rec); uerr != nil {
+			// Treat a malformed pre-existing file as "start fresh" rather
+			// than refusing to record the new result. The audit trail is
+			// observability; refusing the write because of historical
+			// corruption would just hide today's data too.
+			rc.log(LogLevelWarn, "review_persist_unmarshal_failed task=%s error=%v (overwriting)", taskID, uerr)
+			rec = TaskReviewLog{}
+		}
+	case os.IsNotExist(err):
+		// First result for this task — start fresh.
+	default:
+		rc.log(LogLevelWarn, "review_persist_read_failed task=%s error=%v", taskID, err)
+	}
+
+	if rec.SchemaVersion == 0 {
+		rec.SchemaVersion = 1
+	}
+	if rec.FileType == "" {
+		rec.FileType = "task_review_log"
+	}
+	rec.TaskID = taskID
+	if commandID != "" {
+		rec.CommandID = commandID
+	}
+
+	replaced := false
+	for i := range rec.Results {
+		if rec.Results[i].ReviewerModel == result.ReviewerModel {
+			rec.Results[i] = result
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		rec.Results = append(rec.Results, result)
+	}
+
+	if err := yamlutil.AtomicWrite(path, &rec); err != nil {
+		rc.log(LogLevelWarn, "review_persist_write_failed task=%s error=%v", taskID, err)
+	}
+	return path
 }
 
 // DispatchIfEligible checks whether the completed task qualifies for an

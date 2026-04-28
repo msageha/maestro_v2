@@ -11,6 +11,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
@@ -18,6 +19,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -53,6 +55,20 @@ func (d *Daemon) prepareStartup() error {
 	// M2: Clean up stale tmp files (older than 1 hour) that may have been
 	// left behind by SIGKILL during plan submit stdin materialization.
 	d.cleanStaleTmpFiles()
+
+	// N-2: GC abandoned per-worker CODEX_HOME tempdirs from prior daemon
+	// PIDs. prepareCodexHomeForCurrentWorker creates
+	// <TempDir>/maestro-codex-<pid>-<agent_id> and never cleans them up
+	// itself (worker pane lifecycle ends with exec, no defer). Without
+	// this GC, long-running CI / connectivity testing accumulates one dir
+	// per worker per daemon restart. Skipped at compile time? No — this
+	// is cheap (read TempDir + signal-0 PID checks).
+	if removed, errs := agent.GCStaleCodexHomes(); removed > 0 || len(errs) > 0 {
+		d.log(LogLevelInfo, "codex_home_gc removed=%d errors=%d", removed, len(errs))
+		for _, gcErr := range errs {
+			d.log(LogLevelWarn, "codex_home_gc remove_failed: %v", gcErr)
+		}
+	}
 
 	// P4: Validate command state YAMLs and recover any corrupted file from
 	// its sibling .bak. Failures are logged as warnings; startup continues.
@@ -176,10 +192,9 @@ func (d *Daemon) initComponents() {
 	d.admissionCtrl = admission.NewController(d.config.AdmissionControl)
 	d.handler.SetAdmissionController(d.admissionCtrl)
 	d.api.result.SetAdmissionController(d.admissionCtrl)
-	d.log(LogLevelInfo, "admission_control initialized verify=%d repair=%d rollout=%d",
+	d.log(LogLevelInfo, "admission_control initialized verify=%d repair=%d",
 		d.config.AdmissionControl.EffectiveMaxConcurrentVerify(),
-		d.config.AdmissionControl.EffectiveMaxConcurrentRepair(),
-		d.config.AdmissionControl.EffectiveMaxConcurrentRollout())
+		d.config.AdmissionControl.EffectiveMaxConcurrentRepair())
 
 	// Fallback manager: only when enabled
 	if d.config.Fallback.EffectiveEnabled() {
@@ -221,6 +236,7 @@ func (d *Daemon) initComponents() {
 		// this on purpose: there is no integration branch to advance.
 		d.api.result.SetWorktreeManager(d.worktreeManager)
 		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
+		d.logNonClaudeWorkerAdvisory()
 		// NOTE: Reconcile() is intentionally deferred to startRuntime() so it
 		// runs after the UDS server starts listening. Reconcile may spawn git
 		// subprocesses (worktree list / remove) that can take several seconds
@@ -233,9 +249,27 @@ func (d *Daemon) initComponents() {
 		d.api.result.SetVerifyWorkdirResolver(newProjectRootVerifyWorkdirResolver(d.maestroDir))
 	}
 
-	d.initPhaseB()
 	d.phaseC = newPhaseCManager(d.config, d.maestroDir, d.getAvailableModels(), d.log)
 	d.handler.SetPhaseCManager(d.phaseC)
+
+	// Phase C-3: hand the EnsembleVerifier perspectives to the verify
+	// runner so extended_verification.security_check / performance_bench
+	// actually drive the verify executed by result_write. Without this
+	// the verifier was constructed but never consulted by the runner;
+	// the perspective set silently never executed and operators saw
+	// "ensemble verifier security perspective enabled" in the startup
+	// log followed by no security commands actually running. The wiring
+	// is gated on the runner having type *RealVerifyRunner — the skip /
+	// fixed runners used by tests intentionally bypass extended verify.
+	if d.phaseC != nil && d.phaseC.EnsembleVerifier != nil {
+		if rvr, ok := d.api.result.verifyRunner.(*RealVerifyRunner); ok {
+			rvr.SetEnsembleVerifier(d.phaseC.EnsembleVerifier)
+			d.log(LogLevelInfo,
+				"verify_runner_ensemble_wired perspectives=%d max_auto_retries=%d",
+				len(d.phaseC.EnsembleVerifier.Perspectives()),
+				d.phaseC.EnsembleVerifier.MaxAutoRetries())
+		}
+	}
 
 	// Wire the adaptive model selector into the PlanExecutor (if configured).
 	// The executor is set before d.Run() in cmd_daemon.go, but PhaseC state
@@ -362,20 +396,61 @@ func (d *Daemon) startRuntime() error {
 	return nil
 }
 
-// initPhaseB initializes Phase B components: rollout manager and judge.
-func (d *Daemon) initPhaseB() {
-	cfg := d.config
-
-	if cfg.Rollout.EffectiveEnabled() {
-		d.log(LogLevelWarn,
-			"rollout_disabled: rollout.enabled=true should have been rejected by config validation; production multi-candidate dispatcher is not wired")
+// collectNonClaudeWorkers returns the per-worker "id=runtime/model" labels for
+// every entry in wc whose resolved runtime is not claude-code. The list is
+// deterministic in worker number order so log output is stable across runs;
+// claude-code workers are omitted entirely.
+//
+// Pulled out as a pure function for testability — the daemon-level wrapper
+// just shells the result into a structured log line.
+func collectNonClaudeWorkers(wc model.WorkerConfig) []string {
+	out := make([]string, 0)
+	seen := map[string]bool{}
+	check := func(workerID, modelName string) {
+		if modelName == "" {
+			return
+		}
+		runtime, _ := model.ParseRuntimeFromModel(modelName)
+		if runtime == model.RuntimeClaudeCode {
+			return
+		}
+		if seen[workerID] {
+			return
+		}
+		seen[workerID] = true
+		out = append(out, fmt.Sprintf("%s=%s/%s", workerID, runtime, modelName))
 	}
-
-	if cfg.Judge.EffectiveEnabled() {
-		d.log(LogLevelWarn,
-			"judge_disabled: judge.enabled=true should have been rejected by config validation; no production LLM caller is wired; "+
-				"rollout tie-breaking will use deterministic fitness fallback")
+	for i := 1; i <= wc.Count; i++ {
+		workerID := fmt.Sprintf("worker%d", i)
+		if specific, ok := wc.Models[workerID]; ok {
+			check(workerID, specific)
+			continue
+		}
+		check(workerID, wc.DefaultModel)
 	}
+	return out
+}
+
+// logNonClaudeWorkerAdvisory emits a one-shot operator-facing advisory at
+// startup whenever the worker pool resolves to codex / gemini for any worker.
+// Non-claude runtimes intentionally run with broad sandbox bypass flags
+// (--dangerously-bypass-approvals-and-sandbox / --yolo) and do not run under
+// the Claude-only Worker policy hook, so the only cross-runtime safety nets
+// are the worktree isolation boundary and the validate_run_on_main destructive-
+// content pre-flight in dispatch. This log is purely informational — it does
+// not gate or downgrade non-claude runtimes (those are first-class production
+// targets) and is here so an operator scanning daemon.log sees the
+// constraint surface explicitly when a config arrives with codex / gemini in
+// agents.workers.models.
+func (d *Daemon) logNonClaudeWorkerAdvisory() {
+	nonClaudeWorkers := collectNonClaudeWorkers(d.config.Agents.Workers)
+	if len(nonClaudeWorkers) == 0 {
+		return
+	}
+	d.log(LogLevelInfo,
+		"non_claude_worker_runtime_advisory workers=%v "+
+			"(no Claude policy hook applies — cross-runtime safety net = worktree isolation + validate_run_on_main destructive-content pre-flight)",
+		nonClaudeWorkers)
 }
 
 // getAvailableModels returns the deduplicated set of model names referenced

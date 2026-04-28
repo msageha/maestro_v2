@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -122,6 +123,16 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 // trackPartialDispatch examines dispatch results and, when some dispatches
 // succeeded while others failed, logs a detailed warning per kind and appends
 // a recovery hint so Phase C and downstream logging can reference the state.
+//
+// uncertain (ErrSubmitConfirmUncertain) outcomes are tracked separately from
+// genuine failures: the upstream agent dispatch already landed the paste in
+// the worker pane and the queue path immediately emits
+// `dispatch_uncertain_assume_running` to keep the lease and let the worker
+// proceed. Counting them as `failed` produced the 2026-04 retest7/8 noise
+// where every successful task execution still surfaced a
+// `phase_b_partial_dispatch ... failed=1` WARN. Splitting the buckets means
+// the WARN only fires on actual failures and the uncertain count is
+// surfaced as INFO so operators see both signals without being misled.
 func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
 	if len(result.dispatches) == 0 {
 		return
@@ -130,10 +141,12 @@ func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
 	type kindCounts struct {
 		succeeded int
 		failed    int
+		uncertain int
 	}
 	counts := make(map[string]*kindCounts)
 	totalSucceeded := 0
 	totalFailed := 0
+	totalUncertain := 0
 
 	for _, dr := range result.dispatches {
 		kc, ok := counts[dr.Item.Kind]
@@ -141,40 +154,131 @@ func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
 			kc = &kindCounts{}
 			counts[dr.Item.Kind] = kc
 		}
-		if dr.Success {
+		switch {
+		case dr.Success:
 			kc.succeeded++
 			totalSucceeded++
-		} else {
+		case errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain):
+			kc.uncertain++
+			totalUncertain++
+		default:
 			kc.failed++
 			totalFailed++
 		}
 	}
 
-	// Only log and add recovery hints when partial dispatch is detected:
-	// some succeeded AND some failed.
-	if totalSucceeded == 0 || totalFailed == 0 {
+	total := totalSucceeded + totalFailed + totalUncertain
+
+	// Uncertain-only batches: paste landed for those entries; the
+	// queue-side dispatch_uncertain_assume_running already provides
+	// per-entry visibility. Surface a single INFO summary so operator
+	// dashboards show the count without escalating to WARN.
+	if totalSucceeded > 0 && totalFailed == 0 && totalUncertain > 0 {
+		qh.log(LogLevelInfo,
+			"phase_b_dispatch_with_uncertain: total=%d succeeded=%d uncertain=%d "+
+				"(uncertain entries kept lease via dispatch_uncertain_assume_running; not a delivery failure)",
+			total, totalSucceeded, totalUncertain)
 		return
 	}
 
-	total := totalSucceeded + totalFailed
-	qh.log(LogLevelWarn, "phase_b_partial_dispatch: total=%d succeeded=%d failed=%d", total, totalSucceeded, totalFailed)
+	// Only WARN-log + add recovery hint when at least one *genuine*
+	// failure occurred AND something else happened (success or uncertain).
+	// All-failure batches are surfaced by the per-entry dispatch_failed
+	// log lines elsewhere.
+	if totalFailed == 0 || (totalSucceeded == 0 && totalUncertain == 0) {
+		return
+	}
+
+	qh.log(LogLevelWarn,
+		"phase_b_partial_dispatch: total=%d succeeded=%d failed=%d uncertain=%d",
+		total, totalSucceeded, totalFailed, totalUncertain)
 	for kind, kc := range counts {
 		if kc.failed > 0 {
-			qh.log(LogLevelWarn, "phase_b_partial_dispatch_detail: kind=%s succeeded=%d failed=%d", kind, kc.succeeded, kc.failed)
+			qh.log(LogLevelWarn,
+				"phase_b_partial_dispatch_detail: kind=%s succeeded=%d failed=%d uncertain=%d",
+				kind, kc.succeeded, kc.failed, kc.uncertain)
 		}
 	}
 
-	hint := fmt.Sprintf("partial_dispatch: total=%d succeeded=%d failed=%d", total, totalSucceeded, totalFailed)
+	hint := fmt.Sprintf("partial_dispatch: total=%d succeeded=%d failed=%d uncertain=%d",
+		total, totalSucceeded, totalFailed, totalUncertain)
 	for kind, kc := range counts {
-		hint += fmt.Sprintf(" %s_ok=%d %s_fail=%d", kind, kc.succeeded, kind, kc.failed)
+		hint += fmt.Sprintf(" %s_ok=%d %s_fail=%d %s_uncertain=%d",
+			kind, kc.succeeded, kind, kc.failed, kind, kc.uncertain)
 	}
 	hint += "; failed dispatches will be retried in the next scan cycle"
 	result.recoveryHints = append(result.recoveryHints, hint)
 }
 
+// signalCascadeBreakThreshold sets the consecutive-failure count at which
+// stepDeliverSignals stops attempting further deliveries during the current
+// scan tick. Picked at 5 because: (a) it lets a small batch of unrelated
+// transient errors still finish the tick (e.g. one stuck pane plus a few
+// healthy ones), and (b) once we hit 5 in a row the cause is almost always
+// tmux server-wide degradation (load-buffer / send-keys timing out across
+// every planner pane), not per-signal. Without the gate, a long-running
+// degradation produced thousands of identical "phase_b_signal_failed"
+// log lines per scan and burned scan-cycle CPU on doomed deliveries — the
+// 2026-04-27 retest log showed signal_delivery_failed accumulating into the
+// 10k range before daemon shutdown. The remaining signals are retained in
+// the queue (no Attempts increment, no NextAttemptAt update) so the next
+// scan retries from the same point once tmux recovers.
+const signalCascadeBreakThreshold = 5
+
+// sustainedCascadeBreakThreshold sets the consecutive scan-tick count at
+// which the cross-scan meta-circuit fires. Per-tick cascade-break already
+// caps the log/CPU spend within a scan; this counter promotes "we have
+// degraded for N ticks in a row" to an operator-facing ERROR so the
+// long-tail tmux-server outage is not silently absorbed by the per-tick
+// gate. Picked at 3 to align with one ~scanInterval × 3 window, long
+// enough to rule out a single transient hiccup and short enough that the
+// alert lands while a human can still act.
+const sustainedCascadeBreakThreshold = 3
+
+// signalCascadeTracker counts consecutive delivery failures and trips into a
+// "broken" state once threshold is reached. broken stays sticky for the rest
+// of the current scan tick. Threshold <= 0 disables the tracker.
+type signalCascadeTracker struct {
+	threshold   int
+	consecutive int
+	broken      bool
+}
+
+// recordFailure increments the consecutive failure counter and returns the
+// post-increment broken state. Once broken, subsequent recordFailure calls
+// remain broken until the tracker is discarded at the end of the scan tick.
+func (s *signalCascadeTracker) recordFailure() (nowBroken bool) {
+	s.consecutive++
+	if s.threshold > 0 && s.consecutive >= s.threshold {
+		s.broken = true
+	}
+	return s.broken
+}
+
+// recordSuccess resets the consecutive failure counter. Once broken, it stays
+// broken for the rest of the scan; only intermittent failures with successes
+// in between hold the tracker in the unbroken band.
+func (s *signalCascadeTracker) recordSuccess() {
+	if s.broken {
+		return
+	}
+	s.consecutive = 0
+}
+
+// isBroken reports whether the tracker has tripped past the threshold.
+func (s *signalCascadeTracker) isBroken() bool { return s.broken }
+
 // stepDeliverSignals executes planner signal deliveries via tmux.
 func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
+	cascade := signalCascadeTracker{threshold: signalCascadeBreakThreshold}
+	skipped := 0
+	totalSignals := len(pa.work.signals)
+
 	if err := forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
+		if cascade.isBroken() {
+			skipped++
+			return
+		}
 		err := qh.deliverPlannerSignal(ctx, item.CommandID, item.Message)
 		result.signals = append(result.signals, signalDeliveryResult{
 			Item:    item,
@@ -182,12 +286,71 @@ func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult
 			Error:   err,
 		})
 		if err != nil {
+			tripped := cascade.recordFailure()
 			qh.log(LogLevelWarn, "phase_b_signal_failed command=%s error=%v", item.CommandID, err)
 			result.recoveryHints = append(result.recoveryHints,
 				fmt.Sprintf("signal_delivery_failed command=%s: signal will be retried next scan, but planner may have stale view until then", item.CommandID))
+			if tripped {
+				qh.log(LogLevelWarn,
+					"phase_b_signal_cascade_break consecutive_failures=%d threshold=%d remaining=%d "+
+						"(tmux delivery appears degraded; deferring remaining signals to next scan to avoid log/CPU storm)",
+					cascade.consecutive, signalCascadeBreakThreshold, totalSignals-len(result.signals))
+			}
+			return
 		}
+		cascade.recordSuccess()
 	}); err != nil {
 		qh.log(LogLevelInfo, "phase_b_signals_canceled: %v", err)
+	}
+
+	if skipped > 0 {
+		qh.log(LogLevelWarn,
+			"phase_b_signal_cascade_skipped count=%d (deferred to next scan; entries retained with Attempts unchanged)",
+			skipped)
+		result.recoveryHints = append(result.recoveryHints,
+			fmt.Sprintf("signal_cascade_break skipped=%d: signal queue paused this tick after %d consecutive failures; tmux likely needs operator attention",
+				skipped, signalCascadeBreakThreshold))
+	}
+
+	qh.recordCascadeBreakOutcome(cascade.isBroken(), totalSignals)
+}
+
+// recordCascadeBreakOutcome promotes the per-tick cascade-break observation
+// into the daemon-level meta-circuit. Called at the end of every
+// stepDeliverSignals run.
+//
+//   - tripped=true: increment the consecutive-tick counter; on every tick from
+//     sustainedCascadeBreakThreshold onward emit an ERROR-level
+//     tmux_delivery_sustained_degradation line so the long-tail outage is
+//     visible above the per-tick WARN noise.
+//   - tripped=false (with at least one signal attempted): reset the counter.
+//     If the previous value was non-zero we log a one-shot recovery line so
+//     dashboards / log scanners see a clean transition out of the degraded
+//     window.
+//
+// The "no signals this tick" case is a no-op — we cannot tell apart healthy
+// quiet from suppressed-by-cascade quiet without a delivery attempt, so we
+// hold the counter steady. The next tick that actually fires deliveries will
+// re-evaluate.
+func (qh *QueueHandler) recordCascadeBreakOutcome(tripped bool, totalSignals int) {
+	if tripped {
+		breaks := qh.consecutiveCascadeBreakScans.Add(1)
+		if breaks >= sustainedCascadeBreakThreshold {
+			qh.log(LogLevelError,
+				"tmux_delivery_sustained_degradation consecutive_scan_breaks=%d threshold=%d "+
+					"(signal cascade-break has tripped for %d consecutive scans; tmux server / planner pane likely needs operator intervention — `maestro down && maestro up` or kill-server)",
+				breaks, sustainedCascadeBreakThreshold, breaks)
+		}
+		return
+	}
+	if totalSignals == 0 {
+		return // no delivery attempted this tick — counter held steady
+	}
+	if prev := qh.consecutiveCascadeBreakScans.Swap(0); prev > 0 {
+		qh.log(LogLevelInfo,
+			"tmux_delivery_recovered prior_consecutive_scan_breaks=%d "+
+				"(signal delivery succeeded this tick; clearing meta-circuit counter)",
+			prev)
 	}
 }
 
@@ -314,17 +477,79 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 
 // stepCleanupWorktrees executes worktree cleanup operations
 // (Phase A collected items + post-publish additional cleanups).
+//
+// 2026-04-28: each cleanup now respawns the worker panes attached to the
+// command into the project root before `git worktree remove` runs. The
+// worker pane's cwd is the worktree path, so deleting the worktree
+// underneath a still-open claude-code process leaves any subsequent
+// posix_spawn (typically Stop hook) failing with ENOENT for /bin/sh —
+// node.js reports the chdir failure as if the binary itself were
+// missing. The pane respawn is best-effort: a failure aborts the
+// matching CleanupCommand call so the next scan retries rather than
+// deleting a worktree that still has a pane pointed at it.
 func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult, additionalCleanups []worktreeCleanupItem) {
 	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
 	if err := forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {
 		cr := worktreeCleanupResult{Item: item}
 		if qh.worktreeManager != nil {
+			if respErr := qh.respawnWorkerPanesForCleanup(item.CommandID); respErr != nil {
+				qh.log(LogLevelWarn,
+					"worktree_cleanup_pane_respawn_failed command=%s error=%v "+
+						"(skipping cleanup; next scan will retry once the pane is evictable)",
+					item.CommandID, respErr)
+				cr.Error = respErr
+				result.worktreeCleanups = append(result.worktreeCleanups, cr)
+				return
+			}
 			cr.Error = qh.worktreeManager.CleanupCommand(item.CommandID)
 		}
 		result.worktreeCleanups = append(result.worktreeCleanups, cr)
 	}); err != nil {
 		qh.log(LogLevelInfo, "worktree_cleanups_canceled: %v", err)
 	}
+}
+
+// respawnWorkerPanesForCleanup evicts every worker pane attached to
+// commandID from the worktree's directory ahead of the worktree being
+// removed. Returns the first non-nil RespawnPaneToProjectRoot error so
+// the caller can defer the cleanup; missing state, missing executor, or
+// an empty worker list are silently treated as "nothing to evict".
+func (qh *QueueHandler) respawnWorkerPanesForCleanup(commandID string) error {
+	state, err := qh.worktreeManager.GetCommandState(commandID)
+	if err != nil {
+		// State already torn down or never created — proceed with
+		// cleanup unblocked. The worktree dir itself may not exist,
+		// in which case CleanupCommand is a no-op.
+		qh.log(LogLevelDebug,
+			"worktree_cleanup_state_load command=%s error=%v (skipping pane respawn, proceeding to cleanup)",
+			commandID, err)
+		return nil
+	}
+	if state == nil || len(state.Workers) == 0 {
+		return nil
+	}
+	exec, err := qh.execProvider.GetExecutor()
+	if err != nil {
+		// Daemon shutting down or test harness without an executor.
+		// Cleanup is still safe to attempt — without a live pane there
+		// is no posix_spawn ENOENT path to worry about.
+		qh.log(LogLevelDebug,
+			"worktree_cleanup_executor_unavailable command=%s error=%v (proceeding without pane respawn)",
+			commandID, err)
+		return nil
+	}
+	var firstErr error
+	for _, ws := range state.Workers {
+		if err := exec.RespawnPaneToProjectRoot(ws.WorkerID); err != nil {
+			qh.log(LogLevelWarn,
+				"worktree_cleanup_pane_respawn worker=%s command=%s error=%v",
+				ws.WorkerID, commandID, err)
+			if firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	return firstErr
 }
 
 // handleWorkerCommit commits a single worker's changes and manages the

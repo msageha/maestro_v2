@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"path/filepath"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
+// VerifyWrite handles per-command verify-config snapshot writes (the
+// `maestro verify write` UDS request the planner uses to pin the verify
+// commands a specific plan must satisfy).
 type VerifyWrite struct {
 	maestroDir string
 	lock       func()
@@ -18,6 +22,8 @@ type VerifyWrite struct {
 	logInfof   Logf
 }
 
+// NewVerifyWrite constructs a VerifyWrite handler. lock/unlock guard the
+// snapshot file write so concurrent writes from CLI / planner serialize.
 func NewVerifyWrite(maestroDir string, lock func(), unlock func(), logInfof Logf) *VerifyWrite {
 	return &VerifyWrite{
 		maestroDir: maestroDir,
@@ -27,6 +33,8 @@ func NewVerifyWrite(maestroDir string, lock func(), unlock func(), logInfof Logf
 	}
 }
 
+// Handle validates and persists the requested verify config snapshot
+// under <maestroDir>/state/verify/<command_id>.yaml.
 func (h *VerifyWrite) Handle(req *uds.Request) *uds.Response {
 	var params struct {
 		ConfigData string `json:"config_data"`

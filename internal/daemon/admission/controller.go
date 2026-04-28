@@ -1,6 +1,6 @@
-// Package admission provides concurrency admission control for verify, repair,
-// and rollout operations. It enforces per-operation-type slot limits so that
-// the daemon does not exceed the configured concurrency ceilings.
+// Package admission provides concurrency admission control for verify and
+// repair operations. It enforces per-operation-type slot limits so that the
+// daemon does not exceed the configured concurrency ceilings.
 package admission
 
 import (
@@ -22,8 +22,6 @@ const (
 	OpVerify OpType = iota
 	// OpRepair represents repair tasks.
 	OpRepair
-	// OpRollout represents rollout tasks.
-	OpRollout
 	// OpUnknown represents tasks that do not match any known category.
 	OpUnknown
 )
@@ -35,8 +33,6 @@ func (o OpType) String() string {
 		return "verify"
 	case OpRepair:
 		return "repair"
-	case OpRollout:
-		return "rollout"
 	case OpUnknown:
 		return "unknown"
 	default:
@@ -45,8 +41,8 @@ func (o OpType) String() string {
 }
 
 // Controller enforces per-operation-type concurrency limits. Each operation
-// type (verify, repair, rollout) has a maximum number of concurrent slots.
-// OpUnknown tasks are always admitted without limit.
+// type (verify, repair) has a maximum number of concurrent slots. OpUnknown
+// tasks are always admitted without limit.
 //
 // Note: There is no global "enabled" flag. The controller is always active
 // when instantiated; disable by not calling TryAcquire (i.e., bypass at the
@@ -54,7 +50,6 @@ func (o OpType) String() string {
 type Controller struct {
 	maxVerify           int
 	maxRepair           int
-	maxRollout          int
 	slots               map[OpType]int
 	backgroundSlots     map[OpType]int
 	consecutiveRejects  map[OpType]int
@@ -69,22 +64,18 @@ func NewController(cfg model.AdmissionControl, opts ...ControllerOption) *Contro
 	c := &Controller{
 		maxVerify:           cfg.EffectiveMaxConcurrentVerify(),
 		maxRepair:           cfg.EffectiveMaxConcurrentRepair(),
-		maxRollout:          cfg.EffectiveMaxConcurrentRollout(),
 		saturationThreshold: defaultSaturationThreshold,
 		slots: map[OpType]int{
-			OpVerify:  0,
-			OpRepair:  0,
-			OpRollout: 0,
+			OpVerify: 0,
+			OpRepair: 0,
 		},
 		backgroundSlots: map[OpType]int{
-			OpVerify:  0,
-			OpRepair:  0,
-			OpRollout: 0,
+			OpVerify: 0,
+			OpRepair: 0,
 		},
 		consecutiveRejects: map[OpType]int{
-			OpVerify:  0,
-			OpRepair:  0,
-			OpRollout: 0,
+			OpVerify: 0,
+			OpRepair: 0,
 		},
 	}
 	for _, opt := range opts {
@@ -257,8 +248,6 @@ func (c *Controller) maxFor(op OpType) int {
 		return c.maxVerify
 	case OpRepair:
 		return c.maxRepair
-	case OpRollout:
-		return c.maxRollout
 	default:
 		return 0
 	}
@@ -270,11 +259,11 @@ func (c *Controller) maxFor(op OpType) int {
 //
 // Classification is deterministic on Task.OperationType — daemon admission
 // must not depend on free-form Purpose strings, so a normal task whose
-// Purpose happens to contain "verify"/"repair"/"rollout" is NOT misclassified
-// into a constrained bucket. Planner (initial submit, inject) and retry
-// handlers are responsible for populating OperationType explicitly when the
-// task is verify/repair/rollout. Empty OperationType means "normal" and
-// falls through to OpUnknown (always admitted).
+// Purpose happens to contain "verify"/"repair" is NOT misclassified into a
+// constrained bucket. Planner (initial submit, inject) and retry handlers
+// are responsible for populating OperationType explicitly when the task is
+// verify/repair. Empty OperationType means "normal" and falls through to
+// OpUnknown (always admitted).
 //
 // Unrecognized OperationType values (e.g. "bogus") also fall through to
 // OpUnknown rather than silently mapping to a known bucket; logging is left
@@ -285,8 +274,6 @@ func (c *Controller) classifyTaskUnlocked(task *model.Task) OpType {
 		return OpVerify
 	case model.OperationTypeRepair:
 		return OpRepair
-	case model.OperationTypeRollout:
-		return OpRollout
 	default:
 		return OpUnknown
 	}
