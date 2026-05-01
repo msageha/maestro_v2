@@ -3,10 +3,13 @@ package daemon
 import (
 	"bytes"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
@@ -73,8 +76,18 @@ type cbTripCall struct {
 }
 
 func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error)    { return "", nil }
-func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error)   { return nil, nil }
+func (m *cbMockStateManager) GetEffectiveTaskStatus(string, string) (model.Status, error) {
+	return "", nil
+}
+func (m *cbMockStateManager) GetEffectiveTaskStatusForCompletion(string, string) (model.Status, error) {
+	return "", nil
+}
+func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error) { return nil, nil }
 func (m *cbMockStateManager) GetTaskDependencies(string, string) ([]string, error) { return nil, nil }
+func (m *cbMockStateManager) HasNonTerminalTaskState(string) (bool, error)         { return false, nil }
+func (m *cbMockStateManager) GetNonTerminalTaskStates(string) (map[string]model.Status, error) {
+	return nil, nil
+}
 func (m *cbMockStateManager) IsSystemCommitReady(string, string) (bool, bool, error) {
 	return false, false, nil
 }
@@ -82,6 +95,7 @@ func (m *cbMockStateManager) IsCommandCancelRequested(string) (bool, error) { re
 func (m *cbMockStateManager) ApplyPhaseTransition(string, string, model.PhaseStatus) error {
 	return nil
 }
+func (m *cbMockStateManager) SetPhaseCancelledReason(string, string, *string) error      { return nil }
 func (m *cbMockStateManager) UpdateTaskState(string, string, model.Status, string) error { return nil }
 
 func (m *cbMockStateManager) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
@@ -103,6 +117,12 @@ func (m *cbMockStateManager) TripCircuitBreaker(commandID, reason string, progre
 	})
 	return m.tripErr
 }
+
+func (m *cbMockStateManager) MarkAwaitingFillStallNotified(string, string, string) error {
+	return nil
+}
+
+func (m *cbMockStateManager) MarkCircuitBreakerProgress(string) error { return nil }
 
 // TestStepCircuitBreaker_SignalEmittedAtomicallyWithTrip verifies that when
 // TripCircuitBreaker succeeds, the planner signal is emitted using the reason
@@ -694,19 +714,27 @@ func TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires(t *testing.T) {
 	if got := len(s.work.worktreeCleanups); got != 1 {
 		t.Fatalf("expected 1 orphan cleanup item, got %d", got)
 	}
-	if s.work.worktreeCleanups[0].Reason != "orphan_terminal" {
-		t.Errorf("reason = %q, want orphan_terminal", s.work.worktreeCleanups[0].Reason)
+	// 2026-05-01: integration_status=created on a terminal command is now
+	// classified as a no-op terminal so the cleanup happens immediately
+	// regardless of the stall threshold (a finished command that produced
+	// no commits has nothing to gain from waiting). The pre-fix reason
+	// "orphan_terminal" still applies to the failed/conflict/partial_merge
+	// cases.
+	if s.work.worktreeCleanups[0].Reason != "no_op_terminal" {
+		t.Errorf("reason = %q, want no_op_terminal", s.work.worktreeCleanups[0].Reason)
 	}
 }
 
-// TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped verifies negative case
-// (elapsed < stall_cleanup_after).
+// TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped_FailedIntegration
+// verifies that the threshold IS still honoured for non-no-op integration
+// statuses (failed/conflict/partial_merge). The created status now
+// bypasses the threshold (TestStepWorktreeOrphanCleanup_CreatedBypassesThreshold).
 func TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
-	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusFailed)
 
 	recent := qh.clock.Now().Add(-1 * time.Minute)
 	s := scanState{
@@ -724,7 +752,7 @@ func TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped(t *testing.T) {
 
 	qh.stepWorktreeOrphanCleanup(&s)
 	if len(s.work.worktreeCleanups) != 0 {
-		t.Errorf("expected no cleanup before threshold, got %d", len(s.work.worktreeCleanups))
+		t.Errorf("expected no cleanup before threshold for failed integration, got %d", len(s.work.worktreeCleanups))
 	}
 }
 
@@ -934,6 +962,453 @@ func TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill(t *testing.T) {
 
 	if got := len(s.work.worktreeCleanups); got != 0 {
 		t.Fatalf("expected no fast-track cleanup for awaiting_fill phase, got %d", got)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_SkipsPendingPhaseAwaitingDependency
+// pins the 2026-04-29 review pin: a deferred phase that declares
+// `depends_on_phases` starts at `pending` and stays there until the
+// dependency resolver observes every upstream phase as terminal. Prior
+// behaviour swept all non-terminal/non-awaiting_fill phases into the
+// stuck set, which force-failed legitimate downstream phases the moment
+// the command's UpdatedAt aged past the threshold — even though the
+// phase was correctly waiting for its upstream.
+//
+// The scenario: parallel_conflict completed, report_integration is at
+// awaiting_fill (Planner pending), integration_verification (pending,
+// depends_on=report_integration) gets cleaned up. Cleanup must skip
+// integration_verification because its declared dependency is not yet
+// terminal.
+func TestStepWorktreeFastTrackCleanup_SkipsPendingPhaseAwaitingDependency(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusCompleted,
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "parallel_conflict", Status: model.PhaseStatusCompleted},
+			{PhaseID: "p2", Name: "report_integration", Status: model.PhaseStatusAwaitingFill,
+				Type: "deferred", DependsOnPhases: []string{"parallel_conflict"}},
+			{PhaseID: "p3", Name: "integration_verification", Status: model.PhaseStatusPending,
+				Type: "deferred", DependsOnPhases: []string{"report_integration"}},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no fast-track cleanup while a pending phase awaits its dependency, got %d (%+v)",
+			got, s.work.worktreeCleanups)
+	}
+
+	// Verify the integration_verification phase status was NOT mutated.
+	statePath := filepath.Join(maestroDir, "state", "commands", "cmd1.yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	for _, p := range st.Phases {
+		if p.Name == "integration_verification" && p.Status != model.PhaseStatusPending {
+			t.Errorf("integration_verification phase mutated to %s; expected pending preserved", p.Status)
+		}
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_FlagsPendingWithTerminalDeps covers
+// the inverse: when every declared dependency is terminal but the
+// phase still hasn't activated, that IS a real stall (dep resolver
+// silently failing or a Planner abandonment after a phase failed).
+// Cleanup should still fire in that case so the worktrees do not leak.
+func TestStepWorktreeFastTrackCleanup_FlagsPendingWithTerminalDeps(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusFailed, // upstream failed
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusFailed},
+			{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusPending,
+				Type: "deferred", DependsOnPhases: []string{"phase1"}},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusFailed},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 1 {
+		t.Fatalf("expected fast-track cleanup when pending phase's deps are terminal, got %d", got)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_SkipsPausedForReplan pins the
+// 2026-04-29 review fix: when a task has hit max-retries on verify and
+// transitioned to paused_for_replan in state, the queue side may still
+// show the task at a terminal worker-reported status (completed). Prior
+// behaviour saw "all queue terminal" and fired fast-track cleanup,
+// deleting the worker worktree while the Planner was still composing
+// add-retry-task — when the retry finally landed, dispatch could not
+// resolve the worktree path. Cleanup must observe the state side and
+// skip while any task is non-terminal there.
+func TestStepWorktreeFastTrackCleanup_SkipsPausedForReplan(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	// State: t1 paused_for_replan, t2 completed. Phase still active so
+	// the existing "stuck phase" check would have flagged it as a fast-
+	// track candidate. The new state-side gate must override that.
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusPausedForReplan,
+			"t2": model.StatusCompleted,
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		// Queue side shows both tasks at terminal worker-reported status
+		// (the worker reported completed, but verify failed and state
+		// transitioned to paused_for_replan without touching the queue).
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+				{ID: "t2", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no fast-track cleanup while a task sits at paused_for_replan, got %d (%+v)",
+			got, s.work.worktreeCleanups)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_SkipsRepairPending covers the
+// shorter-window symmetric case: state at repair_pending means the
+// daemon is mid-retry and will dispatch into the worktree on the next
+// scan. Cleanup must not race the retry dispatch.
+func TestStepWorktreeFastTrackCleanup_SkipsRepairPending(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusRepairPending,
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no fast-track cleanup while a task sits at repair_pending, got %d (%+v)",
+			got, s.work.worktreeCleanups)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds pins the
+// 2026-04-29 e2e regression: a retry/repair task landed in
+// state.TaskStates as `planned` but never made it into any worker queue
+// (queue write silently lost or rollback failed without RetryEnqueueFailed
+// bookkeeping). All queue tasks were terminal so the queue gate let the
+// scan through, but the state-side gate then bailed indefinitely because
+// the phantom TaskStates entry remained non-terminal — Phase 1 was stuck
+// forever even after the actual work completed. Once the cleanup window
+// elapses, the phantom must be terminated so phase progression can
+// resume.
+//
+// Note (2026-04-30 follow-up): the original implementation force-failed
+// every phantom regardless of source status, which silently looped on the
+// `planned -> failed` validTaskStateTransitions reject. The fix routes
+// non-running phantoms to `cancelled` (the only legal terminal hop from
+// `planned` per model.validTaskStateTransitions) — phantoms by definition
+// did not actually execute, so cancellation is also semantically correct.
+// in_progress / running phantoms still go to `failed`.
+func TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	// Phantom scenario: t1 finished, but a retry task t1_retry is in
+	// TaskStates as `planned` without a queue entry anywhere. Phase
+	// p1 lists t1_retry in TaskIDs (RegisterRetryTaskInState appended
+	// it on the way to the queue write that subsequently failed).
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1":       model.StatusCompleted,
+			"t1_retry": model.StatusPlanned, // phantom — no queue entry
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive,
+				TaskIDs: []string{"t1", "t1_retry"}},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		// Queue has only the original task; t1_retry is missing entirely.
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	// Phantom should be force-cancelled in state. The source status was
+	// `planned`, so validTaskStateTransitions only permits the `cancelled`
+	// terminal hop (not `failed`). Cancellation is semantically right for
+	// a task that was registered in state but never made it onto any
+	// worker queue — by definition, it never executed.
+	statePath := filepath.Join(maestroDir, "state", "commands", "cmd1.yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if got := st.TaskStates["t1_retry"]; got != model.StatusCancelled {
+		t.Errorf("phantom t1_retry status=%s, want cancelled", got)
+	}
+
+	// Cleanup proceeds because the state-side gate is now satisfied.
+	if got := len(s.work.worktreeCleanups); got != 1 {
+		t.Fatalf("expected fast-track cleanup after phantom cleared, got %d", got)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_DoesNotClearPhantomBeforeThreshold
+// guards the conservative grace window: phantom-task force-fail must
+// only fire after cmd.UpdatedAt has aged past stall_cleanup_after, so
+// the brief race between RegisterRetryTaskInState and AddRetryTaskToQueue
+// (during which a retry task is legitimately in state without a queue
+// entry yet) is not false-failed.
+func TestStepWorktreeFastTrackCleanup_DoesNotClearPhantomBeforeThreshold(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	// Only 1 minute since UpdatedAt — well within the 10-minute window.
+	recentlyAt := qh.clock.Now().Add(-1 * time.Minute)
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1":       model.StatusCompleted,
+			"t1_retry": model.StatusPlanned, // mid-registration, no queue yet
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive,
+				TaskIDs: []string{"t1", "t1_retry"}},
+		},
+		recentlyAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: recentlyAt.UTC().Format(time.RFC3339),
+					UpdatedAt: recentlyAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	statePath := filepath.Join(maestroDir, "state", "commands", "cmd1.yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(data, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if got := st.TaskStates["t1_retry"]; got != model.StatusPlanned {
+		t.Errorf("phantom t1_retry status=%s, want planned (preserved within grace window)", got)
+	}
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no cleanup within grace window, got %d", got)
+	}
+}
+
+// TestStepWorktreeFastTrackCleanup_HonoursRecentTaskActivity pins the
+// 2026-04-29 e2e regression where a phase ran for 16 minutes through
+// retry + verify, every task's UpdatedAt was within seconds of `now`,
+// yet the fast-track threshold force-failed the active phase because
+// cmd.UpdatedAt was stuck at the original dispatch timestamp.
+//
+// The fix: use max(cmd.UpdatedAt, latest task UpdatedAt for this command)
+// as the elapsed reference, so recent task progress correctly suppresses
+// the cleanup gate.
+func TestStepWorktreeFastTrackCleanup_HonoursRecentTaskActivity(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	recentTaskAt := qh.clock.Now().Add(-1 * time.Minute) // recent activity
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusCompleted,
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive,
+				TaskIDs: []string{"t1"}},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusInProgress,
+					CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+					UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{
+					ID:        "t1",
+					CommandID: "cmd1",
+					Status:    model.StatusCompleted,
+					UpdatedAt: recentTaskAt.UTC().Format(time.RFC3339),
+				},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no cleanup when task UpdatedAt is recent, got %d", got)
 	}
 }
 

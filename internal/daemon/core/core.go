@@ -162,6 +162,23 @@ type RealClock = clock.RealClock
 type StateReader interface {
 	// GetTaskState returns the status of a task from the command state.
 	GetTaskState(commandID, taskID string) (model.Status, error)
+	// GetEffectiveTaskStatus returns the status of a task after walking
+	// retry_lineage forward to the latest descendant. When a task has been
+	// superseded by a successful retry/repair (cancelled with a
+	// "superseded_by_*" reason), callers that want to know "is this
+	// lineage effectively satisfied?" should consult the successor's
+	// status rather than the raw predecessor status. Falls back to the
+	// raw GetTaskState behaviour when no lineage entry exists.
+	GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error)
+	// GetEffectiveTaskStatusForCompletion returns the status of a task
+	// through the completion-aware lens: like GetEffectiveTaskStatus, but
+	// additionally unwinds cascade-cancellations (CancelledReasons[..] of
+	// the form "blocked_dependency_terminal:<dep>") whose upstream lineage
+	// has effectively completed. Used by phase- and plan-level completion
+	// checks so a downstream cascade-straggler whose required predecessor
+	// was delivered via verify-repair does not block plan completion. NOT
+	// safe for dispatch-time predicates — see EffectiveStatusForCompletion.
+	GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error)
 	// GetCommandPhases returns phases for a command.
 	GetCommandPhases(commandID string) ([]PhaseInfo, error)
 	// GetTaskDependencies returns task IDs that the given task depends on.
@@ -174,17 +191,55 @@ type StateReader interface {
 	IsCommandCancelRequested(commandID string) (bool, error)
 	// GetCircuitBreakerState returns the circuit breaker state for a command.
 	GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error)
+	// HasNonTerminalTaskState reports whether any task in the command state
+	// is at a non-terminal status (paused_for_replan, repair_pending,
+	// verify_pending, etc.). The queue side may show all tasks at terminal
+	// status (e.g. completed/failed) while the state side still tracks an
+	// in-flight resolution path the daemon owes the Planner — fast-track
+	// cleanup must observe both sides to avoid deleting a worktree that a
+	// pending retry-task dispatch will need.
+	HasNonTerminalTaskState(commandID string) (bool, error)
+	// GetNonTerminalTaskStates returns a snapshot of every TaskStates entry
+	// at a non-terminal status, keyed by task ID. Used by the phantom-task
+	// detector in fast-track cleanup: when state has non-terminal entries
+	// whose IDs are absent from every worker queue file (a 2026-04-29 e2e
+	// regression where a state-only retry task left a Phase permanently
+	// blocked), the cleanup step force-fails them so phase progression can
+	// resume. Returns ErrStateNotFound when the state file does not exist.
+	GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error)
 }
 
 // StateWriter provides write access to command state.
 type StateWriter interface {
 	// ApplyPhaseTransition persists a phase status change to state/commands/.
 	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
+	// SetPhaseCancelledReason persists Phase.CancelledReason for a phase.
+	// Pass nil to clear the field. Used by the dependency resolver to
+	// distinguish cascade-cancellations (auto-recoverable) from
+	// operator/manual cancels — see model.DependencyCascadeCancelPrefix.
+	// Idempotent: setting the same value twice is a no-op write.
+	SetPhaseCancelledReason(commandID, phaseID string, reason *string) error
 	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
 	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
 	// TripCircuitBreaker sets the circuit breaker to tripped and issues a cancel request on the command.
 	// progressTimeoutMinutes is re-validated under lock to prevent TOCTOU race; pass 0 to skip re-validation.
 	TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error
+	// MarkAwaitingFillStallNotified records that the awaiting-fill watchdog
+	// has emitted a stall signal for the given phase, so subsequent scan
+	// cycles do not re-fire the same signal until the phase transitions
+	// out of awaiting_fill (which clears the marker via ApplyPhaseTransition).
+	// No-op when the phase is no longer at awaiting_fill (the watchdog
+	// observation is stale by the time the write reaches state).
+	MarkAwaitingFillStallNotified(commandID, phaseID, notifiedAt string) error
+	// MarkCircuitBreakerProgress refreshes circuit_breaker.last_progress_at
+	// when the daemon observes a liveness signal that does NOT come from
+	// task completion (e.g. the worker pane shows cross-scan activity).
+	// Without this hook a long-running task whose execution legitimately
+	// exceeds progress_timeout_minutes would trip the breaker on the
+	// progress-timeout path even though the worker is visibly working.
+	// Idempotent: ErrStateNotFound is silently ignored — the breaker
+	// can only meaningfully advance when state already exists.
+	MarkCircuitBreakerProgress(commandID string) error
 }
 
 // StateManager combines StateReader and StateWriter for components that need both

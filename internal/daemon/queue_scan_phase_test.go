@@ -17,6 +17,7 @@ import (
 	worktreepkg "github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -244,6 +245,235 @@ func TestCollectWorktreePublish_SkipOnFailedTasks(t *testing.T) {
 	}
 	if cleanups[0].Reason != "failure" {
 		t.Errorf("cleanup reason = %q, want failure", cleanups[0].Reason)
+	}
+}
+
+// TestCollectWorktreePublish_IntegrationFailedEmitsSynthetic pins Bug-L:
+// when a command's worktree integration has been marked Failed (typically
+// by fast_track_cleanup), the publish gate must emit a synthetic planner
+// result so R3PlannerQueue can walk the queue command terminal and the
+// Orchestrator gets notified. Without this, Continuous Mode never advances
+// iteration and the operator sees a stuck "in_progress" command despite
+// no work being possible.
+func TestCollectWorktreePublish_IntegrationFailedEmitsSynthetic(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: true,
+	})
+
+	// Integration Failed simulates a fast_track_cleanup that already
+	// nuked the integration; no phases or tasks need to be in a specific
+	// state — the gate decision keys off integration.Status alone for
+	// this branch.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusFailed)
+	writeCommandStateWithPlanStatus(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, []model.Phase{
+		{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusCompleted},
+	}, model.PlanStatusSealed)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Fatalf("expected 0 publishes for failed integration, got %d", len(publishes))
+	}
+	if len(cleanups) != 1 || cleanups[0].Reason != "failure" {
+		t.Fatalf("expected 1 failure cleanup, got %+v", cleanups)
+	}
+
+	resultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("expected synthetic planner result on integration_failed, got read error: %v", err)
+	}
+	var rf model.CommandResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("parse planner.yaml: %v", err)
+	}
+	count := 0
+	for _, r := range rf.Results {
+		if r.CommandID == "cmd1" && r.Status == model.StatusFailed {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 synthetic_failure for cmd1, got %d", count)
+	}
+
+	// Idempotency check: second invocation should not duplicate.
+	_, _ = qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	data2, _ := os.ReadFile(resultPath)
+	var rf2 model.CommandResultFile
+	if err := yamlv3.Unmarshal(data2, &rf2); err != nil {
+		t.Fatalf("parse planner.yaml after idempotent retry: %v", err)
+	}
+	count2 := 0
+	for _, r := range rf2.Results {
+		if r.CommandID == "cmd1" && r.Status == model.StatusFailed {
+			count2++
+		}
+	}
+	if count2 != 1 {
+		t.Errorf("synthetic_failure must be idempotent; got %d after second call", count2)
+	}
+}
+
+// TestCollectWorktreePublish_RecoveryAfterFailedPhasePublishes verifies the
+// post-2026-04-30 race-safe publish gate: when a verify-repair (or planner-
+// driven retry) replaces a failed task with a successor that completes, the
+// publish gate must honor the live derivation — not the stale persisted
+// plan_status. With retry_lineage threaded through DeriveStatus the
+// predecessor's superseded-cancelled status no longer counts as a failure,
+// the dead phase fragment is recognised as recovered, and the command
+// publishes normally rather than being poisoned by synthetic_failure.
+func TestCollectWorktreePublish_RecoveryAfterFailedPhasePublishes(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnSuccess: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	// Realistic shape after a verify-repair recovery: predecessor t1 was
+	// cancelled with superseded_by_verify_repair, t1_recover replaced it in
+	// RequiredTaskIDs (so the live state has only t1_recover required), and
+	// retry_lineage records the supersession. plan_status is still sealed —
+	// R4PlanStatus has not yet propagated the recovery to disk; the publish
+	// gate must derive completion directly.
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"t1_recover"},
+			TaskStates: map[string]model.Status{
+				"t1":         model.StatusCancelled,
+				"t1_recover": model.StatusCompleted,
+			},
+			CancelledReasons: map[string]string{
+				"t1": "superseded_by_verify_repair: repair_task=t1_recover reason=verify_failed",
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: map[string]string{
+				"t1_recover": "t1",
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusFailed},
+				{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusCompleted},
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", "cmd1.yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write command state: %v", err)
+	}
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCancelled},
+			{ID: "t1_recover", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, _ := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 1 {
+		t.Fatalf("expected publish to proceed when retry_lineage successor completed despite stale failed phase, got %d publishes", len(publishes))
+	}
+
+	// Verify the synthetic_failure result was NOT written: the plan succeeded.
+	resultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	if _, err := os.Stat(resultPath); err == nil {
+		var rf model.CommandResultFile
+		data, _ := os.ReadFile(resultPath)
+		if err := yamlv3.Unmarshal(data, &rf); err == nil {
+			for _, r := range rf.Results {
+				if r.CommandID == "cmd1" && r.Status == model.StatusFailed {
+					t.Errorf("synthetic_failure should NOT be written when retry_lineage successor completed; got %+v", r)
+				}
+			}
+		}
+	}
+}
+
+// TestCollectWorktreePublish_FailedPlanWritesSynthetic verifies the inverse:
+// when plan_status is genuinely failed (not recovered), the synthetic_failure
+// write fires so R3/R4 can walk the queue + state to terminal.
+func TestCollectWorktreePublish_FailedPlanWritesSynthetic(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	writeCommandStateWithPlanStatus(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusFailed,
+	}, []model.Phase{
+		{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusFailed},
+	}, model.PlanStatusFailed)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusFailed},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Fatalf("expected 0 publishes for genuinely failed plan, got %d", len(publishes))
+	}
+	if len(cleanups) != 1 || cleanups[0].Reason != "failure" {
+		t.Fatalf("expected 1 failure cleanup, got %+v", cleanups)
+	}
+
+	// Verify the synthetic_failure result IS written exactly once.
+	resultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("expected results/planner.yaml to be written: %v", err)
+	}
+	var rf model.CommandResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("parse planner.yaml: %v", err)
+	}
+	syntheticCount := 0
+	for _, r := range rf.Results {
+		if r.CommandID == "cmd1" && r.Status == model.StatusFailed {
+			syntheticCount++
+		}
+	}
+	if syntheticCount != 1 {
+		t.Errorf("expected exactly 1 synthetic_failure for cmd1, got %d", syntheticCount)
+	}
+
+	// Second invocation should be a no-op (idempotent) — synthetic stays at 1.
+	_, _ = qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	data2, _ := os.ReadFile(resultPath)
+	var rf2 model.CommandResultFile
+	_ = yamlv3.Unmarshal(data2, &rf2)
+	syntheticCount2 := 0
+	for _, r := range rf2.Results {
+		if r.CommandID == "cmd1" && r.Status == model.StatusFailed {
+			syntheticCount2++
+		}
+	}
+	if syntheticCount2 != 1 {
+		t.Errorf("synthetic_failure must be idempotent across scans; got %d after second call", syntheticCount2)
 	}
 }
 
@@ -573,17 +803,52 @@ func (r *scanPhaseStateReader) GetTaskState(commandID, taskID string) (model.Sta
 	return s, nil
 }
 
+func (r *scanPhaseStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", ErrStateNotFound
+	}
+	return plan.EffectiveStatus(taskID, state.TaskStates, state.RetryLineage), nil
+}
+
+func (r *scanPhaseStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", ErrStateNotFound
+	}
+	return plan.EffectiveStatusForCompletion(taskID, state), nil
+}
+
 func (r *scanPhaseStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	state, err := r.loadState(commandID)
 	if err != nil {
 		return nil, err
 	}
+	// Build name→ID lookup so DependsOnPhases (names) can be resolved into
+	// the PhaseInfo.DependsOn (IDs) form the production reader uses.
+	phaseNameToID := make(map[string]string, len(state.Phases))
+	for _, p := range state.Phases {
+		phaseNameToID[p.Name] = p.PhaseID
+	}
 	var phases []PhaseInfo
 	for _, p := range state.Phases {
+		var depIDs []string
+		for _, depName := range p.DependsOnPhases {
+			if id, ok := phaseNameToID[depName]; ok {
+				depIDs = append(depIDs, id)
+			}
+		}
 		phases = append(phases, PhaseInfo{
-			ID:     p.PhaseID,
-			Name:   p.Name,
-			Status: p.Status,
+			ID:        p.PhaseID,
+			Name:      p.Name,
+			Status:    p.Status,
+			DependsOn: depIDs,
 		})
 	}
 	return phases, nil
@@ -597,8 +862,34 @@ func (r *scanPhaseStateReader) ApplyPhaseTransition(commandID, phaseID string, n
 	return nil
 }
 
-func (r *scanPhaseStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+func (r *scanPhaseStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
 	return nil
+}
+
+func (r *scanPhaseStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	// Persist the update so phantom-task force-fail tests can verify the
+	// resulting state. Reads use the same loadState helper, so the cycle
+	// stays consistent.
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return err
+	}
+	if state.TaskStates == nil {
+		state.TaskStates = map[string]model.Status{}
+	}
+	state.TaskStates[taskID] = newStatus
+	if cancelledReason != "" {
+		if state.CancelledReasons == nil {
+			state.CancelledReasons = map[string]string{}
+		}
+		state.CancelledReasons[taskID] = cancelledReason
+	}
+	path := filepath.Join(r.maestroDir, "state", "commands", commandID+".yaml")
+	data, err := yamlv3.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o600)
 }
 
 func (r *scanPhaseStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
@@ -613,9 +904,42 @@ func (r *scanPhaseStateReader) GetCircuitBreakerState(commandID string) (*model.
 	return &model.CircuitBreakerState{}, nil
 }
 
+func (r *scanPhaseStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return false, err
+	}
+	for _, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *scanPhaseStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]model.Status, len(state.TaskStates))
+	for taskID, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			out[taskID] = status
+		}
+	}
+	return out, nil
+}
+
 func (r *scanPhaseStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	return nil
 }
+
+func (r *scanPhaseStateReader) MarkAwaitingFillStallNotified(string, string, string) error {
+	return nil
+}
+
+func (r *scanPhaseStateReader) MarkCircuitBreakerProgress(string) error { return nil }
 
 func (r *scanPhaseStateReader) loadState(commandID string) (*model.CommandState, error) {
 	path := filepath.Join(r.maestroDir, "state", "commands", commandID+".yaml")
@@ -736,6 +1060,15 @@ func markCommitFailedWorkerForTest(t *testing.T, maestroDir, commandID, workerID
 
 func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates map[string]model.Status, phases []model.Phase) {
 	t.Helper()
+	writeCommandStateWithPlanStatus(t, maestroDir, commandID, taskStates, phases, model.PlanStatusSealed)
+}
+
+// writeCommandStateWithPlanStatus is the variant used by tests that need to
+// drive the plan_status reconciliation paths (e.g. recovery after a failed
+// phase has been superseded by an add-task and plan_status flipped to
+// completed).
+func writeCommandStateWithPlanStatus(t *testing.T, maestroDir, commandID string, taskStates map[string]model.Status, phases []model.Phase, planStatus model.PlanStatus) {
+	t.Helper()
 	var requiredIDs []string
 	for id := range taskStates {
 		requiredIDs = append(requiredIDs, id)
@@ -744,7 +1077,7 @@ func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates ma
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     commandID,
-		PlanStatus:    model.PlanStatusSealed,
+		PlanStatus:    planStatus,
 		TaskTracking: model.TaskTracking{
 			RequiredTaskIDs: requiredIDs,
 			TaskStates:      taskStates,
@@ -831,27 +1164,39 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsOnFailure(t *testing.T) {
 	}
 }
 
-func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenNotAllTerminal(t *testing.T) {
+func TestCollectWorktreePhaseMerges_NoPhasesIncrementalWhenSomeTerminal(t *testing.T) {
 	t.Parallel()
+	// 2026-05-02: implicit-phase merge now runs incrementally — a single
+	// completed task is enough to start collecting merge work, so a worker
+	// whose dependent task completed early can hand off its output to
+	// integration before the rest of the command finishes. This is the
+	// fix for the user's "worker2 cannot see worker1 output" regression.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
 		"t1": model.StatusCompleted,
 		"t2": model.StatusInProgress,
 	}, nil)
 	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
-	if items != nil {
-		t.Errorf("expected nil items when a task is non-terminal, got %v", items)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 incremental merge item when at least one task completed, got %d", len(items))
+	}
+	if items[0].PhaseID != "__implicit_phase" {
+		t.Errorf("PhaseID = %q, want __implicit_phase", items[0].PhaseID)
 	}
 }
 
-func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T) {
+func TestCollectWorktreePhaseMerges_NoPhasesAllowsRecollectAfterMerged(t *testing.T) {
 	t.Parallel()
-	// Integration already merged → fallback should not produce a new item.
+	// 2026-05-02: integration_status=merged is no longer a hard skip for
+	// implicit-phase commands. New completions can keep flowing in while
+	// the command runs, and each one needs the merge collector to pick it
+	// up; MergeToIntegration's per-worker idempotency keeps duplicate scans
+	// cheap.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusMerged, map[string]model.Status{
 		"t1": model.StatusCompleted,
 	}, nil)
 	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
-	if items != nil {
-		t.Errorf("expected nil items when integration already merged, got %v", items)
+	if len(items) != 1 {
+		t.Fatalf("expected merge item to be re-collected after merged status (incremental merge), got %d", len(items))
 	}
 }
 
@@ -885,15 +1230,18 @@ func TestCollectImplicitWorktreeMerge_Failed(t *testing.T) {
 	}
 }
 
-func TestCollectImplicitWorktreeMerge_AlreadyMerged(t *testing.T) {
+func TestCollectImplicitWorktreeMerge_AlreadyMerged_IncrementalReentry(t *testing.T) {
 	t.Parallel()
-	// __implicit_phase is already in MergedPhases → should skip even if status allows re-collection
+	// 2026-05-02: __implicit_phase membership in MergedPhases is no longer
+	// a gate. Incremental merge expects to re-enter on every completed
+	// task; the actual idempotency lives inside MergeToIntegration where
+	// up-to-date worker branches are skipped without spending git ops.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusPartialMerge, map[string]model.Status{
 		"t1": model.StatusCompleted,
 	}, map[string]string{"__implicit_phase": "2026-01-01T00:00:00Z"})
 	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
-	if items != nil {
-		t.Errorf("expected nil items when __implicit_phase already merged, got %v", items)
+	if len(items) != 1 {
+		t.Fatalf("expected re-entry merge item even after __implicit_phase recorded as merged, got %d", len(items))
 	}
 }
 
@@ -1133,13 +1481,23 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 				t.Errorf("merge should have been skipped: err=%v conflicts=%v", mr.Error, mr.Conflicts)
 			}
 
-			// Integration must have been marked Failed.
+			// Integration status is intentionally NOT marked Failed here
+			// (2026-05-01 fix): pinning the integration to a terminal status on
+			// the first all-commits-failed observation made transient errors
+			// (e.g. .git/index.lock contention) unrecoverable even when the
+			// next scan's stepRetryCommitFailedWorkers would have succeeded.
+			// The publish gate now blocks via len(CommitFailedWorkers)>0
+			// alone; CommitFailedWorkers gets set on every failure, and
+			// stepRetryCommitFailedWorkers retries every scan. The integration
+			// status therefore stays at its prior value (Created/Merged) and
+			// the operator-visible signal of permanent failure is the
+			// publish_blocked log emitting on every scan, not a status flip.
 			state, err := wm.GetCommandState(commandID)
 			if err != nil {
 				t.Fatalf("GetCommandState: %v", err)
 			}
-			if state.Integration.Status != model.IntegrationStatusFailed {
-				t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
+			if state.Integration.Status == model.IntegrationStatusFailed {
+				t.Errorf("integration status = %q, want non-failed (transient errors must remain recoverable)", state.Integration.Status)
 			}
 
 			// Run phase C and verify commit_failed signal with Reason was emitted,
@@ -1503,6 +1861,77 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	}
 }
 
+// TestPeriodicScanPhaseC_PublishCompletedEmittedAfterDeferredFinalize covers
+// the 2026-04-29 e2e symmetry fix: when the deferred plan-complete intent is
+// finalised inside Phase C, the daemon must still emit publish_completed so
+// the Planner sees parity with the non-deferred path. Pre-fix the signal was
+// suppressed because the command went terminal during deferred finalisation.
+// The signal is tagged Reason="deferred_complete_finalized" to bypass the
+// Phase A dispatch-time stale filter, which is exercised by
+// TestStepPlannerSignalsDeferred_PublishCompletedRetainedAfterDeferredFinalize.
+func TestPeriodicScanPhaseC_PublishCompletedEmittedAfterDeferredFinalize(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_deferred_finalize"
+
+	// Wire a deferredPlanCompleter that simulates a real Complete() flushing
+	// a deferred intent: it flips the queue to terminal AND returns
+	// (true, nil) to signal "deferred finalisation occurred".
+	cqPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_planner",
+		Commands: []model.Command{
+			{ID: commandID, Status: model.StatusInProgress},
+		},
+	}
+	if err := yamlutil.AtomicWrite(cqPath, cq); err != nil {
+		t.Fatalf("write command queue: %v", err)
+	}
+	qh.deferredPlanCompleter = func(cmdID string) (bool, error) {
+		terminalCQ := model.CommandQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_planner",
+			Commands: []model.Command{
+				{ID: cmdID, Status: model.StatusCompleted},
+			},
+		}
+		if err := yamlutil.AtomicWrite(cqPath, terminalCQ); err != nil {
+			t.Fatalf("simulate deferred plan complete: %v", err)
+		}
+		return true, nil
+	}
+
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test publish"},
+			Error: nil,
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
+	var found *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			found = s
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("publish_completed signal must be emitted after deferred finalisation; signals: %+v", signalQueue.Signals)
+	}
+	if found.Reason != "deferred_complete_finalized" {
+		t.Errorf("Reason = %q, want %q (so Phase A dispatch keeps the signal)", found.Reason, "deferred_complete_finalized")
+	}
+}
+
 // TestPeriodicScanPhaseC_PublishFailedNoSignal verifies that a failed worktree
 // publish does NOT emit any signal (neither publish_failed nor publish_completed).
 // The Daemon handles publish retries automatically via recordPublishFailure /
@@ -1710,6 +2139,64 @@ func TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal(t *testing
 	}
 }
 
+// TestStepPlannerSignalsDeferred_PublishCompletedRetainedAfterDeferredFinalize
+// asserts the symmetry-fix counterpart on the dispatch side: a publish_completed
+// signal tagged with Reason="deferred_complete_finalized" must be retained for
+// delivery even when the command is terminal in the queue. The tag indicates
+// that the signal was emitted intentionally from the Phase C deferred path
+// after the daemon flipped the command terminal, and the Planner should
+// receive it for parity with the non-deferred publish_completed path.
+func TestStepPlannerSignalsDeferred_PublishCompletedRetainedAfterDeferredFinalize(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	writeCommandState(t, maestroDir, "cmd_deferred_done", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_completed",
+				CommandID: "cmd_deferred_done",
+				Reason:    "deferred_complete_finalized",
+				Message:   "integration branch published",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	commandQueue := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_planner",
+		Commands: []model.Command{
+			{ID: "cmd_deferred_done", Status: model.StatusCompleted},
+		},
+	}
+	cqPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	if err := yamlutil.AtomicWrite(cqPath, commandQueue); err != nil {
+		t.Fatalf("write command queue: %v", err)
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, commandQueue)
+
+	if len(sq.Signals) != 1 {
+		t.Errorf("expected 1 retained signal (tagged signals must survive terminal-state filter), got %d: %+v",
+			len(sq.Signals), sq.Signals)
+	}
+	// Signal must be deferred for delivery to the Planner.
+	if len(work.signals) != 1 {
+		t.Errorf("expected 1 deferred signal (tagged signal must reach Planner), got %d", len(work.signals))
+	}
+}
+
 // TestStepPlannerSignalsDeferred_PublishFailedSuppressed verifies that a
 // publish_failed signal is removed from the queue and NOT deferred for delivery.
 // The Daemon handles publish retries internally; delivering publish_failed to
@@ -1863,7 +2350,13 @@ func TestStepPlannerSignalsDeferred_PublishCompletedRetainedWhenNonTerminal(t *t
 
 // TestPeriodicScanPhaseC_DeferredComplete verifies that when a deferred plan
 // complete intent exists for a command, a successful publish triggers
-// auto-completion instead of emitting a publish_completed signal.
+// auto-completion AND emits a publish_completed signal tagged with
+// Reason="deferred_complete_finalized" (2026-04-29 symmetry fix). Pre-fix
+// the daemon silently swallowed the signal in the deferred path, breaking
+// parity with the non-deferred publish_completed path observed by the
+// Planner; the tag lets the dispatch-side stale filter keep the signal so
+// the Planner sees a uniform notification regardless of which path
+// finalised the command.
 func TestPeriodicScanPhaseC_DeferredComplete(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -1894,12 +2387,23 @@ func TestPeriodicScanPhaseC_DeferredComplete(t *testing.T) {
 		t.Error("deferredPlanCompleter was not called for the command")
 	}
 
-	// publish_completed signal should NOT be emitted (deferred completion handled it)
+	// publish_completed signal should be emitted with the deferred-finalized
+	// tag so the Planner gets parity with the non-deferred path.
 	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
-	for _, s := range signalQueue.Signals {
+	var found *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
 		if s.Kind == "publish_completed" && s.CommandID == commandID {
-			t.Errorf("publish_completed signal should not be emitted when deferred complete succeeds; got: %+v", s)
+			found = s
+			break
 		}
+	}
+	if found == nil {
+		t.Fatalf("publish_completed signal must still be emitted after deferred complete (symmetry); signals: %+v", signalQueue.Signals)
+	}
+	if found.Reason != "deferred_complete_finalized" {
+		t.Errorf("Reason = %q, want %q so the dispatch-time stale filter retains the signal",
+			found.Reason, "deferred_complete_finalized")
 	}
 }
 

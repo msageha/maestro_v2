@@ -51,7 +51,20 @@ func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string)
 		found = true
 	}
 	if !found {
-		return fmt.Errorf("task %s not found in required, optional, or system_commit_task_id", oldID)
+		// 2026-05-02: a cancelled task that was *already* replaced (e.g. by an
+		// earlier cascade pass that walked the same dependency tree, or by a
+		// previous retry) no longer appears in required/optional/system_commit
+		// because the slot has been rewritten to the successor's ID. Treat
+		// this as a benign no-op so the cascade transaction does not abort
+		// and roll back. The lineage entry that drives EffectiveStatus is
+		// what downstream callers consult; missing slot membership is a
+		// purely structural artefact of the prior replace. Preserving the
+		// transaction lets a Planner-driven add_retry_task succeed even when
+		// the recovery walk reaches a tail task that has already been
+		// resolved through another path.
+		slog.Debug("cascade replace skipped: task already replaced or absent from membership slots",
+			"task_id", oldID, "new_id", newID)
+		return nil
 	}
 	return nil
 }

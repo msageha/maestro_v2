@@ -99,6 +99,56 @@ func (r *PlanStateReader) loadStateWithCache(commandID string) (*model.CommandSt
 	return state, nil
 }
 
+// HasNonTerminalTaskState reports whether any task in the command state file
+// is at a non-terminal status (paused_for_replan, repair_pending,
+// verify_pending, in_progress, etc.). The reconciler-driven status surfaces
+// (state/commands/<cmd>.yaml) and the queue files can disagree: a worker may
+// have committed a "completed" queue entry that the daemon's verify path
+// then transitioned to repair_pending or paused_for_replan in state without
+// touching the queue. Fast-track stall cleanup must consult this view so it
+// does not delete a worktree while a pending retry-task or replan signal is
+// still in flight (2026-04-29 review pin).
+//
+// Returns ErrStateNotFound when the state file does not exist; the caller
+// can treat that as "no in-flight resolution" (commands without state files
+// have nothing for the Planner to act on).
+func (r *PlanStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	state, err := r.loadStateWithCache(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, model.ErrStateNotFound
+		}
+		return false, err
+	}
+	for _, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// GetNonTerminalTaskStates returns every TaskStates entry whose status is
+// non-terminal. The result is a fresh map; mutations by the caller do not
+// affect the cached state. Returns ErrStateNotFound when the state file
+// does not exist.
+func (r *PlanStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	state, err := r.loadStateWithCache(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, model.ErrStateNotFound
+		}
+		return nil, err
+	}
+	out := make(map[string]model.Status, len(state.TaskStates))
+	for taskID, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			out[taskID] = status
+		}
+	}
+	return out, nil
+}
+
 // GetTaskState returns the status of a task from the command state file.
 func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
 	state, err := r.loadStateWithCache(commandID)
@@ -114,6 +164,52 @@ func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 		return "", fmt.Errorf("task %s in command %s: %w", taskID, commandID, model.ErrTaskNotFound)
 	}
 	return status, nil
+}
+
+// GetEffectiveTaskStatus returns the status of a task after walking
+// retry_lineage forward to the latest descendant. When the predecessor was
+// superseded by a successful retry/repair (cancelled with a "superseded_by_*"
+// reason), the lineage successor's status is the truth — the predecessor's
+// raw cancelled status is just a structural marker. Callers that want to
+// know "is this lineage effectively satisfied?" should use this method
+// rather than the raw GetTaskState.
+//
+// Falls back to GetTaskState semantics when no lineage entry maps from
+// taskID, including the original ErrTaskNotFound when the task is unknown.
+func (r *PlanStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadStateWithCache(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", model.ErrStateNotFound
+		}
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", fmt.Errorf("task %s in command %s: %w", taskID, commandID, model.ErrTaskNotFound)
+	}
+	return EffectiveStatus(taskID, state.TaskStates, state.RetryLineage), nil
+}
+
+// GetEffectiveTaskStatusForCompletion returns the status through the
+// completion-aware lens: like GetEffectiveTaskStatus, but additionally
+// unwinds cascade-cancellations (CancelledReasons["blocked_dependency_terminal:<dep>"])
+// whose upstream lineage has effectively completed. Used by plan/phase
+// completion checks so cascade-stragglers whose required predecessor was
+// delivered via verify-repair do not block PlanStatusCompleted (Bug-D'-prime).
+//
+// Falls back to GetEffectiveTaskStatus semantics for unknown tasks.
+func (r *PlanStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadStateWithCache(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", model.ErrStateNotFound
+		}
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", fmt.Errorf("task %s in command %s: %w", taskID, commandID, model.ErrTaskNotFound)
+	}
+	return EffectiveStatusForCompletion(taskID, state), nil
 }
 
 // GetCommandPhases returns phase metadata for a command.
@@ -159,14 +255,23 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]model.PhaseInfo,
 
 		isSystemCommit := state.SystemCommitTaskID != nil && phaseTaskSet[*state.SystemCommitTaskID]
 
+		// Clone phase.TaskIDs so callers can mutate the returned slice
+		// without affecting the cached state struct.
+		phaseTaskIDs := make([]string, len(p.TaskIDs))
+		copy(phaseTaskIDs, p.TaskIDs)
+
 		phases = append(phases, model.PhaseInfo{
-			ID:               p.PhaseID,
-			Name:             p.Name,
-			Status:           p.Status,
-			DependsOn:        depIDs,
-			FillDeadlineAt:   p.FillDeadlineAt,
-			RequiredTaskIDs:  requiredTaskIDs,
-			SystemCommitTask: isSystemCommit,
+			ID:                          p.PhaseID,
+			Name:                        p.Name,
+			TaskIDs:                     phaseTaskIDs,
+			Status:                      p.Status,
+			DependsOn:                   depIDs,
+			FillDeadlineAt:              p.FillDeadlineAt,
+			RequiredTaskIDs:             requiredTaskIDs,
+			SystemCommitTask:            isSystemCommit,
+			CancelledReason:             p.CancelledReason,
+			AwaitingFillSince:           p.AwaitingFillSince,
+			AwaitingFillStallNotifiedAt: p.AwaitingFillStallNotifiedAt,
 		})
 	}
 
@@ -210,6 +315,7 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	if err := model.ValidatePhaseTransition(p.Status, newStatus); err != nil {
 		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, err)
 	}
+	wasAwaitingFill := p.Status == model.PhaseStatusAwaitingFill
 	p.Status = newStatus
 	if model.IsPhaseTerminal(newStatus) {
 		p.CompletedAt = &now
@@ -218,13 +324,103 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 		p.ActivatedAt = &now
 	}
 	if newStatus == model.PhaseStatusAwaitingFill {
+		// AwaitingFillSince is the watchdog clock — record entry time so
+		// stepAwaitingFillWatchdog can re-prompt a stalled Planner long
+		// before R6's hard fill_deadline timeout fires. Always overwrite
+		// so re-entries restart the clock.
+		p.AwaitingFillSince = &now
+		// Reset the per-entry "watchdog already fired" marker so the
+		// watchdog can fire once for this awaiting_fill window.
+		p.AwaitingFillStallNotifiedAt = nil
 		if p.Constraints != nil && p.Constraints.TimeoutMinutes > 0 {
 			deadline := time.Now().UTC().Add(time.Duration(p.Constraints.TimeoutMinutes) * time.Minute).Format(time.RFC3339)
 			p.FillDeadlineAt = &deadline
 		}
+	} else if wasAwaitingFill {
+		// Phase exited awaiting_fill (filling, completed, cancelled, etc.).
+		// Clear the watchdog tracking fields so a future re-entry starts
+		// fresh and so a completed phase does not retain stale
+		// "awaiting_fill_since" data that could mislead audit reads.
+		p.AwaitingFillSince = nil
+		p.AwaitingFillStallNotifiedAt = nil
 	}
 
 	state.UpdatedAt = now
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
+}
+
+// MarkAwaitingFillStallNotified records that the awaiting-fill watchdog has
+// emitted a stall signal for the given phase. Idempotent at the field level
+// — overwriting the same timestamp is harmless. No-op when the phase is no
+// longer at awaiting_fill, because the watchdog observation that drove the
+// call is by definition stale in that case (a fill happened between the
+// scan-time read and the per-phase write under state lock).
+func (r *PlanStateReader) MarkAwaitingFillStallNotified(commandID, phaseID, notifiedAt string) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	idx, found := state.PhaseIndex(phaseID)
+	if !found {
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, model.ErrPhaseNotFound)
+	}
+
+	p := &state.Phases[idx]
+	if p.Status != model.PhaseStatusAwaitingFill {
+		// Phase exited awaiting_fill between the watchdog's read and this
+		// write — silently drop so we do not write a stale marker that
+		// would confuse a subsequent re-entry's clean-slate state.
+		return nil
+	}
+	p.AwaitingFillStallNotifiedAt = &notifiedAt
+	state.UpdatedAt = nowUTC()
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
+}
+
+// SetPhaseCancelledReason persists Phase.CancelledReason for a single
+// phase under the command lock. Pass nil to clear the field. Used by
+// the dependency resolver to record cascade-cancellation provenance
+// (model.DependencyCascadeCancelPrefix) so cancelled-phase recovery
+// can later distinguish auto-recoverable cascade cancellations from
+// operator/manual cancellations.
+//
+// Idempotent: writing the same value twice is a no-op (the underlying
+// SaveState still runs, but no semantic change).
+func (r *PlanStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	idx, found := state.PhaseIndex(phaseID)
+	if !found {
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, model.ErrPhaseNotFound)
+	}
+	p := &state.Phases[idx]
+	if reason == nil {
+		p.CancelledReason = nil
+	} else {
+		// Copy so the caller can mutate the source string without
+		// corrupting the persisted state.
+		s := *reason
+		p.CancelledReason = &s
+	}
+	state.UpdatedAt = nowUTC()
 	if err := r.stateManager.SaveState(state); err != nil {
 		return err
 	}
@@ -321,6 +517,34 @@ func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 		}
 	}
 	return true, true, nil
+}
+
+// MarkCircuitBreakerProgress refreshes CircuitBreaker.LastProgressAt to "now"
+// under the command lock. Used by the periodic scan when it observes a
+// liveness signal (e.g. pane-active extension) so the progress-timeout
+// path does not falsely trip on a long-running task whose execution
+// legitimately exceeds progress_timeout_minutes. ErrStateNotFound is
+// returned for unknown commands so callers can ignore it as a no-op.
+func (r *PlanStateReader) MarkCircuitBreakerProgress(commandID string) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return model.ErrStateNotFound
+		}
+		return err
+	}
+
+	now := nowUTC()
+	state.CircuitBreaker.LastProgressAt = &now
+	state.UpdatedAt = now
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
 }
 
 // GetCircuitBreakerState returns the circuit breaker state for a command.

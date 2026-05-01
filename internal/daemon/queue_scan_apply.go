@@ -133,51 +133,14 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							task.ID, task.Status, err)
 					}
 
-					// ErrRunOnMainBeforePublish is a *timing gate*, not a real
-					// dispatch failure: the planner queued the run_on_main
-					// verification before the integration → base publish step
-					// finished, so the worker would have read stale main if
-					// dispatched. The publish completes naturally during the
-					// merge phase, after which the same task can be dispatched
-					// successfully.
-					//
-					// Treating this like a normal dispatch failure (lease
-					// release + Attempts retained) was wrong on two fronts:
-					// (1) Attempts is incremented at lease-acquire time in
-					// queue_scan_collect.go, so each scan that hits the
-					// publish guard burned one retry against
-					// retry.task_dispatch_attempts and could dead-letter the
-					// verification before publish even ran; and (2) the
-					// `var ErrRunOnMainBeforePublish` doc comment claimed
-					// "non-retryable", which is the opposite of what we want
-					// — the task SHOULD retry once publish lands.
-					//
-					// Fix: roll back the lease-acquire Attempts increment so
-					// the retry budget is preserved, release the lease so
-					// other tasks can be dispatched in this scan, and log at
-					// info level (this is normal until publish completes; an
-					// operator only needs to investigate if the same task
-					// stays publish-pending across many scans, which the
-					// max_in_progress_min and command-level timeout already
-					// surface separately).
-					if errors.Is(dr.Error, dispatch.ErrRunOnMainBeforePublish) {
-						qh.log(LogLevelInfo,
-							"dispatch_deferred_publish_pending type=task id=%s command=%s lease_epoch=%d "+
-								"(run_on_main task waits for integration→base publish; lease released, attempts not consumed) error=%v",
-							task.ID, task.CommandID, task.LeaseEpoch, dr.Error)
-						if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-							qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
-						}
-						// Roll back the Attempts increment from
-						// collectPendingTaskDispatches: this dispatch attempt
-						// never reached the worker, so it must not count
-						// against the retry budget.
-						if task.Attempts > 0 {
-							task.Attempts--
-						}
-						qh.scanExecutor.scanCounters.LeaseReleases++
-						return
-					}
+					// 2026-05-01: ErrRunOnMainBeforePublish was retired together
+					// with the dispatcher-side guard because the gate produced
+					// a self-deadlocking dispatch loop (publish-waits-for-task
+					// + task-waits-for-publish). The branch that handled it
+					// here is intentionally absent — run_on_main tasks now
+					// dispatch normally and the worker is responsible for
+					// refreshing main if needed. See dispatch/dispatcher.go
+					// for the full rationale.
 
 					// ErrSubmitConfirmUncertain: the deliverer's submit-probe
 					// budget exhausted without seeing a Claude UI marker. In the
@@ -356,6 +319,10 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		if task.ID != bc.Item.EntryID {
 			continue
 		}
+		// Snapshot status BEFORE applyBusyCheckCore so we can detect a
+		// busy-check-driven release (in_progress → pending) afterwards
+		// and stamp a cooldown to break the immediate re-dispatch loop.
+		statusBefore := task.Status
 		qh.applyBusyCheckCore(bc, task.ID, task.Status, task.LeaseEpoch, task.LeaseExpiresAt, busyCheckOps{
 			kind:         "task",
 			ownerLabel:   fmt.Sprintf("worker=%s", bc.Item.AgentID),
@@ -364,6 +331,30 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			extendGrace:  func(ttl time.Duration) error { return qh.leaseManager.ExtendTaskLeaseGrace(task, ttl) },
 			markDirty:    func() { taskDirty[bc.Item.QueueFile] = true },
 		})
+
+		// Hang-release cooldown (2026-05-01 fix for the pane-idle dispatch
+		// loop): the busy-check path used to flip the task back to
+		// StatusPending with no NotBefore guard, so the very next scan would
+		// re-acquire the lease and re-dispatch against the same dead pane.
+		// The result was a tight idle→release→re-dispatch→idle loop that
+		// burned the retry budget invisibly. Stamping NotBefore enforces a
+		// minimum quiet period before another scan can re-acquire, and bumps
+		// Attempts so the dead-letter processor still terminates the entry
+		// after retry.task_dispatch_attempts cycles. The cooldown is a hard
+		// constant (5 minutes) — the autonomous-orchestration contract
+		// forbids per-language tuning, and 5 minutes is a deliberate
+		// compromise between "give a slow Worker a chance to recover" and
+		// "do not let a hung worker freeze the queue indefinitely".
+		if statusBefore == model.StatusInProgress && task.Status == model.StatusPending && !bc.Busy && !bc.Undecided {
+			const hangReleaseCooldown = 5 * time.Minute
+			notBefore := qh.clock.Now().Add(hangReleaseCooldown).UTC().Format(time.RFC3339)
+			task.NotBefore = &notBefore
+			task.Attempts++
+			qh.log(LogLevelInfo,
+				"task_hang_release_cooldown task=%s worker=%s attempts=%d not_before=%s "+
+					"(pane idle confirmed; cooldown applied to break dispatch loop)",
+				task.ID, bc.Item.AgentID, task.Attempts, notBefore)
+		}
 		return
 	}
 }
@@ -436,16 +427,40 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 		errStr := dlErr.Error()
 		sig.LastError = &errStr
 
-		// Fast-path dead letter: ErrSubmitConfirmUncertain is non-retryable
-		// by contract (re-dispatching risks a double plan_submit on top of
-		// the original message). Without this gate the signal would sit in
-		// the queue burning the inline probe budget every scan cycle and
-		// surface as repeated "submit confirmation uncertain status=exhausted
-		// attempts=8" log lines pinned to the same (kind, phase, worker).
-		// Drop it on the first non-retryable result instead.
+		// Submit confirmation uncertain: tmux submitted the message but the
+		// planner pane's read-back did not confirm landing within the
+		// observation window. Historically this dead-lettered immediately
+		// to avoid double-submission, but the 2026-05-01 e2e captured
+		// false-positive deadletter records (paused_for_replan signals
+		// that the Planner clearly *did* consume) — the conservative
+		// policy was throwing away healthy phase-progression signals and
+		// metrics.signal_dead_letters drifted from real failures.
+		//
+		// Updated policy: allow one bounded retry. If the message actually
+		// landed the first time, the Planner's reaction will surface in
+		// the next scan and the second delivery turns into a duplicate the
+		// Planner already absorbed. If it did not land, the retry has the
+		// chance to deliver. Only after the *second* uncertain result do
+		// we dead-letter — the same operator-attention signal as before,
+		// but without the false positives. Two attempts is the smallest
+		// bound that still discriminates "tmux/pane glitch" (resolves
+		// next tick) from "structural breakage" (every tick suspect).
 		if errors.Is(dlErr, agent.ErrSubmitConfirmUncertain) {
+			if sig.Attempts < 2 {
+				nextAttempt := qh.computeSignalBackoff(sig.Attempts)
+				nextAttemptStr := now.Add(nextAttempt).Format(time.RFC3339)
+				sig.NextAttemptAt = &nextAttemptStr
+				*dirty = true
+				qh.log(LogLevelInfo,
+					"signal_submit_confirm_uncertain_retry kind=%s command=%s phase=%s attempts=%d next_retry=%s "+
+						"(submit confirmation uncertain; one bounded retry before dead-letter)",
+					sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts, nextAttemptStr)
+				qh.scanExecutor.scanCounters.SignalRetries++
+				retained = append(retained, sig)
+				continue
+			}
 			qh.log(LogLevelWarn,
-				"signal_dead_letter_non_retryable kind=%s command=%s phase=%s attempts=%d reason=submit_confirm_uncertain (non-retryable; manual planner inspection required)",
+				"signal_dead_letter_non_retryable kind=%s command=%s phase=%s attempts=%d reason=submit_confirm_uncertain (non-retryable after bounded retry; manual planner inspection required)",
 				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts)
 			qh.scanExecutor.scanCounters.SignalDeadLetters++
 			*dirty = true

@@ -126,6 +126,12 @@ type stubUpdateTaskCall struct {
 func (s *stubStateReader) GetTaskState(string, string) (model.Status, error) {
 	return "", ErrStateNotFound
 }
+func (s *stubStateReader) GetEffectiveTaskStatus(string, string) (model.Status, error) {
+	return "", ErrStateNotFound
+}
+func (s *stubStateReader) GetEffectiveTaskStatusForCompletion(string, string) (model.Status, error) {
+	return "", ErrStateNotFound
+}
 func (s *stubStateReader) GetCommandPhases(string) ([]PhaseInfo, error) {
 	return nil, ErrStateNotFound
 }
@@ -138,6 +144,9 @@ func (s *stubStateReader) IsSystemCommitReady(string, string) (bool, bool, error
 func (s *stubStateReader) ApplyPhaseTransition(string, string, model.PhaseStatus) error {
 	return ErrStateNotFound
 }
+func (s *stubStateReader) SetPhaseCancelledReason(string, string, *string) error {
+	return nil
+}
 func (s *stubStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
 	s.updateTaskCalls = append(s.updateTaskCalls, stubUpdateTaskCall{commandID, taskID, newStatus, cancelledReason})
 	return s.updateTaskErr
@@ -148,9 +157,17 @@ func (s *stubStateReader) IsCommandCancelRequested(commandID string) (bool, erro
 func (s *stubStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
 	return &model.CircuitBreakerState{}, nil
 }
+func (s *stubStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	return false, nil
+}
+func (s *stubStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	return nil, nil
+}
 func (s *stubStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	return nil
 }
+func (s *stubStateReader) MarkAwaitingFillStallNotified(string, string, string) error { return nil }
+func (s *stubStateReader) MarkCircuitBreakerProgress(string) error                     { return nil }
 
 func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
 	t.Parallel()

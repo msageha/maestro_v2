@@ -333,6 +333,14 @@ func (m *phaseATestStateReader) GetTaskState(commandID, taskID string) (model.St
 	return model.StatusCompleted, nil
 }
 
+func (m *phaseATestStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	return m.GetTaskState(commandID, taskID)
+}
+
+func (m *phaseATestStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	return m.GetEffectiveTaskStatus(commandID, taskID)
+}
+
 func (m *phaseATestStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	p, ok := m.phases[commandID]
 	if !ok {
@@ -349,6 +357,10 @@ func (m *phaseATestStateReader) ApplyPhaseTransition(commandID, phaseID string, 
 	return nil
 }
 
+func (m *phaseATestStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
+	return nil
+}
+
 func (m *phaseATestStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
 	return nil
 }
@@ -361,9 +373,23 @@ func (m *phaseATestStateReader) GetCircuitBreakerState(commandID string) (*model
 	return &model.CircuitBreakerState{}, nil
 }
 
+func (m *phaseATestStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	return false, nil
+}
+
+func (m *phaseATestStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	return nil, nil
+}
+
 func (m *phaseATestStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	return nil
 }
+
+func (m *phaseATestStateReader) MarkAwaitingFillStallNotified(string, string, string) error {
+	return nil
+}
+
+func (m *phaseATestStateReader) MarkCircuitBreakerProgress(string) error { return nil }
 
 func (m *phaseATestStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	return false, false, nil

@@ -249,6 +249,48 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				}
 			}
 			if !model.IsPhaseTerminal(phase.Status) {
+				// Transient race: queue_scan_phase_a_phase.go defers
+				// PhaseStatusCompleted on the merge_recorded gate (Phase B/C
+				// records the merge, then the next scan flips status). When
+				// every task in this phase has finished its work the daemon
+				// is on the verge of moving the phase forward, so the
+				// non-terminal status here reflects the gap between
+				// task-result write and phase transition rather than a real
+				// "Planner called complete too early" mistake. Surface as
+				// retryable so Complete() can write a deferred_complete
+				// intent — the daemon's deferredPlanCompleter then finalises
+				// the plan once publish succeeds, and the Planner does not
+				// have to poll/retry.
+				//
+				// **Eligibility** (2026-04-29 review pin): the deferred-publish
+				// path is only valid when Phase B will actually merge this
+				// phase. Phase B only merges on the success path: it expects
+				// every task to be at StatusCompleted (with StatusCancelled
+				// admitted because cancellation here always means "superseded
+				// by retry sibling"; a genuine plan-level cancel marks the
+				// whole plan PlanStatusCancelled and never reaches this
+				// branch). Tasks at StatusFailed / StatusDeadLetter /
+				// StatusAborted indicate the phase is destined for
+				// PhaseStatusFailed via the dependency resolver — there is no
+				// pending merge for the deferred completer to ride on. Writing
+				// a deferred_complete intent in that case would leave a
+				// dangling intent file (the publish that would clear it never
+				// runs) and return a misleading "publish 待ち" status to the
+				// Planner. Fall through to planValidationError so Complete()
+				// surfaces the real failure path instead.
+				allOK := true
+				for _, tid := range phase.TaskIDs {
+					ts, ok := state.TaskStates[tid]
+					if !ok || (ts != model.StatusCompleted && ts != model.StatusCancelled) {
+						allOK = false
+						break
+					}
+				}
+				if allOK && len(phase.TaskIDs) > 0 {
+					return "", &retryableError{
+						Err: fmt.Errorf("phase %q transitioning to terminal (status: %s, all tasks completed/superseded, awaiting daemon merge_recorded gate)", phase.Name, phase.Status),
+					}
+				}
 				return "", &planValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}
 
@@ -263,27 +305,55 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 
 	// Check all required tasks are terminal
 	var nonTerminal []string
+	allPausedForReplan := true
+	hasNonTerminal := false
 	for _, taskID := range state.RequiredTaskIDs {
 		status, ok := state.TaskStates[taskID]
 		if !ok {
 			nonTerminal = append(nonTerminal, taskID+" (unknown)")
+			hasNonTerminal = true
+			allPausedForReplan = false
 			continue
 		}
 		if !model.IsTerminal(status) {
 			nonTerminal = append(nonTerminal, fmt.Sprintf("%s (%s)", taskID, status))
+			hasNonTerminal = true
+			if status != model.StatusPausedForReplan {
+				allPausedForReplan = false
+			}
 		}
 	}
-	if len(nonTerminal) > 0 {
+	if hasNonTerminal {
+		// When the only thing keeping the plan from completing is one or
+		// more paused_for_replan tasks, rephrase the error so the Planner
+		// pane log explains the actionable next step instead of just
+		// echoing "not terminal". The daemon will either inject a retry
+		// task (Planner-driven) or escalate via R10 deadletter; calling
+		// plan_complete now is premature, not a fundamental error.
+		if allPausedForReplan {
+			return "", &planValidationError{Msg: fmt.Sprintf(
+				"plan_complete deferred: tasks awaiting replan/retry — %s "+
+					"(submit a retry-task with `maestro plan add-retry-task` or wait for R10 deadletter)",
+				strings.Join(nonTerminal, ", "))}
+		}
 		return "", &planValidationError{Msg: fmt.Sprintf("required tasks not terminal: %s", strings.Join(nonTerminal, ", "))}
 	}
 
 	return DeriveStatus(state)
 }
 
-// hasTaskWithStatus returns true if any task in taskIDs has the given status.
-func hasTaskWithStatus(taskIDs []string, taskStates map[string]model.Status, target model.Status) bool {
+// hasTaskWithStatusForCompletion returns true if any task in taskIDs has the
+// given status when viewed through the completion-aware lens. Walks
+// retry_lineage forward AND unwinds cascade-cancellations whose upstream
+// dependency lineages have effectively completed (see
+// EffectiveStatusForCompletion). This is the canonical view for plan
+// completion decisions: a task whose work was structurally short-circuited
+// by an upstream repair must not register as failed/cancelled to the plan
+// machine, otherwise CompletionPolicy returns the plan to PlanStatusCancelled
+// and publish is skipped while main has every required output.
+func hasTaskWithStatusForCompletion(taskIDs []string, state *model.CommandState, target model.Status) bool {
 	for _, taskID := range taskIDs {
-		if taskStates[taskID] == target {
+		if EffectiveStatusForCompletion(taskID, state) == target {
 			return true
 		}
 	}
@@ -291,7 +361,13 @@ func hasTaskWithStatus(taskIDs []string, taskStates map[string]model.Status, tar
 }
 
 // DeriveStatus determines the terminal PlanStatus based on task outcomes
-// and the command's CompletionPolicy.
+// and the command's CompletionPolicy. Failed/cancelled checks walk
+// retry_lineage forward so a task that was superseded by a successful
+// retry — for example a verify-repair successor that completed — does
+// not poison the plan with a synthetic_failure. The check additionally
+// unwinds cascade-cancellations whose upstream lineage completed so that
+// downstream cascade-stragglers do not block plan completion when every
+// required predecessor has, in fact, been delivered (Bug-D'-prime).
 func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 	// Check phases for timed_out — always fails regardless of policy
 	for _, phase := range state.Phases {
@@ -300,8 +376,8 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		}
 	}
 
-	hasFailed := hasTaskWithStatus(state.RequiredTaskIDs, state.TaskStates, model.StatusFailed)
-	hasCancelled := hasTaskWithStatus(state.RequiredTaskIDs, state.TaskStates, model.StatusCancelled)
+	hasFailed := hasTaskWithStatusForCompletion(state.RequiredTaskIDs, state, model.StatusFailed)
+	hasCancelled := hasTaskWithStatusForCompletion(state.RequiredTaskIDs, state, model.StatusCancelled)
 
 	// Apply CompletionPolicy for required task failures
 	onFailed := state.CompletionPolicy.OnRequiredFailed
@@ -340,7 +416,7 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		onOptionalFailed = "ignore" // default: backwards-compatible
 	}
 
-	hasOptionalFailed := hasTaskWithStatus(state.OptionalTaskIDs, state.TaskStates, model.StatusFailed)
+	hasOptionalFailed := hasTaskWithStatusForCompletion(state.OptionalTaskIDs, state, model.StatusFailed)
 
 	if hasOptionalFailed {
 		switch onOptionalFailed {

@@ -75,6 +75,12 @@ func (dr *DependencyResolver) mergeGateAllows(commandID, phaseID string) bool {
 
 // IsTaskBlocked checks if a task's blocked_by dependencies are all resolved.
 // Returns true if the task is still blocked.
+//
+// Lineage-aware: when a recorded BlockedBy entry has been superseded by a
+// retry/repair successor, the successor's effective status is what counts.
+// This lets a queue task whose declared dep is now cancelled (with a
+// "superseded_by_*" reason) recognise its lineage as still in flight or
+// completed without needing the queue's BlockedBy slice to be rewritten.
 func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	if len(task.BlockedBy) == 0 {
 		return false, nil
@@ -85,13 +91,13 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateManager.GetTaskState(task.CommandID, depTaskID)
+		status, err := dr.stateManager.GetEffectiveTaskStatus(task.CommandID, depTaskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
 			return true, err
 		}
 		if status != model.StatusCompleted {
-			dr.log(LogLevelDebug, "task_blocked task=%s blocked_by=%s dep_status=%s",
+			dr.log(LogLevelDebug, "task_blocked task=%s blocked_by=%s effective_status=%s",
 				task.ID, depTaskID, status)
 			return true, nil
 		}
@@ -103,13 +109,20 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 
 // CheckDependencyFailure checks if any of a task's dependencies have failed.
 // Returns the failed dependency ID and status, or empty string if none failed.
+//
+// Lineage-aware: a dep cancelled with a "superseded_by_*" reason is NOT a
+// failure when its successor is still running or has completed. Only when
+// the latest descendant in the lineage chain is itself failed/cancelled is
+// the dependency treated as terminal-failure for cascade purposes. This
+// prevents the daemon from cancelling a downstream task while a verify-repair
+// retry of its upstream is in flight or has already succeeded.
 func (dr *DependencyResolver) CheckDependencyFailure(task *model.Task) (string, model.Status, error) {
 	if len(task.BlockedBy) == 0 || dr.stateManager == nil {
 		return "", "", nil
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateManager.GetTaskState(task.CommandID, depTaskID)
+		status, err := dr.stateManager.GetEffectiveTaskStatus(task.CommandID, depTaskID)
 		if err != nil {
 			return "", "", err
 		}
@@ -127,6 +140,18 @@ type PhaseTransitionResult struct {
 	OldStatus model.PhaseStatus
 	NewStatus model.PhaseStatus
 	Reason    string
+	// CancelledReason is the structured cancellation marker the resolver
+	// wants to persist alongside this transition. Only populated when
+	// NewStatus==PhaseStatusCancelled and the cancellation is
+	// resolver-driven (cascade). Apply paths copy this into
+	// Phase.CancelledReason; nil/empty means leave the field unchanged.
+	CancelledReason string
+	// ClearCancelledReason asks the apply path to clear
+	// Phase.CancelledReason as part of this transition. Used when the
+	// resolver flips a cascade-cancelled phase back to pending — the
+	// stale dep-id marker would otherwise mislead a future cascade
+	// recovery into reusing it.
+	ClearCancelledReason bool
 }
 
 // CheckPhaseTransitions performs phase transition checks (periodic scan step 0.7).
@@ -215,12 +240,62 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 		}
 	}
 
+	// Pass 3: process cancelled phases that may have been cascaded from a
+	// dependency that has since recovered. Without this pass, a phase
+	// cancelled because its upstream failed stays cancelled forever even
+	// when an add-retry-task reopens that upstream — the planner's plan
+	// gets stuck waiting for a downstream phase that is structurally
+	// dead. Restricting the recovery to cancellations carrying
+	// model.DependencyCascadeCancelPrefix in CancelledReason ensures
+	// operator/manual cancellations (no marker) remain terminal.
+	for _, phase := range phases {
+		if phase.Status != model.PhaseStatusCancelled {
+			continue
+		}
+		tr := dr.checkCancelledPhaseRecovery(commandID, phaseMap, phase)
+		if tr != nil {
+			transitions = append(transitions, *tr)
+		}
+	}
+
 	return transitions, nil
 }
 
 // checkActivePhaseCompletion checks if an active phase is complete, failed, or cancelled.
+//
+// Lineage-aware: when a task has been superseded by a verify-repair or
+// planner-driven retry, the predecessor's raw cancelled status would
+// otherwise drive the phase to PhaseStatusCancelled — and the dependency
+// resolver would then cascade-cancel every downstream phase. The 2026-05-01
+// e2e regression (Bug-D') reproduced exactly this: worker A completed,
+// verify failed, repair task replaced A, A flipped to cancelled with
+// superseded_by_verify_repair reason, this routine then cancelled the
+// containing phase, and the cancellation cascaded to the downstream phase
+// before the repair successor had any chance to complete. The plan-level
+// DeriveStatus already walks retry_lineage; the same effective view must
+// drive phase-level transitions or the phase machine produces decisions
+// the plan machine then has to undo.
+//
+// Bug-J fix (2026-05-02): the prior implementation observed only
+// RequiredTaskIDs and bailed out when that slice was empty. Phases whose
+// tasks were exclusively classified as optional thus never reached
+// PhaseStatusCompleted no matter how many tasks finished, and
+// fast_track_cleanup eventually marked the integration as failed despite
+// every task succeeding. The transition now observes phase.TaskIDs (the
+// full set of tasks attached to the phase) so an all-optional phase still
+// completes when its work is done. RequiredTaskIDs still informs plan-
+// level pass/fail policy via DeriveStatus; phase-level transitions stay
+// neutral on the required/optional distinction.
 func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase PhaseInfo) *PhaseTransitionResult {
-	if len(phase.RequiredTaskIDs) == 0 {
+	taskIDs := phase.TaskIDs
+	if len(taskIDs) == 0 {
+		// Backwards-compat fallback: callers that have not yet been
+		// updated to populate PhaseInfo.TaskIDs (mostly older test mocks)
+		// fall through to the legacy RequiredTaskIDs view rather than
+		// silently returning nil.
+		taskIDs = phase.RequiredTaskIDs
+	}
+	if len(taskIDs) == 0 {
 		return nil
 	}
 
@@ -228,8 +303,15 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 	hasFailed := false
 	hasCancelled := false
 
-	for _, taskID := range phase.RequiredTaskIDs {
-		status, err := dr.stateManager.GetTaskState(commandID, taskID)
+	for _, taskID := range taskIDs {
+		// Completion-aware lens: cascade-cancelled tasks whose upstream
+		// lineage has effectively completed are treated as Completed so
+		// the phase machine can transition out of Active even when the
+		// daemon-side verify-repair path delivered the upstream work
+		// without going through cascadeRecover. Without this, the phase
+		// stays Active forever and downstream phases / plan completion
+		// stall (Bug-D'-prime).
+		status, err := dr.stateManager.GetEffectiveTaskStatusForCompletion(commandID, taskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "phase_check task_state error phase=%s task=%s error=%v",
 				phase.ID, taskID, err)
@@ -342,12 +424,16 @@ func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]Phase
 		if dep.Status == model.PhaseStatusFailed ||
 			dep.Status == model.PhaseStatusCancelled ||
 			dep.Status == model.PhaseStatusTimedOut {
+			// Encode the upstream dep into the human Reason via the
+			// canonical helper so cancelled-phase recovery (Pass 3
+			// above) can extract it without parsing free-form text.
 			result := &PhaseTransitionResult{
-				PhaseID:   phase.ID,
-				PhaseName: phase.Name,
-				OldStatus: phase.Status,
-				NewStatus: model.PhaseStatusCancelled,
-				Reason:    fmt.Sprintf("dependency phase %s is %s", depID, dep.Status),
+				PhaseID:         phase.ID,
+				PhaseName:       phase.Name,
+				OldStatus:       phase.Status,
+				NewStatus:       model.PhaseStatusCancelled,
+				Reason:          fmt.Sprintf("dependency phase %s is %s", depID, dep.Status),
+				CancelledReason: model.NewDependencyCascadeCancelReason(depID),
 			}
 			// commandID is not available in this method, caller will publish event
 			return result
@@ -355,6 +441,58 @@ func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]Phase
 	}
 
 	return nil
+}
+
+// checkCancelledPhaseRecovery undoes a previously-cascaded cancellation
+// when the upstream dependency has been reopened (typically via an
+// add-retry-task that brought a failed phase back to active). The
+// recovery is gated by Phase.CancelledReason so operator/manual
+// cancellations — which never carry the model.DependencyCascadeCancelPrefix
+// marker — stay terminal.
+//
+// The reopened upstream's status must be live OR completed: active,
+// awaiting_fill, filling, or completed. If the upstream is still
+// pending we leave the downstream cancelled — it will recover on the
+// next scan once the upstream activates, avoiding a cancelled→pending
+// flip while the upstream is still dependency-bound itself.
+func (dr *DependencyResolver) checkCancelledPhaseRecovery(commandID string, phaseMap map[string]PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+	depID, ok := model.DependencyCascadeDepID(phase.CancelledReason)
+	if !ok {
+		// Operator/manual cancel or pre-marker legacy state: never auto-recover.
+		return nil
+	}
+	dep, ok := phaseMap[depID]
+	if !ok {
+		// Recorded dep no longer exists in the plan — the prior
+		// cancellation reference is stale and unverifiable. Leave
+		// terminal.
+		return nil
+	}
+	switch dep.Status {
+	case model.PhaseStatusActive,
+		model.PhaseStatusAwaitingFill,
+		model.PhaseStatusFilling,
+		model.PhaseStatusCompleted:
+		// Cause invalidated → recover.
+	default:
+		return nil
+	}
+	dr.log(LogLevelInfo,
+		"phase_cancellation_recovered command=%s phase=%s recorded_dep=%s dep_status=%s",
+		commandID, phase.ID, depID, dep.Status)
+	return &PhaseTransitionResult{
+		PhaseID:   phase.ID,
+		PhaseName: phase.Name,
+		OldStatus: phase.Status,
+		NewStatus: model.PhaseStatusPending,
+		Reason: fmt.Sprintf(
+			"cascade-cancellation recovered: dependency phase %s is now %s",
+			depID, dep.Status,
+		),
+		// Clear the marker so a subsequent operator-initiated cancel
+		// does not get confused with the cascade case.
+		ClearCancelledReason: true,
+	}
 }
 
 // checkAwaitingFillTimeout checks if an awaiting_fill phase has timed out.

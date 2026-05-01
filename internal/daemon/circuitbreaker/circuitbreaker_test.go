@@ -29,6 +29,14 @@ func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 	return s, nil
 }
 
+func (m *mockStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	return m.GetTaskState(commandID, taskID)
+}
+
+func (m *mockStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	return m.GetEffectiveTaskStatus(commandID, taskID)
+}
+
 func (m *mockStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
 	p, ok := m.phases[commandID]
 	if !ok {
@@ -43,6 +51,10 @@ func (m *mockStateReader) GetTaskDependencies(commandID, taskID string) ([]strin
 }
 
 func (m *mockStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
+	return nil
+}
+
+func (m *mockStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
 	return nil
 }
 
@@ -62,9 +74,21 @@ func (m *mockStateReader) GetCircuitBreakerState(commandID string) (*model.Circu
 	return &model.CircuitBreakerState{}, nil
 }
 
+func (m *mockStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	return nil, nil
+}
+
 func (m *mockStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	return nil
 }
+
+func (m *mockStateReader) MarkAwaitingFillStallNotified(string, string, string) error { return nil }
+
+func (m *mockStateReader) MarkCircuitBreakerProgress(string) error { return nil }
 
 func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	if m.systemCommitReady == nil {
@@ -137,6 +161,132 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 	}
 	if state.CircuitBreaker.ConsecutiveFailures != 1 {
 		t.Errorf("expected 1 failure, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	}
+}
+
+// TestUpdateCounterOnResult_LineageFailureNotDoubleCounted pins the
+// 2026-05-02 fix: when a retry-of-a-failed-task itself fails, the counter
+// must NOT increment again — the lineage represents the same root-cause
+// failure. Otherwise an automatic retry chain trips the breaker on a
+// command whose underlying problem is a single environmental issue
+// (e.g. a stale worker worktree triggering the same compile error
+// repeatedly while the eventual fix already landed on integration).
+func TestUpdateCounterOnResult_LineageFailureNotDoubleCounted(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusFailed,
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: map[string]string{
+				"t1_retry":  "t1",
+				"t1_retry2": "t1_retry",
+			},
+		},
+	}
+	// First failure (t1) — counter should now be 1.
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r1", time.Now())
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Fatalf("after t1 failure, counter = %d, want 1", got)
+	}
+	// Same lineage: t1_retry fails. Counter must NOT increment because
+	// t1 (its predecessor) is already at StatusFailed.
+	state.TaskStates["t1_retry"] = model.StatusFailed
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1_retry", "r2", time.Now())
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Errorf("after t1_retry failure within same lineage, counter = %d, want 1 (no double count)", got)
+	}
+	// Same lineage, deeper: t1_retry2 fails.
+	state.TaskStates["t1_retry2"] = model.StatusFailed
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1_retry2", "r3", time.Now())
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Errorf("after t1_retry2 failure within same lineage, counter = %d, want 1", got)
+	}
+	if state.CircuitBreaker.Tripped {
+		t.Error("breaker must not trip when failures all share one lineage")
+	}
+}
+
+// TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted pins the
+// 2026-05-01 user reproduction: when result_write_phase_b's
+// retry_lineage_superseded path marks the predecessor StatusCancelled
+// (rather than leaving it Failed), the lineage guard must still prevent
+// the counter from incrementing on the successor's failure. The original
+// fix only matched StatusFailed, so verify-repair retries whose
+// predecessor was non-terminal at supersede time slipped through and
+// the breaker tripped on the third failure of a single lineage.
+func TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: map[string]string{
+				"t1_retry":  "t1",
+				"t1_retry2": "t1_retry",
+			},
+		},
+	}
+	// Step 1: t1 fails first and is counted (counter=1).
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r0", time.Now())
+	state.TaskStates["t1"] = model.StatusFailed
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Fatalf("after t1 first failure, counter = %d, want 1", got)
+	}
+
+	// Step 2: result_write_phase_b's retry_lineage_superseded path
+	// flips t1 from Failed → Cancelled when the t1_retry result lands
+	// (when t1 was non-terminal at supersede time the path leaves it
+	// Cancelled instead of Failed). Simulate that transition before the
+	// successor failure arrives.
+	state.TaskStates["t1"] = model.StatusCancelled
+
+	// Step 3: t1_retry fails — predecessor is now Cancelled (NOT Failed).
+	// The lineage guard must still skip the counter increment.
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1_retry", "r1", time.Now())
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Fatalf("predecessor=Cancelled lineage failure must NOT double-count; got %d, want 1", got)
+	}
+
+	// Step 4: same for the deeper retry — t1_retry is now Cancelled,
+	// and the recursive lineage walk reaches t1 which is Cancelled.
+	state.TaskStates["t1_retry"] = model.StatusCancelled
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1_retry2", "r2", time.Now())
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 1 {
+		t.Errorf("deeper Cancelled-lineage failure must NOT double-count; got %d, want 1", got)
+	}
+	if state.CircuitBreaker.Tripped {
+		t.Error("breaker must not trip on cancelled-predecessor lineage")
+	}
+}
+
+// TestUpdateCounterOnResult_IndependentFailuresStillCount verifies the
+// lineage skip is local: failures in unrelated tasks still accrue.
+func TestUpdateCounterOnResult_IndependentFailuresStillCount(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+	}
+	// Three independent task failures must reach the breaker threshold.
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "tA", "rA", time.Now())
+	state.TaskStates["tA"] = model.StatusFailed
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "tB", "rB", time.Now())
+	state.TaskStates["tB"] = model.StatusFailed
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "tC", "rC", time.Now())
+	if !tripped {
+		t.Errorf("three independent failures must trip; counter=%d, tripped=%v",
+			state.CircuitBreaker.ConsecutiveFailures, tripped)
 	}
 }
 

@@ -140,14 +140,19 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 			wantOptional: []string{"t4", "t5_retry"},
 		},
 		{
-			name:         "not found returns error",
+			// 2026-05-02: replaceInRequiredOrOptional now treats a missing
+			// task ID as a benign no-op (cascade recovery may walk a task
+			// that has already been replaced through another path). The
+			// caller does not get an error; the membership slots are left
+			// untouched.
+			name:         "not found is a no-op",
 			requiredIDs:  []string{"t1"},
 			optionalIDs:  []string{"t2"},
 			oldID:        "t99",
 			newID:        "t99_retry",
 			wantRequired: []string{"t1"},
 			wantOptional: []string{"t2"},
-			wantErr:      true,
+			wantErr:      false,
 		},
 	}
 

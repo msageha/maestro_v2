@@ -2,8 +2,6 @@ package dispatch
 
 import (
 	"errors"
-	"fmt"
-	"os"
 	"regexp"
 	"strings"
 	"unicode/utf8"
@@ -18,22 +16,16 @@ import (
 // can route the task to operator review.
 var ErrDestructiveContentRejected = errors.New("dispatch: task content rejected by run_on_main pre-flight")
 
-// ErrRunOnMainBeforePublish is returned when a RunOnMain task is dispatched
-// while the integration branch for its command has not yet been published
-// into base. Verification tasks scheduled by the planner *before* publish
-// would inspect stale main state and fail spuriously, so dispatch is
-// refused.
-//
-// Unlike ErrDestructiveContentRejected this is a *timing gate*, not a
-// terminal failure: the publish step is expected to complete naturally
-// during the merge phase, after which the same task can be dispatched
-// successfully. Callers must release the lease so other work can proceed
-// AND must not consume the task's retry budget — otherwise a planner that
-// queues the verification immediately after the merge phase would dead-
-// letter the verification before publish even gets a chance to run. See
-// queue_scan_apply.go's run-on-main publish-pending branch for the
-// retry-preserving handler.
-var ErrRunOnMainBeforePublish = errors.New("dispatch: run_on_main task dispatched before integration published")
+// 2026-05-01: ErrRunOnMainBeforePublish was retired. The earlier guard
+// rejected RunOnMain dispatches before the integration→base publish
+// completed, but in practice it produced a self-deadlocking loop with
+// the publish step (which itself waits for every task in the phase to
+// terminate). The user reproduced 7 epochs of `dispatch_deferred_publish_pending`
+// → `dispatch_task_run_on_main_before_publish` → `lease_release` cycling
+// without ever reaching publish. Per the autonomous-orchestration design
+// contract — defenses must not lock the system harder than the failure
+// they prevent — the gate is gone. Worker tasks are now responsible for
+// refreshing main themselves if they need post-publish state.
 
 // destructivePatterns lists regex matchers for shell snippets that must not be
 // dispatched when a task runs on the main branch or integration worktree. The
@@ -116,32 +108,26 @@ var clauseBoundaryRunes = map[rune]bool{
 	'。':  true,
 }
 
-// validateRunOnMainContent inspects worker-visible task instructions for destructive shell
-// patterns. It only runs when task.RunOnMain or task.RunOnIntegration is set,
-// because those are the only paths where the worker operates against shared
-// state. For worktree-only tasks the check is skipped — destructive operations
-// inside an isolated worktree are recoverable.
+// validateRunOnMainContent was a regex-based destructive-content preflight
+// for RunOnMain / RunOnIntegration tasks. It has been retired in favour of
+// the operator-side sandbox: ~/.claude/settings.json policy hooks (for
+// Claude Code workers) and repo-level shell policy hooks (for any worker)
+// are the canonical destructive-command authority. Maintaining a duplicate
+// in the daemon produced false positives — Planner-authored prose like
+// "do not run git push" was repeatedly misclassified, blocking dispatch
+// on tasks the operator had explicitly *forbidden* the dangerous form of.
+// More importantly, a daemon-side preflight cannot be subject-tuned per
+// project (Go vs research vs polyrepo etc.) and contradicts the
+// autonomous-orchestration design contract: defenses must not block the
+// system harder than the failure they prevent.
 //
-// Returns nil when no destructive pattern is found. Returns an error wrapping
-// ErrDestructiveContentRejected with the matched pattern for log/audit
-// purposes.
+// The function is retained as a no-op so callers that wrapped its error in
+// recovery code paths still compile; ErrDestructiveContentRejected stays
+// exported for the same reason. Both will be removed once the cleanup
+// pass through queue_scan_apply.go lands. Until then the preflight always
+// allows the dispatch.
 func validateRunOnMainContent(task *model.Task) error {
-	if task == nil {
-		return nil
-	}
-	if !task.RunOnMain && !task.RunOnIntegration {
-		return nil
-	}
-	fields := runOnMainInstructionFields(task)
-	for _, pat := range destructivePatterns {
-		for name, value := range fields {
-			if !destructiveMatchInExecContext(pat, value) {
-				continue
-			}
-			return fmt.Errorf("%w: field=%s matched=%s run_on_main=%t run_on_integration=%t",
-				ErrDestructiveContentRejected, name, pat.String(), task.RunOnMain, task.RunOnIntegration)
-		}
-	}
+	_ = task
 	return nil
 }
 
@@ -233,40 +219,9 @@ func runOnMainInstructionFields(task *model.Task) map[string]string {
 	}
 }
 
-// validateRunOnMainPublishGuard rejects RunOnMain tasks whose command has not
-// yet published its integration branch into base.
-//
-// Background (cmd_1777330979_d3c29242530906ac post-mortem): the planner can
-// queue a verification task with run_on_main: true alongside the merge phase
-// that produces the build artefact. If the dispatcher honours the dispatch
-// before integration → base publish completes, the worker reads the
-// pre-publish version of main and the task fails with no diagnostic value.
-// Defense-in-depth: also catches operator-authored RunOnMain tasks that
-// arrive before the integration branch is published or while it is in the
-// failure quarantine path.
-//
-// resolver may be nil (worktree-disabled daemon); in that case the guard is a
-// no-op because there is no integration concept. A resolver error wrapping
-// os.ErrNotExist means worktree state was never written for this command,
-// which has the same "no integration enforcement" meaning. Any other
-// resolver error is propagated so callers can decide whether to retry.
-func validateRunOnMainPublishGuard(task *model.Task, resolver WorktreeResolver) error {
-	if task == nil || !task.RunOnMain {
-		return nil
-	}
-	if resolver == nil {
-		return nil
-	}
-	status, err := resolver.GetIntegrationStatus(task.CommandID)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read integration status for %s: %w", task.CommandID, err)
-	}
-	if status == model.IntegrationStatusPublished {
-		return nil
-	}
-	return fmt.Errorf("%w: command=%s integration_status=%s",
-		ErrRunOnMainBeforePublish, task.CommandID, status)
-}
+// validateRunOnMainPublishGuard was removed in the 2026-05-01 dispatch-loop
+// fix. See the package-level comment on ErrRunOnMainBeforePublish for the
+// rationale. The function name is kept absent so callers cannot resurrect
+// the gate by accident; new code that needs to coordinate run_on_main
+// timing should signal through phase ordering / planner output rather
+// than a synchronous dispatch reject.

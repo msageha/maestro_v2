@@ -2,11 +2,16 @@ package daemon
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // leaseInvalidReason checks the core lease invariants shared between Phase C
@@ -119,6 +124,29 @@ func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int, 
 	return now.Sub(t) >= time.Duration(maxMin)*time.Minute
 }
 
+// taskElapsedSinceDispatch returns a human-readable string describing how
+// long the task has been actively held since its in_progress timestamp,
+// falling back to the last UpdatedAt when in_progress_at is missing. Used
+// purely for log surface to make hang-detection diagnostics tractable —
+// the caller never branches on the value, so any parse failure quietly
+// degrades to "?".
+func taskElapsedSinceDispatch(task *model.Task, now time.Time, tc *timeParseCache) string {
+	stamp := ""
+	if task.InProgressAt != nil && *task.InProgressAt != "" {
+		stamp = *task.InProgressAt
+	} else {
+		stamp = task.UpdatedAt
+	}
+	if stamp == "" {
+		return "?"
+	}
+	t, err := tc.ParseRFC3339(stamp)
+	if err != nil {
+		return "?"
+	}
+	return now.Sub(t).Round(time.Second).String()
+}
+
 // maxGraceLeaseDuration returns the maximum cumulative duration for grace lease
 // extensions. Computed as max_in_progress_min / 3, with a floor of
 // scanInterval * 3 to allow at least a few scan cycles.
@@ -183,12 +211,31 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 // as DependencyResolver.checkActivePhaseCompletion; otherwise queue/state drift
 // can cause Phase B to see a phase as mergeable while the resolver still treats
 // it as active (or vice versa).
+//
+// Lineage-aware (Bug-D' follow-up): a task whose lineage successor has
+// already completed is treated as effectively completed even though the
+// raw status is Cancelled (superseded_by_*). This keeps the merge gate
+// consistent with checkActivePhaseCompletion's lineage view, which is the
+// only way to publish a phase whose verify-repair retry succeeded.
+//
+// Bug-J follow-up (2026-05-02): observes phase.TaskIDs (every task) when
+// available, falling back to RequiredTaskIDs for legacy callers/tests
+// that have not been updated. An all-optional phase otherwise had an
+// empty RequiredTaskIDs slice, so this helper returned false even when
+// every task finished — and the merge gate stayed shut indefinitely.
 func phaseTasksAllCompleted(stateReader StateReader, commandID string, phase PhaseInfo) bool {
-	if stateReader == nil || len(phase.RequiredTaskIDs) == 0 {
+	if stateReader == nil {
 		return false
 	}
-	for _, taskID := range phase.RequiredTaskIDs {
-		status, err := stateReader.GetTaskState(commandID, taskID)
+	taskIDs := phase.TaskIDs
+	if len(taskIDs) == 0 {
+		taskIDs = phase.RequiredTaskIDs
+	}
+	if len(taskIDs) == 0 {
+		return false
+	}
+	for _, taskID := range taskIDs {
+		status, err := stateReader.GetEffectiveTaskStatus(commandID, taskID)
 		if err != nil || status != model.StatusCompleted {
 			return false
 		}
@@ -413,6 +460,33 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 		return nil, nil
 	}
 
+	// State-side gate: even when every queue task has reached a terminal
+	// status, the command-state TaskStates view can still hold non-terminal
+	// entries (verify_pending, repair_pending, paused_for_replan, or a freshly
+	// registered repair task at planned). The 2026-04-30 e2e regression
+	// observed published_to_base firing 0.7s after worker_committed while an
+	// async verify command was still mid-flight against the worker worktree —
+	// the verify failure was then masked by the worktree being torn down on
+	// the publish-driven cleanup pass. Refusing to publish until the state
+	// side has also drained means a verify failure has time to schedule its
+	// repair task (and eventually paused_for_replan) before main accepts the
+	// commit. Errors here fail closed (skip publish) to avoid premature
+	// publishing on transient state-read failures.
+	if hasNonTerminal, err := qh.dependencyResolver.GetStateReader().HasNonTerminalTaskState(commandID); err != nil {
+		if !errors.Is(err, ErrStateNotFound) {
+			qh.log(LogLevelWarn, "worktree_publish_state_check_failed command=%s error=%v", commandID, err)
+			return nil, nil
+		}
+		// State file not found is benign for non-phased commands that never
+		// produced one — fall through and let phase / integration gates decide.
+	} else if hasNonTerminal {
+		qh.log(LogLevelDebug,
+			"worktree_publish_blocked_state_non_terminal command=%s "+
+				"(verify/repair/replan still in flight; deferring publish)",
+			commandID)
+		return nil, nil
+	}
+
 	// For phased commands, also verify all phases are terminal.
 	// Errors fail closed (skip publish) to avoid premature publishing.
 	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
@@ -448,16 +522,71 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	var cleanups []worktreeCleanupItem
 
 	if hasFailed {
-		// Don't publish if any phase ended non-successfully — partial results
-		// stay on integration branch for operator inspection.
-		qh.log(LogLevelInfo, "worktree_publish_skip_failed command=%s", commandID)
-		if qh.config.Worktree.CleanupOnFailure {
-			cleanups = append(cleanups, worktreeCleanupItem{
-				CommandID: commandID,
-				Reason:    "failure",
-			})
+		// Race-safe reconciliation: a phase may have failed transiently
+		// (e.g. verify_repair scheduled, retry-task replaced the failed
+		// task) and by the time we reach here the lineage may have
+		// already produced a successful retry. The persisted plan_status
+		// field is updated by R4PlanStatus on a separate scan cycle, so
+		// reading it here would race the reconciler — synthetic_failure
+		// would land before R4 had a chance to flip plan_status to
+		// completed, poisoning a recovered command. Instead, derive the
+		// authoritative status directly from the live state via
+		// plan.DeriveStatus, which is lineage-aware (a cancelled-then-
+		// superseded task whose retry succeeded does not count as a
+		// failure). On parse/read errors we fail open — defer to the
+		// next scan rather than write a synthetic_failure that might be
+		// wrong.
+		state, ok := qh.loadCommandStateForDerivation(commandID)
+		if !ok {
+			qh.log(LogLevelDebug,
+				"worktree_publish_state_load_deferred command=%s "+
+					"(unable to derive authoritative status; deferring publish/synthetic_failure to next scan)",
+				commandID)
+			return publishes, cleanups
 		}
-		return publishes, cleanups
+		derived, deriveErr := plan.DeriveStatus(state)
+		if deriveErr != nil {
+			qh.log(LogLevelDebug,
+				"worktree_publish_derive_failed command=%s error=%v "+
+					"(deferring publish/synthetic_failure to next scan)",
+				commandID, deriveErr)
+			return publishes, cleanups
+		}
+		switch derived {
+		case model.PlanStatusCompleted:
+			qh.log(LogLevelInfo,
+				"worktree_publish_proceeding_after_recovery command=%s derived_status=%s "+
+					"(dead phases superseded; honoring derived status)",
+				commandID, derived)
+			// Fall through to integration-status switch below — let the
+			// command publish normally.
+		default:
+			// Don't publish if the plan genuinely failed — partial results
+			// stay on integration branch for operator inspection.
+			//
+			// Writing a synthetic failed CommandResult here lets
+			// R3PlannerQueue walk the queue command from in_progress →
+			// failed and R4PlanStatus reconcile state.PlanStatus on the
+			// next scan, so the command terminates cleanly. We pass
+			// the derived status into the synthetic result so that
+			// continuous_handler / Orchestrator agree on the outcome.
+			wrote := qh.writeSyntheticFailedPlannerResult(commandID, "phase_failed_publish_blocked")
+			if wrote {
+				qh.log(LogLevelInfo, "worktree_publish_skip_failed command=%s derived_status=%s",
+					commandID, derived)
+			} else {
+				qh.log(LogLevelDebug,
+					"worktree_publish_skip_failed_already_terminal command=%s derived_status=%s",
+					commandID, derived)
+			}
+			if qh.config.Worktree.CleanupOnFailure {
+				cleanups = append(cleanups, worktreeCleanupItem{
+					CommandID: commandID,
+					Reason:    "failure",
+				})
+			}
+			return publishes, cleanups
+		}
 	}
 
 	// No failures — check integration status to decide action
@@ -517,13 +646,307 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 				Reason:    "success",
 			})
 		}
+	case model.IntegrationStatusFailed:
+		// Bug-L fix (2026-05-02): an integration that has been marked
+		// Failed (typically by fast_track_cleanup's MarkIntegrationFailed)
+		// is a dead-end for the publish gate — there's no path forward
+		// other than synthesising a planner result so R3PlannerQueue can
+		// walk the queue command terminal and Orchestrator can be
+		// notified. Without this branch the command sat in_progress
+		// forever, emitting `worktree_publish_not_ready integration_status=failed`
+		// every scan and blocking Continuous Mode from advancing iteration.
+		//
+		// 2026-05-01 follow-up: if the failure marker landed while there
+		// are still unresolved commit_failed workers, defer the synthetic
+		// failure so the daemon's auto-commit retry path (see
+		// commit_failed_retry_succeeded in queue_scan_phase_a.go) has a
+		// chance to clear the failure on the next scan and reopen the
+		// publish gate. Without this gate, a transient .git/index.lock
+		// rendered the command terminal even though the next scan would
+		// have succeeded. CommitFailedWorkers is the durable signal —
+		// once cleared, the next scan re-evaluates this branch.
+		if len(cmdState.CommitFailedWorkers) > 0 {
+			qh.log(LogLevelWarn,
+				"worktree_publish_integration_failed_commit_retry_pending command=%s workers=%v "+
+					"(deferring synthetic failure; auto-commit retry may succeed and reopen publish)",
+				commandID, cmdState.CommitFailedWorkers)
+			return publishes, cleanups
+		}
+		// Idempotent: writeSyntheticFailedPlannerResult is a no-op when a
+		// planner result already exists for the command, so a recurring
+		// scan only emits the loud "skip" log once.
+		wrote := qh.writeSyntheticFailedPlannerResult(commandID, "integration_failed_publish_blocked")
+		if wrote {
+			qh.log(LogLevelWarn,
+				"worktree_publish_integration_failed_synthetic command=%s "+
+					"(integration marked failed; emitting synthetic planner result so the queue can close)",
+				commandID)
+		} else {
+			qh.log(LogLevelDebug,
+				"worktree_publish_integration_failed_already_synthesised command=%s",
+				commandID)
+		}
+		if qh.config.Worktree.CleanupOnFailure {
+			cleanups = append(cleanups, worktreeCleanupItem{
+				CommandID: commandID,
+				Reason:    "failure",
+			})
+		}
+	case model.IntegrationStatusCreated:
+		// No commits were ever made on the integration branch — typically a
+		// command that resolved as a no-op (sleep verification, audit-only
+		// task, research write-up that produced no diff). Without this case
+		// the worktree sat at status=created forever, the publish gate kept
+		// emitting `worktree_publish_not_ready integration_status=created`
+		// every scan, and the Dashboard never observed cleanup. Treat the
+		// derived plan status as authoritative: if the plan finished
+		// (completed/cancelled/failed), schedule a cleanup and stop logging.
+		// Pending plans are still skipped so we don't tear down a worktree
+		// before any task has had a chance to commit.
+		state, ok := qh.loadCommandStateForDerivation(commandID)
+		planTerminal := false
+		if ok {
+			if derived, derr := plan.DeriveStatus(state); derr == nil {
+				switch derived {
+				case model.PlanStatusCompleted, model.PlanStatusFailed, model.PlanStatusCancelled:
+					planTerminal = true
+				}
+			}
+		}
+		if !planTerminal {
+			qh.log(LogLevelDebug, "worktree_publish_not_ready command=%s integration_status=%s",
+				commandID, cmdState.Integration.Status)
+			return publishes, cleanups
+		}
+		// 2026-05-02: defer no_op_terminal cleanup if any worker is still
+		// at WorktreeStatusActive — that worker has uncommitted output and
+		// the implicit-phase incremental merge has not yet picked it up.
+		// Without this gate, a transient race between the final-task scan
+		// and the incremental-merge collector would tear down a worktree
+		// holding real work, causing main publish to silently lose the
+		// command's output. The implicit-phase merge runs on every scan;
+		// once the worker auto-commit succeeds, its status advances to
+		// committed/integrated and this branch falls through to the real
+		// no-op path.
+		var pendingWorker string
+		for _, ws := range cmdState.Workers {
+			if ws.Status == model.WorktreeStatusActive {
+				pendingWorker = ws.WorkerID
+				break
+			}
+		}
+		if pendingWorker != "" {
+			qh.log(LogLevelWarn,
+				"worktree_publish_skip_no_commits_deferred command=%s active_worker=%s integration_status=created plan_terminal=true "+
+					"(uncommitted worker output present; deferring no_op_terminal cleanup until incremental merge runs)",
+				commandID, pendingWorker)
+			return publishes, cleanups
+		}
+		qh.log(LogLevelInfo,
+			"worktree_publish_skip_no_commits command=%s integration_status=created plan_terminal=true "+
+				"(no diff to publish; scheduling cleanup)",
+			commandID)
+		// CleanupOnSuccess covers the no-op case too — the command finished
+		// without producing changes, which is a healthy outcome.
+		if qh.config.Worktree.CleanupOnSuccess {
+			cleanups = append(cleanups, worktreeCleanupItem{
+				CommandID: commandID,
+				Reason:    "no_op_terminal",
+			})
+			// Mirror the orphan-cleanup log shape so observers that key off
+			// "orphan_worktree_cleanup_triggered ... reason=no_op_terminal"
+			// see the no-op publish path uniformly. The pre-existing
+			// worktree_publish_skip_no_commits line stays for backward-compat.
+			qh.log(LogLevelInfo,
+				"orphan_worktree_cleanup_triggered command=%s cmd_status=in_progress integration_status=created elapsed=0s threshold=0s reason=no_op_terminal "+
+					"(publish gate path; no diff to publish, terminal plan)",
+				commandID)
+		}
 	default:
-		// Not ready (created, merging, conflict, publishing, failed)
+		// Not ready (merging, conflict, publishing)
 		qh.log(LogLevelDebug, "worktree_publish_not_ready command=%s integration_status=%s",
 			commandID, cmdState.Integration.Status)
 	}
 
 	return publishes, cleanups
+}
+
+// loadCommandPlanStatus reads state/commands/<commandID>.yaml and returns
+// (plan_status, ok). Returns (zero, false) on read/parse error or missing
+// file — callers that need authoritative status should treat false as "do
+// not assume completion".
+func (qh *QueueHandler) loadCommandPlanStatus(commandID string) (model.PlanStatus, bool) {
+	statePath := commandStatePath(qh.maestroDir, commandID)
+	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			qh.log(LogLevelDebug,
+				"plan_status_load_failed command=%s error=%v (treating as unknown)",
+				commandID, err)
+		}
+		return "", false
+	}
+	if len(data) == 0 {
+		return "", false
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		qh.log(LogLevelDebug,
+			"plan_status_parse_failed command=%s error=%v (treating as unknown)",
+			commandID, err)
+		return "", false
+	}
+	return cs.PlanStatus, true
+}
+
+// loadCommandStateForDerivation reads state/commands/<commandID>.yaml so the
+// caller can run plan.DeriveStatus directly. Distinct from loadCommandPlanStatus,
+// which only reads the persisted plan_status field — that field lags behind
+// reality between the time a phase failed and the time R4PlanStatus catches
+// up. publish-gate decisions need the live derivation to avoid persisting a
+// stale synthetic_failure. Returns (nil, false) on any read/parse error.
+func (qh *QueueHandler) loadCommandStateForDerivation(commandID string) (*model.CommandState, bool) {
+	statePath := commandStatePath(qh.maestroDir, commandID)
+	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
+	if err != nil {
+		return nil, false
+	}
+	if len(data) == 0 {
+		return nil, false
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		return nil, false
+	}
+	return &cs, true
+}
+
+// isCommandPlannerIdle reports whether an in_progress command is currently
+// not occupying the Planner pane. Used by collectPendingCommandDispatches
+// to allow a fresh command to dispatch while a previously-dispatched command
+// is in the "deferred to daemon recovery" wait state (every required task
+// at paused_for_replan, or terminal-but-blocked-on-publish). The Planner
+// pane is genuinely free in those scenarios, so blocking new dispatches
+// stalls the entire queue for up to the R10 deadletter window.
+//
+// Planner-idle is a *conservative* predicate: when in doubt, return false so
+// the legacy single-in-flight guard kicks in. False is also returned when
+// the state file is missing/unreadable — a brand-new in_progress command
+// that has not yet written state is definitely Planner-engaged.
+func (qh *QueueHandler) isCommandPlannerIdle(commandID string) bool {
+	cs, ok := qh.loadCommandStateForDerivation(commandID)
+	if !ok || cs == nil {
+		return false
+	}
+	// Pre-sealed plans are by definition Planner-engaged: the Planner is
+	// still authoring tasks for the command.
+	if cs.PlanStatus == model.PlanStatusPlanning {
+		return false
+	}
+	// Filling/awaiting_fill phases mean the Planner has been asked to fill
+	// the next phase — definitely not idle.
+	for _, phase := range cs.Phases {
+		if phase.Status == model.PhaseStatusFilling || phase.Status == model.PhaseStatusAwaitingFill {
+			return false
+		}
+	}
+	if len(cs.RequiredTaskIDs) == 0 {
+		// No required tasks declared yet — Planner is mid-authoring.
+		return false
+	}
+	// Walk required tasks. If any is not terminal AND not paused_for_replan,
+	// the command is still "live": there is or will be a worker dispatch
+	// the Planner needs to observe. Only when every required task is
+	// terminal-or-paused do we declare Planner-idle.
+	for _, id := range cs.RequiredTaskIDs {
+		status, ok := cs.TaskStates[id]
+		if !ok {
+			return false
+		}
+		if model.IsTerminal(status) {
+			continue
+		}
+		if status == model.StatusPausedForReplan {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// writeSyntheticFailedPlannerResult appends a synthetic failed
+// CommandResult to results/planner.yaml on behalf of a Planner whose
+// command cannot publish (failed phase blocks the publish gate) and who
+// would otherwise leave the queue command in_progress forever.
+// R3PlannerQueue then walks the queue command terminal on the next scan
+// and R4PlanStatus reconciles state.PlanStatus, so a single write drives
+// the whole "command goes terminal" propagation chain.
+//
+// Returns true if a synthetic result was written, false if the call was
+// a no-op (an existing result for commandID was found, an I/O error
+// occurred, or the lock body returned early). Callers can use the bool
+// to distinguish first-time emission (log at info) from subsequent
+// recurring scans (log at debug) — keeps daemon.log readable when a
+// terminal-failed command lingers because cleanup_on_failure=false.
+func (qh *QueueHandler) writeSyntheticFailedPlannerResult(commandID, reason string) bool {
+	resultPath := filepath.Join(qh.maestroDir, "results", "planner.yaml")
+	wrote := false
+	qh.lockMap.WithLock("result:planner", func() {
+		var rf model.CommandResultFile
+		data, err := os.ReadFile(resultPath) //nolint:gosec // controlled application result path
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			qh.log(LogLevelWarn,
+				"synthetic_planner_result_load_failed command=%s reason=%s error=%v",
+				commandID, reason, err)
+			return
+		}
+		if len(data) > 0 {
+			if err := yamlv3.Unmarshal(data, &rf); err != nil {
+				qh.log(LogLevelWarn,
+					"synthetic_planner_result_parse_failed command=%s reason=%s error=%v",
+					commandID, reason, err)
+				return
+			}
+		}
+		for _, r := range rf.Results {
+			if r.CommandID == commandID {
+				return // idempotent: already have a result, wrote stays false
+			}
+		}
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			qh.log(LogLevelWarn,
+				"synthetic_planner_result_id_failed command=%s reason=%s error=%v",
+				commandID, reason, err)
+			return
+		}
+		nowStr := qh.clock.Now().UTC().Format(time.RFC3339)
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+		}
+		if rf.FileType == "" {
+			rf.FileType = "result_command"
+		}
+		rf.Results = append(rf.Results, model.CommandResult{
+			ID:        resultID,
+			CommandID: commandID,
+			Status:    model.StatusFailed,
+			Summary:   "synthetic_failure: " + reason + " (daemon recovery — planner did not finalise)",
+			CreatedAt: nowStr,
+		})
+		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+			qh.log(LogLevelError,
+				"synthetic_planner_result_write_failed command=%s reason=%s error=%v",
+				commandID, reason, err)
+			return
+		}
+		qh.log(LogLevelInfo,
+			"synthetic_planner_result command=%s status=failed reason=%s "+
+				"(R3/R4 will walk planner queue + state.plan_status to failed on next scan)",
+			commandID, reason)
+		wrote = true
+	})
+	return wrote
 }
 
 // checkCommandTasksTerminal checks if all tasks for a command across all task
@@ -557,11 +980,68 @@ func (qh *QueueHandler) checkCommandTasksTerminal(
 	return true, hasFailed
 }
 
-// collectImplicitWorktreeMerge aggregates a single implicit-phase worktree
-// merge for commands that declare no phases. It returns one item only when all
-// tasks are terminal, no task failed, Integration.Status is created, and at
-// least one worker is registered. It is called from the phases==0 branch of
-// collectWorktreePhaseMerges.
+// commandHasAnyCompletedTask reports whether a command has at least one task
+// at StatusCompleted across all worker queues. Used by the implicit-phase
+// merge collector so a long-running command whose first task has finished
+// can begin an incremental merge — without waiting for every task to
+// terminate. The 2026-05-02 e2e regression captured a case where a Planner
+// emitted dependent tasks across multiple workers without declaring phases:
+// worker1 completed task A, worker2 then needed A's output but observed an
+// empty integration branch (no auto-commit had run), and the dependency
+// chain failed. Incremental merge by completed task is the autonomous
+// recovery for that pattern.
+//
+// hasFailed mirrors checkCommandTasksTerminal: a failed task short-circuits
+// the merge collection so partial outputs are not pushed onto integration
+// alongside a task the Planner is going to repair.
+func commandHasAnyCompletedTask(
+	commandID string,
+	taskQueues map[string]*taskQueueEntry,
+) (bool, bool) {
+	hasCompleted := false
+	hasFailed := false
+	for _, tq := range taskQueues {
+		for _, task := range tq.Queue.Tasks {
+			if task.CommandID != commandID {
+				continue
+			}
+			if task.Status == model.StatusCompleted {
+				hasCompleted = true
+			}
+			if task.Status == model.StatusFailed || task.Status == model.StatusDeadLetter {
+				hasFailed = true
+			}
+		}
+	}
+	return hasCompleted, hasFailed
+}
+
+// collectImplicitWorktreeMerge aggregates worktree merge work for commands
+// that declare no phases.
+//
+// Behaviour (2026-05-02): incremental merge. The collector emits a merge
+// item as soon as at least one task has reached StatusCompleted, instead of
+// waiting for every task to terminate. The earlier "all tasks terminal"
+// gate broke a common Planner pattern — emitting dependent tasks across
+// multiple workers without declaring phases. With that gate, worker1's
+// completed output never reached the integration branch, and worker2's
+// dispatcher fast-forward to integration HEAD pulled an empty branch,
+// causing dependency-chain failures and a no_op_terminal cleanup at the
+// end even when real work had been produced.
+//
+// Idempotency under repeated scans: MergeToIntegration's worker iteration
+// already skips up-to-date worker branches and the auto-commit pass is a
+// no-op when the worktree has nothing staged. The MergedPhases marker for
+// __implicit_phase is therefore *not* used as a gate; it is set when a
+// merge actually completes and serves as a hint for downstream code, but
+// the collector keeps emitting items for new completions until the command
+// terminates.
+//
+// hasFailed short-circuits the merge: a failed task indicates the Planner
+// is going to drive a repair, and pushing partial outputs onto integration
+// alongside that repair risks publishing half-done work. The publish path
+// already blocks on plan-level failures, but holding back the merge keeps
+// integration clean while the repair lands.
 func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	commandID string,
 	cmdState *model.WorktreeCommandState,
@@ -571,13 +1051,16 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	if cmdState == nil {
 		return nil
 	}
-	// Allow re-collection for created, partial_merge, conflict, and failed.
-	// The state transition table already permits these → merging.
+	// Allow re-collection for created, partial_merge, conflict, failed, and
+	// merged (the latter so an incremental merge can happen after an earlier
+	// one already wrote some content). The state transition table already
+	// permits these → merging.
 	switch cmdState.Integration.Status {
 	case model.IntegrationStatusCreated,
 		model.IntegrationStatusPartialMerge,
 		model.IntegrationStatusConflict,
-		model.IntegrationStatusFailed:
+		model.IntegrationStatusFailed,
+		model.IntegrationStatusMerged:
 		// eligible for (re-)merge collection
 	default:
 		return nil
@@ -610,17 +1093,12 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 		}
 	}
 
-	// Prevent double-merge: if __implicit_phase is already in MergedPhases, skip.
-	if cmdState.MergedPhases != nil {
-		if _, merged := cmdState.MergedPhases["__implicit_phase"]; merged {
-			return nil
-		}
-	}
 	if len(cmdState.Workers) == 0 {
 		return nil
 	}
-	allTerm, hasFailed := qh.checkCommandTasksTerminal(commandID, taskQueues)
-	if !allTerm || hasFailed {
+
+	hasCompleted, hasFailed := commandHasAnyCompletedTask(commandID, taskQueues)
+	if !hasCompleted || hasFailed {
 		return nil
 	}
 

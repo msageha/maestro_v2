@@ -78,6 +78,14 @@ func (r *phaseIntegrationStateReader) GetTaskState(commandID, taskID string) (mo
 	return s, nil
 }
 
+func (r *phaseIntegrationStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	return r.GetTaskState(commandID, taskID)
+}
+
+func (r *phaseIntegrationStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	return r.GetEffectiveTaskStatus(commandID, taskID)
+}
+
 func (r *phaseIntegrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -121,6 +129,20 @@ func (r *phaseIntegrationStateReader) UpdateTaskState(commandID, taskID string, 
 	return nil
 }
 
+func (r *phaseIntegrationStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ps := r.phases[commandID]
+	for i := range ps {
+		if ps[i].ID == phaseID {
+			ps[i].CancelledReason = reason
+			r.phases[commandID] = ps
+			return nil
+		}
+	}
+	return nil
+}
+
 func (r *phaseIntegrationStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	return false, false, nil
 }
@@ -135,7 +157,31 @@ func (r *phaseIntegrationStateReader) GetCircuitBreakerState(commandID string) (
 	return &model.CircuitBreakerState{}, nil
 }
 
+func (r *phaseIntegrationStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	return false, nil
+}
+
+func (r *phaseIntegrationStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	return nil, nil
+}
+
 func (r *phaseIntegrationStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	return nil
+}
+
+func (r *phaseIntegrationStateReader) MarkCircuitBreakerProgress(string) error { return nil }
+
+func (r *phaseIntegrationStateReader) MarkAwaitingFillStallNotified(commandID, phaseID, notifiedAt string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ps := r.phases[commandID]
+	for i := range ps {
+		if ps[i].ID == phaseID {
+			now := notifiedAt
+			ps[i].AwaitingFillStallNotifiedAt = &now
+			break
+		}
+	}
 	return nil
 }
 
@@ -203,8 +249,24 @@ func newPhaseIntegrationQH(t *testing.T, maestroDir string, exec *recordingExecu
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return exec, nil
 	})
+	// Pane-activity tracker is wired to real tmux helpers by NewQueueHandler.
+	// Phase-integration tests run with a real-on-disk maestroDir but with no
+	// tmux session of their own — and on developer machines that happen to
+	// have a stray maestro session running, FindPaneByAgentID would return
+	// a pane from that *other* session, then capture-pane would scrape its
+	// live content. The tests would then occasionally see VerdictActive or
+	// VerdictUncertain (and grace-extend the lease) instead of falling
+	// through to the busy-check path they pin. Replace the pane lookup with
+	// a fail-closed stub so the verdict is always VerdictUnknown — the
+	// legacy "no pane activity input" branch — making these tests
+	// hermetic against whatever tmux state happens to live on the host.
+	qh.paneFinder = func(string) (string, error) {
+		return "", errPhaseIntegrationNoTmux
+	}
 	return qh
 }
+
+var errPhaseIntegrationNoTmux = fmt.Errorf("phase_integration_test: tmux pane lookup intentionally disabled")
 
 func writeTaskQueue(t *testing.T, maestroDir, workerID string, tasks []model.Task) {
 	t.Helper()
@@ -1574,17 +1636,20 @@ func TestPhaseIntegration_BusyFalse_LeaseRelease(t *testing.T) {
 		t.Errorf("After release: expected epoch=3 (preserved), got %d", task.LeaseEpoch)
 	}
 
-	// Second scan: task should now be re-dispatchable
+	// 2026-05-01: applyTaskBusyCheckResult now stamps NotBefore on
+	// hang-driven release so the next scan does not immediately re-acquire
+	// against the same dead pane (the original loop the user hit on
+	// `sh -c 'sleep 600'`). The task is still re-dispatchable, but only
+	// after the cooldown — verify the cooldown landed and that the
+	// dispatcher honours it.
+	tqAfterRelease := piReadTaskQueue(t, maestroDir, "worker1")
+	releasedTask := tqAfterRelease.Tasks[0]
+	if releasedTask.NotBefore == nil {
+		t.Fatalf("After hang release: expected NotBefore cooldown to be set, got nil")
+	}
 	pa2 := qh.periodicScanPhaseA()
-	if len(pa2.work.dispatches) != 1 {
-		t.Fatalf("Scan 2: expected 1 dispatch (re-dispatch after release), got %d", len(pa2.work.dispatches))
-	}
-	if pa2.work.dispatches[0].Task.ID != "task_1772000016_release1" {
-		t.Errorf("Scan 2: expected task_1772000016_release1, got %s", pa2.work.dispatches[0].Task.ID)
-	}
-	// Epoch should be incremented by lease acquisition
-	if pa2.work.dispatches[0].Epoch != 4 {
-		t.Errorf("Scan 2: expected epoch=4 (incremented), got %d", pa2.work.dispatches[0].Epoch)
+	if len(pa2.work.dispatches) != 0 {
+		t.Fatalf("Scan 2: expected 0 dispatches while NotBefore cooldown is active, got %d", len(pa2.work.dispatches))
 	}
 }
 

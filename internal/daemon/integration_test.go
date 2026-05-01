@@ -20,6 +20,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/quality"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -63,6 +64,28 @@ func (r *integrationStateReader) GetTaskState(commandID, taskID string) (model.S
 		return "", fmt.Errorf("task %s not found in command %s", taskID, commandID)
 	}
 	return status, nil
+}
+
+func (r *integrationStateReader) GetEffectiveTaskStatus(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", fmt.Errorf("task %s not found in command %s", taskID, commandID)
+	}
+	return plan.EffectiveStatus(taskID, state.TaskStates, state.RetryLineage), nil
+}
+
+func (r *integrationStateReader) GetEffectiveTaskStatusForCompletion(commandID, taskID string) (model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := state.TaskStates[taskID]; !ok {
+		return "", fmt.Errorf("task %s not found in command %s", taskID, commandID)
+	}
+	return plan.EffectiveStatusForCompletion(taskID, state), nil
 }
 
 func (r *integrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
@@ -145,6 +168,29 @@ func (r *integrationStateReader) ApplyPhaseTransition(commandID, phaseID string,
 	return r.saveState(state)
 }
 
+func (r *integrationStateReader) SetPhaseCancelledReason(commandID, phaseID string, reason *string) error {
+	r.lockMap.Lock("state:" + commandID)
+	defer r.lockMap.Unlock("state:" + commandID)
+
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return err
+	}
+	for i := range state.Phases {
+		if state.Phases[i].PhaseID == phaseID {
+			if reason == nil {
+				state.Phases[i].CancelledReason = nil
+			} else {
+				s := *reason
+				state.Phases[i].CancelledReason = &s
+			}
+			break
+		}
+	}
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return r.saveState(state)
+}
+
 func (r *integrationStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
 	r.lockMap.Lock("state:" + commandID)
 	defer r.lockMap.Unlock("state:" + commandID)
@@ -211,6 +257,33 @@ func (r *integrationStateReader) GetCircuitBreakerState(commandID string) (*mode
 	return &cb, nil
 }
 
+func (r *integrationStateReader) HasNonTerminalTaskState(commandID string) (bool, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return false, err
+	}
+	for _, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func (r *integrationStateReader) GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]model.Status, len(state.TaskStates))
+	for taskID, status := range state.TaskStates {
+		if !model.IsTerminal(status) {
+			out[taskID] = status
+		}
+	}
+	return out, nil
+}
+
 func (r *integrationStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	r.lockMap.Lock("state:" + commandID)
 	defer r.lockMap.Unlock("state:" + commandID)
@@ -240,6 +313,17 @@ func (r *integrationStateReader) TripCircuitBreaker(commandID string, reason str
 	state.UpdatedAt = now
 	return r.saveState(state)
 }
+
+// MarkAwaitingFillStallNotified is a no-op stub for the integration test
+// state reader. The watchdog scan step is exercised in dedicated unit tests
+// (queue_scan_phase_a_phase_test.go); the integration tests in this file do
+// not drive awaiting_fill phases through to a stall window, so a no-op stub
+// keeps the StateManager interface satisfied without requiring fixture wiring.
+func (r *integrationStateReader) MarkAwaitingFillStallNotified(string, string, string) error {
+	return nil
+}
+
+func (r *integrationStateReader) MarkCircuitBreakerProgress(string) error { return nil }
 
 // testCanComplete is a simplified version of plan.CanComplete for integration tests.
 func testCanComplete(state *model.CommandState) (model.PlanStatus, error) {

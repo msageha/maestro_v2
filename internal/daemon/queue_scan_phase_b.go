@@ -422,15 +422,26 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 			}
 		}
 
-		// All-failed transition: if every worker's commit failed there is
-		// nothing to merge. Mark the integration branch Failed explicitly so
-		// the planner can detect a permanent stall instead of seeing the
-		// status frozen at Created/Merged.
+		// All-failed observation: when every worker's commit failed, do not
+		// immediately MarkIntegrationFailed. The 2026-05-01 e2e regression
+		// showed this is hostile to transient errors: a single .git/index.lock
+		// race during the auto-commit pass flipped the integration to Failed,
+		// the helpers' IntegrationStatusFailed branch synthesised a planner
+		// failed-result, and the next scan's stepRetryCommitFailedWorkers
+		// could no longer reopen publish even after the commit succeeded
+		// because the synthetic failure had already terminated the queue.
+		// AddCommitFailedWorker (called from autoCommitWorkerWithRetry) has
+		// already recorded the failure on every affected worker, so the
+		// publish gate stays blocked via len(CommitFailedWorkers)>0 and
+		// stepRetryCommitFailedWorkers will retry every scan. If retries
+		// keep failing, the operator-visible publish_blocked log surfaces
+		// the situation; tying integration_status to a single tick's
+		// outcome over-commits the daemon to a recoverable error.
 		if qh.worktreeManager != nil && len(mr.CommitFailures) > 0 && len(committedWorkerIDs) == 0 {
-			if markErr := qh.worktreeManager.MarkIntegrationFailed(item.CommandID); markErr != nil {
-				qh.log(LogLevelWarn, "worktree_mark_integration_failed command=%s error=%v",
-					item.CommandID, markErr)
-			}
+			qh.log(LogLevelWarn,
+				"worktree_all_commits_failed command=%s commit_failures=%d "+
+					"(commit_failed_workers retained; auto-commit retry path will reattempt next scan)",
+				item.CommandID, len(mr.CommitFailures))
 		}
 
 		result.worktreeMerges = append(result.worktreeMerges, mr)
