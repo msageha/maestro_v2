@@ -783,6 +783,49 @@ func TestSubmit_PhaseFill_Success(t *testing.T) {
 	}
 }
 
+// TestSubmit_PhaseFill_HonorsWorkerID covers the 2026-04-29 regression
+// observed in e2e: a Planner reported "plan submit YAML does not accept
+// worker_id" after a verification task they meant for worker3 ended up
+// on worker1. The pipeline DOES honor worker_id (resolveAndAssignTasks
+// → AssignWorkers PinnedWorkerID branch); this test pins it down so
+// future refactors cannot quietly regress the deferred-phase path.
+func TestSubmit_PhaseFill_HonorsWorkerID(t *testing.T) {
+	maestroDir, _, commandID := setupAwaitingFillFixture(t)
+	cfg := testConfig()
+	cfg.Agents.Workers.Count = 3
+
+	tasksFile := writeTasksFile(t, []TaskInput{
+		{
+			Name:               "verify_on_worker3",
+			Purpose:            "review on worker3",
+			Content:            "verify the implementation on worker3 worktree",
+			AcceptanceCriteria: "verified",
+			BloomLevel:         2,
+			Required:           true,
+			WorkerID:           "worker3",
+		},
+	})
+
+	result, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		PhaseName:  "phase_review",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Submit phase fill returned error: %v", err)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("len(Tasks) = %d, want 1", len(result.Tasks))
+	}
+	got := result.Tasks[0]
+	if got.Worker != "worker3" {
+		t.Errorf("phase-fill ignored worker_id pinning: Worker = %q, want %q", got.Worker, "worker3")
+	}
+}
+
 func TestSubmit_PhaseFill_DryRun_NoMutation(t *testing.T) {
 	maestroDir, origState, commandID := setupAwaitingFillFixture(t)
 	cfg := testConfig()

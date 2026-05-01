@@ -567,6 +567,19 @@ func ValidatePhaseTransition(from, to PhaseStatus) error {
 	if from == PhaseStatusFailed && to == PhaseStatusActive {
 		return nil
 	}
+	// Special case (2026-04-29 dependency-cascade recovery): cancelled →
+	// pending is allowed when the dependency resolver has detected that
+	// the upstream cause of a scheduler-derived cancellation is no longer
+	// terminal-failed. The reversal is restricted by the resolver to
+	// cancellations whose Phase.CancelledReason carries the
+	// DependencyCascadeCancelPrefix marker — operator/manual cancellations
+	// (no marker) stay terminal. The validation layer here only knows
+	// the from/to pair, so it cannot enforce that gate; the resolver is
+	// the canonical caller and is the single producer of this transition.
+	// See dependency_resolver.checkCancelledPhaseRecovery.
+	if from == PhaseStatusCancelled && to == PhaseStatusPending {
+		return nil
+	}
 	if IsPhaseTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal phase status %q", from)
 	}

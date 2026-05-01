@@ -1056,6 +1056,43 @@ func TestLaunchCommand_Format(t *testing.T) {
 	}
 }
 
+// TestResolvedLaunchCommandFor_PrependsMaestroDirEnv pins the 2026-04-29 fix:
+// when the formation re-launches `maestro agent launch` in a worker pane that
+// sits inside a worktree, the command must carry MAESTRO_DIR so that
+// findMaestroDir takes the env-var branch instead of falling back to a cwd
+// walk-up that can stop at a partial worktree-local .maestro/ fragment.
+func TestResolvedLaunchCommandFor_PrependsMaestroDirEnv(t *testing.T) {
+	dir := t.TempDir()
+	got := ResolvedLaunchCommandFor(dir)
+	if !strings.Contains(got, "MAESTRO_DIR=") {
+		t.Errorf("expected MAESTRO_DIR= prefix in launch command, got %q", got)
+	}
+	if !strings.Contains(got, "agent launch") {
+		t.Errorf("expected `agent launch` suffix, got %q", got)
+	}
+	canonical, err := canonicalMaestroDir(dir)
+	if err != nil {
+		t.Fatalf("canonicalMaestroDir: %v", err)
+	}
+	wantSubstr := "MAESTRO_DIR=" + shellSingleQuote(canonical)
+	if !strings.Contains(got, wantSubstr) {
+		t.Errorf("expected canonical maestroDir in MAESTRO_DIR assignment %q, got %q", wantSubstr, got)
+	}
+}
+
+// TestResolvedLaunchCommandFor_FallsBackOnEmptyMaestroDir keeps backward
+// compatibility for tests / edge paths that pass an empty maestroDir: the
+// command must still launch the agent rather than embedding `MAESTRO_DIR=”`.
+func TestResolvedLaunchCommandFor_FallsBackOnEmptyMaestroDir(t *testing.T) {
+	got := ResolvedLaunchCommandFor("")
+	if strings.Contains(got, "MAESTRO_DIR=") {
+		t.Errorf("did not expect MAESTRO_DIR= when maestroDir is empty, got %q", got)
+	}
+	if !strings.Contains(got, "agent launch") {
+		t.Errorf("expected `agent launch` in fallback command, got %q", got)
+	}
+}
+
 func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
 	invalid := []string{
 		"",

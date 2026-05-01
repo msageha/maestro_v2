@@ -422,13 +422,6 @@ func (c Config) validateFloatFields(errs *[]error) {
 	if !isFiniteFloat64Ptr(c.Search.ThompsonBeta) {
 		*errs = append(*errs, fmt.Errorf("search.thompson_beta: must be a finite value"))
 	}
-	for k, v := range c.ExtendedVerification.PerspectiveWeights {
-		if math.IsNaN(v) || math.IsInf(v, 0) {
-			*errs = append(*errs, fmt.Errorf("extended_verification.perspective_weights.%s: must be a finite value", k))
-		} else if v <= 0 {
-			*errs = append(*errs, fmt.Errorf("extended_verification.perspective_weights.%s: must be > 0", k))
-		}
-	}
 }
 
 // validateNonNegInt appends an error if val is negative.

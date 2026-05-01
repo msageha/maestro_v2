@@ -165,13 +165,22 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	select {
 	case <-ctx.Done():
 		result.Status = model.ReviewStatusSkipped
+		result.SkipReason = "context_cancelled_before_invoke"
 		return nil
 	default:
 	}
 
 	if strings.TrimSpace(req.DiffContent) == "" {
 		// Empty diff means nothing to review; record as skipped with no findings.
+		// SkipReason makes the audit-trail YAML self-describing — operators
+		// reviewing 0-finding reviews can tell at a glance whether the model
+		// genuinely cleared the diff or whether the dispatch path never had
+		// anything to send. The 2026-04-29 e2e regression hit exactly this
+		// gap: every review came back as "skipped findings=0" and the only
+		// way to tell empty_diff from a model parse failure was to correlate
+		// daemon.log timestamps to review_id strings.
 		result.Status = model.ReviewStatusSkipped
+		result.SkipReason = "empty_diff_content"
 		return nil
 	}
 
@@ -179,12 +188,14 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	raw, err := d.getInvoker().Invoke(ctx, req.ReviewerModel, reviewSystemPrompt, userPrompt)
 	if err != nil {
 		result.Status = model.ReviewStatusSkipped
+		result.SkipReason = fmt.Sprintf("invoke_failed: %v", err)
 		return fmt.Errorf("reviewer: model invocation failed: %w", err)
 	}
 
 	findings, parseErr := parseFindings(raw)
 	if parseErr != nil {
 		result.Status = model.ReviewStatusSkipped
+		result.SkipReason = fmt.Sprintf("parse_failed: %v", parseErr)
 		return fmt.Errorf("reviewer: response parse failed: %w", parseErr)
 	}
 

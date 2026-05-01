@@ -5,9 +5,31 @@ import (
 	"time"
 )
 
+// baselinePerspectives returns a language-neutral perspective scaffold used by
+// aggregation tests below. Commands are intentionally empty: these tests
+// exercise the scoring/aggregation contract, not command execution, so the
+// scaffold only needs Name and Weight to drive Aggregate.
+func baselinePerspectives() []Perspective {
+	return []Perspective{
+		{Name: "build", Weight: 1.0},
+		{Name: "lint", Weight: 0.8},
+		{Name: "test", Weight: 1.0},
+		{Name: "typecheck", Weight: 0.9},
+	}
+}
+
+func newVerifierWithBaseline(t *testing.T) *Verifier {
+	t.Helper()
+	v := NewVerifier()
+	if err := v.SetPerspectives(baselinePerspectives()); err != nil {
+		t.Fatalf("SetPerspectives: %v", err)
+	}
+	return v
+}
+
 func TestAggregate_AllPass(t *testing.T) {
 	t.Parallel()
-	v := NewVerifier()
+	v := newVerifierWithBaseline(t)
 	results := []PerspectiveResult{
 		{Name: "build", Passed: true, Duration: time.Second},
 		{Name: "lint", Passed: true, Duration: time.Second},
@@ -25,7 +47,7 @@ func TestAggregate_AllPass(t *testing.T) {
 
 func TestAggregate_CriticalWeightFailed(t *testing.T) {
 	t.Parallel()
-	v := NewVerifier()
+	v := newVerifierWithBaseline(t)
 	// test has weight 1.0 — critical
 	results := []PerspectiveResult{
 		{Name: "build", Passed: true},
@@ -44,7 +66,7 @@ func TestAggregate_CriticalWeightFailed(t *testing.T) {
 
 func TestAggregate_LintOnlyFailed(t *testing.T) {
 	t.Parallel()
-	v := NewVerifier()
+	v := newVerifierWithBaseline(t)
 	// lint has weight 0.8 — not critical (< 1.0), so Passed remains true
 	results := []PerspectiveResult{
 		{Name: "build", Passed: true},
@@ -102,29 +124,11 @@ func TestShouldRetry_Passed(t *testing.T) {
 	}
 }
 
-func TestDefaultPerspectives(t *testing.T) {
+func TestNewVerifier_StartsEmpty(t *testing.T) {
 	t.Parallel()
 	v := NewVerifier()
-	perspectives := v.DefaultPerspectives()
-	if len(perspectives) != 4 {
-		t.Fatalf("expected 4 default perspectives, got %d", len(perspectives))
-	}
-
-	expected := map[string]float64{
-		"build":     1.0,
-		"lint":      0.8,
-		"test":      1.0,
-		"typecheck": 0.9,
-	}
-	for _, p := range perspectives {
-		w, ok := expected[p.Name]
-		if !ok {
-			t.Errorf("unexpected perspective: %s", p.Name)
-			continue
-		}
-		if p.Weight != w {
-			t.Errorf("perspective %s: expected weight %f, got %f", p.Name, w, p.Weight)
-		}
+	if got := len(v.Perspectives()); got != 0 {
+		t.Errorf("NewVerifier must not auto-populate perspectives (production callers inject language-aware perspectives via SetPerspectives); got %d", got)
 	}
 }
 

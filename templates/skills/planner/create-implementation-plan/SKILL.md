@@ -22,6 +22,7 @@ priority: 5
 ## 2. Tasks 構造
 
 ```yaml
+name: "<task-name>"
 purpose: "<動詞>: <対象> - <意図>"
 content: |
   1. ファイルパスと変更内容
@@ -29,7 +30,14 @@ content: |
   3. 参照すべき既存コード
 acceptance_criteria: |
   - Given <前提>, When <操作>, Then <期待結果>
+blocked_by: []
+bloom_level: 3
 persona_hint: implementer
+required: true
+expected_paths: ["相対パス"]
+definition_of_abort:
+  max_repair_count: 3
+  max_wall_clock_sec: 1800
 ```
 
 ## 3. acceptance_criteria 品質基準（Given-When-Then）

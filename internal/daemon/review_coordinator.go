@@ -31,6 +31,16 @@ type ReviewCoordinator struct {
 	// summary+files payload, which is degraded but lets the pipeline keep
 	// flowing for non-worktree configurations.
 	worktreeManager *WorktreeManager
+	// diffCache stores precomputed diffs keyed by taskID so the review
+	// dispatch path can use a stable snapshot even when the worker worktree
+	// has been cleaned up by the time DispatchIfEligible runs (2026-04-29
+	// e2e regression). Result-write callers populate it via PrecaptureDiff
+	// before relinquishing the worker queue lock; consumers (buildDiffContent)
+	// look it up first and fall back to ComputeWorkerDiff only when the cache
+	// has nothing for the task. Entries are evicted in DispatchIfEligible to
+	// bound memory.
+	diffCacheMu sync.Mutex
+	diffCache   map[string]string
 }
 
 // newReviewCoordinator creates a ReviewCoordinator when review is enabled.
@@ -45,6 +55,7 @@ func newReviewCoordinator(cfg model.ReviewConfig, maestroDir string, log logFunc
 		requests:   make(map[string]reviewTaskInfo),
 		maestroDir: maestroDir,
 		log:        log,
+		diffCache:  make(map[string]string),
 	}
 
 	stateDir := filepath.Join(maestroDir, "state")
@@ -263,18 +274,89 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 		params.TaskID, params.CommandID, task.BloomLevel)
 }
 
-// buildDiffContent produces the diff payload sent to the advisory reviewer.
-// Prefers a real `git diff <merge-base>` against the integration branch
-// (computed via WorktreeManager.ComputeWorkerDiff) so that the reviewer's
-// system prompt — which expects a unified diff — receives input matching its
-// contract.
+// PrecaptureDiff records a snapshot of the worker diff for taskID. Callers
+// invoke this from the result-write path while the worker worktree is
+// guaranteed to still exist (i.e., before relinquishing the per-worker queue
+// lock or before any cleanup-eligible status transition). DispatchIfEligible
+// later prefers the cached value over a fresh ComputeWorkerDiff call so the
+// review payload is stable across the cleanup race window.
 //
-// Falls back to a synthetic "summary + files changed" payload when:
-//   - no WorktreeManager is wired (legacy tests / worktree-disabled configs),
-//   - the command has no worktree state yet,
-//   - or git diff computation fails. In each case, the dispatcher receives
-//     degraded but non-empty input rather than blocking the review pipeline.
+// An empty diff (worktree gone, no commits since the merge base, etc.) is
+// intentionally NOT cached: caching "" would suppress the buildDiffContent
+// fallback chain (worktreeManager.ComputeWorkerDiff retry → summary +
+// files_changed payload), and the dispatcher records the resulting empty
+// payload as status=skipped. The 2026-04-29 e2e regression observed exactly
+// this — every codex review came back as `status=skipped findings=0` in
+// under a second because PrecaptureDiff cached "" before the worker had
+// committed and the dispatch path then deferred to that cached "".
+//
+// Errors during capture are logged and result in no cache entry, so the
+// dispatch path keeps its existing fallback behaviour.
+func (rc *ReviewCoordinator) PrecaptureDiff(taskID, commandID, reporter string) {
+	if rc == nil || rc.worktreeManager == nil {
+		return
+	}
+	diff, err := rc.worktreeManager.ComputeWorkerDiff(commandID, reporter)
+	if err != nil {
+		rc.log(LogLevelDebug,
+			"review_diff_precapture_failed task=%s command=%s reporter=%s error=%v "+
+				"(dispatch path will fall back to summary payload)",
+			taskID, commandID, reporter, err)
+		return
+	}
+	if diff == "" {
+		rc.log(LogLevelDebug,
+			"review_diff_precapture_empty task=%s command=%s reporter=%s "+
+				"(not cached; dispatch path will retry ComputeWorkerDiff or fall back to summary payload)",
+			taskID, commandID, reporter)
+		return
+	}
+	rc.diffCacheMu.Lock()
+	rc.diffCache[taskID] = diff
+	rc.diffCacheMu.Unlock()
+}
+
+// popPrecapturedDiff returns the cached diff for taskID (if any) and removes
+// it from the cache so memory does not grow unbounded for long-running daemons.
+// The boolean indicates whether a precapture entry existed; callers can use it
+// to decide whether to attempt a fresh ComputeWorkerDiff or treat the empty
+// string as "captured but no diff".
+func (rc *ReviewCoordinator) popPrecapturedDiff(taskID string) (string, bool) {
+	if rc == nil {
+		return "", false
+	}
+	rc.diffCacheMu.Lock()
+	defer rc.diffCacheMu.Unlock()
+	diff, ok := rc.diffCache[taskID]
+	if ok {
+		delete(rc.diffCache, taskID)
+	}
+	return diff, ok
+}
+
+// buildDiffContent produces the diff payload sent to the advisory reviewer.
+// Prefers, in order:
+//
+//  1. a precaptured diff from PrecaptureDiff (stable across cleanup races —
+//     the 2026-04-29 e2e regression where the worker worktree was wiped
+//     before DispatchIfEligible ran),
+//  2. a fresh `git diff <merge-base>` via WorktreeManager.ComputeWorkerDiff,
+//  3. a synthetic "summary + files changed" payload (legacy fallback).
+//
+// The fallback always produces non-empty content (it includes task/command
+// IDs and the reporter at minimum) so the dispatcher's "DiffContent empty
+// → status=skipped" early-return never fires from the daemon side. If the
+// reviewer model still cannot find anything to review, it returns 0
+// findings as completed — that is a meaningfully different signal than
+// "we never even sent a payload", which is what the legacy fallback used
+// to produce when params.Summary and params.FilesChanged were both empty
+// (the 2026-04-29 TS-repo regression where every codex review ended in
+// skipped after under 1 second of duration).
 func (rc *ReviewCoordinator) buildDiffContent(params ResultWriteParams) string {
+	if cached, ok := rc.popPrecapturedDiff(params.TaskID); ok && cached != "" {
+		return cached
+	}
+
 	if rc.worktreeManager != nil {
 		diff, err := rc.worktreeManager.ComputeWorkerDiff(params.CommandID, params.Reporter)
 		if err != nil {
@@ -287,8 +369,28 @@ func (rc *ReviewCoordinator) buildDiffContent(params ResultWriteParams) string {
 		}
 	}
 
+	// Synthetic fallback: include task / command / reporter identification
+	// AND any worker-supplied summary / files_changed. The IDs guarantee
+	// the payload is never empty even when the worker reported nothing,
+	// so the dispatcher does not silently short-circuit to skipped. The
+	// reviewer can still legitimately return 0 findings if there is
+	// nothing concrete to review — that path is observable in the audit
+	// trail as Status=Completed with empty Findings, which is materially
+	// different from Status=Skipped with SkipReason=empty_diff_content.
 	var sb strings.Builder
-	sb.WriteString(params.Summary)
+	sb.WriteString("[review-context-only fallback — no diff available]\n")
+	sb.WriteString("task_id: ")
+	sb.WriteString(params.TaskID)
+	sb.WriteString("\ncommand_id: ")
+	sb.WriteString(params.CommandID)
+	sb.WriteString("\nreporter: ")
+	sb.WriteString(params.Reporter)
+	sb.WriteString("\nworker_status: ")
+	sb.WriteString(params.Status)
+	if params.Summary != "" {
+		sb.WriteString("\n\nSummary:\n")
+		sb.WriteString(params.Summary)
+	}
 	if len(params.FilesChanged) > 0 {
 		sb.WriteString("\n\nFiles changed: ")
 		sb.WriteString(strings.Join(params.FilesChanged, ", "))

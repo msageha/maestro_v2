@@ -234,6 +234,79 @@ signals:
 	}
 }
 
+// TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork pins the
+// 2026-04-29 e2e regression: worker4 reported @status=busy in tmux
+// while no queue file showed an in-progress task. `maestro status`
+// previously reported "busy" verbatim, leaving operators no signal
+// that the busy claim was unbacked. The annotation rewrites such
+// rows to "busy (stale)" so the inconsistency is immediately
+// observable.
+func TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork(t *testing.T) {
+	agents := []agentStatus{
+		{ID: "worker1", Role: "worker", Status: "busy"},
+		{ID: "worker4", Role: "worker", Status: "busy"},
+		{ID: "planner", Role: "planner", Status: "idle"},
+	}
+	queues := []queueStatus{
+		{Name: "worker1", InProgress: 1, Pending: 0},
+		{Name: "worker4", InProgress: 0, Pending: 0},
+	}
+	out := annotateStaleBusyAgents(agents, queues)
+	statusByID := map[string]string{}
+	for _, a := range out {
+		statusByID[a.ID] = a.Status
+	}
+	if statusByID["worker1"] != "busy" {
+		t.Errorf("worker1 must stay busy when queue has in-progress, got %q", statusByID["worker1"])
+	}
+	if statusByID["worker4"] != "busy (stale)" {
+		t.Errorf("worker4 must flip to busy (stale) when queue has no in-progress, got %q", statusByID["worker4"])
+	}
+	if statusByID["planner"] != "idle" {
+		t.Errorf("planner status (idle) must not be touched by the annotation, got %q", statusByID["planner"])
+	}
+}
+
+// TestAnnotateStaleBusyAgents_SkipsWhenQueueFileAbsent verifies that
+// when no queue file backs the busy claim we leave the row alone — the
+// annotation should only fire when a queue file actually contradicts
+// the busy state, not when the queue file is missing entirely (which
+// could mean "not yet observed" rather than "stale busy").
+func TestAnnotateStaleBusyAgents_SkipsWhenQueueFileAbsent(t *testing.T) {
+	agents := []agentStatus{
+		{ID: "worker99", Role: "worker", Status: "busy"},
+	}
+	out := annotateStaleBusyAgents(agents, nil)
+	if out[0].Status != "busy" {
+		t.Errorf("absent queue file must not trigger stale annotation, got %q", out[0].Status)
+	}
+}
+
+// TestAnnotateStaleBusyAgents_PlannerAndOrchestratorMapByRole confirms
+// the role-based mapping for planner/orchestrator (their queue files
+// are not named after a worker pattern).
+func TestAnnotateStaleBusyAgents_PlannerAndOrchestratorMapByRole(t *testing.T) {
+	agents := []agentStatus{
+		{ID: "planner", Role: "planner", Status: "busy"},
+		{ID: "orchestrator", Role: "orchestrator", Status: "busy"},
+	}
+	queues := []queueStatus{
+		{Name: "planner", InProgress: 0},
+		{Name: "orchestrator", InProgress: 1},
+	}
+	out := annotateStaleBusyAgents(agents, queues)
+	statusByID := map[string]string{}
+	for _, a := range out {
+		statusByID[a.ID] = a.Status
+	}
+	if statusByID["planner"] != "busy (stale)" {
+		t.Errorf("planner with empty command queue must flip to stale, got %q", statusByID["planner"])
+	}
+	if statusByID["orchestrator"] != "busy" {
+		t.Errorf("orchestrator with non-empty notifications must stay busy, got %q", statusByID["orchestrator"])
+	}
+}
+
 func TestPrintStatus_DoesNotPanic(t *testing.T) {
 	// Verify printing works without panicking for all cases
 	s := formationStatus{

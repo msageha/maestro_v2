@@ -631,6 +631,262 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 	}
 }
 
+// TestRegisterRetryTaskInState_AllowsRetryEvenAtMaxTasks pins the
+// 2026-04-30 e2e regression fix: retries / repairs MUST proceed even
+// when a phase is already at its declared PhaseConstraints.MaxTasks.
+// The previous behaviour rejected with ErrPhaseMaxTasksExceeded, which
+// turned recovery (auto-repair, plan add-retry-task) into a structural
+// failure mode for tightly-budgeted phases. retry depth is bounded by
+// Retry.TaskExecution.MaxRetries and per-task DefinitionOfAbort
+// .MaxRepairCount, so the budget guard here was redundant guardrail at
+// the cost of unrecoverable failure flows.
+func TestRegisterRetryTaskInState_AllowsRetryEvenAtMaxTasks(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_phase_budget"
+	predecessorID := "task_predecessor_001"
+	retryID := "task_retry_001"
+	phaseID := "phase_budget"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{{
+				PhaseID: phaseID,
+				Name:    "verify_integration",
+				Type:    "concrete",
+				Status:  model.PhaseStatusActive,
+				TaskIDs: []string{predecessorID, "task_filler_001"}, // already at MaxTasks
+				Constraints: &model.PhaseConstraints{
+					MaxTasks:       2,
+					TimeoutMinutes: 30,
+				},
+			}},
+		},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				predecessorID:     model.StatusFailed,
+				"task_filler_001": model.StatusCompleted,
+			},
+			RequiredTaskIDs: []string{predecessorID, "task_filler_001"},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        retryID,
+		CommandID: commandID,
+		Purpose:   "retry past budget",
+		Content:   "should still register",
+		Status:    model.StatusPending,
+	}
+
+	if err := handler.RegisterRetryTaskInState(retryTask, predecessorID, commandID); err != nil {
+		t.Fatalf("retry registration must succeed past max_tasks for recovery, got %v", err)
+	}
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("re-read state: %v", err)
+	}
+	var post model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &post); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := post.TaskStates[retryID]; got != model.StatusPlanned {
+		t.Errorf("retry task state = %q, want planned", got)
+	}
+	if len(post.Phases) != 1 || len(post.Phases[0].TaskIDs) != 3 {
+		t.Errorf("phase TaskIDs must include the new retry, got %v", post.Phases[0].TaskIDs)
+	}
+}
+
+// TestRegisterRetryTaskInState_AllowsRetryWhenWithinPhaseBudget keeps the
+// happy path covered after the new max_tasks guard so a retry inside the
+// declared budget still registers correctly.
+func TestRegisterRetryTaskInState_AllowsRetryWhenWithinPhaseBudget(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_phase_within"
+	predecessorID := "task_predecessor_002"
+	retryID := "task_retry_002"
+	phaseID := "phase_within"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{{
+				PhaseID: phaseID,
+				Name:    "phase_within",
+				Type:    "concrete",
+				Status:  model.PhaseStatusActive,
+				TaskIDs: []string{predecessorID}, // 1 < MaxTasks=3
+				Constraints: &model.PhaseConstraints{
+					MaxTasks:       3,
+					TimeoutMinutes: 30,
+				},
+			}},
+		},
+		TaskTracking: model.TaskTracking{
+			TaskStates:      map[string]model.Status{predecessorID: model.StatusFailed},
+			RequiredTaskIDs: []string{predecessorID},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        retryID,
+		CommandID: commandID,
+		Purpose:   "retry within budget",
+		Content:   "should succeed",
+		Status:    model.StatusPending,
+	}
+	if err := handler.RegisterRetryTaskInState(retryTask, predecessorID, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState should succeed within budget, got: %v", err)
+	}
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("re-read state: %v", err)
+	}
+	var post model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &post); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := post.TaskStates[retryID]; got != model.StatusPlanned {
+		t.Errorf("retry task status = %q, want planned", got)
+	}
+	if len(post.Phases[0].TaskIDs) != 2 {
+		t.Errorf("phase TaskIDs after registration = %v, want size 2", post.Phases[0].TaskIDs)
+	}
+}
+
+// TestRegisterRetryTaskInState_AllowsRetryWhenSupersededTasksFillBudget pins
+// the 2026-04-30 e2e contract: cancelled-and-superseded predecessors (those
+// recorded in RetryLineage as the predecessor of a later retry) must NOT
+// count against PhaseConstraints.MaxTasks. Before this fix, a max_tasks=2
+// phase rejected the second auto-repair after a single failure because the
+// counter saw [original (cancelled-superseded), 1st repair (cancelled-
+// superseded), 2nd repair (about to be added)] = 3 > 2 = max_tasks. The
+// active-only count restores parity with the operator's mental model:
+// max_tasks bounds *concurrent live attempts*, not lineage history.
+func TestRegisterRetryTaskInState_AllowsRetryWhenSupersededTasksFillBudget(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_phase_supersede"
+	originalID := "task_original_001"
+	firstRepairID := "task_repair_001"
+	secondRepairID := "task_repair_002"
+	phaseID := "phase_supersede"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{{
+				PhaseID: phaseID,
+				Name:    "phase_supersede",
+				Type:    "concrete",
+				Status:  model.PhaseStatusActive,
+				// Two prior tasks are already in the phase. The original
+				// produced a verify failure and was superseded by the first
+				// repair (RetryLineage[firstRepairID] = originalID). The
+				// first repair just failed and is itself about to be
+				// superseded by the second repair we are registering now.
+				TaskIDs: []string{originalID, firstRepairID},
+				Constraints: &model.PhaseConstraints{
+					MaxTasks:       2, // already "full" by raw count
+					TimeoutMinutes: 30,
+				},
+			}},
+		},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				originalID:    model.StatusCancelled,
+				firstRepairID: model.StatusFailed,
+			},
+			RequiredTaskIDs: []string{firstRepairID},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: map[string]string{
+				firstRepairID: originalID, // original was superseded by first repair
+			},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        secondRepairID,
+		CommandID: commandID,
+		Purpose:   "second repair after first repair failed",
+		Content:   "should be allowed because original is superseded and does not count",
+		Status:    model.StatusPending,
+	}
+	if err := handler.RegisterRetryTaskInState(retryTask, firstRepairID, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState should succeed when one slot is occupied by a superseded predecessor, got: %v", err)
+	}
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("re-read state: %v", err)
+	}
+	var post model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &post); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := post.TaskStates[secondRepairID]; got != model.StatusPlanned {
+		t.Errorf("second repair status = %q, want planned", got)
+	}
+	if len(post.Phases[0].TaskIDs) != 3 {
+		t.Errorf("phase TaskIDs after registration = %v, want size 3 (raw count grows; budget tracks active only)",
+			post.Phases[0].TaskIDs)
+	}
+}
+
 // TC-RT-009: AddRetryTaskToQueue のテスト
 func TestAddRetryTaskToQueue(t *testing.T) {
 	t.Parallel()

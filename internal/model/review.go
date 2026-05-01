@@ -80,8 +80,15 @@ type ReviewResult struct {
 	Findings      []ReviewFinding `json:"findings" yaml:"findings"`
 	IsAdvisory    bool            `json:"is_advisory" yaml:"is_advisory"`
 	Status        ReviewStatus    `json:"status" yaml:"status"`
-	Duration      time.Duration   `json:"duration" yaml:"duration"`
-	CreatedAt     time.Time       `json:"created_at" yaml:"created_at"`
+	// SkipReason is populated only when Status==ReviewStatusSkipped to
+	// explain why the review never executed (empty diff, context cancel,
+	// invocation error, parse failure, etc.). Mirrored into the per-task
+	// review audit YAML so an operator can see at a glance why a
+	// particular reviewer model returned 0 findings, instead of having
+	// to grep daemon.log for the matching review_id.
+	SkipReason string        `json:"skip_reason,omitempty" yaml:"skip_reason,omitempty"`
+	Duration   time.Duration `json:"duration" yaml:"duration"`
+	CreatedAt  time.Time     `json:"created_at" yaml:"created_at"`
 }
 
 // NewReviewResult creates a new ReviewResult with the given advisory flag.

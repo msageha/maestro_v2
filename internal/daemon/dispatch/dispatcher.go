@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -169,7 +170,23 @@ func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityI
 	}
 	result := exec.Execute(req)
 	if result.Error != nil {
-		disp.dl.Logf(core.LogLevelError, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
+		// 2026-04-30 e2e regression: ErrSubmitConfirmUncertain is a
+		// false-negative-prone signal — the paste already landed and the
+		// downstream agent will start processing, but the post-paste
+		// probe failed to see a Claude UI marker within its 6s budget.
+		// Logging at ERROR pollutes the operator dashboard with
+		// "dispatch_*_failed" noise that critical-alert channels treat
+		// as a real failure even though the user observation was that
+		// the dispatch ultimately succeeded. Demote to WARN so the
+		// signal is visible but does not page; the
+		// dispatch_uncertain_assume_running path that runs immediately
+		// after in queue_scan_apply.go is the canonical operator-facing
+		// breadcrumb for this case.
+		level := core.LogLevelError
+		if errors.Is(result.Error, agent.ErrSubmitConfirmUncertain) {
+			level = core.LogLevelWarn
+		}
+		disp.dl.Logf(level, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
 			logLabel, entityID, logExtra, result.Error, result.Retryable)
 		return result.Retryable, result.Error
 	}
@@ -253,17 +270,30 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		return err
 	}
 
-	// run_on_main timing guard: reject RunOnMain dispatches that arrive
-	// before the integration branch has been published into base. The
-	// planner sometimes queues main-branch verification alongside the merge
-	// phase that produces the artefact; without this gate the worker reads
-	// stale main and fails for no actionable reason. Skips silently for
-	// worktree-disabled daemons (resolver == nil).
-	if err := validateRunOnMainPublishGuard(task, disp.getWorktreeManager()); err != nil {
-		disp.dl.Logf(core.LogLevelError,
-			"dispatch_task_run_on_main_before_publish id=%s worker=%s command=%s error=%v",
-			task.ID, workerID, task.CommandID, err)
-		return err
+	// run_on_main timing observation (2026-05-01 dispatch-loop fix): the
+	// previous implementation rejected RunOnMain dispatches that arrived
+	// before integration→base publish completed (ErrRunOnMainBeforePublish).
+	// In practice that gate produced a self-deadlocking loop:
+	//
+	//   • run_on_main tasks need publish to finish before they dispatch
+	//   • publish needs every phase task to terminate before it runs
+	//   • a phase that contains the run_on_main task therefore never
+	//     completes, publish never runs, the gate keeps rejecting, and
+	//     the planner re-queues forever (epoch 1..N forever).
+	//
+	// The 2026-05-01 user reproduction (cmd_1777610280_4dd0b6014ace44da)
+	// looped through 7 epochs before the operator killed it. Per the
+	// "self-healing autonomous orchestration" design contract, a defense
+	// that locks the system harder than the failure it tries to prevent
+	// is a regression — drop the gate and let the worker handle stale
+	// main itself (a `git fetch + git checkout main` at task start, or a
+	// circuit-breaker-aware retry if the verification needs newer base
+	// state). Logged as INFO so operators can still spot the pattern.
+	if task != nil && task.RunOnMain {
+		disp.dl.Logf(core.LogLevelInfo,
+			"dispatch_run_on_main_pre_publish_observation id=%s worker=%s command=%s "+
+				"(no longer blocking dispatch; worker is responsible for refreshing main if needed)",
+			task.ID, workerID, task.CommandID)
 	}
 
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
@@ -451,6 +481,32 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 		disp.dl.Logf(core.LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
 			task.ID, workerID, err)
 		return "", fmt.Errorf("worktree path resolution failed: %w", err)
+	}
+
+	// Repair tasks (verify_repair / plan add-retry-task) operate on top of
+	// the worker's pending changes from the original task. Auto-commit only
+	// fires at Phase B merge time AFTER verify succeeds; for repair tasks
+	// the original task's edits remain uncommitted in the worker worktree,
+	// and refusing dispatch on dirty state would dead-letter every repair.
+	// The repair task is precisely the operation that fixes the failure
+	// the daemon detected, so running it on top of the worker's pending
+	// state is the correct semantic — refresh would either lose those
+	// edits or abort the dispatch. Skip the refresh here; the repair
+	// inherits the dirty worktree by design.
+	if task.OperationType != model.OperationTypeRepair {
+		// Fast-forward the worker worktree to integration HEAD before dispatching.
+		// A worker re-used across phases retains its branch tip from a prior merge:
+		// without this refresh, sibling-worker commits already on integration are
+		// invisible to the worker, causing tests/builds that exercise the merged
+		// state to read stale code (the alpha/beta/test workflow regression).
+		// Fail-closed: any error (dirty, diverged, git failure) refuses dispatch
+		// rather than running a task against unknowingly-stale state.
+		if refreshErr := wm.RefreshWorkerWorktreeToIntegrationHead(task.CommandID, workerID); refreshErr != nil {
+			disp.dl.Logf(core.LogLevelError,
+				"worktree_refresh_failed task=%s worker=%s error=%v",
+				task.ID, workerID, refreshErr)
+			return "", fmt.Errorf("worker worktree refresh failed: %w", refreshErr)
+		}
 	}
 	return wtPath, nil
 }

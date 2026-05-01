@@ -1,12 +1,14 @@
 ---
 name: context-window-efficiency
-description: コンテキストウィンドウの効率的な利用と情報ロス防止パターン
+description: 常時注入される共有ガイド。必要時のみ適用するコンテキスト効率化と情報ロス防止パターン
 version: "1.0"
 tags: [context, efficiency, summary, compaction, information-density]
 priority: 5
 ---
 
 # Context Window Efficiency
+
+この skill は共有スキルとして常時注入される。全セクションを機械的に適用せず、タスクのコンテキスト量・summary・委譲が問題になる場合だけ参照する。
 
 ## 1. 情報圧縮の原則
 
@@ -47,7 +49,7 @@ priority: 5
 
 大量の情報が必要な場合、一度に全てを読み込まず段階的に収集する:
 
-1. **スコープ特定**: `Explore` SubAgent で影響範囲のファイルリストを取得
+1. **スコープ特定**: 委譲が許可され、効果がある場合のみ `Explore` SubAgent で影響範囲のファイルリストを取得
 2. **優先読み込み**: 変更対象ファイルのみを先に読む
 3. **必要時展開**: 依存先は実際にエラーや不明点が発生した時点で読む
 

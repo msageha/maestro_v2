@@ -95,6 +95,23 @@ type MaestroConfig struct {
 	Version     string `yaml:"version"`
 	Created     string `yaml:"created"`
 	ProjectRoot string `yaml:"project_root"`
+	// AwaitingFillStallNotifyMinutes is the elapsed time after which the
+	// daemon's awaiting-fill watchdog re-emits an `awaiting_fill_stall`
+	// signal to the Planner. The original `awaiting_fill` signal is fired
+	// on phase entry, but if the Planner pane stops making progress (the
+	// 2026-04-30 e2e regression captured a 6+ minute "Thinking" stall with
+	// no `plan submit` follow-up), the signal queue empties after delivery
+	// and there is no further re-prompt until R6 fires the hard
+	// fill_deadline_at timeout, which defaults to 3 hours. The watchdog
+	// closes that gap. 0 disables the watchdog (no re-prompt, R6 still
+	// applies). Default 5 minutes.
+	AwaitingFillStallNotifyMinutes *int `yaml:"awaiting_fill_stall_notify_minutes,omitempty"`
+}
+
+// EffectiveAwaitingFillStallNotifyMinutes returns AwaitingFillStallNotifyMinutes
+// or DefaultAwaitingFillStallNotifyMinutes when unset.
+func (m MaestroConfig) EffectiveAwaitingFillStallNotifyMinutes() int {
+	return effectiveValue(m.AwaitingFillStallNotifyMinutes, DefaultAwaitingFillStallNotifyMinutes)
 }
 
 // --- AgentsConfig ---
@@ -310,6 +327,14 @@ type VerifyDaemonConfig struct {
 	// verify_pending before R9 transitions it to repair_pending. 0 ≤ value;
 	// 0 disables stall recovery. Default DefaultVerifyStallThresholdSec.
 	StallThresholdSec *int `yaml:"stall_threshold_sec,omitempty"`
+	// PausedForReplanDeadletterSec is the wall-clock window after a task
+	// enters paused_for_replan before R10 escalates it to a terminal failed
+	// state. Once escalated, the phase containing the task transitions to
+	// PhaseStatusFailed (via the dependency resolver applied on the next
+	// scan), allowing the publish gate to make a decision instead of
+	// spinning on Planner inaction. 0 ≤ value; 0 disables R10.
+	// Default DefaultPausedForReplanDeadletterSec (see config_defaults.go).
+	PausedForReplanDeadletterSec *int `yaml:"paused_for_replan_deadletter_sec,omitempty"`
 }
 
 // EffectiveEnabled returns the configured verify.enabled value or true (the
@@ -325,6 +350,12 @@ func (v VerifyDaemonConfig) EffectiveEnabled() bool {
 // or DefaultVerifyStallThresholdSec.
 func (v VerifyDaemonConfig) EffectiveStallThresholdSec() int {
 	return effectiveValue(v.StallThresholdSec, DefaultVerifyStallThresholdSec)
+}
+
+// EffectivePausedForReplanDeadletterSec returns the configured paused_for_replan
+// deadletter window or DefaultPausedForReplanDeadletterSec.
+func (v VerifyDaemonConfig) EffectivePausedForReplanDeadletterSec() int {
+	return effectiveValue(v.PausedForReplanDeadletterSec, DefaultPausedForReplanDeadletterSec)
 }
 
 // TaskRetryConfig holds configuration for automatic task execution retries.

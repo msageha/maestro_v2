@@ -110,35 +110,29 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	}
 
 	// C-3 Extended Verification
+	//
+	// The 2026-04-30 redesign drops every language-specific auto-injection
+	// (npm audit / pip-audit / cargo audit / gosec / go test / cargo test /
+	// etc.). Auto-detecting a "project language" and running language-bound
+	// commands assumes a software-engineering monorepo with a single stack;
+	// it breaks for polyglot repositories, research/documentation projects,
+	// and any context that doesn't ship the assumed toolchain. Verification
+	// is now driven purely by what the operator writes in
+	// .maestro/verify.yaml — that file is language-agnostic and lets the
+	// project's own concept of "verification" survive without the daemon
+	// guessing.
+	//
+	// EnsembleVerifier is still wired (when extended_verification.enabled
+	// is true) so operator-supplied per-perspective weights from
+	// PerspectiveWeights continue to apply to verify.yaml-loaded categories
+	// via buildVerifyCategories — this preserves the criticality/advisory
+	// distinction without re-introducing language detection.
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
-		projectRoot := filepath.Dir(maestroDir)
-		perspectives := configureVerificationPerspectives(cfg.ExtendedVerification, m.EnsembleVerifier.Perspectives(), projectRoot)
-		if err := m.EnsembleVerifier.SetPerspectives(perspectives); err != nil {
-			log(LogLevelWarn, "extended verification perspective config rejected: %v", err)
-		}
 		m.EnsembleVerifier.SetMaxAutoRetries(cfg.ExtendedVerification.EffectiveMaxAutoRetries())
-		detectedLang := model.DetectProjectLanguage(projectRoot)
-		log(LogLevelInfo, "ensemble verifier initialized perspectives=%d max_auto_retries=%d language=%q",
-			len(m.EnsembleVerifier.Perspectives()),
-			m.EnsembleVerifier.MaxAutoRetries(),
-			detectedLang)
-		if cfg.ExtendedVerification.EffectiveSecurityCheck() {
-			cmds := model.DefaultSecurityCommandsForLanguage(detectedLang)
-			if len(cmds) == 0 {
-				log(LogLevelWarn, "ensemble verifier security_check enabled but no command available for language=%q (skipping)", detectedLang)
-			} else {
-				log(LogLevelInfo, "ensemble verifier security perspective enabled commands=%v", cmds)
-			}
-		}
-		if cfg.ExtendedVerification.EffectivePerformanceBench() {
-			cmds := model.DefaultPerformanceCommandsForLanguage(detectedLang)
-			if len(cmds) == 0 {
-				log(LogLevelWarn, "ensemble verifier performance_bench enabled but no command available for language=%q (skipping)", detectedLang)
-			} else {
-				log(LogLevelInfo, "ensemble verifier performance perspective enabled commands=%v", cmds)
-			}
-		}
+		log(LogLevelInfo,
+			"ensemble verifier initialized (verify.yaml-driven; language-specific auto-injection removed) max_auto_retries=%d",
+			m.EnsembleVerifier.MaxAutoRetries())
 	}
 
 	// C-4 Exploratory Search
@@ -207,52 +201,19 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	return m
 }
 
-// configureVerificationPerspectives merges the operator-supplied weights into
-// the verifier's base perspectives and conditionally appends security /
-// performance perspectives. Commands are resolved via language detection at
-// projectRoot so non-Go projects do not see Go-only tools advertised. When no
-// language-appropriate command exists, the perspective is omitted entirely
-// rather than added with an empty Commands slice that would silently never
-// execute.
-func configureVerificationPerspectives(cfg model.ExtendedVerificationConfig, base []verification.Perspective, projectRoot string) []verification.Perspective {
-	weights := cfg.EffectivePerspectiveWeights()
-	out := make([]verification.Perspective, 0, len(base)+2)
-	seen := make(map[string]bool, len(base)+2)
-	for _, p := range base {
-		if w, ok := weights[p.Name]; ok {
-			p.Weight = w
-		}
-		out = append(out, p)
-		seen[p.Name] = true
-	}
-	if cfg.EffectiveSecurityCheck() && !seen["security"] {
-		if cmds := model.DefaultSecurityCommandsForProject(projectRoot); len(cmds) > 0 {
-			weight := weights["security"]
-			if weight == 0 {
-				weight = 0.5
-			}
-			out = append(out, verification.Perspective{
-				Name:     "security",
-				Commands: cmds,
-				Weight:   weight,
-			})
-		}
-	}
-	if cfg.EffectivePerformanceBench() && !seen["performance"] {
-		if cmds := model.DefaultPerformanceCommandsForProject(projectRoot); len(cmds) > 0 {
-			weight := weights["performance"]
-			if weight == 0 {
-				weight = 0.5
-			}
-			out = append(out, verification.Perspective{
-				Name:     "performance",
-				Commands: cmds,
-				Weight:   weight,
-			})
-		}
-	}
-	return out
-}
+// configureVerificationPerspectives was removed in the 2026-04-30 redesign.
+// The previous implementation auto-injected language-specific perspectives
+// (build/lint/test/typecheck/security/performance) by detecting marker
+// files like go.mod or package.json and dispatching tool-specific commands.
+// That approach baked in the assumption that maestro is always running
+// against a single-language software-engineering project, which is
+// incompatible with the autonomous-orchestration philosophy: the harness
+// must be useful for polyglot monorepos, research, documentation, and any
+// other context where the host project defines verification on its own
+// terms via .maestro/verify.yaml. EnsembleVerifier remains in place so
+// operator-supplied PerspectiveWeights still influence the criticality of
+// verify.yaml categories via buildVerifyCategories, but commands no longer
+// originate inside the daemon.
 
 // SaveState persists stateful Phase C components that must survive daemon
 // restarts.

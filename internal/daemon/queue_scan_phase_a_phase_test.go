@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -653,6 +654,166 @@ func TestCheckPhaseTransitions_MergeGateAllowsActivationAfterMerge(t *testing.T)
 	}
 	if !sawAwaitingFill {
 		t.Errorf("expected p2 AwaitingFill transition after merge recorded, got %+v", transitions)
+	}
+}
+
+// TestStepAwaitingFillWatchdog_FiresOnceAfterThreshold pins the 2026-04-30
+// e2e regression contract: a phase that has been at awaiting_fill longer
+// than the configured stall window must emit a single
+// `awaiting_fill_stall` planner signal and record
+// AwaitingFillStallNotifiedAt so subsequent scans do not refire. The
+// original `awaiting_fill` signal is one-shot at phase entry; without
+// this watchdog a stalled Planner waits up to 3 hours (R6 fill_deadline)
+// before any retry.
+func TestStepAwaitingFillWatchdog_FiresOnceAfterThreshold(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	// Threshold = 5 minutes (default); set explicitly so the test
+	// pins the gate independently of DefaultAwaitingFillStallNotifyMinutes.
+	notifyMin := 5
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &notifyMin
+
+	now := qh.clock.Now()
+	enteredAt := now.Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+
+	if got := len(s.signals.Data.Signals); got != 1 {
+		t.Fatalf("expected 1 awaiting_fill_stall signal, got %d", got)
+	}
+	sig := s.signals.Data.Signals[0]
+	if sig.Kind != "awaiting_fill_stall" {
+		t.Errorf("signal kind = %q, want awaiting_fill_stall", sig.Kind)
+	}
+	if sig.CommandID != "cmd1" || sig.PhaseID != "p_fixes" {
+		t.Errorf("signal command/phase = %q/%q, want cmd1/p_fixes", sig.CommandID, sig.PhaseID)
+	}
+
+	// Marker should now be set on the in-memory phase, gating future scans.
+	phases, _ := reader.GetCommandPhases("cmd1")
+	if phases[0].AwaitingFillStallNotifiedAt == nil {
+		t.Error("expected AwaitingFillStallNotifiedAt to be set after watchdog fires")
+	}
+
+	// Re-running with the marker set must not emit a second signal even
+	// though the elapsed window still exceeds the threshold.
+	s.signalIndex = buildSignalIndex(s.signals.Data.Signals)
+	qh.stepAwaitingFillWatchdog(&s)
+	if got := len(s.signals.Data.Signals); got != 1 {
+		t.Errorf("expected watchdog to be one-shot per window, got %d signals", got)
+	}
+}
+
+// TestStepAwaitingFillWatchdog_SkipsBeforeThreshold guards the conservative
+// gate: a phase that just entered awaiting_fill within the threshold window
+// must not fire — Planner is still expected to be working on the plan.
+func TestStepAwaitingFillWatchdog_SkipsBeforeThreshold(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	notifyMin := 5
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &notifyMin
+
+	now := qh.clock.Now()
+	// Only 1 minute elapsed — well within the 5-minute window.
+	enteredAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+	if got := len(s.signals.Data.Signals); got != 0 {
+		t.Errorf("expected no signal before threshold, got %d", got)
+	}
+}
+
+// TestStepAwaitingFillWatchdog_DisabledByConfig pins the operator-disable
+// path: setting AwaitingFillStallNotifyMinutes=0 must turn the watchdog
+// into a no-op (no signal, no state mutation) so deployments that prefer
+// to rely on R6 fill_deadline only can opt out.
+func TestStepAwaitingFillWatchdog_DisabledByConfig(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	disabled := 0
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &disabled
+
+	now := qh.clock.Now()
+	enteredAt := now.Add(-1 * time.Hour).UTC().Format(time.RFC3339)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+	if got := len(s.signals.Data.Signals); got != 0 {
+		t.Errorf("expected no signal when watchdog is disabled, got %d", got)
 	}
 }
 

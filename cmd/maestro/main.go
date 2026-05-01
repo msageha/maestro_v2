@@ -167,6 +167,8 @@ func (a *cliApp) run(args []string) int {
 		err = runWorker(args[1:])
 	case "skill":
 		err = a.runSkill(args[1:])
+	case "persona":
+		err = runPersona(args[1:])
 	case "verify":
 		err = a.runVerify(args[1:])
 	case "dashboard":
@@ -283,6 +285,9 @@ Skill Management:
   skill candidates [--status] List skill candidates
   skill approve <id> [--name] Approve a skill candidate
   skill reject <id>           Reject a skill candidate
+
+Persona Management:
+  persona list                List registered personas
 
 Utilities:
   worker standby     Show idle workers

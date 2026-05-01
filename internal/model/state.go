@@ -31,6 +31,20 @@ type RetryTracking struct {
 // Embedded with yaml:",inline" to maintain flat YAML serialization.
 type PhaseTracking struct {
 	Phases []Phase `yaml:"phases"`
+	// HeavyVerifyOwners reserves "the task that runs heavy verify
+	// (test/security/performance) for this phase" so the per-task
+	// optimisation in result_write_handler.shouldDeferHeavyVerifyForIntermediateTask
+	// cannot turn into a race where every sibling sees the others at
+	// verify_pending (non-terminal) and all defer, leaving no task to
+	// actually run repo-wide verification (the 2026-04-29 review pin).
+	//
+	// Map key: Phase.PhaseID. Value: the Task.ID that has been granted
+	// heavy-verify ownership under the state lock. Tasks observe this
+	// field on each verify entry: if they are not the owner, they defer
+	// heavy categories. Only one task per phase ever runs heavy verify,
+	// guaranteed by the state-lock-protected CAS in
+	// ResultWriteAPI.reserveOrDeferHeavyVerify.
+	HeavyVerifyOwners map[string]string `yaml:"heavy_verify_owners,omitempty"`
 }
 
 // PhaseIndex returns the slice index for the given phaseID by linear search.
@@ -115,19 +129,104 @@ type Phase struct {
 	FillDeadlineAt   *string           `yaml:"fill_deadline_at"`
 	FillingStartedAt *string           `yaml:"filling_started_at,omitempty"`
 	ReopenedAt       *string           `yaml:"reopened_at"`
+	// AwaitingFillSince records the timestamp at which this phase last
+	// entered the awaiting_fill status. Distinct from FillDeadlineAt (the
+	// hard timeout deadline) and ActivatedAt (transition to active): the
+	// awaiting-fill watchdog (queue_scan_phase_a_phase.stepAwaitingFillWatchdog)
+	// uses this to fire a re-prompt long before the fill_deadline expires
+	// when a Planner has stopped making progress. Cleared on transition out
+	// of awaiting_fill so a re-entry (e.g., reopened phase awaiting more
+	// tasks) restarts the clock.
+	AwaitingFillSince *string `yaml:"awaiting_fill_since,omitempty"`
+	// AwaitingFillStallNotifiedAt records the last time the watchdog emitted
+	// a stall signal for this phase, so the watchdog does not refire on every
+	// scan cycle (default 5s) once the threshold has elapsed. Cleared
+	// together with AwaitingFillSince when the phase exits awaiting_fill.
+	AwaitingFillStallNotifiedAt *string `yaml:"awaiting_fill_stall_notified_at,omitempty"`
+	// CancelledReason records WHY a phase was cancelled, when set. The
+	// resolver populates it on cascade-cancellations with a structured
+	// prefix (see DependencyCascadeCancelPrefix) so a later scan can
+	// distinguish "scheduler-derived cancellation" (reversible if the
+	// cause goes away) from "operator/manual cancellation" (terminal).
+	// Absence of the field is the marker for the latter — every
+	// automatic cascade writes the reason. Empty/nil => not safe to
+	// auto-recover.
+	CancelledReason *string `yaml:"cancelled_reason,omitempty"`
+}
+
+// DependencyCascadeCancelPrefix tags Phase.CancelledReason values that
+// were written by the dependency resolver when cascading a cancellation
+// from an upstream failed/cancelled/timed-out phase. The full reason has
+// the form "<prefix><dep_phase_id>" so the dep can be recovered without
+// parsing free-form text. NewDependencyCascadeCancelReason and
+// DependencyCascadeDepID encapsulate the format so the prefix string
+// only appears in those helpers.
+const DependencyCascadeCancelPrefix = "dependency_phase_cascaded:"
+
+// NewDependencyCascadeCancelReason returns the canonical CancelledReason
+// string the resolver writes when cascading a cancellation from depID.
+func NewDependencyCascadeCancelReason(depID string) string {
+	return DependencyCascadeCancelPrefix + depID
+}
+
+// DependencyCascadeDepID extracts the upstream dep phase ID from a
+// CancelledReason that was written by the resolver. Returns ("", false)
+// when reason is nil, empty, or not a cascade reason — that case means
+// the cancellation was operator/manual, NOT eligible for auto-recovery.
+func DependencyCascadeDepID(reason *string) (string, bool) {
+	if reason == nil || *reason == "" {
+		return "", false
+	}
+	r := *reason
+	if len(r) <= len(DependencyCascadeCancelPrefix) {
+		return "", false
+	}
+	if r[:len(DependencyCascadeCancelPrefix)] != DependencyCascadeCancelPrefix {
+		return "", false
+	}
+	return r[len(DependencyCascadeCancelPrefix):], true
 }
 
 // PhaseInfo represents phase metadata from command state.
 // Used by StateReader implementations to return phase data without exposing
 // the full Phase struct or YAML serialization details.
 type PhaseInfo struct {
-	ID               string
-	Name             string
-	Status           PhaseStatus
+	ID     string
+	Name   string
+	Status PhaseStatus
+	// TaskIDs lists every task in the phase regardless of required/optional
+	// classification — it mirrors Phase.TaskIDs verbatim. The dependency
+	// resolver's phase-completion check uses this set as the authoritative
+	// "what must finish before the phase can transition" view, falling back
+	// to RequiredTaskIDs only when an explicit required-only judgment is
+	// needed (which is rare). The 2026-05-01 Bug-J regression reproduced
+	// the failure mode of relying solely on RequiredTaskIDs: a phase whose
+	// tasks were all classified as optional ended up with an empty
+	// RequiredTaskIDs slice, so checkActivePhaseCompletion early-returned
+	// without ever marking the phase Completed even after every task
+	// finished. Plan-level required/optional policy still drives whether
+	// the *plan* succeeds or fails (DeriveStatus), but phase-level
+	// transitions must observe every task in the phase.
+	TaskIDs          []string
 	DependsOn        []string // phase IDs
 	FillDeadlineAt   *string
 	RequiredTaskIDs  []string
 	SystemCommitTask bool
+	// CancelledReason mirrors Phase.CancelledReason so the dependency
+	// resolver can distinguish cascade-cancellations (auto-recoverable
+	// when the upstream cause goes away) from operator/manual cancels
+	// (terminal). Nil/empty means "no machine-readable reason" → treat
+	// as terminal.
+	CancelledReason *string
+	// AwaitingFillSince mirrors Phase.AwaitingFillSince so the
+	// awaiting-fill watchdog can compute elapsed time without re-loading
+	// state directly. Nil for phases not currently at awaiting_fill.
+	AwaitingFillSince *string
+	// AwaitingFillStallNotifiedAt mirrors Phase.AwaitingFillStallNotifiedAt
+	// so the watchdog can dedup re-emissions across scan cycles. Nil
+	// means the watchdog has not yet fired for the current awaiting_fill
+	// window.
+	AwaitingFillStallNotifiedAt *string
 }
 
 // PhaseConstraints defines limits applied to a phase, including maximum task

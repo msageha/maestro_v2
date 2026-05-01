@@ -1,6 +1,6 @@
 ---
 name: structured-ai-communication
-description: AI-to-AI通信品質を高めるための構造化コミュニケーションガイドライン
+description: 常時注入される共有ガイド。AI-to-AI通信品質を高めるため、必要時のみ使う構造化コミュニケーションガイドライン
 version: "1.0"
 tags: [communication, structured-output, clarity, ai-to-ai]
 priority: 5
@@ -8,7 +8,7 @@ priority: 5
 
 # Structured AI Communication
 
-AI Agent間通信（コマンド→タスク→結果報告）の品質を高めるガイドライン。
+AI Agent間通信（コマンド→タスク→結果報告）の品質を高めるガイドライン。この skill は共有スキルとして常時注入されるため、タスク設計・報告・引き継ぎに関係する箇所だけを適用する。
 
 ## 1. コンテキスト最小十分セット
 

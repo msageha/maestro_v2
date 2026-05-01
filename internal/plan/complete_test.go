@@ -1028,6 +1028,76 @@ func TestComplete_WorktreeEnabled_PartialMerge_Deferred(t *testing.T) {
 	}
 }
 
+// TestComplete_PhaseActiveAllTasksTerminal_Deferred verifies the
+// Planner-side fix for the 2026-04-29 race window. When the daemon's
+// queue_scan_phase_a defers a phase's Active → Completed transition on
+// the merge_recorded gate, the Planner observing all tasks terminal
+// will call plan complete before phase.Status flips. Previously this
+// returned a non-retryable validation error and the Planner re-issued
+// after a long delay (~30s+). With the fix, Complete() returns
+// deferred_publish and writes a deferred_complete intent so the
+// daemon's deferredPlanCompleter (Phase C, post-publish) finalises
+// the plan automatically.
+func TestComplete_PhaseActiveAllTasksTerminal_Deferred(t *testing.T) {
+	commandID := "cmd_0000000060_aabbccdd"
+	taskID := "task_0000000060_11111111"
+
+	maestroDir := setupCompleteTest(t,
+		commandID,
+		map[string]model.Status{taskID: model.StatusCompleted},
+		[]string{taskID},
+	)
+
+	// Inject a phase that's Active but whose only task is terminal —
+	// the exact race shape produced by queue_scan_phase_a's
+	// merge_recorded gate.
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	state.Phases = []model.Phase{
+		{
+			PhaseID: "ph-verify",
+			Name:    "verification",
+			Status:  model.PhaseStatusActive,
+			TaskIDs: []string{taskID},
+		},
+	}
+	if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "race-window summary",
+		MaestroDir: maestroDir,
+		Config:     testConfig(),
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != "deferred_publish" {
+		t.Errorf("Status = %q, want deferred_publish", result.Status)
+	}
+
+	dc, err := readDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("readDeferredComplete: %v", err)
+	}
+	if dc == nil {
+		t.Fatal("expected deferred_complete intent to be written")
+	}
+	if dc.Summary != "race-window summary" {
+		t.Errorf("deferred summary = %q, want %q", dc.Summary, "race-window summary")
+	}
+}
+
 func TestComplete_WorktreeEnabled_Published_Allowed(t *testing.T) {
 	commandID := "cmd_0000000051_aabbccdd"
 	taskID1 := "task_0000000051_11111111"

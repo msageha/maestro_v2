@@ -350,6 +350,7 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			// Try deferred auto-completion: if the Planner already called
 			// plan complete (which was deferred because publish hadn't
 			// finished), the daemon can now finalize it without a round-trip.
+			deferredFinalized := false
 			if qh.deferredPlanCompleter != nil {
 				completed, err := qh.deferredPlanCompleter(pr.Item.CommandID)
 				if err != nil {
@@ -357,28 +358,40 @@ func (qh *QueueHandler) applyPublishResultSignals(
 						pr.Item.CommandID, err)
 				} else if completed {
 					qh.log(LogLevelInfo, "deferred_complete_success command=%s", pr.Item.CommandID)
+					deferredFinalized = true
+				}
+			}
+
+			// publish_completed is emitted in two cases:
+			//   (a) deferredFinalized == true — the Planner explicitly asked
+			//       for deferred completion and the daemon just finalised it.
+			//       The 2026-04-29 e2e flagged the previous suppression here
+			//       as asymmetric: the non-deferred path sends the signal so
+			//       the deferred path should too. Both branches are
+			//       informational only (Planner already finished its turn
+			//       via deferred_publish), so emitting is safe.
+			//   (b) command is not yet terminal in the queue — the standard
+			//       "publish succeeded, Planner has not yet called complete"
+			//       flow.
+			//
+			// We still skip the signal when the command is already terminal
+			// AND there was no deferred intent — that case is the legacy
+			// race where a concurrent plan complete during Phase B/C marks
+			// the queue terminal without a deferred_complete file. Emitting
+			// in that race would re-deliver to a Planner who already
+			// finished outside the deferred path.
+			if !deferredFinalized {
+				terminalCQ := commandQueue
+				if freshCQ, _, err := qh.queueStore.LoadCommandQueue(); err == nil {
+					terminalCQ = freshCQ
+				}
+				if isCommandTerminalInQueue(terminalCQ, pr.Item.CommandID) {
+					qh.log(LogLevelInfo, "publish_completed_signal_suppressed command=%s (command already terminal, no deferred intent)",
+						pr.Item.CommandID)
 					continue
 				}
 			}
 
-			// Skip the publish_completed signal if the command is already
-			// terminal — the Planner has already called plan complete and
-			// sending the signal would cause a redundant second invocation.
-			//
-			// Reload the command queue from disk to capture concurrent
-			// plan complete calls that ran after Phase C's initial queue
-			// load. Without this reload the in-memory snapshot is stale
-			// and the terminal check misses commands that were completed
-			// during Phase B / early Phase C.
-			terminalCQ := commandQueue
-			if freshCQ, _, err := qh.queueStore.LoadCommandQueue(); err == nil {
-				terminalCQ = freshCQ
-			}
-			if isCommandTerminalInQueue(terminalCQ, pr.Item.CommandID) {
-				qh.log(LogLevelInfo, "publish_completed_signal_suppressed command=%s (command already terminal)",
-					pr.Item.CommandID)
-				continue
-			}
 			// Informational notification: publish has succeeded. This signal
 			// does NOT instruct the Planner to call `plan complete`; that path
 			// caused redundant double-fire previously.
@@ -388,7 +401,8 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			//     + planner.md instruct it after all tasks complete).
 			//   - If the Planner called plan complete before publish finished,
 			//     it received `deferred_publish` and `deferredPlanCompleter`
-			//     above auto-finalises the deferred intent.
+			//     above auto-finalises the deferred intent — the signal still
+			//     fires for symmetry.
 			//   - This signal only informs the Planner that publish succeeded
 			//     (useful for post-publish verification like `--run-on-main`).
 			msg := fmt.Sprintf("[maestro] kind:publish_completed command_id:%s\n"+
@@ -399,10 +413,20 @@ func (qh *QueueHandler) applyPublishResultSignals(
 				"verification tasks by default; only add them when the command's "+
 				"original content explicitly requires post-publish verification on main.",
 				pr.Item.CommandID)
+			reason := ""
+			if deferredFinalized {
+				// Tag the signal so the dispatch-time stale filter
+				// (stepPlannerSignalsDeferred) keeps it instead of dropping
+				// it as a "terminal command" race artefact. The Planner is
+				// expected to receive publish_completed in the deferred
+				// path for parity with the non-deferred path.
+				reason = "deferred_complete_finalized"
+			}
 			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
 				Kind:      "publish_completed",
 				CommandID: pr.Item.CommandID,
 				Message:   msg,
+				Reason:    reason,
 				CreatedAt: now,
 				UpdatedAt: now,
 			}, signalIndex)

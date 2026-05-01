@@ -72,6 +72,7 @@ func TestRunResultWrite_LeaseEpochZeroIsValid(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "0",
 		"--status", "completed",
+		"--summary", "Verified lease-epoch zero accepted by validation",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: lease-epoch 0 should be valid: %v", err)
@@ -223,7 +224,7 @@ func TestRunResultWrite_UDSSuccess(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
-		"--summary", "done",
+		"--summary", "Implemented feature X with unit tests covering edge cases",
 		"--files-changed", "a.go",
 		"--learnings", "something useful",
 		"--skill-candidates", "new-skill",
@@ -246,6 +247,7 @@ func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified fencing reject path returns the correct exit code",
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -276,6 +278,7 @@ func TestRunResultWrite_UDSOtherError(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified other-error path surfaces a generic exit code 1",
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -302,6 +305,7 @@ func TestRunResultWrite_UDSConnError(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified UDS connection error surfaces unchanged",
 	})
 	if err == nil {
 		t.Fatal("expected error")
@@ -353,6 +357,7 @@ func TestRunResultWrite_ValidStatuses(t *testing.T) {
 				"--command-id", "cmd_0000000001_abcdef01",
 				"--lease-epoch", "1",
 				"--status", tt.status,
+				"--summary", "Verified valid-status acceptance for " + tt.status + " path",
 			}
 			args = append(args, tt.extraArg...)
 			err := app.runResultWrite(args)
@@ -379,6 +384,7 @@ func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 		"--exit-code", "1",
 		"--partial-changes",
 		"--no-retry-safe",
+		"--summary", "Verified partial-changes and no-retry-safe flags carry through",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -427,6 +433,7 @@ func TestRunResultWrite_ExitCodeForwardedToDaemon(t *testing.T) {
 		"--lease-epoch", "1",
 		"--status", "failed",
 		"--exit-code", "42",
+		"--summary", "Verified exit-code is forwarded to daemon evaluateRetry",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -462,6 +469,7 @@ func TestRunResultWrite_ExitCodeOmittedForCompleted(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified exit-code is omitted from params when unset for completed",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -488,6 +496,7 @@ func TestRunResultWrite_OversizedLearningTruncated(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified oversized learnings are truncated rather than rejected",
 		"--learnings", oversized,
 	})
 	if err != nil {
@@ -526,6 +535,7 @@ func TestRunResultWrite_OversizedFilesChangedTruncated(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified oversized files-changed entries are truncated, not rejected",
 		"--files-changed", oversized,
 	})
 	if err != nil {
@@ -549,6 +559,7 @@ func TestRunResultWrite_NormalEntriesNotTruncated(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
+		"--summary", "Verified normal-sized learnings pass through unchanged",
 		"--learnings", normalLearning,
 	})
 	if err != nil {
@@ -559,5 +570,45 @@ func TestRunResultWrite_NormalEntriesNotTruncated(t *testing.T) {
 	entries := m["learnings"].(stringSliceFlag)
 	if entries[0] != normalLearning {
 		t.Errorf("expected unchanged learning, got %q", entries[0])
+	}
+}
+
+// TestValidateSummaryNotPlaceholder pins the placeholder/min-length contract
+// so a worker that lost its real result during a policy-hook denial cannot
+// silently land a degenerate summary as the canonical task result. The 2026-04-30
+// e2e regression captured exactly this flow ("test minimal" / "test summary"
+// shows up as the only completed-task report); the helper is unit-tested
+// here so future edits to summaryPlaceholderPatterns or the length floor
+// remain auditable in isolation from the rest of result_write.
+func TestValidateSummaryNotPlaceholder(t *testing.T) {
+	cases := []struct {
+		name      string
+		summary   string
+		status    string
+		wantError bool
+	}{
+		{name: "empty completed", summary: "", status: "completed", wantError: true},
+		{name: "empty failed", summary: "", status: "failed", wantError: true},
+		{name: "exact done", summary: "done", status: "completed", wantError: true},
+		{name: "exact placeholder", summary: "placeholder", status: "completed", wantError: true},
+		{name: "exact test summary", summary: "test summary", status: "completed", wantError: true},
+		{name: "case-folded test minimal", summary: "Test Minimal", status: "completed", wantError: true},
+		{name: "whitespace normalised foo", summary: "  foo  ", status: "completed", wantError: true},
+		{name: "short completed below floor", summary: "fixed it", status: "completed", wantError: true},
+		{name: "short completed at floor", summary: "Fixed greet typo", status: "completed", wantError: false},
+		{name: "long completed", summary: "Implemented multiplication helper with table-driven tests", status: "completed", wantError: false},
+		{name: "short failed allowed", summary: "worker timeout", status: "failed", wantError: false},
+		{name: "unicode counted as runes", summary: "実装完了：足し算と引き算とテストを追加", status: "completed", wantError: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSummaryNotPlaceholder("--summary", tc.summary, tc.status)
+			if tc.wantError && err == nil {
+				t.Fatalf("expected error for summary %q (status=%s)", tc.summary, tc.status)
+			}
+			if !tc.wantError && err != nil {
+				t.Fatalf("unexpected error for summary %q (status=%s): %v", tc.summary, tc.status, err)
+			}
+		})
 	}
 }

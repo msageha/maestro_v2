@@ -22,13 +22,20 @@ priority: 10
 ## 2. タスク YAML マッピング
 
 ```yaml
-- purpose: "<レイヤー>: <変更の意図>"
+- name: "<task-name>"
+  purpose: "<レイヤー>: <変更の意図>"
   content: |
     具体的な実装指示（ファイルパス、関数名、変更内容）
   acceptance_criteria: |
     Given-When-Then 形式の検証可能な完了条件
+  blocked_by: []  # 依存がある場合は同一フェーズ内の先行タスクname
+  bloom_level: 3
   persona_hint: implementer
-  blocked_by: [依存先タスクインデックス]
+  required: true
+  expected_paths: ["相対パス"]
+  definition_of_abort:
+    max_repair_count: 3
+    max_wall_clock_sec: 1800
 ```
 
 ## 3. persona_hint 割り当て基準

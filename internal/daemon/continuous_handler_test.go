@@ -608,3 +608,99 @@ func TestContinuous_RunningNoNotification(t *testing.T) {
 		t.Errorf("no notification should be emitted when continuing, got %+v", nq.Notifications)
 	}
 }
+
+// TestContinuous_ReconcileWithPlanStatus_OverridesStaleFailure verifies that
+// when CommandResult.Status arrives as failed (e.g. a stale synthetic_failure
+// from a prior scan) but state.plan_status has already been reconciled to
+// completed by R4PlanStatus, continuous mode trusts the state file and does
+// NOT pause. Defense-in-depth fix for the 2026-04-30 e2e regression where a
+// false synthetic_failure paused continuous after the daemon's own recovery
+// path had already driven the command to completed.
+func TestContinuous_ReconcileWithPlanStatus_OverridesStaleFailure(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: true},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:    1,
+		FileType:         "state_continuous",
+		CurrentIteration: 1,
+		MaxIterations:    10,
+		Status:           model.ContinuousStatusRunning,
+		UpdatedAt:        now,
+	})
+	// Authoritative state: plan_status=completed (recovery succeeded).
+	writeCommandStateForReconcile(t, maestroDir, "cmd_recovered", model.PlanStatusCompleted)
+
+	// Caller passes failed (synthetic stale result) but reconciliation should
+	// override to completed and avoid pausing.
+	if err := ch.CheckAndAdvance("cmd_recovered", model.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	state := readContinuousState(t, maestroDir)
+	if state.Status != model.ContinuousStatusRunning {
+		t.Errorf("status: got %s, want running (plan_status=completed should override)", state.Status)
+	}
+	if state.ConsecutiveFailures != 0 {
+		t.Errorf("consecutive_failures: got %d, want 0 (override should reset)", state.ConsecutiveFailures)
+	}
+}
+
+// TestContinuous_ReconcileWithPlanStatus_TrustsFailedPlan verifies the
+// inverse: when plan_status=failed, even a stale "completed" passed-in status
+// is corrected and continuous pauses appropriately.
+func TestContinuous_ReconcileWithPlanStatus_TrustsFailedPlan(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: true},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:    1,
+		FileType:         "state_continuous",
+		CurrentIteration: 1,
+		MaxIterations:    10,
+		Status:           model.ContinuousStatusRunning,
+		UpdatedAt:        now,
+	})
+	writeCommandStateForReconcile(t, maestroDir, "cmd_failed", model.PlanStatusFailed)
+
+	if err := ch.CheckAndAdvance("cmd_failed", model.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	state := readContinuousState(t, maestroDir)
+	if state.Status != model.ContinuousStatusPaused {
+		t.Errorf("status: got %s, want paused (plan_status=failed should override)", state.Status)
+	}
+}
+
+// writeCommandStateForReconcile writes a minimal CommandState yaml at the
+// canonical state/commands/<id>.yaml path with the given PlanStatus, so that
+// reconcileCommandStatusWithPlanStatus has a file to read.
+func writeCommandStateForReconcile(t *testing.T, maestroDir, commandID string, planStatus model.PlanStatus) {
+	t.Helper()
+	dir := filepath.Join(maestroDir, "state", "commands")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cs := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    planStatus,
+		CreatedAt:     "2026-01-01T00:00:00Z",
+		UpdatedAt:     "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(dir, commandID+".yaml"), cs); err != nil {
+		t.Fatal(err)
+	}
+}

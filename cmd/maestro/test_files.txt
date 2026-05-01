@@ -1,9 +1,0 @@
-cmd_agent
-cmd_formation
-cmd_plan
-cmd_queue
-cmd_result
-cmd_setup
-cmd_skill
-cmd_task
-cmd_verify

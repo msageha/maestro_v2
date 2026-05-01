@@ -1,9 +1,11 @@
-# verify.yaml — minimal valid example for `maestro verify write`.
+# verify.yaml — language-agnostic example for `maestro verify write`.
 #
-# This file is the on-disk format for the verification commands the daemon
-# runs after a Worker reports a task as completed. Provide AT LEAST one
-# command across the verify.* categories below; an empty file is rejected
-# by validateRequiredVerifySnapshot in internal/plan/submit.go.
+# This file lists verification commands the daemon may run after a Worker
+# reports a task as completed. The example below uses git-only commands so it
+# works for any repository regardless of language (Go, Python, JavaScript,
+# Rust, research notes, documentation, ...). Replace the entries with the
+# verification suite that fits your project — or leave them as-is and the
+# daemon will gate worker output through `git diff --check` only.
 #
 # Usage:
 #   maestro verify write --command-id <command_id> --config-file verify.yaml
@@ -16,23 +18,23 @@
 #     If a command needs them, wrap it in a script that the verify command
 #     invokes by path.
 #   - `sh -c` / `bash -c` invocations are rejected.
-#   - Leading `KEY=VALUE` env assignments are allowed (e.g. `CGO_ENABLED=0
-#     go test ./...`).
+#   - Leading `KEY=VALUE` env assignments are allowed.
 #
-# Replace the example commands below with the verification suite for the
-# project you are gating. The categories are advisory groupings only; all
-# commands run regardless of which category they appear under.
+# Notes for autonomous LLM orchestration:
+#   - Verify is best-effort. A failing verify command schedules a repair
+#     task; if the repair succeeds, the plan is treated as completed
+#     (lineage-aware DeriveStatus, see internal/plan/lineage.go).
+#   - Avoid commands that depend on a hot dev cache (e.g., `pnpm turbo run
+#     build` without a prior install) — they produce environment-driven
+#     false negatives. If you need them, also run the install step.
+#   - Categories below are advisory groupings; all listed commands run.
 
 verify:
   build:
-    - go vet ./...
-  lint:
-    - go vet ./...
-  test:
-    - go test ./...
+    - git diff --check
+  lint: []
+  test: []
   typecheck: []
-  # security and performance categories are optional (C-3 extension).
-  # security:
-  #   - govulncheck ./...
-  # performance:
-  #   - go test -bench=. -benchtime=1x ./...
+  # security and performance categories are optional (C-3 extension):
+  # security: []
+  # performance: []

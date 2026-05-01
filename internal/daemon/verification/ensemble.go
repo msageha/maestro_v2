@@ -45,11 +45,14 @@ type Verifier struct {
 	mu             sync.RWMutex
 }
 
-// NewVerifier creates a Verifier pre-loaded with DefaultPerspectives.
+// NewVerifier creates a Verifier with no perspectives configured. Callers must
+// inject project-appropriate perspectives via SetPerspectives before running
+// verification — there is no built-in default because perspectives carry
+// language-specific commands (build/test/lint runners) that only the calling
+// layer can resolve. See daemon.configureVerificationPerspectives for the
+// production wiring that derives perspectives from DetectProjectLanguage.
 func NewVerifier() *Verifier {
-	v := &Verifier{}
-	v.perspectives = v.DefaultPerspectives()
-	return v
+	return &Verifier{}
 }
 
 // SetPerspectives replaces the verifier perspective set. Invalid perspectives
@@ -105,17 +108,6 @@ func (v *Verifier) AddPerspective(p Perspective) error {
 	defer v.mu.Unlock()
 	v.perspectives = append(v.perspectives, p)
 	return nil
-}
-
-// DefaultPerspectives returns the four baseline verification viewpoints:
-// build (1.0), lint (0.8), test (1.0), typecheck (0.9).
-func (v *Verifier) DefaultPerspectives() []Perspective {
-	return []Perspective{
-		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
-		{Name: "lint", Commands: []string{"golangci-lint run ./..."}, Weight: 0.8},
-		{Name: "test", Commands: []string{"go test ./..."}, Weight: 1.0},
-		{Name: "typecheck", Commands: []string{"go vet ./..."}, Weight: 0.9},
-	}
 }
 
 // Aggregate computes a weighted score from the provided perspective results.

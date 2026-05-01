@@ -38,6 +38,8 @@ priority: 5
 | SubAgent 委譲 | 1回 | 直接実行に切替 |
 | ビルド/テスト | 2回 | 即時（修正後） |
 
+task の `definition_of_abort`（`max_repair_count` / `max_wall_clock_sec`）が hard limit であり、本表は推奨値。両者の小さい方に従う。
+
 ## 3. 段階的エスカレーション
 
 修復試行が失敗した場合、段階的に対応を拡大する。

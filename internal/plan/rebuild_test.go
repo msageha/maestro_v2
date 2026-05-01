@@ -374,6 +374,132 @@ func TestRebuild_PrunesStaleAppliedResultIDs(t *testing.T) {
 	}
 }
 
+// TestRebuild_FailsPhantomPlannedTasksWithoutQueueEntry pins the
+// 2026-04-29 e2e regression: a retry/repair task registered in
+// state.TaskStates as `planned` but never enqueued to a worker queue
+// would block phase termination forever, and `plan rebuild` reported
+// no-op success without surfacing the inconsistency. Rebuild must
+// detect such phantoms (planned in state, absent from every worker
+// queue) and force them to failed so the phase can advance.
+func TestRebuild_FailsPhantomPlannedTasksWithoutQueueEntry(t *testing.T) {
+	dir, lm := setupRebuildDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "queue"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_phantom",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1":         model.StatusCompleted,
+				"t1_retry":   model.StatusPlanned, // phantom — never enqueued
+				"t2_pending": model.StatusPending, // not planned — should be left alone
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	writeRebuildState(t, dir, state)
+
+	// Write a queue with t1 only — t1_retry and t2_pending are absent.
+	queue := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "t1", CommandID: "cmd_phantom", Status: model.StatusCompleted},
+		},
+	}
+	queueData, err := yamlv3.Marshal(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "queue", "worker1.yaml"), queueData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rebuild(RebuildOptions{
+		CommandID:  "cmd_phantom",
+		MaestroDir: dir,
+		LockMap:    lm,
+	}); err != nil {
+		t.Fatalf("Rebuild error: %v", err)
+	}
+
+	updated := loadState(t, dir, "cmd_phantom")
+	if got := updated.TaskStates["t1_retry"]; got != model.StatusFailed {
+		t.Errorf("phantom t1_retry status = %s, want failed", got)
+	}
+	if reason := updated.CancelledReasons["t1_retry"]; reason == "" {
+		t.Errorf("phantom CancelledReasons[t1_retry] should record the reason, got empty")
+	}
+	if got := updated.TaskStates["t1"]; got != model.StatusCompleted {
+		t.Errorf("t1 status = %s, want completed (must not be touched)", got)
+	}
+	// t2_pending is at status `pending`, not `planned`, so the phantom
+	// detector must leave it alone — pending is owned by the dispatch
+	// path and force-failing here would race that owner.
+	if got := updated.TaskStates["t2_pending"]; got != model.StatusPending {
+		t.Errorf("t2_pending status = %s, want pending (only `planned` should be flagged as phantom)", got)
+	}
+}
+
+// TestRebuild_KeepsPlannedTaskWithMatchingQueueEntry guards against
+// the false-positive direction: a `planned` task that *does* have a
+// corresponding queue entry must not be force-failed (it is in the
+// normal pre-dispatch window).
+func TestRebuild_KeepsPlannedTaskWithMatchingQueueEntry(t *testing.T) {
+	dir, lm := setupRebuildDir(t)
+	if err := os.MkdirAll(filepath.Join(dir, "queue"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_pre_dispatch",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusPlanned,
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	writeRebuildState(t, dir, state)
+
+	queue := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "t1", CommandID: "cmd_pre_dispatch", Status: model.StatusPending},
+		},
+	}
+	queueData, err := yamlv3.Marshal(queue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "queue", "worker1.yaml"), queueData, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rebuild(RebuildOptions{
+		CommandID:  "cmd_pre_dispatch",
+		MaestroDir: dir,
+		LockMap:    lm,
+	}); err != nil {
+		t.Fatalf("Rebuild error: %v", err)
+	}
+
+	updated := loadState(t, dir, "cmd_pre_dispatch")
+	if got := updated.TaskStates["t1"]; got != model.StatusPlanned {
+		t.Errorf("planned task with queue entry status = %s, want planned", got)
+	}
+}
+
 func TestRebuild_NilAppliedResultIDs(t *testing.T) {
 	dir, lm := setupRebuildDir(t)
 

@@ -345,13 +345,28 @@ func TestValidate_WorkersAcceptNonClaudeRuntime(t *testing.T) {
 }
 
 func TestIsValidModelName(t *testing.T) {
-	valid := []string{"", "sonnet", "opus", "haiku", "claude-sonnet-4-6", "o3-mini", "gemini-2.5-pro"}
+	valid := []string{
+		"", "sonnet", "opus", "haiku",
+		"claude-sonnet-4-6", "o3-mini", "gemini-2.5-pro",
+		// 1M context variant suffix used by Claude Code's long-context models.
+		"claude-opus-4-7[1m]",
+		"claude-sonnet-4-6[1m]",
+		"claude-haiku-4-5-20251001[1m]",
+	}
 	for _, name := range valid {
 		if !isValidModelName(name) {
 			t.Errorf("expected %q to be valid", name)
 		}
 	}
-	invalid := []string{" ", "a b", ";cmd", "$var", "model\x00null"}
+	invalid := []string{
+		" ", "a b", ";cmd", "$var", "model\x00null",
+		// Bracket suffix must be a single trailing [..] block of alphanumerics,
+		// otherwise it is treated as shell-special and rejected.
+		"claude-opus-4-7[1m",
+		"claude-opus-4-7]1m[",
+		"claude-opus-4-7[1m][2m]",
+		"claude-opus-4-7[1 m]",
+	}
 	for _, name := range invalid {
 		if isValidModelName(name) {
 			t.Errorf("expected %q to be invalid", name)
@@ -519,16 +534,6 @@ func TestExtendedVerificationConfig_Defaults(t *testing.T) {
 	if ev.EffectiveEnabled() {
 		t.Error("default Enabled should be false")
 	}
-	if ev.EffectiveSecurityCheck() {
-		t.Error("default SecurityCheck should be false")
-	}
-	if ev.EffectivePerformanceBench() {
-		t.Error("default PerformanceBench should be false")
-	}
-	weights := ev.EffectivePerspectiveWeights()
-	if weights["build"] != 1.0 || weights["test"] != 1.0 || weights["security"] != 0.5 {
-		t.Errorf("unexpected default weights: %v", weights)
-	}
 	if v := ev.EffectiveMaxAutoRetries(); v != 2 {
 		t.Errorf("EffectiveMaxAutoRetries() = %d, want 2", v)
 	}
@@ -536,24 +541,11 @@ func TestExtendedVerificationConfig_Defaults(t *testing.T) {
 
 func TestExtendedVerificationConfig_Configured(t *testing.T) {
 	ev := ExtendedVerificationConfig{
-		Enabled:            ptr.Bool(true),
-		SecurityCheck:      ptr.Bool(true),
-		PerformanceBench:   ptr.Bool(true),
-		PerspectiveWeights: map[string]float64{"build": 2.0},
-		MaxAutoRetries:     ptr.Int(5),
+		Enabled:        ptr.Bool(true),
+		MaxAutoRetries: ptr.Int(5),
 	}
 	if !ev.EffectiveEnabled() {
 		t.Error("Enabled should be true")
-	}
-	if !ev.EffectiveSecurityCheck() {
-		t.Error("SecurityCheck should be true")
-	}
-	if !ev.EffectivePerformanceBench() {
-		t.Error("PerformanceBench should be true")
-	}
-	weights := ev.EffectivePerspectiveWeights()
-	if weights["build"] != 2.0 {
-		t.Errorf("weights[build] = %v, want 2.0", weights["build"])
 	}
 	if v := ev.EffectiveMaxAutoRetries(); v != 5 {
 		t.Errorf("EffectiveMaxAutoRetries() = %d, want 5", v)
@@ -1391,18 +1383,6 @@ func TestValidate_RetryVsCircuitBreaker_RetryDisabled_OK(t *testing.T) {
 	cfg.Retry.TaskExecution.MaxRetries = 10 // doesn't matter when disabled
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected no error when retry disabled, got: %v", err)
-	}
-}
-
-func TestValidate_ExtendedVerificationPerspectiveWeightPositive(t *testing.T) {
-	cfg := validConfig()
-	cfg.ExtendedVerification.PerspectiveWeights = map[string]float64{"security": 0}
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for zero perspective weight")
-	}
-	if !strings.Contains(err.Error(), "extended_verification.perspective_weights.security") {
-		t.Fatalf("expected extended verification perspective weight in error, got: %v", err)
 	}
 }
 

@@ -1,0 +1,445 @@
+package reconcile
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
+)
+
+// R10PausedForReplanDeadletter escalates tasks that have been parked in
+// paused_for_replan beyond the configured deadletter window (see
+// VerifyDaemonConfig.PausedForReplanDeadletterSec; the default lives in
+// model.DefaultPausedForReplanDeadletterSec — 1 hour at time of writing,
+// extended from earlier 10-minute / 4-hour iterations to balance Planner
+// LLM deliberation time against the queue-occupancy cost of leaving a
+// paused command parked for too long). The
+// 2026-04 alpha/beta/test workflow regression demonstrated that without this
+// rule, a Planner LLM that misclassifies the paused_for_replan signal as
+// stale leaves the publish gate blocked indefinitely — the daemon kept
+// emitting worktree_publish_skip_failed every scan because at least one phase
+// stayed in a non-terminal state owned by an unresponsive Planner.
+//
+// Once the threshold elapses, R10 advances the task's TaskStates entry from
+// paused_for_replan to failed and overwrites the queue task status to failed
+// as well. The phase containing the task transitions to PhaseStatusFailed via
+// the dependency resolver on the next scan, which lets the publish gate (and
+// the operator-facing dashboard) reach a terminal decision instead of
+// spinning forever.
+//
+// R10 is intentionally conservative:
+//   - 0 threshold disables the rule entirely (operator opt-out);
+//   - elapsed time is measured against state.UpdatedAt because no result file
+//     is rewritten when the daemon advances state to paused_for_replan;
+//   - the daemon emits a deadletter audit log so the operator sees the
+//     escalation in the same channel as R7/R8/R9 deadletters.
+type R10PausedForReplanDeadletter struct{}
+
+// Apply scans every command state file, identifies paused_for_replan tasks
+// whose state.UpdatedAt is older than the configured threshold, and rewrites
+// their TaskStates entry to failed. Sibling daemon plumbing (the dependency
+// resolver, queue reconciler, and publish gate) reacts on the next scan.
+func (R10PausedForReplanDeadletter) Apply(run *Run) Outcome {
+	thresholdSec := run.Deps.Config.Verify.EffectivePausedForReplanDeadletterSec()
+	if thresholdSec <= 0 {
+		return Outcome{} // disabled
+	}
+	threshold := time.Duration(thresholdSec) * time.Second
+
+	stateDir := filepath.Join(run.Deps.MaestroDir, "state", "commands")
+	entries, err := run.cachedReadDir(stateDir)
+	if err != nil {
+		return Outcome{}
+	}
+
+	now := run.Deps.Clock.Now().UTC()
+	var repairs []Repair
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		commandID := strings.TrimSuffix(name, ".yaml")
+		statePath := filepath.Join(stateDir, name)
+		commandRepairs := r10ApplyForCommand(run, statePath, commandID, now, threshold)
+		repairs = append(repairs, commandRepairs...)
+	}
+
+	return Outcome{Repairs: repairs}
+}
+
+// r10Candidate carries enough state from Phase 1 (read under state lock) to
+// drive Phase 2 (queue updates under queue lock) and Phase 3 (state write
+// under re-acquired state lock) without holding both locks at once.
+type r10Candidate struct {
+	taskID string
+	age    time.Duration
+}
+
+// r10ApplyForCommand escalates paused_for_replan tasks whose stale window
+// has elapsed. It runs in three phases so the reconcile package's
+// "state and queue locks MUST NOT be held simultaneously" rule (run.go) is
+// honoured even at internal call boundaries:
+//
+//  1. Read-only Phase 1 under the state lock: identify candidates whose
+//     UpdatedAt anchor is older than the threshold.
+//  2. Per-candidate queue work under each queue lock (state lock released):
+//     find the owning worker (transient I/O errors propagate so we do NOT
+//     advance state for them) and overwrite the queue task to failed.
+//  3. Phase 3 reacquires the state lock, re-verifies that each successful
+//     candidate is still at paused_for_replan, and writes state to failed.
+//
+// The freshness check uses state.UpdatedAt because every
+// advanceRepairPendingToPausedForReplan path bumps it to the same RFC3339
+// timestamp as the status mutation; if the timestamp is unparseable the
+// task is logged and skipped. Two-phase queue→state ordering means
+// failures in Phase 2 leave the state at paused_for_replan so the next
+// scan retries (r10MarkQueueTaskFailed is idempotent on already-failed
+// queue rows).
+func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, threshold time.Duration) []Repair {
+	// Phase 1: identify candidates under state lock (no queue locks here).
+	var candidates []r10Candidate
+	stateLoaded := false
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelError, "R10 load_state command=%s error=%v", commandID, err)
+			}
+			return
+		}
+		stateLoaded = true
+		if state.TaskStates == nil {
+			return
+		}
+		startedAt, anchorOk := r10ResolveStaleAnchor(state)
+		if !anchorOk {
+			run.Log(core.LogLevelDebug,
+				"R10 skip command=%s reason=stale_anchor_unparseable updated_at=%q "+
+					"(no R10 candidates evaluated; operator inspection may be required)",
+				commandID, state.UpdatedAt)
+			return
+		}
+		age := now.Sub(startedAt)
+		if age < threshold {
+			return
+		}
+		for taskID, status := range state.TaskStates {
+			if status != model.StatusPausedForReplan {
+				continue
+			}
+			candidates = append(candidates, r10Candidate{taskID: taskID, age: age})
+		}
+	})
+	if !stateLoaded || len(candidates) == 0 {
+		return nil
+	}
+
+	// Phase 2: per-candidate queue work, state lock released. Each step
+	// can fail independently — failed queue updates are dropped from the
+	// escalation set so Phase 3 leaves their state at paused_for_replan
+	// for the next scan to retry.
+	type prepared struct {
+		taskID string
+		age    time.Duration
+	}
+	var ready []prepared
+	for _, c := range candidates {
+		workerID, findErr := r10FindOwningWorker(run, commandID, c.taskID)
+		if findErr != nil {
+			run.Log(core.LogLevelWarn,
+				"R10 find_owning_worker_failed command=%s task=%s error=%v "+
+					"(state left at paused_for_replan so the next scan can retry)",
+				commandID, c.taskID, findErr)
+			continue
+		}
+		if workerID != "" {
+			if err := r10MarkQueueTaskFailed(run, workerID, c.taskID); err != nil {
+				run.Log(core.LogLevelWarn,
+					"R10 queue_update_failed command=%s task=%s worker=%s error=%v "+
+						"(state left at paused_for_replan so the next scan can retry)",
+					commandID, c.taskID, workerID, err)
+				continue
+			}
+		}
+		ready = append(ready, prepared{c.taskID, c.age})
+	}
+	if len(ready) == 0 {
+		return nil
+	}
+
+	// Phase 3: reacquire state lock, re-verify, and write. Re-verification
+	// guards against a parallel state mutation between Phase 1 and Phase 3
+	// (e.g., the Planner finally acted, transitioning the task off
+	// paused_for_replan). We never overwrite a non-paused_for_replan
+	// status — better to skip than to clobber a legitimate transition.
+	var commandRepairs []Repair
+	requiredTaskEscalated := false
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			run.Log(core.LogLevelError,
+				"R10 reload_state command=%s error=%v "+
+					"(queue tasks already failed; next scan will replay state escalation)",
+				commandID, err)
+			return
+		}
+		if state.TaskStates == nil {
+			return
+		}
+		requiredSet := make(map[string]bool, len(state.RequiredTaskIDs))
+		for _, tid := range state.RequiredTaskIDs {
+			requiredSet[tid] = true
+		}
+		modified := false
+		nowStr := now.Format(time.RFC3339)
+		for _, p := range ready {
+			if state.TaskStates[p.taskID] != model.StatusPausedForReplan {
+				run.Log(core.LogLevelDebug,
+					"R10 skip_terminal_write command=%s task=%s reason=status_changed_during_queue_update "+
+						"(another path advanced the state; honouring it)",
+					commandID, p.taskID)
+				continue
+			}
+			run.Log(core.LogLevelWarn,
+				"R10 paused_for_replan_deadletter command=%s task=%s age=%s threshold=%s -> failed "+
+					"(planner did not act within deadletter window — escalating to terminal failure)",
+				commandID, p.taskID, p.age.Round(time.Second), threshold)
+			state.TaskStates[p.taskID] = model.StatusFailed
+			modified = true
+			if requiredSet[p.taskID] {
+				requiredTaskEscalated = true
+			}
+			commandRepairs = append(commandRepairs, Repair{
+				Pattern:   PatternR10,
+				CommandID: commandID,
+				TaskID:    p.taskID,
+				Detail:    fmt.Sprintf("paused_for_replan stalled for %s (>%s); escalated to failed (planner_unresponsive)", p.age.Round(time.Second), threshold),
+			})
+		}
+		if modified {
+			state.LastReconciledAt = &nowStr
+			state.UpdatedAt = nowStr
+			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+				run.Log(core.LogLevelError,
+					"R10 write_state command=%s error=%v "+
+						"(queue tasks already failed; next scan will replay state escalation)",
+					commandID, err)
+			}
+		}
+	})
+
+	// Phase 4: when at least one *required* task was escalated, publish a
+	// synthetic planner result with status=failed so R3PlannerQueue picks
+	// up the terminal-result/in_progress-queue mismatch and walks the
+	// planner queue command to failed on the next scan, and R4PlanStatus
+	// reconciles state.PlanStatus accordingly. Without this step, a
+	// command whose Planner stops responding to paused_for_replan stays
+	// in_progress on the planner queue until something else pokes it
+	// (operator / Planner restart) — the user-observed "終わらない" pattern.
+	//
+	// Optional-only escalations skip this step because the command may
+	// still complete via the remaining required tasks; CompletionPolicy
+	// keeps optional failures from forcing a command-wide failure unless
+	// the operator opted in.
+	if requiredTaskEscalated {
+		r10WriteSyntheticPlannerFailedResult(run, commandID)
+	}
+
+	return commandRepairs
+}
+
+// r10WriteSyntheticPlannerFailedResult appends a synthetic failed
+// CommandResult to results/planner.yaml on behalf of a Planner that
+// went silent past the paused_for_replan deadletter window. R3 will
+// then reconcile the planner queue (in_progress → failed) and R4 will
+// reconcile state.PlanStatus on the next scan, so this single write
+// drives the whole "command goes terminal" propagation chain without
+// requiring further Planner cooperation.
+//
+// Idempotent: if results/planner.yaml already has a result for
+// commandID we skip silently (the Planner may have raced us with a
+// real result, or a prior R10 cycle already wrote ours).
+func r10WriteSyntheticPlannerFailedResult(run *Run, commandID string) {
+	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
+	run.Deps.LockMap.WithLock("result:planner", func() {
+		rf, err := run.loadCommandResultFile(resultPath)
+		if err != nil {
+			run.Log(core.LogLevelWarn,
+				"R10 synthetic_planner_result_load_failed command=%s error=%v "+
+					"(planner queue terminal propagation skipped this cycle; will retry next scan)",
+				commandID, err)
+			return
+		}
+		for _, r := range rf.Results {
+			if r.CommandID == commandID {
+				return // idempotent: already have a result for this command
+			}
+		}
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			run.Log(core.LogLevelWarn,
+				"R10 synthetic_planner_result_id_failed command=%s error=%v",
+				commandID, err)
+			return
+		}
+		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+		}
+		if rf.FileType == "" {
+			rf.FileType = "result_command"
+		}
+		rf.Results = append(rf.Results, model.CommandResult{
+			ID:        resultID,
+			CommandID: commandID,
+			Status:    model.StatusFailed,
+			Summary:   "synthetic_failure: paused_for_replan deadletter — planner did not act within configured window (R10)",
+			CreatedAt: nowStr,
+		})
+		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+			run.Log(core.LogLevelError,
+				"R10 synthetic_planner_result_write_failed command=%s error=%v "+
+					"(planner queue terminal propagation deferred to next scan)",
+				commandID, err)
+			return
+		}
+		run.Log(core.LogLevelInfo,
+			"R10 synthetic_planner_result command=%s status=failed "+
+				"(R3/R4 will pick up the terminal-result mismatch and walk planner queue + state.plan_status to failed)",
+			commandID)
+	})
+}
+
+// r10ResolveStaleAnchor extracts the timestamp R10 uses to measure "how long
+// has this task been in paused_for_replan?". state.UpdatedAt is updated on the
+// same write that sets paused_for_replan and is therefore a tight upper bound
+// on the wait duration. Returns (zero, false) when no parseable anchor exists.
+func r10ResolveStaleAnchor(state *model.CommandState) (time.Time, bool) {
+	if state.UpdatedAt == "" {
+		return time.Time{}, false
+	}
+	t, err := time.Parse(time.RFC3339, state.UpdatedAt)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return t.UTC(), true
+}
+
+// r10FindOwningWorker locates the worker queue file that holds taskID for
+// commandID. Returns ("", nil) when the task definitively has no queue
+// entry (file missing, task absent, or all worker queue files scanned
+// successfully without a match); the caller advances state safely in that
+// case.
+//
+// Returns ("", err) for transient I/O failures: the caller MUST treat
+// these as "do not advance state, retry next scan" so a transient
+// permission denied or unmarshal error does not silently leave the queue
+// non-terminal while state is escalated to failed (the publish gate
+// dependency that the 2026-04-29 review surfaced).
+func r10FindOwningWorker(run *Run, commandID, taskID string) (string, error) {
+	queueDir := filepath.Join(run.Deps.MaestroDir, "queue")
+	entries, err := run.cachedReadDir(queueDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("read queue dir %s: %w", queueDir, err)
+	}
+	for _, entry := range entries {
+		workerID := extractWorkerID(entry.Name())
+		if workerID == "" {
+			continue
+		}
+		queuePath := filepath.Join(queueDir, entry.Name())
+		var (
+			found    bool
+			queueErr error
+		)
+		run.Deps.LockMap.WithLock("queue:"+workerID, func() {
+			data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in the controlled queue directory
+			if err != nil {
+				if !os.IsNotExist(err) {
+					queueErr = fmt.Errorf("read %s: %w", queuePath, err)
+				}
+				return
+			}
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				queueErr = fmt.Errorf("unmarshal %s: %w", queuePath, err)
+				return
+			}
+			for _, t := range tq.Tasks {
+				if t.CommandID == commandID && t.ID == taskID {
+					found = true
+					return
+				}
+			}
+		})
+		if queueErr != nil {
+			return "", queueErr
+		}
+		if found {
+			return workerID, nil
+		}
+	}
+	return "", nil
+}
+
+// r10MarkQueueTaskFailed sets the queue task's status to failed so command-
+// level scans (publish gate, dashboard) see a consistent terminal status with
+// the state file. Idempotent: a queue task already terminal is left alone
+// (returns nil without rewriting). Returns an error only when the queue file
+// could not be read, parsed, or atomically written; the caller uses the
+// non-nil error as a signal to leave state at paused_for_replan so the next
+// R10 scan can retry the whole transition.
+func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) error {
+	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	var retErr error
+	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
+		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in the controlled queue directory
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Queue file already gone — treat as success (nothing
+				// to escalate; state can flip to failed safely).
+				return
+			}
+			retErr = fmt.Errorf("read queue: %w", err)
+			return
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			retErr = fmt.Errorf("unmarshal queue: %w", err)
+			return
+		}
+		modified := false
+		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		for i := range tq.Tasks {
+			t := &tq.Tasks[i]
+			if t.ID != taskID {
+				continue
+			}
+			if model.IsTerminal(t.Status) {
+				return // already terminal — idempotent success
+			}
+			t.Status = model.StatusFailed
+			t.UpdatedAt = nowStr
+			modified = true
+		}
+		if !modified {
+			return // task not found in queue — treat as success
+		}
+		if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+			retErr = fmt.Errorf("write queue: %w", err)
+		}
+	})
+	return retErr
+}

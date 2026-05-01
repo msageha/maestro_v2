@@ -201,7 +201,7 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 		busyDetector: bd,
 		paneState:    ps,
 	}
-	e.processManager = newClaudeProcessManager(paneIO, ps, &e.config, execCfg, logger, ll)
+	e.processManager = newClaudeProcessManager(paneIO, ps, &e.config, execCfg, logger, ll, maestroDir)
 	e.deliverer = newMessageDeliverer(paneIO, ps, &e.config, execCfg, logger, ll)
 	return e, nil
 }

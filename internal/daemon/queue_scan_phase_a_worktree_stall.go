@@ -39,8 +39,18 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 		if err != nil {
 			continue
 		}
-		if cmdState.Integration.Status != model.IntegrationStatusCreated &&
-			cmdState.Integration.Status != model.IntegrationStatusMerged {
+		// Stall detection applies only to integrations that are stuck in
+		// "merge has not happened despite all tasks being terminal"
+		// (IntegrationStatusCreated). The previous version also fired on
+		// IntegrationStatusMerged — but `merged` is the natural state
+		// between merge completion and publish, and the publish gate
+		// (collectWorktreePublishAndCleanup) reliably advances it within
+		// one or two scans. Operators reported 'worktree_stall_signal_emitted
+		// reason=integration_stalled:merged' immediately followed by a
+		// successful publish — pure noise. Removing the merged branch
+		// keeps the stall machinery focused on the only state where it
+		// produces actionable signal.
+		if cmdState.Integration.Status != model.IntegrationStatusCreated {
 			continue
 		}
 		if cmdState.Integration.StallSignaled {
@@ -50,24 +60,22 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 			continue
 		}
 
-		// Stall fast-path for commands with no declared phases and
-		// Integration.Status==created: apply the same timeoutMin-based check
-		// as the normal path so flat-task plans are not falsely flagged as
-		// stalled before the timeout elapses.
-		if cmdState.Integration.Status == model.IntegrationStatusCreated {
-			phases, perr := qh.dependencyResolver.GetStateReader().GetCommandPhases(cmd.ID)
-			noPhases := false
-			if perr != nil {
-				if errors.Is(perr, ErrStateNotFound) {
-					noPhases = true
-				}
-			} else if len(phases) == 0 {
+		// Stall fast-path for commands with no declared phases (already
+		// guarded above to IntegrationStatusCreated only): apply the same
+		// timeoutMin-based check so flat-task plans are not falsely
+		// flagged as stalled before the timeout elapses.
+		phases, perr := qh.dependencyResolver.GetStateReader().GetCommandPhases(cmd.ID)
+		noPhases := false
+		if perr != nil {
+			if errors.Is(perr, ErrStateNotFound) {
 				noPhases = true
 			}
-			if noPhases {
-				qh.emitWorktreeStallSignal(cmd, s, now, threshold, "integration_stalled_no_phases:created")
-				continue
-			}
+		} else if len(phases) == 0 {
+			noPhases = true
+		}
+		if noPhases {
+			qh.emitWorktreeStallSignal(cmd, s, now, threshold, "integration_stalled_no_phases:created")
+			continue
 		}
 
 		reason := fmt.Sprintf("integration_stalled:%s", cmdState.Integration.Status)

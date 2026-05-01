@@ -323,7 +323,7 @@ func newCovExecutor(mock *mockPaneIO) (*Executor, *bytes.Buffer) {
 		busyDetector: bd,
 		paneState:    ps,
 	}
-	e.processManager = newClaudeProcessManager(mock, ps, &e.config, execCfg, logger, logLevelDebug)
+	e.processManager = newClaudeProcessManager(mock, ps, &e.config, execCfg, logger, logLevelDebug, "")
 	// Tests use synthetic paths (e.g. "/project/worktree1") that never exist
 	// on the test filesystem. Override dirExists to always report "exists"
 	// so the stale-cwd respawn path added in 2026-04-28 does not fire and
@@ -377,7 +377,7 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 		busyDetector: bd,
 		paneState:    ps,
 	}
-	exec.processManager = newClaudeProcessManager(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
+	exec.processManager = newClaudeProcessManager(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug, "")
 	// Match newCovExecutor: synthetic test paths never exist on disk, so
 	// always report directories as present to keep stale-cwd respawn off
 	// unless a test explicitly opts in.

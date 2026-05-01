@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -107,6 +108,33 @@ func (r *RealVerifyRunner) snapshotEnsembleVerifier() *verification.Verifier {
 // per-task directory; production callers always pass a resolved value so
 // that worker-uncommitted changes are visible to verify commands.
 func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error) {
+	return r.runFiltered(ctx, taskID, commandID, workingDir, expectedPaths, false)
+}
+
+// RunSkippingHeavyCategories executes verification but skips the heavy
+// repo-wide categories (test, security, performance). Lightweight categories
+// (build, lint, typecheck) still run so syntax/type errors are caught at every
+// task. The caller (runVerifySecondPass) opts into this mode when the source
+// task is intermediate within its phase — earlier sibling tasks may have left
+// the worktree in a state that is correct for the eventual phase merge but
+// would fail repo-wide tests asserting against the *final* phase state. The
+// final task in the phase still runs the full verify, gating the phase merge.
+func (r *RealVerifyRunner) RunSkippingHeavyCategories(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error) {
+	return r.runFiltered(ctx, taskID, commandID, workingDir, expectedPaths, true)
+}
+
+// heavyVerifyCategoryNames is the set of categories deferred when an
+// intermediate task triggers verify. They tend to assert end-state correctness
+// (`go test ./...`, security audits, perf benchmarks) and are flaky against a
+// half-applied phase. Lightweight categories must remain to catch broken
+// syntax/types at every task.
+var heavyVerifyCategoryNames = map[string]struct{}{
+	"test":        {},
+	"security":    {},
+	"performance": {},
+}
+
+func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string, skipHeavyCategories bool) (VerifyOutcome, error) {
 	cfg, source, err := r.loadVerifyConfig(commandID)
 	if err != nil {
 		return VerifyOutcome{Passed: false, Reason: fmt.Sprintf("verify_config_invalid: %v", err)}, nil
@@ -119,25 +147,75 @@ func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID, workingDi
 	if runDir == "" {
 		runDir = r.projectDir
 	}
+
+	// Fail-fast on inaccessible runDir (2026-04-29 review pin). When a
+	// worktree has been cleaned up between dispatch and verify (e.g.
+	// fast-track stall cleanup races a verify already in flight), every
+	// downstream `cmd.Run()` will fail with `chdir … : no such file or
+	// directory`. Prior behaviour pushed those errors through the
+	// per-category advisory path and could end up returning Passed=true
+	// with "passed_with_advisory_failures", silently marking the task
+	// completed even though no verify command actually executed. A hard
+	// failure here surfaces the missing worktree as a real verify
+	// failure so the daemon can route it to repair_pending /
+	// paused_for_replan rather than green-light a non-event.
+	if info, err := os.Stat(runDir); err != nil {
+		return VerifyOutcome{
+			Passed: false,
+			Reason: fmt.Sprintf("verify_workdir_inaccessible path=%q: %v", runDir, err),
+		}, nil
+	} else if !info.IsDir() {
+		return VerifyOutcome{
+			Passed: false,
+			Reason: fmt.Sprintf("verify_workdir_not_directory path=%q", runDir),
+		}, nil
+	}
+
+	// 2026-04-30 e2e regression: the expected_paths gate was promoted from
+	// "advisory warning" to "hard verify failure" in earlier work, but the
+	// constraint is software-engineering specific (commit-boundary policy
+	// for refactor tasks) and routinely produces false-positive failures
+	// on legitimate fixes that touch ancillary files (the reproduced case:
+	// a lint repair required a one-line change in proxy/cmd/osv-ingest/
+	// main.go which was not in the predicted expected_paths). For
+	// research / documentation / polyglot orchestration the constraint is
+	// inapplicable. The check is now advisory: changes outside the
+	// declared paths are logged for operator review but do not fail
+	// verify. Commit-boundary enforcement still happens at commit_policy
+	// time when the worktree is staged for integration.
 	if len(expectedPaths) > 0 {
 		changed, err := gitChangedFiles(ctx, runDir)
 		if err != nil {
-			return VerifyOutcome{Passed: false, Reason: fmt.Sprintf("verify_expected_paths_check_failed: %v", err)}, nil
-		}
-		if outside := filesOutsideExpectedPaths(changed, expectedPaths); len(outside) > 0 {
-			return VerifyOutcome{
-				Passed: false,
-				Reason: fmt.Sprintf("verify_expected_paths_violation files=%q expected_paths=%q", outside, expectedPaths),
-			}, nil
+			r.logger.Warn("verify_expected_paths_check_skipped",
+				"task_id", taskID, "command_id", commandID, "error", err.Error(),
+				"reason", "git_status_unavailable")
+		} else if outside := filesOutsideExpectedPaths(changed, expectedPaths); len(outside) > 0 {
+			r.logger.Warn("verify_expected_paths_advisory",
+				"task_id", taskID, "command_id", commandID,
+				"files_outside_expected", outside, "expected_paths", expectedPaths,
+				"note", "advisory only; verify proceeds. Commit-policy will enforce final boundary.")
 		}
 	}
 
 	categories := r.buildVerifyCategories(cfg)
+	skippedHeavy := 0
+	if skipHeavyCategories {
+		filtered := categories[:0]
+		for _, cat := range categories {
+			if _, isHeavy := heavyVerifyCategoryNames[cat.name]; isHeavy {
+				skippedHeavy++
+				continue
+			}
+			filtered = append(filtered, cat)
+		}
+		categories = filtered
+	}
 
 	r.logger.Info("verify_runner_start",
 		"task_id", taskID, "command_id", commandID,
 		"working_dir", runDir, "config_source", source,
-		"category_count", len(categories))
+		"category_count", len(categories), "skipped_heavy", skippedHeavy,
+		"intermediate_task", skipHeavyCategories)
 
 	var advisoryFailures []string
 
@@ -158,6 +236,53 @@ func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID, workingDi
 
 			timedOut := errors.Is(cmdCtx.Err(), context.DeadlineExceeded)
 			failed := timedOut || runErr != nil || exitCode != 0
+
+			// Mid-run worktree disappearance check (2026-04-29 e2e
+			// regression originally; updated 2026-04-30 review): when a
+			// worktree cleanup races a still-running verify command, the
+			// subprocess inherits an unlinked cwd and commands like
+			// `uvx pip-audit` fail with FileNotFoundError on os.getcwd().
+			// Re-stat the workdir after each failed command so the audit
+			// log captures the environmental cause instead of attributing
+			// the noise to a real test failure.
+			//
+			// Earlier this branch returned Passed=true under the assumption
+			// that the publish gate had already advanced past the point
+			// where verify mattered. That assumption was wrong — the gate
+			// (collectWorktreePublishAndCleanup) now blocks publish while
+			// any TaskStates entry is non-terminal, so swallowing a
+			// verify failure here actively defeats the gate by marking the
+			// task as completed in state without ever observing whether the
+			// expected verify commands passed. Routing the failure as a
+			// verify failure with `verify_runner_workdir_inaccessible` as
+			// the reason makes the §2.1 pipeline send the task to
+			// repair_pending instead, which (a) preserves the gate (state
+			// is non-terminal, so publish stays blocked), (b) lets the
+			// daemon-side repair retry recover when the cleanup was a
+			// transient race, and (c) keeps the audit log truthful: verify
+			// did NOT pass, the runner just could not observe the outcome.
+			//
+			// We still only short-circuit when the command itself failed
+			// AND the workdir is gone — a passing command proves the dir
+			// was alive at least until completion, so continuing to run
+			// subsequent categories is safe.
+			if failed {
+				if _, statErr := os.Stat(runDir); statErr != nil {
+					r.logger.Warn("verify_runner_workdir_disappeared_during_run",
+						"task_id", taskID, "command_id", commandID,
+						"category", cat.name, "command", cmd,
+						"working_dir", runDir, "stat_error", statErr,
+						"hint", "worktree cleanup likely raced an in-flight verify command; "+
+							"routing as environmental verify failure so the publish gate stays "+
+							"blocked while repair_pending decides whether to retry")
+					reason := fmt.Sprintf(
+						"verify_runner_workdir_inaccessible category=%s command=%q working_dir=%q stat_error=%v",
+						cat.name, cmd, runDir, statErr,
+					)
+					return VerifyOutcome{Passed: false, Reason: reason}, nil
+				}
+			}
+
 			if !failed {
 				r.logger.Debug("verify_runner_command_passed",
 					"task_id", taskID, "command_id", commandID,
@@ -226,22 +351,14 @@ type verifyCategory struct {
 	advisory bool
 }
 
-// buildVerifyCategories merges the verify.yaml-derived configuration with
-// the EnsembleVerifier perspectives so extended_verification settings
-// actually influence the run. The merge is one-way (perspectives augment
-// the loaded config; verify.yaml never replaces the perspective set):
-//
-//   - Categories already populated by cfg keep their commands but pick up
-//     the perspective's weight if one is configured. This lets an
-//     operator-authored verify.yaml tighten or relax criticality without
-//     changing commands.
-//   - Categories absent from cfg but present in perspectives are added
-//     with the perspective's commands. This is what makes
-//     extended_verification.security_check / performance_bench actually
-//     run when a planner-generated snapshot omits those categories.
-//   - When no EnsembleVerifier is wired, every cfg category runs at the
-//     legacy weight 1.0 (critical) so behaviour matches the pre-wiring
-//     code path.
+// buildVerifyCategories converts the verify.yaml-derived configuration
+// into the verifyCategory slice consumed by the runner. Every category
+// listed in verify.yaml is run at the critical weight (1.0) — the
+// pre-2026-04-30 design used per-perspective weights from
+// extended_verification.perspective_weights, but those are gone now that
+// the daemon no longer auto-injects category commands. The operator's
+// verify.yaml is the single source of truth: if a category is listed,
+// it is critical; if it is absent, it does not run.
 func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []verifyCategory {
 	cfgCategories := []struct {
 		name string
@@ -255,51 +372,17 @@ func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []veri
 		{"performance", cfg.Performance},
 	}
 
-	weights := perspectiveWeightsByName(r.snapshotEnsembleVerifier())
-
-	out := make([]verifyCategory, 0, len(cfgCategories)+2)
-	covered := make(map[string]bool, len(cfgCategories))
+	out := make([]verifyCategory, 0, len(cfgCategories))
 	for _, c := range cfgCategories {
 		if len(c.cmds) == 0 {
-			// Empty category in cfg does NOT count as "covered": that
-			// would suppress the EnsembleVerifier perspective for the
-			// same name even though the verify config provided no
-			// command of its own. extended_verification's whole point
-			// is to fill gaps left by the snapshot, so we must leave
-			// the slot open for the perspective merge below.
 			continue
-		}
-		covered[c.name] = true
-		weight, hasWeight := weights[c.name]
-		if !hasWeight {
-			weight = defaultCategoryCriticalWeight
 		}
 		out = append(out, verifyCategory{
 			name:     c.name,
 			cmds:     c.cmds,
-			weight:   weight,
-			advisory: weight < defaultCategoryCriticalWeight,
+			weight:   defaultCategoryCriticalWeight,
+			advisory: false,
 		})
-	}
-
-	// Append perspectives whose category isn't already represented in cfg.
-	// Iterating Perspectives() rather than the weights map preserves the
-	// configured order and lets us pick up the perspective's Commands.
-	if v := r.snapshotEnsembleVerifier(); v != nil {
-		for _, p := range v.Perspectives() {
-			if covered[p.Name] {
-				continue
-			}
-			if len(p.Commands) == 0 {
-				continue
-			}
-			out = append(out, verifyCategory{
-				name:     p.Name,
-				cmds:     p.Commands,
-				weight:   p.Weight,
-				advisory: p.Weight < defaultCategoryCriticalWeight,
-			})
-		}
 	}
 	return out
 }
@@ -309,21 +392,6 @@ func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []veri
 // Aggregate semantics where weight >= 1.0 perspectives gate the overall
 // pass/fail decision.
 const defaultCategoryCriticalWeight = 1.0
-
-// perspectiveWeightsByName returns a name → weight lookup for the
-// EnsembleVerifier's configured perspectives. Returns nil for an absent
-// verifier so callers can use a single shared zero-value path.
-func perspectiveWeightsByName(v *verification.Verifier) map[string]float64 {
-	if v == nil {
-		return nil
-	}
-	perspectives := v.Perspectives()
-	out := make(map[string]float64, len(perspectives))
-	for _, p := range perspectives {
-		out[p.Name] = p.Weight
-	}
-	return out
-}
 
 func (r *RealVerifyRunner) loadVerifyConfig(commandID string) (*model.VerifyConfig, string, error) {
 	if commandID != "" {
@@ -346,7 +414,14 @@ func (r *RealVerifyRunner) loadVerifyConfig(commandID string) (*model.VerifyConf
 }
 
 func gitChangedFiles(ctx context.Context, dir string) ([]string, error) {
-	c := exec.CommandContext(ctx, "git", "status", "--porcelain", "-z") //nolint:gosec // fixed argv, dir supplied by daemon worktree resolver
+	// `-uall` is required so untracked *files* inside a freshly created
+	// directory are listed individually (e.g. `notes/note_b.txt`). With the
+	// default `-unormal`, git collapses an untracked directory to a single
+	// entry (`notes/`), which then false-fails the expected_paths check
+	// because the matcher compares `notes` against `notes/note_b.txt` and
+	// rejects the directory as "outside expected paths". This was a 100%
+	// reproducible verify failure for any task that creates new directories.
+	c := exec.CommandContext(ctx, "git", "status", "--porcelain", "-uall", "-z") //nolint:gosec // fixed argv, dir supplied by daemon worktree resolver
 	c.Dir = dir
 	out, err := c.Output()
 	if err != nil {
@@ -387,8 +462,68 @@ func filesOutsideExpectedPaths(files, expectedPaths []string) []string {
 	return outside
 }
 
+// dependencyManifestBasenames lists the basenames of dependency-manifest /
+// lockfile artefacts that every package manager touches as a side effect of
+// installing or upgrading a library. They are unconditionally admitted
+// alongside expected_paths so that a routine `npm install -D vitest`,
+// `pip install ...`, `cargo add ...` etc. does not flunk verify with an
+// expected_paths_violation and force the planner into an extra repair
+// cycle just to widen the path declaration. The 2026-04-29 e2e regression
+// hit this on every Node task: workers pulled in vitest, package-lock.json
+// changed, and the verify runner rejected the entire result.
+//
+// Inclusion criteria: the file MUST be (a) machine-generated by the
+// language's package manager, (b) safe-to-commit (not a credential or
+// developer-local cache), and (c) a routinely-changing artefact of
+// dependency operations. Source manifests like pyproject.toml are also
+// listed because they are commonly edited alongside the lockfile.
+var dependencyManifestBasenames = map[string]struct{}{
+	// Node / npm / yarn / pnpm
+	"package.json":        {},
+	"package-lock.json":   {},
+	"npm-shrinkwrap.json": {},
+	"yarn.lock":           {},
+	"pnpm-lock.yaml":      {},
+	// Go
+	"go.mod": {},
+	"go.sum": {},
+	// Rust
+	"Cargo.toml": {},
+	"Cargo.lock": {},
+	// Python (uv, poetry, pip, pipenv)
+	"pyproject.toml":   {},
+	"uv.lock":          {},
+	"poetry.lock":      {},
+	"Pipfile":          {},
+	"Pipfile.lock":     {},
+	"requirements.txt": {},
+	// Ruby
+	"Gemfile":      {},
+	"Gemfile.lock": {},
+	// PHP
+	"composer.json": {},
+	"composer.lock": {},
+	// Elixir
+	"mix.exs":  {},
+	"mix.lock": {},
+}
+
+// isDependencyManifest reports whether file (a normalised slash-path) is a
+// dependency-manifest artefact admitted regardless of expected_paths.
+// Match is on basename only — manifests live at the project root for
+// every package manager listed here, and matching by basename catches
+// monorepo workspaces (e.g. apps/web/package.json) without enumerating
+// every nesting depth in the allow list.
+func isDependencyManifest(file string) bool {
+	_, ok := dependencyManifestBasenames[path.Base(file)]
+	return ok
+}
+
 func verifyPathAllowed(file string, expectedPaths []string) bool {
 	file = filepath.ToSlash(filepath.Clean(strings.TrimSpace(file)))
+	if isDependencyManifest(file) {
+		return true
+	}
 	for _, exp := range expectedPaths {
 		exp = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp)))
 		if exp == "" {

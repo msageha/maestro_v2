@@ -224,7 +224,15 @@ func rollbackStateAndQueueLocked(sm stateStore, maestroDir string, commandID str
 // rollbackPhaseFillToAwaiting reverts a phase from filling to awaiting_fill and persists.
 func rollbackPhaseFillToAwaiting(sm stateStore, state *model.CommandState, phaseIdx int, commandID string) error {
 	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
-	state.UpdatedAt = nowUTC()
+	// A failed plan_submit returns the phase to awaiting_fill; restart the
+	// watchdog clock from this moment so a Planner that keeps producing
+	// invalid task lists is detected on the same elapsed schedule as a
+	// Planner that never started filling. AwaitingFillStallNotifiedAt is
+	// reset so the next watchdog check can re-emit a fresh signal.
+	now := nowUTC()
+	state.Phases[phaseIdx].AwaitingFillSince = &now
+	state.Phases[phaseIdx].AwaitingFillStallNotifiedAt = nil
+	state.UpdatedAt = now
 	if saveErr := sm.SaveState(state); saveErr != nil {
 		return fmt.Errorf("rollback: save state for command %s: %w", commandID, saveErr)
 	}
@@ -239,8 +247,14 @@ func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx in
 		errs = append(errs, fmt.Errorf("rollback: queue entries for command %s: %w", opts.CommandID, queueErr))
 	}
 	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
+	// Restart the awaiting-fill watchdog clock — see rollbackPhaseFillToAwaiting
+	// for the same rationale (failed full fill returns the phase to the
+	// pre-filling awaiting state, so a stalled Planner remains observable).
+	now := nowUTC()
+	state.Phases[phaseIdx].AwaitingFillSince = &now
+	state.Phases[phaseIdx].AwaitingFillStallNotifiedAt = nil
 	rollbackPhaseFillState(state, phaseIdx, tasks, nameToID)
-	state.UpdatedAt = nowUTC()
+	state.UpdatedAt = now
 	if saveErr := sm.SaveState(state); saveErr != nil {
 		errs = append(errs, fmt.Errorf("rollback: save state for command %s: %w", opts.CommandID, saveErr))
 	}
@@ -517,9 +531,23 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.Phases[targetPhaseIdx].Status = model.PhaseStatusFilling
 	nowStr := nowUTC()
 	state.Phases[targetPhaseIdx].FillingStartedAt = &nowStr
+	// Clear awaiting-fill watchdog tracking now that filling has begun. The
+	// raw mutation here bypasses ApplyPhaseTransition (where the symmetric
+	// clear lives), so we must reset these fields explicitly to keep audit
+	// reads from reporting a phase at filling/completed with stale
+	// "awaiting_fill_since" data.
+	state.Phases[targetPhaseIdx].AwaitingFillSince = nil
+	state.Phases[targetPhaseIdx].AwaitingFillStallNotifiedAt = nil
 	state.UpdatedAt = nowStr
 	if err := sm.SaveState(state); err != nil {
+		// In-memory revert when the SaveState write itself fails — disk
+		// state is unchanged, so the on-disk fields are still consistent.
+		// Restore awaiting_fill watchdog tracking too: cleared above in
+		// the optimistic transition, restored here so the next plan_submit
+		// attempt sees the same elapsed window.
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
+		state.Phases[targetPhaseIdx].AwaitingFillSince = &nowStr
+		state.Phases[targetPhaseIdx].AwaitingFillStallNotifiedAt = nil
 		return nil, fmt.Errorf("save state (filling): %w", err)
 	}
 

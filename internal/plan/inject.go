@@ -229,6 +229,27 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		selectedPhaseIdx = targetIdx
 	}
 
+	// max_tasks is treated as advisory at injection time. A hard reject
+	// previously surfaced as an unrecoverable failure flow (Planner needed
+	// to add a task to address residual scope, but the cap had already been
+	// reached) — exactly the "failing for structural reasons rather than
+	// real outcomes" pattern the user flagged as an autonomous LLM
+	// orchestration anti-pattern. The cap remains useful as a soft
+	// indicator that the Planner is exceeding its own declared
+	// parallelism budget; surface it via slog.Warn so operators / future
+	// audits can see the breach without forcing an abort. Phase merge
+	// semantics do not depend on the count being below the cap.
+	if selectedPhaseIdx >= 0 && state.Phases[selectedPhaseIdx].Constraints != nil {
+		maxT := state.Phases[selectedPhaseIdx].Constraints.MaxTasks
+		if maxT > 0 && len(state.Phases[selectedPhaseIdx].TaskIDs) > maxT {
+			slog.Warn("add-task exceeds declared max_tasks (advisory)",
+				"phase_id", state.Phases[selectedPhaseIdx].PhaseID,
+				"task_count_after_injection", len(state.Phases[selectedPhaseIdx].TaskIDs),
+				"max_tasks", maxT,
+				"new_task_id", newTaskID)
+		}
+	}
+
 	// If the task was injected into a completed phase, reopen it so that
 	// the new pending task is properly tracked by the phase lifecycle.
 	if selectedPhaseIdx >= 0 && state.Phases[selectedPhaseIdx].Status == model.PhaseStatusCompleted {
@@ -312,6 +333,16 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	if state.PlanStatus != model.PlanStatusSealed {
 		return &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
+
+	// CompletionPolicy.AllowDynamicTasks intentionally NOT enforced here:
+	// the bool's zero value (false) does not unambiguously distinguish
+	// "operator declared false" from "field absent in YAML / older state",
+	// and gating injection on the zero value would break every legacy
+	// state file. A schema-level fix (e.g. `DisallowDynamicTasks bool`,
+	// default false=allow, or a tri-state pointer) is the right way to
+	// honour the planner's declared intent and is filed as a follow-up.
+	// Until then, the max_tasks gate added below is the load-bearing
+	// constraint that prevents runaway phase growth.
 
 	if err := ValidateNotCancelled(state); err != nil {
 		return err

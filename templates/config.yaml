@@ -29,6 +29,14 @@ maestro:
   # project_root: プロジェクトルートのパス
   # type: string | default: "" | range: 制限なし
   project_root: ""
+  # awaiting_fill_stall_notify_minutes: awaiting_fill 状態に陥った Phase に対して、
+  # daemon が watchdog 用 `awaiting_fill_stall` シグナルを Planner に再投入するまでの分数。
+  # 元々の `awaiting_fill` シグナルは Phase 入場時に一度だけ送られるため、Planner pane が
+  # 配信後に Thinking のまま停止すると次の再プロンプトは R6 の fill_deadline_at (デフォルト
+  # 3 時間) まで発生しない。Watchdog はその空白を埋めるための短期タイマー。
+  # 0 を設定すると watchdog を無効化（R6 のみで運用）。
+  # type: int | default: 5 | range: 0-(無効) または正の分数
+  awaiting_fill_stall_notify_minutes: 5
 
 # --- Agents ---
 # Agent ロールごとの設定。
@@ -39,7 +47,7 @@ agents:
     id: "orchestrator"
     # model: 使用するモデル名
     # type: string | default: なし | range: 制限なし
-    model: "opus"
+    model: "claude-opus-4-7[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
@@ -49,7 +57,7 @@ agents:
     id: "planner"
     # model: 使用するモデル名
     # type: string | default: なし | range: 制限なし
-    model: "opus"
+    model: "claude-opus-4-7[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
@@ -59,17 +67,17 @@ agents:
     count: 4
     # default_model: Worker のデフォルトモデル名
     # type: string | default: なし | range: 制限なし
-    default_model: "sonnet"
+    default_model: "claude-sonnet-4-6[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "append"
     # models: Worker ごとのモデルオーバーライド (worker_id -> model_name)
     # type: map[string]string | default: なし | range: 制限なし
     models:
-      worker1: "sonnet"
-      worker2: "sonnet"
-      worker3: "opus"
-      worker4: "opus"
+      worker1: "claude-sonnet-4-6[1m]"
+      worker2: "claude-sonnet-4-6[1m]"
+      worker3: "claude-opus-4-7[1m]"
+      worker4: "claude-opus-4-7[1m]"
     # boost: Worker のブーストモード有効化
     # type: bool | default: false | range: true/false
     boost: false
@@ -103,6 +111,12 @@ watcher:
   scan_interval_sec: 60
   # dispatch_lease_sec: ディスパッチリースの有効期間 (秒)
   # type: int | default: 0 | range: 0-3600 (MaxDispatchLeaseSec)
+  # 2026-04-29 リファクタ: lease 期限切れ時に daemon は worker pane の
+  # 内容ハッシュを scan 跨ぎで観測し、変化があれば lease を自動延長する
+  # (busy_patterns マッチでも延長)。よってこの値は「pane が完全に静止
+  # してから諦めるまでの猶予時間」であり、タスク本体の実行時間とは
+  # 無関係になっている。デフォルト 5 分 (300) で十分。長時間実行は
+  # max_in_progress_min をハードキャップとして使い分ける。
   dispatch_lease_sec: 300
   # max_in_progress_min: タスク in_progress 状態の最大持続時間 (分)
   # type: *int | default: 60 (DefaultMaxInProgressMin) | range: 0-1440 (MaxMaxInProgressMin)
@@ -489,36 +503,23 @@ bandit:
   trace_data_requirement: 50
 
 # --- Extended Verification ---
-# 拡張検証パースペクティブ機能。
-# security_check / performance_bench はマーカーファイル (go.mod, package.json,
-# pyproject.toml, Cargo.toml, Gemfile, pom.xml/build.gradle 等) でプロジェクトの
-# 言語を自動判定し、対応するツールを起動する:
-#   go     → gosec ./...                   / go test -bench=. ./...
-#   node   → npm audit --audit-level=high  / (未対応)
-#   python → uvx pip-audit                 / (未対応)
-#   rust   → cargo audit                   / cargo bench
-#   ruby   → bundle audit check            / (未対応)
-#   その他 → スキップ (verify を fail させない)
-# 言語に対応するツールが手元にインストールされていない場合は当該検証コマンド
-# だけが fail する。`verify.yaml` を書けば言語別 default を上書きできる。
+# 拡張検証 (verify.yaml ベース)。
+#
+# 2026-04-30 redesign: 言語自動判定 / `npm audit` / `pip-audit` / `gosec` 等
+# の daemon 側からの自動投入や、`perspective_weights` による
+# critical/advisory 切り分けは廃止しました。マエストロは autonomous LLM
+# orchestration のハーネスとして、polyglot リポジトリ・研究/ドキュメント用途・
+# ソフトウェア開発以外の文脈でも動くことを前提にしているため、特定言語の
+# ツール群をデーモン側で勝手に走らせることは設計から外しました。
+#
+# 検証コマンドは `.maestro/verify.yaml` (build / lint / test / typecheck /
+# security / performance) に運用者または Planner が明示的に書く形に統一されて
+# おり、書かれたカテゴリだけが critical (weight 1.0) として実行されます。
+# 本セクションは EnsembleVerifier の起動可否と自動リトライ回数のみ制御します。
 extended_verification:
   # enabled: 拡張検証の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
   enabled: true
-  # security_check: セキュリティチェックの有効化 (言語別ツールに自動マップ)
-  # type: *bool | default: false | range: true/false
-  security_check: true
-  # performance_bench: パフォーマンスベンチマークの有効化 (go / rust のみ)
-  # type: *bool | default: false | range: true/false
-  performance_bench: false
-  # perspective_weights: パースペクティブの重みマップ
-  # weight >= 1.0 の perspective が fail すると全体 FAIL (critical)
-  # weight <  1.0 は score を下げるが全体 fail にはしない (advisory)
-  # type: map[string]float64 | default: {"build": 1.0, "test": 1.0, "security": 0.5} | range: 制限なし
-  perspective_weights:
-    build: 1.0
-    test: 1.0
-    security: 0.5
   # max_auto_retries: 自動リトライの最大回数
   # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
   max_auto_retries: 2

@@ -58,8 +58,22 @@ func newTestQueueHandler(maestroDir string, opts ...QueueHandlerOption) *QueueHa
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
+	// Disable the pane-activity tmux lookup so tests are hermetic against
+	// stray maestro tmux sessions on the host. Without this, the
+	// production paneFinder (tmux.FindPaneByAgentID) can return a pane
+	// from an unrelated maestro session, capture-pane scrapes its live
+	// content, and tests that pin "expired lease → busy-check fallback"
+	// observe VerdictUncertain (no baseline yet → grace-extend) or
+	// VerdictActive (foreign pane shows a busy_pattern match) and the
+	// release path never runs. The fail-closed stub forces VerdictUnknown
+	// so legacy busy-check semantics apply.
+	qh.paneFinder = func(string) (string, error) {
+		return "", errTestNoTmux
+	}
 	return qh
 }
+
+var errTestNoTmux = fmt.Errorf("test: tmux pane lookup intentionally disabled")
 
 func TestQueueHandler_PeriodicScan_Empty(t *testing.T) {
 	t.Parallel()

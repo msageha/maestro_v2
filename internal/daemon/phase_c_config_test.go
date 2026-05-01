@@ -10,92 +10,98 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// makeGoProjectMaestroDir creates a fake project root with a go.mod marker
-// so DetectProjectLanguage() returns "go" and the security/performance
-// perspectives have language-appropriate commands to attach.
-func makeGoProjectMaestroDir(t *testing.T) string {
+// makeMaestroDir builds a fake .maestro directory under a fresh temp
+// project root. The 2026-04-30 redesign removed language detection, so
+// the marker-file (go.mod / package.json / etc.) plumbing previous
+// fixtures used is no longer relevant — every test now exercises the
+// language-agnostic baseline.
+func makeMaestroDir(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
-		t.Fatalf("write go.mod: %v", err)
-	}
-	maestroDir := filepath.Join(root, ".maestro")
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
 		t.Fatalf("mkdir maestro: %v", err)
 	}
 	return maestroDir
 }
 
-func TestNewPhaseCManager_WiresExtendedVerificationConfig(t *testing.T) {
+// TestNewPhaseCManager_ExtendedVerificationWiresMaxAutoRetriesOnly pins the
+// minimum contract of the redesigned extended_verification wiring:
+// EnsembleVerifier is initialised with MaxAutoRetries from config, and no
+// language-specific perspectives are auto-injected. Operators tailor
+// per-project verify commands via .maestro/verify.yaml — that file is the
+// single source of truth for which categories and commands run.
+func TestNewPhaseCManager_ExtendedVerificationWiresMaxAutoRetriesOnly(t *testing.T) {
 	t.Parallel()
 	enabled := true
 	maxRetries := 5
 	cfg := model.Config{
 		ExtendedVerification: model.ExtendedVerificationConfig{
-			Enabled:          &enabled,
-			SecurityCheck:    &enabled,
-			PerformanceBench: &enabled,
-			PerspectiveWeights: map[string]float64{
-				"build":       0.75,
-				"security":    0.6,
-				"performance": 0.4,
-			},
+			Enabled:        &enabled,
 			MaxAutoRetries: &maxRetries,
 		},
 	}
 
-	m := newPhaseCManager(cfg, makeGoProjectMaestroDir(t), []string{"sonnet"}, discardDaemonLog)
+	m := newPhaseCManager(cfg, makeMaestroDir(t), []string{"sonnet"}, discardDaemonLog)
 	if m.EnsembleVerifier == nil {
 		t.Fatalf("expected EnsembleVerifier to be initialized")
 	}
 	if got := m.EnsembleVerifier.MaxAutoRetries(); got != maxRetries {
 		t.Fatalf("MaxAutoRetries=%d, want %d", got, maxRetries)
 	}
-
-	seen := map[string]float64{}
-	for _, p := range m.EnsembleVerifier.Perspectives() {
-		if _, exists := seen[p.Name]; exists {
-			t.Fatalf("duplicate perspective %q", p.Name)
-		}
-		seen[p.Name] = p.Weight
-	}
-	for name, want := range map[string]float64{"build": 0.75, "security": 0.6, "performance": 0.4} {
-		if got, ok := seen[name]; !ok || got != want {
-			t.Fatalf("perspective %q weight=%v present=%t, want %v", name, got, ok, want)
-		}
+	if got := len(m.EnsembleVerifier.Perspectives()); got != 0 {
+		t.Errorf("EnsembleVerifier must not auto-inject perspectives (verify.yaml is the source of truth), got %d: %+v",
+			got, m.EnsembleVerifier.Perspectives())
 	}
 }
 
-// TestNewPhaseCManager_SkipsLanguageSpecificPerspectivesForUnknownProjects
-// verifies that security/performance perspectives are NOT added for projects
-// without a recognised language marker (the cmd_1777330979 root cause: gosec
-// running against non-Go projects fails every verify).
-func TestNewPhaseCManager_SkipsLanguageSpecificPerspectivesForUnknownProjects(t *testing.T) {
+// TestNewPhaseCManager_NoLanguageSpecificInjection guards that *every*
+// project — regardless of which marker files are present — gets the same
+// empty-perspective EnsembleVerifier. The previous implementation
+// inspected go.mod / package.json / Cargo.toml / etc. and ran
+// gosec / npm audit / cargo audit / etc. accordingly; that coupling is
+// incompatible with maestro's autonomous-orchestration goal of being
+// useful for polyglot, research, and documentation workloads.
+func TestNewPhaseCManager_NoLanguageSpecificInjection(t *testing.T) {
 	t.Parallel()
 	enabled := true
-	cfg := model.Config{
-		ExtendedVerification: model.ExtendedVerificationConfig{
-			Enabled:          &enabled,
-			SecurityCheck:    &enabled,
-			PerformanceBench: &enabled,
-		},
+
+	cases := []struct {
+		name   string
+		marker string
+		body   []byte
+	}{
+		{name: "no markers", marker: "", body: nil},
+		{name: "go marker", marker: "go.mod", body: []byte("module example.com/test\n")},
+		{name: "node marker", marker: "package.json", body: []byte("{}")},
+		{name: "rust marker", marker: "Cargo.toml", body: []byte("[package]\nname = \"x\"\nversion = \"0.1.0\"\n")},
 	}
 
-	// No marker files at the temp project root → DetectProjectLanguage returns "".
-	root := t.TempDir()
-	maestroDir := filepath.Join(root, ".maestro")
-	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
-		t.Fatalf("mkdir maestro: %v", err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			root := t.TempDir()
+			if tc.marker != "" {
+				if err := os.WriteFile(filepath.Join(root, tc.marker), tc.body, 0o600); err != nil {
+					t.Fatalf("write %s: %v", tc.marker, err)
+				}
+			}
+			maestroDir := filepath.Join(root, ".maestro")
+			if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+				t.Fatalf("mkdir maestro: %v", err)
+			}
 
-	m := newPhaseCManager(cfg, maestroDir, []string{"sonnet"}, discardDaemonLog)
-	if m.EnsembleVerifier == nil {
-		t.Fatalf("expected EnsembleVerifier to be initialized")
-	}
-	for _, p := range m.EnsembleVerifier.Perspectives() {
-		if p.Name == "security" || p.Name == "performance" {
-			t.Errorf("perspective %q must not be attached when project language is unknown (commands=%v)", p.Name, p.Commands)
-		}
+			cfg := model.Config{
+				ExtendedVerification: model.ExtendedVerificationConfig{Enabled: &enabled},
+			}
+			m := newPhaseCManager(cfg, maestroDir, []string{"sonnet"}, discardDaemonLog)
+			if m.EnsembleVerifier == nil {
+				t.Fatalf("expected EnsembleVerifier to be initialized")
+			}
+			if got := len(m.EnsembleVerifier.Perspectives()); got != 0 {
+				t.Errorf("%s: expected zero auto-injected perspectives, got %d: %+v",
+					tc.name, got, m.EnsembleVerifier.Perspectives())
+			}
+		})
 	}
 }
 

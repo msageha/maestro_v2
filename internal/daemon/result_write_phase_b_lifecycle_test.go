@@ -36,14 +36,19 @@ func (r *recordingVerifyRunner) Run(_ context.Context, taskID, _, workingDir str
 }
 
 type recordingReviewDispatcher struct {
-	enabled bool
-	calls   atomic.Int32
+	enabled        bool
+	calls          atomic.Int32
+	precaptureCall atomic.Int32
 }
 
 func (r *recordingReviewDispatcher) Enabled() bool { return r.enabled }
 
 func (r *recordingReviewDispatcher) DispatchIfEligible(_ context.Context, _ ResultWriteParams) {
 	r.calls.Add(1)
+}
+
+func (r *recordingReviewDispatcher) PrecaptureDiff(_, _, _ string) {
+	r.precaptureCall.Add(1)
 }
 
 // setupWorkerQueueWithTask installs a custom in-progress task into worker's
@@ -426,8 +431,20 @@ func TestResultWrite_CompletedVerifyFailsSchedulesRepairTask(t *testing.T) {
 	}
 
 	st := readCommandStateForLifecycle(t, d, commandID)
-	if got := st.TaskStates[taskID]; got != model.StatusRepairPending {
-		t.Fatalf("original task state = %q, want %q", got, model.StatusRepairPending)
+	// 2026-04-29 follow-up: once the verify repair successor is enqueued,
+	// the original task's state is auto-flipped from repair_pending to
+	// cancelled (superseded_by_verify_repair). That eliminates the
+	// plan-complete validation failure where phase=terminal coexisted
+	// with task=repair_pending, which forced the Planner to burn LLM
+	// round-trips on plan_complete retries until R4PlanStatus backed off.
+	if got := st.TaskStates[taskID]; got != model.StatusCancelled {
+		t.Fatalf("original task state = %q, want %q (superseded by verify repair successor)",
+			got, model.StatusCancelled)
+	}
+	if reason, ok := st.CancelledReasons[taskID]; !ok {
+		t.Errorf("expected CancelledReasons[%s] to be populated, got missing", taskID)
+	} else if !strings.Contains(reason, "superseded_by_verify_repair") {
+		t.Errorf("CancelledReasons[%s] = %q, want superseded_by_verify_repair prefix", taskID, reason)
 	}
 
 	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")

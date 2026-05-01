@@ -11,6 +11,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
@@ -197,6 +198,165 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 	// At exact boundary, time.Since(updatedAt) >= 30m should be true → release
 	if cmd.Status != model.StatusPending {
 		t.Errorf("cmd_exact: got %s, want pending (released at max_in_progress_min boundary)", cmd.Status)
+	}
+}
+
+// TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends pins the
+// 2026-04-30 e2e correction: a command past max_in_progress_min must NOT
+// be released when worker queues still hold a non-terminal task for that
+// command. The previous behaviour released the lease and re-dispatched
+// the same command as a new epoch, which the user observed as duplicate
+// processing of an in-flight 30+ minute audit/repair pass.
+func TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+	qh.config.Watcher.MaxInProgressMin = ptr.Int(30)
+
+	owner := qh.leaseOwnerID()
+	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	// 35 minutes ago — well past the 30m threshold.
+	updatedAt := time.Now().Add(-35 * time.Minute).UTC().Format(time.RFC3339)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "command_queue",
+		Commands: []model.Command{
+			{
+				ID: "cmd_active_long", Content: "long running with worker", Priority: 1,
+				Status: model.StatusInProgress, LeaseOwner: &owner,
+				LeaseExpiresAt: &expired, LeaseEpoch: 1,
+				CreatedAt: updatedAt, UpdatedAt: updatedAt,
+			},
+		},
+	}
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	yamlutil.AtomicWrite(plannerPath, cq)
+
+	// State file so R0 doesn't revert to pending.
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	state := model.CommandState{
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: "cmd_active_long", PlanStatus: model.PlanStatusSealed,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}
+	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_active_long.yaml"), state)
+
+	// Worker queue holds a non-terminal task for the command — this is the
+	// "active worker" signal that must defer the release.
+	workerQueueDir := filepath.Join(maestroDir, "queue")
+	require.NoError(t, os.MkdirAll(workerQueueDir, 0o755))
+	workerQueue := model.TaskQueue{
+		SchemaVersion: 1, FileType: "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:        "task_active_001",
+				CommandID: "cmd_active_long",
+				Content:   "long verify in progress",
+				Status:    model.StatusInProgress,
+				CreatedAt: updatedAt, UpdatedAt: updatedAt,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(workerQueueDir, "worker1.yaml"), workerQueue)
+
+	qh.PeriodicScan()
+
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
+	var result model.CommandQueue
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
+
+	cmd := result.Commands[0]
+	if cmd.Status != model.StatusInProgress {
+		t.Errorf("cmd_active_long: got %s, want in_progress (must extend, not release, while worker task is active)", cmd.Status)
+	}
+	if cmd.LeaseExpiresAt == nil {
+		t.Fatal("lease_expires_at should be set after deferred release")
+	}
+	newExpiry, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
+	if !newExpiry.After(time.Now()) {
+		t.Error("lease_expires_at should have been extended to a future time")
+	}
+}
+
+// TestCommandLeaseAutoExtend_PastMaxTimeoutWithAwaitingFillExtends pins the
+// 2026-04-30 e2e correction: a command past max_in_progress_min must NOT
+// be released when one of its phases is in awaiting_fill (or filling) —
+// the Planner is mid-work on the fill and a re-dispatch would destroy
+// the in-flight dry-run / submit. The previous behaviour released the
+// lease and re-dispatched the same command as a new epoch, breaking the
+// Planner's awaiting_fill response.
+func TestCommandLeaseAutoExtend_PastMaxTimeoutWithAwaitingFillExtends(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+	qh.config.Watcher.MaxInProgressMin = ptr.Int(30)
+	// Wire a state reader so commandHasActivePlannerWork can read phases.
+	lockMap := lock.NewMutexMap()
+	qh.SetStateReader(&integrationStateReader{maestroDir: maestroDir, lockMap: lockMap})
+
+	owner := qh.leaseOwnerID()
+	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	// 35 minutes ago — well past the 30m threshold.
+	updatedAt := time.Now().Add(-35 * time.Minute).UTC().Format(time.RFC3339)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "command_queue",
+		Commands: []model.Command{
+			{
+				ID: "cmd_awaiting_fill", Content: "long fix phase", Priority: 1,
+				Status: model.StatusInProgress, LeaseOwner: &owner,
+				LeaseExpiresAt: &expired, LeaseEpoch: 1,
+				CreatedAt: updatedAt, UpdatedAt: updatedAt,
+			},
+		},
+	}
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	yamlutil.AtomicWrite(plannerPath, cq)
+
+	// State file with a phase in awaiting_fill — Planner is filling tasks
+	// but has not yet emitted any worker dispatch.
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	require.NoError(t, os.MkdirAll(stateDir, 0o755))
+	awaitingSince := time.Now().Add(-3 * time.Minute).UTC().Format(time.RFC3339)
+	state := model.CommandState{
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: "cmd_awaiting_fill", PlanStatus: model.PlanStatusSealed,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:           "phase_fix",
+					Name:              "fix",
+					Type:              "deferred",
+					Status:            model.PhaseStatusAwaitingFill,
+					AwaitingFillSince: &awaitingSince,
+				},
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_awaiting_fill.yaml"), state)
+
+	qh.PeriodicScan()
+
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
+	var result model.CommandQueue
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
+
+	cmd := result.Commands[0]
+	if cmd.Status != model.StatusInProgress {
+		t.Errorf("cmd_awaiting_fill: got %s, want in_progress (must extend, not release, while phase is awaiting_fill)", cmd.Status)
+	}
+	if cmd.LeaseExpiresAt == nil {
+		t.Fatal("lease_expires_at should be set after deferred release")
+	}
+	newExpiry, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
+	if !newExpiry.After(time.Now()) {
+		t.Error("lease_expires_at should have been extended to a future time")
 	}
 }
 

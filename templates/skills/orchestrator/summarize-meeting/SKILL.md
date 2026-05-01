@@ -8,14 +8,14 @@ priority: 15
 
 # Summarize Meeting — コマンド完了結果の構造化要約
 
-コマンド実行完了後に、dashboard.md と results/*.yaml の情報を構造化要約として整理する。ユーザーへの報告品質を向上させ、次のアクションを明確にする。
+コマンド実行完了後に、許可された `.maestro/dashboard.md` と `.maestro/results/planner.yaml` の情報を構造化要約として整理する。ユーザーへの報告品質を向上させ、次のアクションを明確にする。
 
 ## 入力ソース
 
 | ソース | 取得情報 |
 |--------|---------|
-| `dashboard.md` | コマンド全体の進捗・ステータス |
-| `results/*.yaml` | 各タスクの summary, files_changed, learnings |
+| `.maestro/dashboard.md` | コマンド全体の進捗・ステータス |
+| `.maestro/results/planner.yaml` | Planner が集約したコマンド結果、タスク summary, files_changed, learnings |
 
 ## 構造化要約テンプレート
 

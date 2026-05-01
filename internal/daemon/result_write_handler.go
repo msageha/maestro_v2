@@ -50,6 +50,7 @@ type circuitBreakerUpdater interface {
 type reviewDispatcher interface {
 	Enabled() bool
 	DispatchIfEligible(ctx context.Context, params ResultWriteParams)
+	PrecaptureDiff(taskID, commandID, reporter string)
 }
 
 type autoRecoverWorktreeManager interface {
@@ -365,6 +366,23 @@ func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, re
 	resultID := resultWritePhaseAResult.resultID
 	isDuplicate := resultWritePhaseAResult.duplicate
 
+	// Capture-before-cleanup snapshot (2026-04-29 e2e regression): Phase A
+	// has just transitioned the queue task to terminal, which makes the
+	// command eligible for the next scan's worktree cleanup. Async verify
+	// and the eventual review dispatch run AFTER that. By the time
+	// ReviewCoordinator.buildDiffContent calls ComputeWorkerDiff, the
+	// worker worktree may have been wiped, leaving an empty diff that the
+	// reviewer dispatcher records as status=skipped and codex never runs.
+	// Capturing the diff here — while the worker worktree is still alive —
+	// pins a stable snapshot that the dispatch path retrieves via
+	// popPrecapturedDiff. Only fired for completed results; failed/cancelled
+	// results never trigger a review so the cost is wasted.
+	if !isDuplicate && resultStatus == model.StatusCompleted {
+		if rc := h.reviewCoord(); rc != nil && rc.Enabled() {
+			rc.PrecaptureDiff(params.TaskID, params.CommandID, params.Reporter)
+		}
+	}
+
 	// Bug H: for duplicate submissions, skip Phase B (state already reflects
 	// the prior write) and the normal "result_write result_id=..." audit log
 	// line (it would double-record a single logical write and mislead log
@@ -446,19 +464,290 @@ type resultVerifyInput struct {
 	taskRunOnIntegration bool
 }
 
+// reserveOrDeferHeavyVerify decides whether the verify run for sourceTask
+// should run repo-wide categories (test/security/performance) or defer them
+// to a sibling. Returns true when the caller must DEFER heavy verify.
+//
+// The decision uses a CAS-style reservation under the state lock so that at
+// most one task per phase ever wins the right to run heavy verify. Without
+// the lock-protected reservation, multiple sibling tasks reaching
+// verify_pending in parallel would each see the others at verify_pending
+// (which is not a terminal status) and all defer — leaving no task to
+// actually run repo-wide verification, breaking the §S1-1 Strong Signal.
+// This was the race surfaced in the 2026-04-29 review.
+//
+// Decision rules, evaluated under the state lock:
+//
+//   - If sourceTask is nil → run heavy (no phase context to reason about).
+//   - If state load/save fails → run heavy (conservative: preserve Strong
+//     Signal at the cost of possible duplicated work).
+//   - If sourceTask is not a member of any phase (implicit-phase commands) →
+//     run heavy (legacy behaviour).
+//   - If a phase-level reservation already exists for an in-phase task and
+//     it isn't sourceTask → defer.
+//   - If a phase-level reservation exists but the owner is no longer a
+//     member of the phase (the original owner was retried out and replaced
+//     by a new task) → treat as cleared and re-evaluate.
+//   - If any sibling is still active (running / dispatched / repair_pending /
+//     pending — anything that is neither terminal nor verify_pending) →
+//     defer; the phase isn't ready for repo-wide verification yet.
+//   - Otherwise reserve sourceTask as the owner under the lock and run
+//     heavy. The reservation persists across verify failures so a retry
+//     does not double-charge the phase.
+//
+// The "verify_pending counts as ready" half of the rule is what unblocks the
+// race: when N siblings sit at verify_pending simultaneously, exactly one of
+// them grabs the lock first, finds no in-flight work, writes itself into
+// HeavyVerifyOwners, and proceeds; subsequent siblings see the reservation
+// and defer.
+func (h *ResultWriteAPI) reserveOrDeferHeavyVerify(commandID string, sourceTask *model.Task) bool {
+	if sourceTask == nil {
+		return false
+	}
+
+	cmdLockKey := "state:" + commandID
+	h.lockMap.Lock(cmdLockKey)
+	defer h.lockMap.Unlock(cmdLockKey)
+
+	statePath := commandStatePath(h.maestroDir, commandID)
+	var deferHeavy bool
+	updateErr := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		var phase *model.Phase
+		for i := range state.Phases {
+			for _, tid := range state.Phases[i].TaskIDs {
+				if tid == sourceTask.ID {
+					phase = &state.Phases[i]
+					break
+				}
+			}
+			if phase != nil {
+				break
+			}
+		}
+		if phase == nil {
+			deferHeavy = false
+			return errNoUpdate
+		}
+
+		ownerInPhase := func(owner string) bool {
+			for _, tid := range phase.TaskIDs {
+				if tid == owner {
+					return true
+				}
+			}
+			return false
+		}
+
+		// Check existing reservation. A reservation is "live" only while
+		// the owner is actually in a state that exercises heavy verify:
+		//   - verify_pending: owner is currently running heavy
+		//   - completed: owner has already passed heavy successfully
+		// In any other state — repair_pending after a heavy failure,
+		// cancelled because a retry superseded the owner, failed/dead_letter/
+		// aborted, etc. — the heavy verification did NOT pass for this
+		// phase. The reservation is stale and must be cleared so a fresh
+		// owner (typically the retry that replaced the failed one) can
+		// reclaim ownership and run heavy verify. Without this clearance,
+		// the 2026-04-29 review pin reproduces: a failed owner sits in
+		// phase.TaskIDs forever, retries always defer, repo-wide verify
+		// is never re-run, and a half-fixed phase merges silently.
+		mutated := false
+		if owner, ok := state.HeavyVerifyOwners[phase.PhaseID]; ok {
+			ownerLive := false
+			if ownerInPhase(owner) {
+				switch state.TaskStates[owner] {
+				case model.StatusVerifyPending, model.StatusCompleted:
+					ownerLive = true
+				}
+			}
+			if ownerLive {
+				deferHeavy = owner != sourceTask.ID
+				return errNoUpdate
+			}
+			delete(state.HeavyVerifyOwners, phase.PhaseID)
+			mutated = true
+		}
+
+		// No live reservation. Phase is "ready for heavy verify" only
+		// when every sibling has reached either a terminal status or
+		// verify_pending (which signals "I'm done writing files; verify
+		// is scheduled for me too"). Anything still actively running
+		// means a later sibling will reach verify_pending and become a
+		// more authoritative phase-final candidate.
+		for _, tid := range phase.TaskIDs {
+			if tid == sourceTask.ID {
+				continue
+			}
+			s, ok := state.TaskStates[tid]
+			if !ok {
+				deferHeavy = false
+				if mutated {
+					return nil
+				}
+				return errNoUpdate
+			}
+			if !model.IsTerminal(s) && s != model.StatusVerifyPending {
+				deferHeavy = true
+				if mutated {
+					return nil
+				}
+				return errNoUpdate
+			}
+		}
+
+		if state.HeavyVerifyOwners == nil {
+			state.HeavyVerifyOwners = make(map[string]string)
+		}
+		state.HeavyVerifyOwners[phase.PhaseID] = sourceTask.ID
+		deferHeavy = false
+		return nil
+	})
+	if updateErr != nil {
+		h.logFn(LogLevelWarn,
+			"heavy_verify_reservation_failed command=%s task=%s error=%v "+
+				"(running full verify; may duplicate work but preserves Strong Signal)",
+			commandID, sourceTask.ID, updateErr)
+		return false
+	}
+	return deferHeavy
+}
+
+// computeWorkerExpectedPathsForVerify returns the union of expected_paths for
+// the reporter worker that the §S1-1 Verification Runner should treat as the
+// allowed write surface. Phase B's commit_policy uses the same worker-level
+// union; using a single task's expected_paths here would falsely flag earlier
+// sibling-task dirty files when the worker holds multiple tasks under one
+// command.
+//
+// The union covers:
+//   - the source task being verified, whose ExpectedPaths must be admitted
+//     even though its queue status is still verify_pending at this point;
+//   - same-phase sibling tasks at StatusCompleted on the reporter worker.
+//     Within a phase, completed siblings still have *uncommitted* changes
+//     in the worker worktree because Phase B's auto-commit runs only after
+//     the whole phase reaches a terminal state. Verification therefore must
+//     admit those paths.
+//
+// **Scope** (2026-04-29 review): the union is intentionally restricted to
+// tasks in the *same* phase as sourceTask. Earlier-phase tasks have already
+// been auto-committed at their phase's merge boundary and the worktree is
+// fast-forwarded to integration HEAD before the next phase's tasks dispatch
+// (see internal/daemon/dispatch/dispatcher.go), so their ExpectedPaths must
+// not silently widen the verify surface for the current phase. Including
+// them would let the current task's verify see paths it never declared and
+// miss out-of-scope writes.
+//
+// Falls back to the legacy "every completed task in the command" union when
+// no phase context is available (implicit-phase commands or queue load
+// failure), so a transient I/O hiccup does not silently widen the surface
+// beyond the legacy behaviour.
+func (h *ResultWriteAPI) computeWorkerExpectedPathsForVerify(commandID, workerID string, sourceTask *model.Task) []string {
+	addPaths := func(seen map[string]struct{}, dst []string, paths []string) []string {
+		for _, p := range paths {
+			if p == "" {
+				continue
+			}
+			if _, ok := seen[p]; ok {
+				continue
+			}
+			seen[p] = struct{}{}
+			dst = append(dst, p)
+		}
+		return dst
+	}
+
+	seen := make(map[string]struct{})
+	var union []string
+	if sourceTask != nil {
+		union = addPaths(seen, union, sourceTask.ExpectedPaths)
+	}
+
+	// Build the same-phase task ID set. If we cannot identify the phase we
+	// fall back to legacy "every completed task in the command" behaviour
+	// so this fix never tightens further than the previous implementation
+	// in the absence of a phase context.
+	var samePhaseTaskIDs map[string]bool
+	if sourceTask != nil {
+		if state, err := h.fileStore.LoadCommandState(commandID); err == nil {
+			for i := range state.Phases {
+				for _, tid := range state.Phases[i].TaskIDs {
+					if tid == sourceTask.ID {
+						samePhaseTaskIDs = make(map[string]bool, len(state.Phases[i].TaskIDs))
+						for _, sid := range state.Phases[i].TaskIDs {
+							samePhaseTaskIDs[sid] = true
+						}
+						break
+					}
+				}
+				if samePhaseTaskIDs != nil {
+					break
+				}
+			}
+		} else {
+			h.logFn(LogLevelDebug,
+				"verify_expected_paths_state_load_failed command=%s task=%s error=%v "+
+					"(falling back to command-wide union)",
+				commandID, sourceTask.ID, err)
+		}
+	}
+
+	tq, err := h.fileStore.LoadQueueFile(workerID)
+	if err != nil {
+		h.logFn(LogLevelDebug,
+			"verify_expected_paths_queue_load_failed worker=%s command=%s error=%v "+
+				"(falling back to source task expected_paths)",
+			workerID, commandID, err)
+		return union
+	}
+	for i := range tq.Tasks {
+		t := &tq.Tasks[i]
+		if t.CommandID != commandID {
+			continue
+		}
+		if t.Status != model.StatusCompleted {
+			continue
+		}
+		// Phase scope: only include same-phase siblings whose changes are
+		// still uncommitted (auto-commit runs at phase boundary).
+		if samePhaseTaskIDs != nil && !samePhaseTaskIDs[t.ID] {
+			continue
+		}
+		union = addPaths(seen, union, t.ExpectedPaths)
+	}
+	return union
+}
+
+// heavyVerifyFilterRunner is implemented by VerifyRunners that can defer
+// repo-wide categories (test/security/performance) when the source task is
+// intermediate within its phase. Production *RealVerifyRunner satisfies it;
+// test/skip/unconfigured runners do not, and runVerifySecondPass falls back
+// to plain Run for those.
+type heavyVerifyFilterRunner interface {
+	VerifyRunner
+	RunSkippingHeavyCategories(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error)
+}
+
 func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVerifyInput) model.Status {
 	params := input.params
 	workingDir, wdErr := h.resolveVerifyWorkingDir(params)
 	runner := h.resolveVerifyRunner()
-	var expectedPaths []string
-	if input.sourceTask != nil {
-		expectedPaths = input.sourceTask.ExpectedPaths
-	}
+	expectedPaths := h.computeWorkerExpectedPathsForVerify(params.CommandID, params.Reporter, input.sourceTask)
+	skipHeavy := h.reserveOrDeferHeavyVerify(params.CommandID, input.sourceTask)
 	var outcome VerifyOutcome
 	var vErr error
 	if wdErr != nil {
 		h.logFn(LogLevelWarn, "verify_workdir_resolution_failed task=%s command=%s error=%v", params.TaskID, params.CommandID, wdErr)
 		outcome = VerifyOutcome{Passed: false, Reason: wdErr.Error()}
+	} else if skipHeavy {
+		if hr, ok := runner.(heavyVerifyFilterRunner); ok {
+			h.logFn(LogLevelInfo,
+				"verify_intermediate_task_skipping_heavy task=%s command=%s "+
+					"(repo-wide test/security/performance deferred to phase-final task)",
+				params.TaskID, params.CommandID)
+			outcome, vErr = hr.RunSkippingHeavyCategories(ctx, params.TaskID, params.CommandID, workingDir, expectedPaths)
+		} else {
+			outcome, vErr = runner.Run(ctx, params.TaskID, params.CommandID, workingDir, expectedPaths)
+		}
 	} else {
 		outcome, vErr = runner.Run(ctx, params.TaskID, params.CommandID, workingDir, expectedPaths)
 	}
@@ -481,6 +770,21 @@ func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVe
 			// terminal in queue history so command-level queue scans do not stall
 			// on a lifecycle-only repair_pending marker.
 			queueStatus = model.StatusCancelled
+			// notifyPlannerOfWorkerResult already delivered the worker-reported
+			// status (commonly "completed"). Verify has now overruled it: a
+			// retry has been scheduled. Surface the divergence with a dedicated
+			// supplementary signal so Planner does not treat the task as done.
+			// paused_for_replan path emits its own signal below — skip this one
+			// there to avoid double-notification.
+			if params.Status == string(model.StatusCompleted) {
+				// emitVerifyOutcomeChangedPlannerSignal expects callers to
+				// hold scanMu.RLock; handleVerifyRepairRegistration above has
+				// already returned and released its lock, so we re-acquire
+				// for this single signal write.
+				h.acquireFileLock()
+				h.emitVerifyOutcomeChangedPlannerSignal(params, reason, finalStatus)
+				h.releaseFileLock()
+			}
 		} else {
 			// No repair producer exists; the command state carries the
 			// paused_for_replan signal while the queue history records a terminal
@@ -488,11 +792,22 @@ func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVe
 			queueStatus = model.StatusFailed
 		}
 	}
+	// Cleanup-race fix (2026-04-29 e2e regression): dispatch the advisory
+	// review BEFORE syncQueueStatusAfterVerify marks the queue task
+	// terminal. Once the queue task lands at completed/failed, the next
+	// queue scan may schedule a worktree cleanup that wipes the worker
+	// worktree directory; ReviewCoordinator.buildDiffContent then computes
+	// an empty diff (ComputeWorkerDiff returns "" when ws.Path is gone),
+	// the dispatcher sees an empty payload and records status=skipped, and
+	// codex never actually runs. Capturing the diff while the task is
+	// still parked at verify_pending keeps the worktree gated against
+	// cleanup so the diff is real and the review actually fires.
+	h.dispatchAdvisoryReview(params, finalStatus)
+
 	h.syncQueueStatusAfterVerify(params, queueStatus)
 
 	h.maybeAutoRecoverAfterResolution(params, model.StatusCompleted, finalStatus,
 		input.taskRunOnIntegration)
-	h.dispatchAdvisoryReview(params, finalStatus)
 	if h.triggerScan != nil {
 		h.triggerScan(ctx)
 	}
@@ -550,6 +865,18 @@ func newFencingError(code, message string, details uds.FencingDetails) *resultWr
 // determined one is needed. TaskRetryHandler does not hold state and queue
 // locks at the same time, so it must not be moved under Phase A's queue/result
 // locks.
+//
+// scanMu serialization (2026-04-30 e2e regression): RetryTaskAtomically
+// writes the worker queue file via lockMap("queue:{worker}") only. PeriodicScan
+// Phase A loads worker queues into an in-memory snapshot, performs scan
+// mutations, and flushes the snapshot back under the same lockMap key. Without
+// scanMu.RLock here, Phase A's flush can race the retry-add and overwrite the
+// file with its pre-retry snapshot — the user observed this as a state-side
+// retry task with zero queue presence (`task_state=planned, queue empty`),
+// which then made phantom_task cleanup loop on an illegal `planned -> failed`
+// transition. Holding scanMu.RLock for the whole RetryTaskAtomically call
+// makes the retry write atomic vs. PeriodicScan, matching the canonical
+// "queue writes hold scanMu.RLock + lockMap" invariant documented in doc.go.
 func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseAResult, params ResultWriteParams) {
 	if phaseAResult.retryTask == nil {
 		return
@@ -557,6 +884,9 @@ func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseA
 
 	retryTask := phaseAResult.retryTask
 	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
+
+	h.acquireFileLock()
+	defer h.releaseFileLock()
 
 	if err := retryHandler.RetryTaskAtomically(retryTask, params.TaskID, params.CommandID, params.Reporter); err != nil {
 		h.logFn(LogLevelError, "retry_task_atomic_failed task=%s worker=%s command=%s error=%v",
@@ -568,6 +898,15 @@ func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseA
 }
 
 func (h *ResultWriteAPI) handleVerifyRepairRegistration(sourceTask *model.Task, params ResultWriteParams, reason string) (bool, model.Status) {
+	// Hold scanMu.RLock for the full repair-registration sequence so the
+	// RetryTaskAtomically queue write and the advance/cancel state writes
+	// below run atomically against PeriodicScan Phase A's queue flush. See
+	// handleRetryRegistration for the race details — the verify-side path
+	// is the same plus advanceRepairPendingToPausedForReplan and
+	// cancelSupersededPredecessor, so the lock has to bracket all of them.
+	h.acquireFileLock()
+	defer h.releaseFileLock()
+
 	if sourceTask == nil {
 		replanReason := fmt.Sprintf("verify_repair_source_task_missing: %s", reason)
 		h.logFn(LogLevelError,
@@ -603,13 +942,81 @@ func (h *ResultWriteAPI) handleVerifyRepairRegistration(sourceTask *model.Task, 
 			fmt.Sprintf("verify_repair_enqueue_failed: %v", err))
 		return false, model.StatusPausedForReplan
 	}
+	// Predecessor cleanup (2026-04-29 e2e regression): the verify repair
+	// path leaves the original task at StatusRepairPending in state.
+	// That status is non-terminal, so plan/state.go:CanComplete rejects
+	// any subsequent plan_complete with "phase X is terminal but task Y
+	// is non-terminal (repair_pending)". The user observed the Planner
+	// burning two LLM round-trips on failed plan_complete calls before
+	// some out-of-band reconcile (R4 backoff in the original report) flipped
+	// the task to terminal. Now that the repair successor has been
+	// successfully enqueued, the original task is by construction
+	// superseded — its lifecycle is complete from the planner's
+	// perspective. Eagerly transitioning it to StatusCancelled with a
+	// descriptive reason both unblocks plan_complete and gives operators
+	// a self-describing audit trail (the cancellation reason links to
+	// the successor ID).
+	supersededReason := fmt.Sprintf(
+		"superseded_by_verify_repair: repair_task=%s reason=%s",
+		repairTask.ID, reason,
+	)
+	if cancelErr := h.cancelSupersededPredecessor(params.CommandID, sourceTask.ID, supersededReason); cancelErr != nil {
+		h.logFn(LogLevelWarn,
+			"verify_repair_predecessor_cancel_failed task=%s command=%s repair_id=%s error=%v "+
+				"(R4PlanStatus backoff will retry plan_complete; not fatal)",
+			sourceTask.ID, params.CommandID, repairTask.ID, cancelErr)
+	}
 	h.logFn(LogLevelInfo,
 		"verify_repair_scheduled task=%s repair_id=%s command=%s reason=%q",
 		params.TaskID, repairTask.ID, params.CommandID, reason)
 	return true, model.StatusRepairPending
 }
 
+// cancelSupersededPredecessor flips a task whose successor (retry / repair) has
+// just been enqueued into StatusCancelled inside the command-state file. This
+// breaks the plan-complete validation gridlock where phase=terminal but the
+// predecessor task lingers at StatusRepairPending or StatusPausedForReplan.
+//
+// Idempotent: if the predecessor is already terminal, the YAML update is a no-op.
+// Best-effort: failures are reported back to the caller (logged at warn) so that
+// the legacy R4PlanStatus backoff path still gets a chance to recover.
+func (h *ResultWriteAPI) cancelSupersededPredecessor(commandID, predecessorID, reason string) error {
+	cmdLockKey := "state:" + commandID
+	h.lockMap.Lock(cmdLockKey)
+	defer h.lockMap.Unlock(cmdLockKey)
+	statePath := commandStatePath(h.maestroDir, commandID)
+	return updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.TaskStates == nil {
+			return errNoUpdate
+		}
+		current, ok := state.TaskStates[predecessorID]
+		if !ok {
+			return errNoUpdate
+		}
+		if model.IsTerminal(current) {
+			return errNoUpdate
+		}
+		if err := model.AdvanceTaskState(state.TaskStates, predecessorID, model.StatusCancelled); err != nil {
+			return err
+		}
+		if state.CancelledReasons == nil {
+			state.CancelledReasons = make(map[string]string)
+		}
+		state.CancelledReasons[predecessorID] = reason
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	})
+}
+
 func (h *ResultWriteAPI) syncQueueStatusAfterVerify(params ResultWriteParams, nextStatus model.Status) {
+	// scanMu.RLock — same rationale as applyVerifyOutcome: this queue write
+	// happens after async verify finishes and would otherwise race
+	// PeriodicScan Phase A's queue flush. Holding RLock + queue:{reporter}
+	// keeps the daemon-wide invariant that every queue write is observed by
+	// every scan cycle as either "before" or "after" — never "vanished".
+	h.acquireFileLock()
+	defer h.releaseFileLock()
+
 	h.lockMap.Lock("queue:" + params.Reporter)
 	defer h.lockMap.Unlock("queue:" + params.Reporter)
 
@@ -713,6 +1120,68 @@ func (h *ResultWriteAPI) emitPausedForReplanPlannerSignal(params ResultWritePara
 	h.logFn(LogLevelInfo,
 		"paused_for_replan_signal_queued task=%s command=%s reason=%q",
 		params.TaskID, params.CommandID, reason)
+}
+
+// emitVerifyOutcomeChangedPlannerSignal notifies the Planner that the
+// post-verify lifecycle disagreed with the worker's self-reported result.
+// notifyPlannerOfWorkerResult delivers the *worker-reported* status (typically
+// "completed") via the per-result task_result notification path, but does not
+// re-fire when verify subsequently routes the task to repair_pending. Without
+// this supplementary signal, the Planner's mental model treats the task as
+// finished while the daemon has actually scheduled a retry — the divergence
+// observed in the 2026-04 alpha/beta/test workflow regression where Planner
+// proceeded to the next phase while a hidden repair task still kept the
+// publish gate blocked.
+//
+// The dedicated paused_for_replan signal already covers the
+// repair_pending → paused_for_replan branch (max_repair / non-retryable). This
+// signal is intentionally limited to the repair_pending branch (a retry task
+// has been scheduled but the worker still believes its task is done) so the
+// Planner sees both signals only when both events apply.
+func (h *ResultWriteAPI) emitVerifyOutcomeChangedPlannerSignal(params ResultWriteParams, reason string, finalStatus model.Status) {
+	now := h.clock.Now().UTC().Format(time.RFC3339)
+	phaseID := "__task_" + params.TaskID
+	msg := fmt.Sprintf("[maestro] kind:verify_outcome_changed command_id:%s task_id:%s\nworker_reported: %s\nverify_final_status: %s\nreason: %s\nnext_action: track the scheduled retry task; the worker-reported task_result is stale",
+		params.CommandID, params.TaskID, params.Status, finalStatus, reason)
+	sig := model.PlannerSignal{
+		Kind:      "verify_outcome_changed",
+		CommandID: params.CommandID,
+		PhaseID:   phaseID,
+		Message:   msg,
+		Reason:    reason,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	// Caller is responsible for holding scanMu.RLock — see emitPausedForReplanPlannerSignal
+	// for the same caller-bracket convention. Function-level RLock is rejected
+	// here because some callers reach this helper from inside an outer
+	// scanMu.RLock (handleVerifyRepairRegistration), and Go's sync.RWMutex
+	// can deadlock on recursive RLock when a writer arrives between the two
+	// acquires.
+	h.lockMap.Lock("queue:planner_signals")
+	defer h.lockMap.Unlock("queue:planner_signals")
+	if err := updateYAMLFile(signalQueuePath(h.maestroDir), func(sq *model.PlannerSignalQueue) error {
+		index := buildSignalIndex(sq.Signals)
+		key := signalDedupKey(sig)
+		if _, exists := index[key]; exists {
+			return errNoUpdate
+		}
+		if sq.SchemaVersion == 0 {
+			sq.SchemaVersion = 1
+			sq.FileType = "planner_signal_queue"
+		}
+		sq.Signals = append(sq.Signals, sig)
+		return nil
+	}); err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_outcome_changed_signal_write_failed task=%s command=%s reason=%q error=%v",
+			params.TaskID, params.CommandID, reason, err)
+		return
+	}
+	h.logFn(LogLevelInfo,
+		"verify_outcome_changed_signal_queued task=%s command=%s worker_reported=%s final=%s reason=%q",
+		params.TaskID, params.CommandID, params.Status, finalStatus, reason)
 }
 
 // truncateRunes truncates a string to at most maxRunes runes.

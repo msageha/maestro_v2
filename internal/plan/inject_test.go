@@ -796,6 +796,119 @@ func setupInjectFixtureWithPhases(t *testing.T) (string, string, string, string,
 	return maestroDir, commandID, taskID1, phase1ID, phase2ID
 }
 
+// TestAddTask_RejectsExceedingMaxTasks pins the 2026-04-29 follow-up:
+// TestAddTask_AllowsExceedingMaxTasksAdvisory pins the policy that PhaseConstraints.MaxTasks
+// is advisory at injection time. Earlier a hard reject blocked add-task from
+// growing a phase past its declared cap, but operators reported residual
+// scope (verify-driven follow-up tasks, planner-discovered missing deps)
+// being structurally unfixable when a phase had pre-saturated its cap. The
+// cap remains useful as a soft signal — a slog.Warn surfaces the breach —
+// but the injection succeeds so the autonomous flow can recover.
+func TestAddTask_AllowsExceedingMaxTasksAdvisory(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000060_maxtasks"
+	taskID1 := "task_0000000060_11111111"
+	phaseID := "phase_with_cap"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{taskID1},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  map[string][]string{taskID1: {}},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: phaseID,
+					Name:    "capped",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: []string{taskID1},
+					Constraints: &model.PhaseConstraints{
+						MaxTasks: 1, // cap already saturated by taskID1
+					},
+				},
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := addTaskTest(InjectOptions{
+		CommandID:          commandID,
+		TargetPhase:        phaseID,
+		Purpose:            "p with enough length to clear shell-damage minimum",
+		Content:            "c with enough length to clear shell-damage minimum",
+		AcceptanceCriteria: "ac with enough length to clear shell-damage minimum",
+		BloomLevel:         3,
+		Required:           true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("expected add-task to succeed (max_tasks advisory), got: %v", err)
+	}
+	if result == nil || result.TaskID == "" {
+		t.Fatalf("expected a new task to be added, got %+v", result)
+	}
+	// Confirm the new task is inside the phase even though it pushes the
+	// count past the cap.
+	updated, _ := plan_loadStateForInjectTest(t, maestroDir, commandID)
+	if updated == nil {
+		t.Fatal("expected reloadable command state after injection")
+	}
+	if len(updated.Phases) != 1 || len(updated.Phases[0].TaskIDs) != 2 {
+		t.Errorf("expected phase to hold 2 tasks (cap=1 advisory), got %+v", updated.Phases)
+	}
+}
+
+// plan_loadStateForInjectTest is a thin reader used by the advisory-cap test
+// to confirm the persisted shape after add-task. Kept inline to avoid
+// wiring a new export from plan; deliberate naming prefix prevents test
+// name collision elsewhere.
+func plan_loadStateForInjectTest(t *testing.T, maestroDir, commandID string) (*model.CommandState, error) {
+	t.Helper()
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return nil, err
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(data, &st); err != nil {
+		return nil, err
+	}
+	return &st, nil
+}
+
 func TestAddTask_TargetPhase_PlacedCorrectly(t *testing.T) {
 	maestroDir, commandID, _, _, phase2ID := setupInjectFixtureWithPhases(t)
 	cfg := testConfig()

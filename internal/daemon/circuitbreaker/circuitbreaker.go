@@ -113,6 +113,23 @@ func (cb *Handler) UpdateCounterOnResult(
 		return false, ""
 
 	case model.StatusFailed:
+		// Lineage-aware count (2026-05-02): when a task has a
+		// retry_lineage ancestor that is already failed, this is a
+		// continued failure within the same lineage chain and should
+		// NOT increment the counter again. Otherwise a single stuck
+		// task that failed N times across automatic retries trips the
+		// breaker even though only one underlying problem exists. The
+		// user reproduced this with run_on_integration retries running
+		// against a stale worker worktree: the same root cause got
+		// counted three times and tripped the breaker on a command
+		// whose actual fix had succeeded.
+		if isLineageAlreadyFailed(taskID, state) {
+			cb.Log(core.LogLevelInfo,
+				"circuit_breaker_lineage_failure_skipped command=%s task=%s "+
+					"(predecessor in retry_lineage already failed; not double-counting)",
+				state.CommandID, taskID)
+			return false, ""
+		}
 		state.CircuitBreaker.ConsecutiveFailures++
 		cb.Log(core.LogLevelInfo, "circuit_breaker_counter command=%s consecutive_failures=%d",
 			state.CommandID, state.CircuitBreaker.ConsecutiveFailures)
@@ -127,6 +144,49 @@ func (cb *Handler) UpdateCounterOnResult(
 	}
 
 	return false, ""
+}
+
+// isLineageAlreadyFailed reports whether any predecessor in the retry
+// lineage of taskID is already at a non-success terminal state in
+// TaskStates. Used by the failure-counter path to avoid double-counting
+// the same root-cause failure across automatic retries. Walks at most
+// len(RetryLineage) ancestors with a visited map so corrupted state
+// cannot loop.
+//
+// Both StatusFailed AND StatusCancelled qualify as "already-counted"
+// predecessor states because the cascade-recovery / verify-repair
+// pipelines can leave the original task at either:
+//
+//   - StatusFailed when result_write_phase_b sees the original is
+//     already terminal (its `if !model.IsTerminal(existing)` guard
+//     skips the cancelled-on-supersede write), OR
+//   - StatusCancelled when the original was non-terminal at supersede
+//     time (the line 110 mutation in result_write_phase_b.go fires).
+//
+// The pre-fix code only matched StatusFailed, so verify-repair retries
+// whose original got marked Cancelled instead of Failed slipped past
+// the guard and the counter incremented on every retry — exactly the
+// 2026-05-01 user reproduction (task_1777611518 → task_1777611533 →
+// task_1777611621 tripped the breaker on the third failure even though
+// all three were the same root-cause repair lineage).
+func isLineageAlreadyFailed(taskID string, state *model.CommandState) bool {
+	if state == nil || len(state.RetryLineage) == 0 {
+		return false
+	}
+	cur := taskID
+	visited := map[string]bool{cur: true}
+	for {
+		ancestor, ok := state.RetryLineage[cur]
+		if !ok || visited[ancestor] {
+			return false
+		}
+		visited[ancestor] = true
+		switch state.TaskStates[ancestor] {
+		case model.StatusFailed, model.StatusCancelled:
+			return true
+		}
+		cur = ancestor
+	}
 }
 
 // TripBreaker sets the circuit breaker to tripped state and issues cancel on the command state.
@@ -253,6 +313,34 @@ func (cb *Handler) CheckHalfOpenTransition(state *model.CommandState, now time.T
 	cbs.HalfOpenProbeActive = false
 	cb.Log(core.LogLevelInfo, "circuit_breaker_half_open command=%s after=%ds", state.CommandID, delaySec)
 	return true
+}
+
+// MarkProgress refreshes the persisted CircuitBreaker.LastProgressAt so the
+// progress-timeout path does not trip a command whose worker pane is
+// observably alive (e.g. cross-scan tail-hash delta). Without this hook a
+// task whose execution legitimately exceeds progress_timeout_minutes would
+// be cancelled despite making forward progress, defeating the
+// "long-running tasks should never block the system" design goal.
+//
+// Idempotent and best-effort: when state does not exist yet (e.g. command
+// was just created and no result has been written), the call is silently
+// dropped. Read/write errors are surfaced to the caller for logging but
+// do NOT propagate up the scan loop — pane-active extension is the
+// authoritative liveness signal regardless of bookkeeping success.
+func (cb *Handler) MarkProgress(commandID string) error {
+	if !cb.config.CircuitBreaker.Enabled {
+		return nil
+	}
+	if cb.stateManager == nil {
+		return nil
+	}
+	if err := cb.stateManager.MarkCircuitBreakerProgress(commandID); err != nil {
+		if errors.Is(err, model.ErrStateNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // AllowProbe checks whether a single probe task should be dispatched in half-open state.

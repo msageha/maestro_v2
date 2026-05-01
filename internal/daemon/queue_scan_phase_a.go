@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -24,8 +25,11 @@ func (qh *QueueHandler) executePhaseASteps(s *scanState) {
 	qh.stepCancelPending(s)
 	qh.stepCancelInterrupt(s)
 	qh.stepCancelAutoComplete(s)
+	qh.stepCascadeRevivalSignal(s)
 	qh.stepPhaseTransitions(s)
+	qh.stepAwaitingFillWatchdog(s)
 	qh.stepWorktreePhaseMerges(s)
+	qh.stepRetryCommitFailedWorkers(s)
 	qh.stepWorktreePublish(s)
 	qh.stepWorktreeFastTrackCleanup(s)
 	qh.stepWorktreeOrphanCleanup(s)
@@ -197,6 +201,159 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 			}
 			s.work.interrupts = append(s.work.interrupts, interrupts...)
 		}
+	}
+}
+
+// stepRetryCommitFailedWorkers — auto-recover commit_failed_workers entries.
+//
+// Background (2026-05-01 user reproduction): a worker's auto-commit failed
+// (e.g. transient git lock, ENOSPC during a snapshot, etc.), the daemon
+// recorded the worker in CommitFailedWorkers, the publish gate then blocked
+// indefinitely with `worktree_publish_blocked_commit_failed`. The intended
+// recovery — re-running CommitWorkerChanges on the next merge phase — never
+// fired because handleWorkerCommit only runs during merge orchestration,
+// and once a phase has merged the daemon never revisits the per-worker
+// commit. The flag therefore became a permanent publish block: the dashboard
+// kept showing "publish blocked" long after the repair task that produced
+// the missing commit had completed.
+//
+// This step closes the gap: every scan, for every command that still has
+// CommitFailedWorkers, retry the worker commit through the same idempotent
+// CommitWorkerChanges entry point. A successful retry clears the flag via
+// RemoveCommitFailedWorker and unblocks publish on the next pass. A
+// continuing failure simply leaves the flag in place (publish stays
+// blocked, log emits at debug level so the operator-visible signal is the
+// existing publish-block warning rather than a new flood of failures).
+//
+// Phase A is normally state-YAML-only, but commit retry is idempotent and
+// fast — the alternative (a dedicated Phase B step) would not gain any
+// safety because Phase B's existing merge orchestration cannot revisit
+// already-merged phases. Keeping the retry in Phase A ensures the recovery
+// path runs on every scan cycle.
+func (qh *QueueHandler) stepRetryCommitFailedWorkers(s *scanState) {
+	if qh.worktreeManager == nil {
+		return
+	}
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		cmdState, err := qh.worktreeManager.GetCommandState(cmd.ID)
+		if err != nil || cmdState == nil {
+			continue
+		}
+		if len(cmdState.CommitFailedWorkers) == 0 {
+			continue
+		}
+		// Snapshot to avoid mutating the slice we're iterating after the
+		// successful Remove writes a fresh state.
+		workers := make([]string, len(cmdState.CommitFailedWorkers))
+		copy(workers, cmdState.CommitFailedWorkers)
+		for _, workerID := range workers {
+			retryMsg := fmt.Sprintf("auto-retry: %s", autoCommitFallbackMessage)
+			if err := qh.worktreeManager.CommitWorkerChanges(cmd.ID, workerID, retryMsg); err != nil {
+				qh.log(LogLevelDebug,
+					"commit_failed_retry_failed command=%s worker=%s error=%v "+
+						"(commit_failed_workers retained; publish stays blocked)",
+					cmd.ID, workerID, err)
+				continue
+			}
+			if clrErr := qh.worktreeManager.RemoveCommitFailedWorker(cmd.ID, workerID); clrErr != nil {
+				qh.log(LogLevelWarn,
+					"commit_failed_retry_clear_failed command=%s worker=%s error=%v",
+					cmd.ID, workerID, clrErr)
+				continue
+			}
+			qh.log(LogLevelInfo,
+				"commit_failed_retry_succeeded command=%s worker=%s "+
+					"(retry commit succeeded; commit_failed_workers cleared, publish unblocked)",
+				cmd.ID, workerID)
+		}
+	}
+}
+
+// stepCascadeRevivalSignal — Bug-D'-prime detector / signal emitter.
+//
+// The 2026-05-01 e2e regression captured a case where a verify_failed task A
+// was successfully repaired (repair task R completed, A's effective status
+// became Completed), but the downstream task C — which had been
+// cascade-cancelled with reason "blocked_dependency_terminal:A" when A
+// originally failed — stayed at StatusCancelled forever. cascadeRecover
+// only fires inside AddRetryTask, which is the Planner-driven retry path;
+// daemon-side verify-repair injects the repair task without going through
+// AddRetryTask, so cascade-recovery never runs and the dependency chain
+// remains broken even though the lineage is effectively healthy.
+//
+// This step doesn't yet reopen the cancelled task automatically (that
+// would require either a worker queue mutation or a fresh inject path
+// alongside the existing reconcilers — both bigger than fits in this
+// pass). What it DOES do is detect the pattern, log it loudly, and emit
+// a "cascade_revival_pending" planner signal so the Planner sees the
+// situation and can issue an add_retry_task that carries the existing
+// cascadeRecover machinery into the right shape. Without the signal the
+// Planner has no observable cue that a healthy lineage is still being
+// blocked by a stale cascade-cancellation.
+//
+// Scope: only commands at PlanStatusSealed/PlanStatusPlanning are inspected;
+// terminal commands cannot benefit from a signal anyway. Phantom (no
+// state file) commands are silently skipped.
+func (qh *QueueHandler) stepCascadeRevivalSignal(s *scanState) {
+	if !qh.dependencyResolver.HasStateReader() {
+		return
+	}
+	stateReader := qh.dependencyResolver.GetStateReader()
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+
+		state, ok := qh.loadCommandStateForDerivation(cmd.ID)
+		if !ok {
+			continue
+		}
+		if len(state.CancelledReasons) == 0 {
+			continue
+		}
+
+		cascadeBlockPrefix := "blocked_dependency_terminal:"
+		var revivable []string
+		for taskID, reason := range state.CancelledReasons {
+			if !strings.HasPrefix(reason, cascadeBlockPrefix) {
+				continue
+			}
+			predID := reason[len(cascadeBlockPrefix):]
+			if predID == "" {
+				continue
+			}
+			predStatus, err := stateReader.GetEffectiveTaskStatus(cmd.ID, predID)
+			if err != nil {
+				continue
+			}
+			if predStatus == model.StatusCompleted {
+				revivable = append(revivable, taskID+"<-"+predID)
+			}
+		}
+		if len(revivable) == 0 {
+			continue
+		}
+
+		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		msg := fmt.Sprintf(
+			"[maestro] kind:cascade_revival_pending command_id:%s\n"+
+				"the following cascade-cancelled tasks are blocked by predecessors that are now effectively completed:\n  %s\n"+
+				"emit add_retry_task for the predecessor lineage so cascadeRecover can revive them.",
+			cmd.ID, strings.Join(revivable, ", "))
+		qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+			Kind:      "cascade_revival_pending",
+			CommandID: cmd.ID,
+			Message:   msg,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}, s.signalIndex)
+		qh.log(LogLevelWarn,
+			"cascade_revival_pending command=%s revivable=%v "+
+				"(predecessor effectively completed; planner needs to reissue add_retry_task)",
+			cmd.ID, revivable)
 	}
 }
 

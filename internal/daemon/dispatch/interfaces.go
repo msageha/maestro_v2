@@ -45,6 +45,15 @@ type WorktreeResolver interface {
 	// published into base — running those would inspect stale main and fail
 	// spuriously.
 	GetIntegrationStatus(commandID string) (model.IntegrationStatus, error)
+	// RefreshWorkerWorktreeToIntegrationHead fast-forwards a worker worktree
+	// to the integration branch's latest HEAD when the worker is strictly
+	// behind. The dispatcher calls this just before handing a worker a new
+	// task so a worker reused across phases never executes against a state
+	// that is missing sibling-worker commits already merged into integration.
+	// Returns nil for already-current / worker-ahead worktrees, and a non-nil
+	// error for dirty/diverged/git-failure cases (treated as fail-closed by
+	// the caller).
+	RefreshWorkerWorktreeToIntegrationHead(commandID, workerID string) error
 }
 
 // ExecutorGetter provides lazy executor access.

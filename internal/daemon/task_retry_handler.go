@@ -132,6 +132,15 @@ func (h *TaskRetryHandler) ShouldRepairTask(task *model.Task, failureReason stri
 // satisfying §S2-2 (Circuit Breaker → planner replan signal).
 const MaxRepairCountReasonPrefix = "definition_of_abort.max_repair_count"
 
+// ErrPhaseMaxTasksExceeded is retained as a sentinel for backwards
+// compatibility with tests / callers that still reference it, but the
+// daemon's RegisterRetryTaskInState no longer emits it: the 2026-04-30
+// e2e regression captured several recovery flows stuck because retries
+// were rejected once a phase reached its declared MaxTasks. retry depth
+// is bounded by Retry.TaskExecution.MaxRetries and DefinitionOfAbort
+// .MaxRepairCount, so the budget guard here was redundant.
+var ErrPhaseMaxTasksExceeded = fmt.Errorf("phase max_tasks exceeded; retry refused")
+
 // IsAbortByMaxRepair reports whether reason originates from
 // definition_of_abort.max_repair_count exceeding its threshold. The string
 // prefix match is intentional — ShouldRetryTask formats the counter values
@@ -320,6 +329,17 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(retryTask *model.Task, prede
 		// be reopened (failed→active is the dedicated add-retry transition in
 		// model.ValidatePhaseTransition) so the queue scan dispatches the new
 		// task and so phase merge eventually picks up the retry's commit.
+		//
+		// PhaseConstraints.MaxTasks is intentionally NOT enforced here. The
+		// constraint applies to Planner's explicit task list at plan submit /
+		// add-task time (see internal/plan/validate.go); enforcing it again
+		// during retry/repair turns recovery into a structural failure mode —
+		// the 2026-04-30 e2e regression captured several commands stuck because
+		// max_tasks=3 phases had no headroom for a fourth slot when verify
+		// failed and the daemon (or Planner) tried to retry. Retry depth is
+		// already bounded by Retry.TaskExecution.MaxRetries and per-task
+		// DefinitionOfAbort.MaxRepairCount, so the budget here was redundant
+		// guardrail at the cost of unrecoverable failure flows.
 		if predecessorTaskID != "" {
 			for i := range state.Phases {
 				phase := &state.Phases[i]
@@ -399,6 +419,32 @@ func phaseContainsTask(phase *model.Phase, taskID string) bool {
 		}
 	}
 	return false
+}
+
+// phaseActiveTaskCount returns the number of phase tasks that have not been
+// superseded by a later retry. The "live" task budget for max_tasks excludes
+// predecessors that RetryLineage reports as the predecessor of some other
+// retry — those entries are lineage markers (their TaskStates are typically
+// cancelled with a superseded_by_* reason) and counting them against the
+// budget makes max_tasks=2 phases lock out the second auto-repair after a
+// single failure. Tasks not in any RetryLineage value are counted normally,
+// so the active count grows by one per genuine attempt and the budget still
+// bounds concurrent / serial occupancy.
+func phaseActiveTaskCount(state *model.CommandState, phase *model.Phase) int {
+	superseded := make(map[string]bool, len(state.RetryLineage))
+	for _, predID := range state.RetryLineage {
+		if predID != "" {
+			superseded[predID] = true
+		}
+	}
+	count := 0
+	for _, tid := range phase.TaskIDs {
+		if superseded[tid] {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 // AddRetryTaskToQueue acquires the queue lock for workerID and adds the retry task.

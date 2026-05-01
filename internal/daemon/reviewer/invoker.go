@@ -130,9 +130,42 @@ func invokeCodex(ctx context.Context, modelName, systemPrompt, userPrompt string
 		if ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		return "", fmt.Errorf("codex review invocation failed: %w; stderr=%s", err, truncate(stderr.String(), 512))
+		stderrTail := truncate(stderr.String(), 512)
+		// Surface a targeted hint when the daemon was launched inside a
+		// caller-side sandbox (most commonly Claude Code) that denies
+		// writes to ~/.codex. codex CLI emits "Failed to create session"
+		// + "Operation not permitted" when it cannot persist its session
+		// file, and the resulting reviewer skip is hard to diagnose from
+		// the raw stderr alone — the 2026-04-30 e2e regression burned
+		// hours on it. Detecting the pattern here lets operators spot the
+		// cause from a single log line.
+		if codexSandboxBlocked(stderrTail) {
+			return "", fmt.Errorf(
+				"codex review invocation failed: %w; stderr=%s "+
+					"(hint: codex could not write its session file; "+
+					"the daemon is probably running inside a caller sandbox "+
+					"that excludes ~/.codex — either start the daemon outside "+
+					"the sandbox or extend the write allowlist to cover ~/.codex)",
+				err, stderrTail)
+		}
+		return "", fmt.Errorf("codex review invocation failed: %w; stderr=%s", err, stderrTail)
 	}
 	return stdout.String(), nil
+}
+
+// codexSandboxBlocked recognises the stderr signature emitted when codex CLI
+// fails to create its session file because the parent process's sandbox has
+// blocked writes to ~/.codex. The check is intentionally conservative
+// (substring match against both the codex-side phrasing and the underlying
+// OS error) so we do not misclassify unrelated codex failures.
+func codexSandboxBlocked(stderr string) bool {
+	if stderr == "" {
+		return false
+	}
+	if !strings.Contains(stderr, "Operation not permitted") {
+		return false
+	}
+	return strings.Contains(stderr, "session") || strings.Contains(stderr, ".codex")
 }
 
 // invokeGemini shells out to `gemini -p` (the CLI's headless mode that

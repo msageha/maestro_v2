@@ -28,6 +28,9 @@ const (
 	PatternR8 RepairPatternID = "R8"
 	// PatternR9 identifies repairs produced by the R9 verify_pending stall reconciler.
 	PatternR9 RepairPatternID = "R9"
+	// PatternR10 identifies repairs produced by the R10 paused_for_replan
+	// deadletter reconciler.
+	PatternR10 RepairPatternID = "R10"
 )
 
 // NotificationKind identifies the type of deferred Planner notification.

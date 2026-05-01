@@ -16,6 +16,16 @@ import (
 const (
 	// defaultDispatchLeaseSec is the fallback lease duration (in seconds) when
 	// Config.Watcher.DispatchLeaseSec is unset or non-positive.
+	//
+	// Pane-activity refactor (2026-04-29): the lease no longer needs to
+	// match per-task wall-clock duration because the queue-scan path
+	// inspects each worker pane every scan and extends the lease when
+	// it observes activity (cross-scan hash delta or busy_patterns).
+	// 5 minutes is therefore the "pane completely silent before we give
+	// up" timer, NOT the per-task SLA. Long-running tasks that *do*
+	// produce output (every Sonnet/Opus implementation task we have
+	// observed) get their lease auto-extended; only a frozen pane hits
+	// this default.
 	defaultDispatchLeaseSec = 300
 
 	// minDispatchThreshold is the minimum age threshold before a dispatch-stuck

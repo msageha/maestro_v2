@@ -21,6 +21,12 @@ type ClaudeProcessManager struct {
 	config    *model.WatcherConfig
 	logger    *log.Logger
 	logLevel  logLevel
+	// maestroDir pins the project-root .maestro/ directory used to build
+	// re-launch commands sent into worker panes. Without this, a pane
+	// re-launching `maestro agent launch` from inside a worktree could
+	// resolve a partial worktree-local .maestro/ via findMaestroDir's
+	// cwd walk-up and then crash on the missing maestro.md file.
+	maestroDir string
 	// dirExists checks whether a path resolves to a real directory. Defaults
 	// to directoryExists (os.Stat). Tests use synthetic paths like
 	// "/project/worktree1" that never exist on the filesystem, so they
@@ -29,15 +35,16 @@ type ClaudeProcessManager struct {
 	dirExists func(path string) bool
 }
 
-func newClaudeProcessManager(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *ClaudeProcessManager {
+func newClaudeProcessManager(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel, maestroDir string) *ClaudeProcessManager {
 	return &ClaudeProcessManager{
-		paneIO:    paneIO,
-		paneState: paneState,
-		execCfg:   execCfg,
-		config:    cfg,
-		logger:    logger,
-		logLevel:  ll,
-		dirExists: directoryExists,
+		paneIO:     paneIO,
+		paneState:  paneState,
+		execCfg:    execCfg,
+		config:     cfg,
+		logger:     logger,
+		logLevel:   ll,
+		maestroDir: maestroDir,
+		dirExists:  directoryExists,
 	}
 }
 
@@ -68,7 +75,7 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 
 	// Re-launch Claude in the pane using the resolved binary path to prevent
 	// version skew between the daemon binary and the pane's PATH resolution.
-	if sendErr := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommand()); sendErr != nil {
+	if sendErr := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommandFor(pm.maestroDir)); sendErr != nil {
 		return fmt.Errorf("%w: %w", ErrRelaunch, sendErr)
 	}
 
@@ -170,7 +177,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	}
 
 	// Step 4: Re-launch Claude using the resolved binary path to prevent version skew.
-	if err := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommand()); err != nil {
+	if err := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommandFor(pm.maestroDir)); err != nil {
 		return markCWDUnknownOnError(fmt.Errorf("re-launch claude: %w", err))
 	}
 

@@ -12,8 +12,6 @@ import (
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/msageha/maestro_v2/internal/daemon/verification"
 )
 
 // newTestRealRunner constructs a RealVerifyRunner with a discard logger and a
@@ -73,12 +71,21 @@ func (rr *recordingRunner) run(_ context.Context, _ string, cmd string) (string,
 	return out.output, out.exitCode, out.err
 }
 
-func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
+// TestRealVerifyRunner_FallbackUsesGitDiffCheck pins the language-agnostic
+// fallback added in the 2026-04-30 redesign. When verify.yaml is missing,
+// the runner executes the single generic check `git diff --check` for
+// every project regardless of which marker files happen to be present at
+// the project root. Language detection (DetectProjectLanguage) and the
+// Default*ForLanguage helpers were deleted because the assumption "this
+// is a software-engineering monorepo with one primary language" does not
+// hold for polyglot, research, or documentation projects.
+func TestRealVerifyRunner_FallbackUsesGitDiffCheck(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
-	// DefaultVerifyConfigForProject only returns the Go fallback when go.mod
-	// exists at the project root. Without this stub the fallback would now be
-	// empty (intentional: avoid running `go vet` against non-Go repos).
+	// A go.mod sitting in the project root used to flip the fallback to
+	// the Go-specific (go vet / gosec / go bench) bundle. After the
+	// redesign the marker is irrelevant — the seeding here exists only to
+	// pin that no language-conditional behaviour remains.
 	if err := os.WriteFile(filepath.Join(r.projectDir, "go.mod"), []byte("module test\n"), 0o600); err != nil {
 		t.Fatalf("seed go.mod: %v", err)
 	}
@@ -92,28 +99,8 @@ func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	if !out.Passed {
 		t.Fatalf("expected pass, got %+v", out)
 	}
-	// DefaultVerifyConfigForProject now populates Build + Security + Performance
-	// for Go projects so extended_verification.security_check / performance_bench
-	// have language-appropriate tools to run by default. The Go fallback must
-	// still include `go vet ./...` as Build; Security/Performance are advisory
-	// extras that may or may not be wired by the operator's verify.yaml.
-	wantCmds := map[string]bool{
-		"go vet ./...":           false,
-		"gosec ./...":            false,
-		"go test -bench=. ./...": false,
-	}
-	for _, c := range rr.seen {
-		if _, ok := wantCmds[c]; ok {
-			wantCmds[c] = true
-		}
-	}
-	if !wantCmds["go vet ./..."] {
-		t.Errorf("Go fallback must execute `go vet ./...`; saw=%v", rr.seen)
-	}
-	for cmd, executed := range wantCmds {
-		if !executed {
-			t.Errorf("expected Go fallback to include %q, got %v", cmd, rr.seen)
-		}
+	if len(rr.seen) != 1 || rr.seen[0] != "git diff --check" {
+		t.Errorf("expected fallback to run only `git diff --check`, got %v", rr.seen)
 	}
 }
 
@@ -229,6 +216,74 @@ func TestRealVerifyRunner_CommandWithoutSnapshotIgnoresMutableGlobal(t *testing.
 	}
 	if len(rr.seen) != 1 || rr.seen[0] != "git diff --check" {
 		t.Fatalf("expected project fallback for missing command snapshot, got %v", rr.seen)
+	}
+}
+
+// TestRealVerifyRunner_MissingWorkdirFailsClosed pins the 2026-04-29
+// review fix: when the worker worktree has been cleaned up between
+// dispatch and verify (e.g. fast-track stall cleanup races a verify
+// already in flight), the runner must surface a hard failure rather
+// than letting the per-category advisory path classify the chdir
+// errors as passed_with_advisory_failures. Prior behaviour silently
+// marked tasks completed even though no verify command actually ran.
+func TestRealVerifyRunner_MissingWorkdirFailsClosed(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo build
+  lint:
+    - echo lint
+`)
+
+	missing := filepath.Join(t.TempDir(), "deleted_worktree")
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", missing, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected fail-closed outcome for missing workdir, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "verify_workdir_inaccessible") {
+		t.Errorf("expected verify_workdir_inaccessible reason, got %q", out.Reason)
+	}
+	if len(rr.seen) != 0 {
+		t.Errorf("missing workdir must not execute any verify commands, got %v", rr.seen)
+	}
+}
+
+// TestRealVerifyRunner_NonDirectoryWorkdirFailsClosed pins the symmetric
+// case: a path that exists but is a regular file (e.g. someone replaced
+// the worktree directory with a placeholder file) must also fail rather
+// than tunnel through to per-command chdir errors.
+func TestRealVerifyRunner_NonDirectoryWorkdirFailsClosed(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo build
+`)
+
+	notADir := filepath.Join(t.TempDir(), "actually_a_file")
+	if err := os.WriteFile(notADir, []byte("placeholder"), 0o600); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", notADir, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected fail-closed outcome for non-directory workdir, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "verify_workdir_not_directory") {
+		t.Errorf("expected verify_workdir_not_directory reason, got %q", out.Reason)
+	}
+	if len(rr.seen) != 0 {
+		t.Errorf("non-directory workdir must not execute any verify commands, got %v", rr.seen)
 	}
 }
 
@@ -399,6 +454,81 @@ func TestRealVerifyRunner_TimeoutReportsTimeoutReason(t *testing.T) {
 	}
 }
 
+// TestRealVerifyRunner_WorkdirDisappearsDuringRunFailsAsEnvironmental
+// pins the 2026-04-30 review correction: when worktree cleanup races a
+// still-running verify command and the subprocess fails on a missing
+// cwd (`getcwd: No such file or directory`), the runner must surface
+// the failure as Passed=false with a `verify_runner_workdir_inaccessible`
+// reason. The earlier behavior returned Passed=true under the assumption
+// that the publish gate had already moved past the point where verify
+// mattered, but the new state-side gate (collectWorktreePublishAndCleanup
+// + HasNonTerminalTaskState) blocks publish exactly while a task is at
+// verify_pending — so swallowing the failure here would mark the task
+// completed in state, bypass the gate, and let an unverified change
+// land on the base branch. Routing the disappearance through
+// repair_pending preserves the gate and keeps the audit log truthful:
+// verify did NOT pass, the runner just could not observe the outcome.
+func TestRealVerifyRunner_WorkdirDisappearsDuringRunFailsAsEnvironmental(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	// Use a workdir we can delete mid-run.
+	workDir := t.TempDir()
+	writeVerifyYAML(t, r, `verify:
+  test:
+    - npm test
+`)
+
+	r.runner = func(_ context.Context, dir, _ string) (string, int, error) {
+		// Simulate the race: cleanup unlinks the worktree while the
+		// verify command is mid-execution. The subprocess sees its
+		// cwd vanish and returns with a getcwd-style error.
+		_ = os.RemoveAll(dir)
+		return "shell-init: error retrieving current directory: getcwd: ENOENT", 7, nil
+	}
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", workDir, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected verify run to surface mid-run workdir disappearance as Passed=false (environmental verify failure), got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "verify_runner_workdir_inaccessible") {
+		t.Errorf("Reason should include verify_runner_workdir_inaccessible marker, got %q", out.Reason)
+	}
+	if !strings.Contains(out.Reason, "category=test") {
+		t.Errorf("Reason should include the failing category, got %q", out.Reason)
+	}
+}
+
+// TestRealVerifyRunner_WorkdirIntactFailureStillFails guards the
+// negative direction: a real failure (non-zero exit, workdir still
+// alive) must still surface as failed. Otherwise the workdir-stat
+// shortcut would silently swallow legitimate test failures.
+func TestRealVerifyRunner_WorkdirIntactFailureStillFails(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  test:
+    - npm test
+`)
+	r.runner = func(_ context.Context, _, _ string) (string, int, error) {
+		// Workdir untouched; real test failure with a normal output tail.
+		return "FAIL: 1 of 5 assertions", 1, nil
+	}
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected real test failure to remain Passed=false")
+	}
+	if !strings.Contains(out.Reason, "category=test") {
+		t.Errorf("reason should include category=test, got %q", out.Reason)
+	}
+}
+
 func TestRealVerifyRunner_AbortedContextReturnsError(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
@@ -447,7 +577,14 @@ func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 	}
 }
 
-func TestRealVerifyRunner_RejectsDirtyFilesOutsideExpectedPaths(t *testing.T) {
+// TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths pins the
+// 2026-04-30 e2e regression fix: changes outside expected_paths must be
+// advisory (logged, verify continues) rather than a hard failure. The
+// previous strict gate routinely false-failed legitimate fixes that
+// touched ancillary files (proxy/cmd/osv-ingest/main.go in the
+// reproduced case) and forced commands into permanent stuck states.
+// Commit-policy still enforces the boundary at integration time.
+func TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -479,14 +616,195 @@ func TestRealVerifyRunner_RejectsDirtyFilesOutsideExpectedPaths(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if out.Passed {
-		t.Fatalf("expected expected_paths violation, got pass")
+	if !out.Passed {
+		t.Fatalf("expected pass — out-of-bound paths are advisory now, got reason=%q", out.Reason)
 	}
-	if !strings.Contains(out.Reason, "verify_expected_paths_violation") {
-		t.Fatalf("reason = %q, want verify_expected_paths_violation", out.Reason)
+	if len(rr.seen) != 1 || rr.seen[0] != "true" {
+		t.Fatalf("verify command must still execute despite advisory, got %v", rr.seen)
 	}
-	if len(rr.seen) != 0 {
-		t.Fatalf("verify commands should not run after expected_paths violation, got %v", rr.seen)
+}
+
+// TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory pins the
+// 2026-04-29 fix: when a task creates a new directory containing a file,
+// `git status --porcelain` (default `-unormal`) collapses the directory to
+// a single entry like `notes/`, which then false-fails the expected_paths
+// matcher because `notes` does not match `notes/note_b.txt`. Without
+// `-uall`, every task that introduces a fresh directory hits a 100%
+// reproducible verify_expected_paths_violation. This test wires the
+// scenario end-to-end: a fresh `notes/note_b.txt` in a virgin git repo
+// must be recognised as inside expected_paths=["notes/note_b.txt"].
+func TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	r := newTestRealRunner(t)
+	if out, err := exec.Command("git", "-C", r.projectDir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v output=%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(r.projectDir, "notes"), 0o755); err != nil {
+		t.Fatalf("mkdir notes: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "notes", "note_b.txt"), []byte("hi\n"), 0o600); err != nil {
+		t.Fatalf("write note_b: %v", err)
+	}
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - true
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", []string{"notes/note_b.txt"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass for file inside expected_paths, got %+v", out)
+	}
+}
+
+// TestRealVerifyRunner_AllowsDependencyManifestChanges pins the 2026-04-29
+// dependency-manifest auto-allow rule. Routine package-manager operations
+// (npm install -D vitest, pip install ..., cargo add ...) update lockfiles
+// and source manifests as a side effect. Before this fix, every Node task
+// that pulled in a new dev dependency tripped expected_paths_violation
+// because the planner naturally declares only the source files it intends
+// the task to touch — not the lockfile that the package manager mutates
+// automatically. The auto-allow lets workers add legitimate dependencies
+// without forcing a planner repair cycle to widen expected_paths.
+func TestRealVerifyRunner_AllowsDependencyManifestChanges(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	r := newTestRealRunner(t)
+	if out, err := exec.Command("git", "-C", r.projectDir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v output=%s", err, out)
+	}
+	// Worker touched the source file the planner declared AND the
+	// lockfile that npm install updated as a side effect.
+	if err := os.MkdirAll(filepath.Join(r.projectDir, "src"), 0o755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "src", "main.ts"), []byte("export {};\n"), 0o600); err != nil {
+		t.Fatalf("write main.ts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "package.json"), []byte("{\"name\":\"x\"}\n"), 0o600); err != nil {
+		t.Fatalf("write package.json: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "package-lock.json"), []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write package-lock.json: %v", err)
+	}
+
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - true
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", []string{"src/main.ts"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass — package.json/package-lock.json must auto-allow alongside src/main.ts; got %+v", out)
+	}
+}
+
+// TestVerifyPathAllowed_DependencyManifestBasenames is a focused unit
+// test that exercises the basename-based admission across every package
+// manager listed in dependencyManifestBasenames. Nested locations (e.g.
+// monorepo workspaces under apps/web/) must be admitted just like
+// project-root manifests, because the rule matches on path.Base().
+func TestVerifyPathAllowed_DependencyManifestBasenames(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"package.json",
+		"package-lock.json",
+		"yarn.lock",
+		"pnpm-lock.yaml",
+		"go.mod",
+		"go.sum",
+		"Cargo.lock",
+		"pyproject.toml",
+		"uv.lock",
+		"poetry.lock",
+		"requirements.txt",
+		"Gemfile.lock",
+		"composer.lock",
+		"mix.lock",
+		// Nested monorepo workspaces should also be admitted.
+		"apps/web/package.json",
+		"crates/core/Cargo.lock",
+	}
+	for _, p := range cases {
+		if !verifyPathAllowed(p, nil) {
+			t.Errorf("verifyPathAllowed(%q, nil) = false, want true (dependency manifest auto-allow)", p)
+		}
+	}
+}
+
+// TestVerifyPathAllowed_NonManifestNotAllowed pins that the auto-allow
+// rule is narrow: a similar-looking file (e.g. a `lock.json` in src/)
+// must NOT be admitted just because the basename mentions a lockfile
+// keyword. The list is exact-match, not heuristic.
+func TestVerifyPathAllowed_NonManifestNotAllowed(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"src/lock.json",            // not in the allow list
+		"src/my-package-lock.json", // basename mismatch
+		"src/Cargo.lock.bak",
+	}
+	for _, p := range cases {
+		if verifyPathAllowed(p, nil) {
+			t.Errorf("verifyPathAllowed(%q, nil) = true; want false (not a real manifest)", p)
+		}
+	}
+}
+
+// TestGitChangedFiles_UntrackedFilesInsideNewDirectory directly exercises
+// the helper to lock in `-uall` behaviour. Without the flag, git reports
+// the directory only; with it, every file is reported individually.
+func TestGitChangedFiles_UntrackedFilesInsideNewDirectory(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	dir := t.TempDir()
+	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v output=%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "pkg", "sub"), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pkg", "sub", "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatalf("write a: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pkg", "sub", "b.txt"), []byte("b"), 0o600); err != nil {
+		t.Fatalf("write b: %v", err)
+	}
+
+	files, err := gitChangedFiles(context.Background(), dir)
+	if err != nil {
+		t.Fatalf("gitChangedFiles: %v", err)
+	}
+	want := map[string]bool{"pkg/sub/a.txt": false, "pkg/sub/b.txt": false}
+	for _, f := range files {
+		if _, ok := want[f]; ok {
+			want[f] = true
+		}
+	}
+	for f, seen := range want {
+		if !seen {
+			t.Errorf("expected file %q in changed list, got %v", f, files)
+		}
+	}
+	for _, f := range files {
+		if f == "pkg/" || f == "pkg/sub/" {
+			t.Errorf("directory entry %q must not appear; -uall should expand it", f)
+		}
 	}
 }
 
@@ -591,13 +909,15 @@ func TestTailBytes_TrimsPartialUTF8Prefix(t *testing.T) {
 	_ = got
 }
 
-// TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo asserts that
-// when a non-empty expected_paths is supplied but `git status` fails (e.g.
-// the working directory is not a git repository), the verify outcome reports
-// the failure as expected_paths-derived rather than a generic verify failure.
-// F-008: ensure operators can disambiguate worktree-resolution bugs from
-// command failures.
-func TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo(t *testing.T) {
+// TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails pins the
+// 2026-04-30 advisory contract: when expected_paths is supplied but
+// `git status` fails (e.g. running outside a git repository), the
+// runner must NOT fail verify — it logs an advisory and proceeds to
+// run the configured commands. expected_paths is only meaningful for
+// software engineering inside a git repo; orchestrating research /
+// documentation tasks outside git must still reach the verify
+// commands the operator listed in verify.yaml.
+func TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
@@ -615,160 +935,19 @@ func TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if out.Passed {
-		t.Fatalf("expected fail when expected_paths check runs outside a git repo, got pass")
-	}
-	if !strings.Contains(out.Reason, "verify_expected_paths_check_failed") {
-		t.Fatalf("reason = %q, want it to mention verify_expected_paths_check_failed (F-008)", out.Reason)
-	}
-	if len(rr.seen) != 0 {
-		t.Fatalf("verify commands should not run after expected_paths check failure, got %v", rr.seen)
-	}
-}
-
-// TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands pins
-// the Phase C-3 wiring: when extended_verification configures perspectives
-// (security / performance) and the verify snapshot does not list those
-// categories, the runner must execute the perspectives' commands so the
-// security gate actually runs. Before the wiring fix, EnsembleVerifier
-// was constructed in PhaseCManager but never consulted; operators saw
-// "ensemble verifier security perspective enabled" in the startup log
-// while no security command was ever invoked.
-func TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands(t *testing.T) {
-	t.Parallel()
-	r := newTestRealRunner(t)
-	// Snapshot only configures Build — Security/Performance are absent so
-	// the EnsembleVerifier must supply them.
-	writeVerifyYAML(t, r, `verify:
-  build:
-    - echo build1
-`)
-
-	v := verification.NewVerifier()
-	if err := v.SetPerspectives([]verification.Perspective{
-		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
-		{Name: "security", Commands: []string{"echo sec1"}, Weight: 1.0},
-		{Name: "performance", Commands: []string{"echo perf1"}, Weight: 1.0},
-	}); err != nil {
-		t.Fatalf("SetPerspectives: %v", err)
-	}
-	r.SetEnsembleVerifier(v)
-
-	rr := &recordingRunner{}
-	r.runner = rr.run
-
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
 	if !out.Passed {
-		t.Fatalf("expected pass, got %+v", out)
+		t.Fatalf("expected pass — git_status failure must be advisory only, got reason=%q", out.Reason)
 	}
-
-	wantContain := []string{"echo build1", "echo sec1", "echo perf1"}
-	for _, want := range wantContain {
-		found := false
-		for _, c := range rr.seen {
-			if c == want {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("expected runner to invoke %q (perspective should augment missing snapshot category); seen=%v", want, rr.seen)
-		}
+	if len(rr.seen) != 1 || rr.seen[0] != "true" {
+		t.Fatalf("verify command must still execute despite advisory git status failure, got %v", rr.seen)
 	}
 }
 
-// TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun pins the
-// per-perspective weight semantics: a non-critical perspective (weight
-// < 1.0) that fails must NOT abort the run. The legacy fail-fast path
-// short-circuited on the first non-zero exit regardless of perspective
-// weight, so an "advisory" security finding immediately failed verify
-// and routed the task to repair_pending — defeating the point of weight
-// configuration.
-func TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun(t *testing.T) {
-	t.Parallel()
-	r := newTestRealRunner(t)
-	writeVerifyYAML(t, r, `verify:
-  build:
-    - echo b1
-`)
-
-	v := verification.NewVerifier()
-	if err := v.SetPerspectives([]verification.Perspective{
-		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
-		{Name: "security", Commands: []string{"echo sec_advisory"}, Weight: 0.5},
-	}); err != nil {
-		t.Fatalf("SetPerspectives: %v", err)
-	}
-	r.SetEnsembleVerifier(v)
-
-	rr := &recordingRunner{
-		results: map[string]struct {
-			output   string
-			exitCode int
-			err      error
-		}{
-			"echo sec_advisory": {output: "advisory finding", exitCode: 1},
-		},
-	}
-	r.runner = rr.run
-
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if !out.Passed {
-		t.Fatalf("expected pass — advisory perspective failure must not fail the run, got %+v", out)
-	}
-
-	// Both commands must have run; advisory failure does not short-circuit.
-	if len(rr.seen) != 2 {
-		t.Errorf("expected both build and advisory security commands to run, got %v", rr.seen)
-	}
-}
-
-// TestRealVerifyRunner_EnsembleCriticalFailureFailsRun mirrors the
-// advisory test above but with a critical perspective (weight >= 1.0):
-// a failure of a critical perspective must fail-fast and route the task
-// to repair_pending.
-func TestRealVerifyRunner_EnsembleCriticalFailureFailsRun(t *testing.T) {
-	t.Parallel()
-	r := newTestRealRunner(t)
-	writeVerifyYAML(t, r, `verify:
-  build:
-    - echo b1
-`)
-
-	v := verification.NewVerifier()
-	if err := v.SetPerspectives([]verification.Perspective{
-		{Name: "build", Commands: []string{"go build ./..."}, Weight: 1.0},
-		{Name: "security", Commands: []string{"echo sec_critical"}, Weight: 1.0},
-	}); err != nil {
-		t.Fatalf("SetPerspectives: %v", err)
-	}
-	r.SetEnsembleVerifier(v)
-
-	rr := &recordingRunner{
-		results: map[string]struct {
-			output   string
-			exitCode int
-			err      error
-		}{
-			"echo sec_critical": {output: "critical finding", exitCode: 2},
-		},
-	}
-	r.runner = rr.run
-
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if out.Passed {
-		t.Fatalf("expected fail — critical perspective failure must fail the run, got %+v", out)
-	}
-	if !strings.Contains(out.Reason, "category=security") {
-		t.Errorf("expected reason to include category=security, got %q", out.Reason)
-	}
-}
+// 2026-04-30 redesign: the previous EnsembleVerifier perspective tests
+// (TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands,
+// TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun,
+// TestRealVerifyRunner_EnsembleCriticalFailureFailsRun) were removed
+// alongside the perspective_weights / advisory-vs-critical wiring.
+// verify.yaml is now the single source of truth: every listed category
+// runs at the critical weight, and non-listed categories do not run.
+// See buildVerifyCategories for the simplified merge.

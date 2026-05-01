@@ -102,6 +102,30 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 				continue
 			}
 
+			// Persist Phase.CancelledReason alongside the status flip when the
+			// resolver requested it. Used by:
+			//  - cascade cancellations (set the marker so recovery can find it)
+			//  - cascade recoveries (clear the marker so a future operator
+			//    cancel does not collide with the prior cascade reference).
+			// Failures here are logged at warn but do NOT roll back the
+			// status transition: the recovery is observability-grade,
+			// and a stale reason on a re-failed phase is bounded by the
+			// next cascade overwriting it.
+			if tr.ClearCancelledReason {
+				if err := qh.dependencyResolver.GetStateManager().SetPhaseCancelledReason(cmd.ID, tr.PhaseID, nil); err != nil {
+					qh.log(LogLevelWarn,
+						"phase_cancelled_reason_clear_failed command=%s phase=%s error=%v",
+						cmd.ID, tr.PhaseID, err)
+				}
+			} else if tr.CancelledReason != "" {
+				reason := tr.CancelledReason
+				if err := qh.dependencyResolver.GetStateManager().SetPhaseCancelledReason(cmd.ID, tr.PhaseID, &reason); err != nil {
+					qh.log(LogLevelWarn,
+						"phase_cancelled_reason_set_failed command=%s phase=%s reason=%s error=%v",
+						cmd.ID, tr.PhaseID, reason, err)
+				}
+			}
+
 			now := qh.clock.Now().UTC().Format(time.RFC3339)
 			switch tr.NewStatus {
 			case model.PhaseStatusCompleted:
@@ -189,6 +213,138 @@ func (qh *QueueHandler) isPhaseMergeRecorded(commandID, phaseID string) bool {
 	return merged
 }
 
+// stepAwaitingFillWatchdog — Step 0.7.5: re-prompt a Planner that has
+// stopped making progress on an awaiting_fill phase.
+//
+// Motivation (2026-04-30 e2e regression): Phase transitions to
+// awaiting_fill emit a one-shot `awaiting_fill` planner signal in
+// stepPhaseTransitions. Phase B delivers it to the Planner pane via tmux
+// and then removes it from the signal queue. If the Planner LLM stops
+// making progress (the user observed a 6+ minute "Thinking" stall after
+// signal delivery, with `task_ids` still empty), there is no further
+// re-prompt until R6 fires the hard `fill_deadline_at` timeout — which
+// defaults to 3 hours. The watchdog closes that gap by detecting a
+// per-phase elapsed window since `awaiting_fill_since` and re-emitting
+// a different-Kind signal so the Planner sees a fresh prompt.
+//
+// The watchdog fires at most once per awaiting_fill window, gated by
+// Phase.AwaitingFillStallNotifiedAt. On the first observed elapsed
+// breach the watchdog (1) emits a signal with Kind=`awaiting_fill_stall`
+// and (2) records the notification timestamp on the phase so subsequent
+// scan cycles do not re-fire. The marker is cleared by
+// ApplyPhaseTransition / submit.go whenever the phase exits
+// awaiting_fill, so a re-entry restarts the clock.
+//
+// Skipped when:
+//   - the watchdog is disabled (notify_minutes = 0)
+//   - StateReader is not wired
+//   - the command is not in_progress
+//   - the phase is not at awaiting_fill
+//   - the phase has no AwaitingFillSince (legacy state pre-watchdog)
+//   - elapsed < threshold
+//   - AwaitingFillStallNotifiedAt is already set (one-shot per window)
+func (qh *QueueHandler) stepAwaitingFillWatchdog(s *scanState) {
+	if !qh.dependencyResolver.HasStateReader() {
+		return
+	}
+	thresholdMin := qh.config.Maestro.EffectiveAwaitingFillStallNotifyMinutes()
+	if thresholdMin <= 0 {
+		return
+	}
+	threshold := time.Duration(thresholdMin) * time.Minute
+	now := qh.clock.Now()
+	nowStr := now.UTC().Format(time.RFC3339)
+
+	stateReader := qh.dependencyResolver.GetStateReader()
+	stateMgr := qh.dependencyResolver.GetStateManager()
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		// Cancellation in flight: the Planner pane may legitimately go
+		// quiet while cancellation propagates; firing a stall prompt now
+		// would race the cancel signal that is about to land. Defer.
+		if qh.cancelHandler != nil && qh.cancelHandler.IsCommandCancelRequested(cmd) {
+			continue
+		}
+
+		phases, err := stateReader.GetCommandPhases(cmd.ID)
+		if err != nil {
+			continue
+		}
+		for _, p := range phases {
+			if p.Status != model.PhaseStatusAwaitingFill {
+				continue
+			}
+			if p.AwaitingFillStallNotifiedAt != nil {
+				// Already notified for this awaiting_fill window — skip
+				// until the phase transitions out and re-enters (which
+				// clears the marker via ApplyPhaseTransition).
+				continue
+			}
+			if p.AwaitingFillSince == nil {
+				// Legacy state file written before the watchdog field
+				// existed. Refusing to fire here means this phase will
+				// only be caught by R6 fill_deadline; that is acceptable
+				// because the missing timestamp would force us to guess
+				// the entry time, which could mis-fire on long-running
+				// awaiting_fill windows that operators have intentionally
+				// left in flight.
+				continue
+			}
+			since, err := qh.timeCache.ParseRFC3339(*p.AwaitingFillSince)
+			if err != nil {
+				qh.log(LogLevelDebug,
+					"awaiting_fill_watchdog_parse_failed command=%s phase=%s value=%q error=%v",
+					cmd.ID, p.Name, *p.AwaitingFillSince, err)
+				continue
+			}
+			elapsed := now.Sub(since)
+			if elapsed < threshold {
+				continue
+			}
+
+			msg := fmt.Sprintf(
+				"[maestro] kind:awaiting_fill_stall command_id:%s phase:%s\n"+
+					"%s elapsed since the original awaiting_fill signal without a plan_submit follow-up.\n"+
+					"next_action: review the phase context (audit/test results, prior tasks) and call "+
+					"`maestro plan submit --command-id %s --phase %s --tasks-file <path>` "+
+					"with the concrete task list. If the phase is genuinely blocked, call "+
+					"`maestro plan request-cancel --command-id %s --reason \"<why>\"` instead so "+
+					"the Orchestrator is notified.",
+				cmd.ID, p.Name, elapsed.Round(time.Second), cmd.ID, p.Name, cmd.ID,
+			)
+			qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+				Kind:      "awaiting_fill_stall",
+				CommandID: cmd.ID,
+				PhaseID:   p.ID,
+				PhaseName: p.Name,
+				Message:   msg,
+				Reason:    fmt.Sprintf("awaiting_fill_elapsed=%s threshold=%s", elapsed.Round(time.Second), threshold),
+				CreatedAt: nowStr,
+				UpdatedAt: nowStr,
+			}, s.signalIndex)
+
+			// Record the notification timestamp so the watchdog does not
+			// re-fire on every scan cycle. State is mutated outside Phase A's
+			// queue snapshot (phase state lives in command-state YAML, not
+			// the queue file), so the dedup is durable across scans.
+			if stateMgr != nil {
+				if err := stateMgr.MarkAwaitingFillStallNotified(cmd.ID, p.ID, nowStr); err != nil {
+					qh.log(LogLevelWarn,
+						"awaiting_fill_watchdog_mark_notified_failed command=%s phase=%s error=%v",
+						cmd.ID, p.Name, err)
+				}
+			}
+			qh.log(LogLevelWarn,
+				"awaiting_fill_watchdog_fired command=%s phase=%s elapsed=%s threshold=%s",
+				cmd.ID, p.Name, elapsed.Round(time.Second), threshold)
+		}
+	}
+}
+
 // stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.
 func (qh *QueueHandler) stepPlannerSignals(s *scanState) {
 	if len(s.signals.Data.Signals) > 0 {
@@ -198,7 +354,7 @@ func (qh *QueueHandler) stepPlannerSignals(s *scanState) {
 
 // stepPreemptiveRenewal — Renew command leases before checking expired leases.
 func (qh *QueueHandler) stepPreemptiveRenewal(s *scanState) {
-	qh.preemptiveCommandRenewal(&s.commands.Data, &s.commands.Dirty)
+	qh.preemptiveCommandRenewal(&s.commands.Data, &s.commands.Dirty, s.tasks)
 }
 
 // stepDispatchOrRecovery — Steps 1 & 2: Dispatch or recovery (mutually exclusive).
@@ -214,7 +370,7 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 			s.taskDirty[queueFile] = d
 			s.work.busyChecks = append(s.work.busyChecks, items...)
 		}
-		qh.autoExtendExpiredCommandLeases(&s.commands.Data, &s.commands.Dirty)
+		qh.autoExtendExpiredCommandLeases(&s.commands.Data, &s.commands.Dirty, s.tasks)
 		qh.recoverExpiredNotificationLeases(&s.notifications.Data, &s.notifications.Dirty)
 		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(s.work.busyChecks))
 	} else {

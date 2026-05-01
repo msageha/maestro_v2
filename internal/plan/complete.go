@@ -147,22 +147,20 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// can-complete validation
 	derivedPlanStatus, err := CanComplete(state)
 	if err != nil {
-		return nil, err
-	}
-
-	// Worktree publish guard: when worktree mode is enabled, the integration
-	// branch must be published before the command can complete.
-	if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
-		var notPub *worktreeNotPublishedError
-		if errors.As(err, &notPub) {
-			// Publish hasn't completed yet. Write a deferred intent so the
-			// daemon can auto-complete after publish, and return a non-error
-			// "deferred_publish" result to the caller.
+		// Transient daemon-side state (e.g. phase awaiting the
+		// merge_recorded gate after every task in it is terminal).
+		// Mirror the worktreeNotPublishedError handling below: write a
+		// deferred_complete intent so Phase C's deferredPlanCompleter
+		// finalises the plan once publish succeeds. Avoids forcing the
+		// Planner into an explicit retry loop while the daemon flips
+		// phase.Status from active → completed.
+		var retErr *retryableError
+		if errors.As(err, &retErr) {
 			if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
 				return nil, fmt.Errorf("write deferred complete: %w", writeErr)
 			}
-			slog.Info("Complete: deferred until worktree publish",
-				"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
+			slog.Info("Complete: deferred until daemon resolves transient phase state",
+				"command_id", opts.CommandID, "reason", retErr.Error())
 			return &CompleteResult{
 				CommandID: opts.CommandID,
 				Status:    "deferred_publish",
@@ -171,7 +169,8 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		return nil, err
 	}
 
-	// Map PlanStatus to Status for result
+	// Map PlanStatus to Status for result first so the publish guard below
+	// can short-circuit for non-success outcomes.
 	var resultStatus model.Status
 	switch derivedPlanStatus {
 	case model.PlanStatusCompleted:
@@ -182,6 +181,39 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		resultStatus = model.StatusCancelled
 	default:
 		return nil, fmt.Errorf("unexpected derived status: %s", derivedPlanStatus)
+	}
+
+	// Worktree publish guard: when worktree mode is enabled, the integration
+	// branch must be published before the command can complete *successfully*.
+	//
+	// 2026-04-30 e2e regression: failed/cancelled commands hit this guard and
+	// looped on `deferred_publish` forever — `worktree_publish_skip_failed`
+	// fires every scan because phases are non-Completed, so publish never
+	// happens, so deferred_complete is never finalised. Bypassing the guard
+	// for non-success outcomes is correct: failed commands should NOT be
+	// merged to base, and skipping the publish step lets the queue/state
+	// transition to terminal failed cleanly. The guard is retained for
+	// successful commands so that "command completed" never lies about the
+	// base branch state.
+	if resultStatus == model.StatusCompleted {
+		if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
+			var notPub *worktreeNotPublishedError
+			if errors.As(err, &notPub) {
+				// Publish hasn't completed yet. Write a deferred intent so the
+				// daemon can auto-complete after publish, and return a non-error
+				// "deferred_publish" result to the caller.
+				if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
+					return nil, fmt.Errorf("write deferred complete: %w", writeErr)
+				}
+				slog.Info("Complete: deferred until worktree publish",
+					"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
+				return &CompleteResult{
+					CommandID: opts.CommandID,
+					Status:    "deferred_publish",
+				}, nil
+			}
+			return nil, err
+		}
 	}
 
 	// Aggregate task results from results/worker{N}.yaml (lock-free: AtomicWrite

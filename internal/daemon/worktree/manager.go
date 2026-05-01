@@ -894,8 +894,300 @@ func (wm *Manager) findWorker(state *model.WorktreeCommandState, workerID string
 	return nil
 }
 
+// commitWorkerInlineForRefresh stages tracked file modifications and creates a
+// minimal commit so RefreshWorkerWorktreeToIntegrationHead can fast-forward.
+//
+// This is the wave-crossing inline auto-commit: same phase, two tasks, the
+// canonical phase-boundary CommitWorkerChanges has not yet fired but the
+// dispatcher needs a clean worktree to refresh against integration. The
+// function deliberately stays narrow:
+//
+//   - status / lifecycle: untouched. Worker stays at whatever lifecycle
+//     status it had (typically `active`). The phase-boundary commit (which
+//     does the `active → committed` transition) still runs as before.
+//   - untracked files: NOT staged. The phase-boundary commit owns
+//     untracked-file admission via stageNewFiles + expected_paths +
+//     sensitive-file filters; replicating those mid-phase would either
+//     bypass them or duplicate the policy machinery. If untracked files
+//     remain after `git add -u`, the caller aborts the refresh.
+//   - sensitive files: tracked sensitive files briefly staged by `git add -u`
+//     are unstaged via the same helper as the canonical commit, so we
+//     never inline-commit credentials.
+//   - commit policy: not enforced here. The wave-crossing commit might
+//     legitimately span multiple tasks' expected_paths, which the
+//     phase-boundary policy treats as a single union. Re-applying it at
+//     wave granularity would false-fail the union shape.
+//
+// Caller MUST hold wm.mu (this is invoked from RefreshWorkerWorktreeToIntegrationHead
+// which acquires it).
+func (wm *Manager) commitWorkerInlineForRefresh(ws *model.WorktreeState, commandID, workerID string) error {
+	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
+		return fmt.Errorf("git add -u: %w", err)
+	}
+	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
+		// Non-fatal: sensitive files are also filtered at phase-boundary commit.
+		// Log so an operator can see what happened, but proceed — we have
+		// already executed `add -u`, so reverting cleanly is awkward and
+		// leaving the file unstaged is what unstageSensitiveFiles attempts.
+		wm.Log(core.LogLevelWarn,
+			"inline_commit_unstage_sensitive_warning command=%s worker=%s error=%v",
+			commandID, workerID, err)
+	}
+	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return fmt.Errorf("git diff --cached: %w", err)
+	}
+	if strings.TrimRight(stagedOut, "\x00") == "" {
+		// Nothing tracked to commit — the dirty bits were untracked or
+		// filtered. Caller's post-check sees the still-dirty worktree and
+		// aborts; that is the right outcome because we cannot safely admit
+		// untracked files mid-phase.
+		return nil
+	}
+	message := fmt.Sprintf("[maestro] wave-crossing auto-commit: worker=%s command=%s", workerID, commandID)
+	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {
+		return fmt.Errorf("git commit: %w", err)
+	}
+	wm.Log(core.LogLevelInfo,
+		"worker_inline_committed_for_refresh command=%s worker=%s",
+		commandID, workerID)
+	return nil
+}
+
+// onlyUntrackedDirty reports whether every non-empty line in `git status
+// --porcelain` output represents an untracked file ("??" marker). Used by
+// RefreshWorkerWorktreeToIntegrationHead to distinguish the benign
+// case (read-only task residue) from a tracked-modification leak after
+// inline auto-commit. The porcelain v1 grammar uses two-character XY
+// codes (X=staged, Y=unstaged); "??" is the dedicated marker for
+// untracked entries (`man git-status` → "Short Format" → Untracked).
+func onlyUntrackedDirty(porcelain string) bool {
+	hasAny := false
+	for _, line := range strings.Split(porcelain, "\n") {
+		trimmed := strings.TrimRight(line, "\r")
+		if trimmed == "" {
+			continue
+		}
+		hasAny = true
+		// Each porcelain entry is "XY <path>" where XY is the two-char
+		// status. Untracked entries are exactly "?? <path>".
+		if !strings.HasPrefix(trimmed, "?? ") {
+			return false
+		}
+	}
+	return hasAny
+}
+
 // AutoCommit returns whether auto-commit is enabled in the worktree config.
 func (wm *Manager) AutoCommit() bool { return wm.config.AutoCommit }
 
 // AutoMerge returns whether auto-merge is enabled in the worktree config.
 func (wm *Manager) AutoMerge() bool { return wm.config.AutoMerge }
+
+// RefreshWorkerWorktreeToIntegrationHead fast-forwards the worker's branch
+// (and its worktree checkout) to the integration branch's latest HEAD when it
+// is safe to do so. The dispatcher invokes this just before handing a worker a
+// new task; without it, a worker that was Integrated by an earlier phase merge
+// keeps its old branch tip when re-used in a later phase, so sibling-worker
+// commits already merged into integration are invisible to the worker. The
+// 2026-04 alpha/beta/test workflow regression bisected to exactly this stale
+// HEAD: a verify_integration test ran on worker1's worktree which had
+// Version() = "alpha" while integration HEAD already carried "alpha+beta".
+//
+// Behaviour:
+//   - Worktree must be clean. Dirty worktree → error; the caller fails the
+//     dispatch rather than risk silent drift.
+//   - Worker HEAD == integration HEAD → no-op.
+//   - Worker HEAD is a strict ancestor of integration HEAD → fast-forward
+//     merge (no merge commit) so the worker branch stays linear.
+//   - integration HEAD is an ancestor of worker HEAD → no-op (worker has its
+//     own newer commits, treat as already-current).
+//   - Histories diverged → error; the caller refuses dispatch and an
+//     operator must investigate.
+//
+// SyncFromIntegration is intentionally not used here: it skips Integrated
+// workers (loses Integrated status would erase post-merge progress markers)
+// and creates a "[maestro] sync integration" merge commit that pollutes the
+// worker history. The fast-forward path keeps both invariants intact while
+// closing the staleness gap.
+func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			// No worktree state — worktree mode disabled for this command.
+			// Caller already handles "no worktree" via GetWorkerPath path.
+			return nil
+		}
+		return fmt.Errorf("load state: %w", err)
+	}
+	if state.Integration.Branch == "" {
+		// Integration branch not yet created — nothing to refresh against.
+		return nil
+	}
+	ws := wm.findWorker(state, workerID)
+	if ws == nil {
+		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+	}
+	if _, err := os.Stat(ws.Path); err != nil {
+		if os.IsNotExist(err) {
+			// Worktree directory gone — caller's path resolution will surface
+			// this. Nothing to refresh.
+			return nil
+		}
+		return fmt.Errorf("stat worker worktree: %w", err)
+	}
+
+	// Conflict resolution is the canonical case where the worker is
+	// *intentionally* diverged from integration: the diverged state IS the
+	// conflict that the resolution task is being dispatched to fix. Treating
+	// that divergence as a refresh failure would block the resolution task
+	// dispatch in a 5-attempt → dead-letter → planner-replan loop (the
+	// 2026-04 follow-up regression). The skip is narrow: only Conflict /
+	// Resolving statuses, so Integrated / Active / Created etc. still get
+	// fast-forwarded (or fail-closed on real divergence) as designed.
+	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+		wm.Log(core.LogLevelDebug,
+			"worker_worktree_refresh_skipped_for_conflict_resolution command=%s worker=%s status=%s",
+			commandID, workerID, ws.Status)
+		return nil
+	}
+
+	// Refuse to touch a dirty worktree — uncommitted edits whose provenance we
+	// cannot reconstruct must never be silently merged with integration.
+	//
+	// Wave-crossing inline auto-commit (2026-04-29 e2e regression): when a
+	// worker has just finished task A in the same phase as task B about to
+	// be dispatched, Phase B's canonical auto-commit has not yet fired
+	// (it runs at phase boundary, not wave boundary). The result is a
+	// dirty worktree at task B dispatch time; without this fast-path
+	// commit, refresh aborts → dispatch fails → attempts climbs to the
+	// retry cap → the task lands in dead-letter and the phase fails. The
+	// inline commit deliberately avoids the heavy CommitWorkerChanges
+	// path (status transition, expected_paths gate, commit-policy
+	// scanning): all of that runs again at phase boundary, and applying
+	// it now would either reject legitimate intermediate state (the
+	// commit-policy gate is sized for whole-phase output, not wave
+	// output) or prematurely flip the worker to `committed`. Untracked
+	// files are intentionally NOT staged here because we cannot evaluate
+	// expected_paths or sensitive-file filters cheaply mid-phase; they
+	// are deferred to the phase-boundary auto-commit. If any untracked
+	// file remains after `git add -u`, we still abort — sibling-worker
+	// fast-forward is too risky when we cannot account for the working
+	// tree.
+	statusOut, statusErr := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
+	if statusErr != nil {
+		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, statusErr)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		if err := wm.commitWorkerInlineForRefresh(ws, commandID, workerID); err != nil {
+			return fmt.Errorf("worker %s worktree has uncommitted changes that could not be auto-committed inline: %w", workerID, err)
+		}
+		statusOut, statusErr = wm.gitOutputInDir(ws.Path, "status", "--porcelain")
+		if statusErr != nil {
+			return fmt.Errorf("git status post-inline-commit (worker=%s, command=%s): %w", workerID, commandID, statusErr)
+		}
+		if strings.TrimSpace(statusOut) != "" {
+			// Untracked-only soft-skip (2026-04-29 e2e regression):
+			// inline auto-commit deliberately does not stage untracked
+			// files (replicating the sensitive-file gate and
+			// expected_paths filter mid-phase is unsafe). Without
+			// soft-skip, the post-check fails, dispatch fails, the
+			// inline retry loop burns through the configured attempts
+			// cap in seconds, and the next task lands in the dead-letter
+			// queue — blocking phase progression on what may be benign
+			// tmp output OR legitimate task artefacts that the
+			// expected_paths gate will commit at phase-boundary time.
+			// When the remaining dirty bits are exclusively untracked
+			// entries, log loud and skip the fast-forward for this
+			// cycle. The phase-boundary commit still applies the full
+			// sensitive-file / expected_paths gates before merge.
+			//
+			// Wording note (2026-05-01): earlier copy described these as
+			// "read-only investigation residue", which mis-classified
+			// legitimate task artefacts in operator logs. The message
+			// now states what we observed (untracked files post inline
+			// commit) without inferring intent.
+			if onlyUntrackedDirty(statusOut) {
+				wm.Log(core.LogLevelWarn,
+					"worker_worktree_refresh_soft_skipped_untracked_only command=%s worker=%s status=%q "+
+						"(untracked files remain after inline commit; integration fast-forward deferred — phase-boundary commit will gate them)",
+					commandID, workerID, strings.TrimSpace(statusOut))
+				return nil
+			}
+			return fmt.Errorf("worker %s worktree still dirty after inline auto-commit (mixed tracked + untracked); refresh aborted", workerID)
+		}
+	}
+
+	workerHEADRaw, err := wm.gitOutputInDir(ws.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("rev-parse worker HEAD (worker=%s, command=%s): %w", workerID, commandID, err)
+	}
+	workerHEAD := strings.TrimSpace(workerHEADRaw)
+
+	integHEADRaw, err := wm.gitOutputInDir(ws.Path, "rev-parse", state.Integration.Branch)
+	if err != nil {
+		return fmt.Errorf("rev-parse integration HEAD (worker=%s, command=%s, branch=%s): %w",
+			workerID, commandID, state.Integration.Branch, err)
+	}
+	integHEAD := strings.TrimSpace(integHEADRaw)
+
+	if workerHEAD == integHEAD {
+		return nil
+	}
+
+	mbRaw, err := wm.gitOutputInDir(ws.Path, "merge-base", "HEAD", state.Integration.Branch)
+	if err != nil {
+		return fmt.Errorf("merge-base (worker=%s, command=%s): %w", workerID, commandID, err)
+	}
+	mergeBase := strings.TrimSpace(mbRaw)
+
+	switch mergeBase {
+	case integHEAD:
+		// Worker is strictly ahead of integration. Refusing to fast-forward
+		// here is correct: the worker has commits not yet in integration and
+		// rebasing them would silently drop or duplicate work.
+		return nil
+	case workerHEAD:
+		// Worker HEAD is a strict ancestor of integration → safe fast-forward.
+	default:
+		// 2026-04-30 e2e regression: a worker that has truly diverged (own
+		// commits + integration also moved on) used to be a hard failure
+		// here, which produced 3-4 minutes of `worktree_refresh_failed`
+		// log spam (each scan re-dispatches and re-fails) before the task
+		// finally dead-letters. For autonomous orchestration the right
+		// graceful degradation is to reset the worker worktree to
+		// integration HEAD so the next task dispatch can proceed: the
+		// diverged commits represent work that never made it into
+		// integration anyway (a race or a stale worker carryover) and
+		// clinging to them only blocks recovery. The Planner can
+		// re-dispatch the lost work as a fresh task if needed; staying
+		// stuck is the worse outcome.
+		wm.Log(core.LogLevelWarn,
+			"worker_worktree_diverged_resetting command=%s worker=%s "+
+				"worker_head=%s integration_head=%s merge_base=%s "+
+				"(auto-recover: discarding diverged worker commits to unblock dispatch)",
+			commandID, workerID, workerHEAD, integHEAD, mergeBase)
+		if err := wm.gitRunInDir(ws.Path, "reset", "--hard", state.Integration.Branch); err != nil {
+			return fmt.Errorf("reset worker %s onto integration after divergence (worker=%s integration=%s): %w",
+				workerID, workerHEAD, integHEAD, err)
+		}
+		wm.Log(core.LogLevelInfo,
+			"worker_worktree_reset_to_integration command=%s worker=%s old=%s new=%s",
+			commandID, workerID, workerHEAD, integHEAD)
+		return nil
+	}
+
+	if err := wm.gitRunInDir(ws.Path, "merge", "--ff-only", state.Integration.Branch); err != nil {
+		return fmt.Errorf("fast-forward worker %s to integration: %w", workerID, err)
+	}
+	wm.Log(core.LogLevelInfo,
+		"worker_worktree_refreshed_to_integration command=%s worker=%s old=%s new=%s",
+		commandID, workerID, workerHEAD, integHEAD)
+	return nil
+}

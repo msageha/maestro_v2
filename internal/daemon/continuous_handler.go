@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -49,6 +50,27 @@ func NewContinuousHandler(
 func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus model.Status) error {
 	if !ch.config.Continuous.Enabled {
 		return nil
+	}
+
+	// Reconciliation with state.plan_status (defense in depth — see also the
+	// recovery guard in collectWorktreePublishAndCleanup). The CommandResult
+	// passed in here can lag behind reality:
+	//
+	//   - A stale synthetic_failure result written before R3/R4 propagated
+	//     a successful recovery would otherwise trigger pause_on_failure.
+	//   - The Orchestrator-side status reported via NotifyOrchestrator may
+	//     reflect what was true at write-time, but the daemon's state file
+	//     is updated atomically by R4PlanStatus and is the canonical source.
+	//
+	// When state.plan_status disagrees with the passed-in commandStatus, we
+	// trust the state file. A mismatch is logged at warn so the discrepancy
+	// is observable in daemon.log without silently masking errors.
+	if effectiveStatus, mismatch := ch.reconcileCommandStatusWithPlanStatus(commandID, commandStatus); mismatch {
+		ch.log(LogLevelWarn,
+			"continuous_status_reconciled command=%s passed_in=%s plan_status_derived=%s "+
+				"(trusting state.plan_status — likely stale CommandResult or in-flight recovery)",
+			commandID, commandStatus, effectiveStatus)
+		commandStatus = effectiveStatus
 	}
 
 	// Lock order: state:continuous is held only while reading and persisting
@@ -243,6 +265,80 @@ func (ch *ContinuousHandler) writeContinuousTransitionNotification(
 		})
 		return nil
 	})
+}
+
+// reconcileCommandStatusWithPlanStatus reads state/commands/<commandID>.yaml
+// and returns (effectiveStatus, mismatch). The effective status is derived
+// from the command's authoritative plan_status:
+//
+//   - PlanStatusCompleted → StatusCompleted
+//   - PlanStatusFailed    → StatusFailed
+//   - PlanStatusCancelled → StatusCancelled
+//   - other / unknown / error → returns the passed-in commandStatus
+//
+// mismatch is true only when the derived status differs from the passed-in
+// status. State-file read errors fail open: we trust the input rather than
+// refuse to advance, so a transient read failure cannot indefinitely stall
+// continuous mode.
+func (ch *ContinuousHandler) reconcileCommandStatusWithPlanStatus(
+	commandID string,
+	passedIn model.Status,
+) (model.Status, bool) {
+	statePath := commandStatePath(ch.maestroDir, commandID)
+	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
+	if err != nil {
+		// Missing state file is normal for non-phased commands or pre-Phase-A
+		// arrivals — fall back to the passed-in status without flagging.
+		return passedIn, false
+	}
+	if len(data) == 0 {
+		return passedIn, false
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		ch.log(LogLevelDebug,
+			"continuous_plan_status_parse_failed command=%s error=%v (using passed-in status)",
+			commandID, err)
+		return passedIn, false
+	}
+	var derived model.Status
+	switch cs.PlanStatus {
+	case model.PlanStatusCompleted:
+		derived = model.StatusCompleted
+	case model.PlanStatusFailed:
+		derived = model.StatusFailed
+	case model.PlanStatusCancelled:
+		derived = model.StatusCancelled
+	default:
+		// Non-terminal plan_status (planning/sealed/etc) — R4PlanStatus
+		// has not caught up yet. Derive directly from the live state so
+		// continuous mode is not paused by a stale CommandResult while
+		// the plan is, in fact, on its way to completed (the verify-
+		// repair lineage path: predecessor cancelled, successor in
+		// flight, R4 still queued behind the scan that observed the
+		// failed phase). Lineage-aware DeriveStatus prevents a
+		// superseded-but-completed retry from being mistaken for a
+		// real failure. On derive errors we trust the input — fail
+		// open rather than indefinitely stall continuous mode.
+		live, deriveErr := plan.DeriveStatus(&cs)
+		if deriveErr != nil {
+			ch.log(LogLevelDebug,
+				"continuous_status_derive_failed command=%s error=%v (using passed-in status)",
+				commandID, deriveErr)
+			return passedIn, false
+		}
+		switch live {
+		case model.PlanStatusCompleted:
+			derived = model.StatusCompleted
+		case model.PlanStatusFailed:
+			derived = model.StatusFailed
+		case model.PlanStatusCancelled:
+			derived = model.StatusCancelled
+		default:
+			return passedIn, false
+		}
+	}
+	return derived, derived != passedIn
 }
 
 func (ch *ContinuousHandler) loadContinuousState() (*model.Continuous, error) {

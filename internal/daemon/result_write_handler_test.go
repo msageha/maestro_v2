@@ -652,6 +652,154 @@ func TestResultWrite_FilesChangedOutsideExpectedPathsRejected(t *testing.T) {
 	}
 }
 
+// TestResultWrite_RunOnMainStripsFilesChanged covers the 2026-04-29
+// regression where a Worker LLM running a read-only run_on_main / verify
+// task self-reported `--files-changed` populated with files it had only
+// inspected (not modified). The daemon must strip this field for tasks
+// flagged RunOnMain because the dispatch contract guarantees the task
+// runs read-only against the merged main branch — any non-empty
+// files_changed there is necessarily a Worker reporting bug.
+func TestResultWrite_RunOnMainStripsFilesChanged(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+	owner := workerID
+
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:            taskID,
+			CommandID:     commandID,
+			Purpose:       "verify on main",
+			Content:       "verify the published state",
+			BloomLevel:    3,
+			Status:        model.StatusInProgress,
+			LeaseOwner:    &owner,
+			LeaseEpoch:    leaseEpoch,
+			ExpectedPaths: []string{"."},
+			RunOnMain:     true,
+			CreatedAt:     "2026-01-01T00:00:00Z",
+			UpdatedAt:     "2026-01-01T00:00:00Z",
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
+		t.Fatalf("write worker queue: %v", err)
+	}
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:     workerID,
+		TaskID:       taskID,
+		CommandID:    commandID,
+		LeaseEpoch:   leaseEpoch,
+		Status:       "completed",
+		Summary:      "verified — git status empty",
+		FilesChanged: []string{"feature.go"}, // bogus: read-only contract violated
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("result write should accept run_on_main result and strip files_changed; got error: %+v", resp.Error)
+	}
+
+	// Inspect the persisted result file to confirm files_changed was stripped.
+	rfPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	data, err := os.ReadFile(rfPath)
+	if err != nil {
+		t.Fatalf("read result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result file: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
+	}
+	if len(rf.Results[0].FilesChanged) != 0 {
+		t.Errorf("FilesChanged must be stripped for run_on_main tasks; got %v", rf.Results[0].FilesChanged)
+	}
+}
+
+// TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation pins the
+// 2026-04-29 review fix: the run_on_main strip-and-warn path must run
+// BEFORE validateFilesChangedWithinExpectedPaths so that read-only verify
+// tasks declaring narrow expected_paths don't get rejected on a Worker
+// reporting bug. The original ordering had validation first, defeating
+// the strip's "instead of rejecting" comment.
+//
+// Setup: RunOnMain task with expected_paths restricted to a docs/
+// subtree, but the Worker incorrectly reports files_changed=[feature.go]
+// for files it only inspected. With the fix, the result is accepted
+// (stripped + warned). Without the fix, validation rejects with
+// "files_changed outside expected_paths".
+func TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000002_runonmain"
+	commandID := "cmd_0000000002_runonmain"
+	workerID := "worker1"
+	leaseEpoch := 1
+	owner := workerID
+
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:            taskID,
+			CommandID:     commandID,
+			Purpose:       "verify docs",
+			Content:       "verify the published docs render correctly",
+			BloomLevel:    3,
+			Status:        model.StatusInProgress,
+			LeaseOwner:    &owner,
+			LeaseEpoch:    leaseEpoch,
+			ExpectedPaths: []string{"docs/"}, // narrow surface
+			RunOnMain:     true,
+			CreatedAt:     "2026-01-01T00:00:00Z",
+			UpdatedAt:     "2026-01-01T00:00:00Z",
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
+		t.Fatalf("write worker queue: %v", err)
+	}
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:     workerID,
+		TaskID:       taskID,
+		CommandID:    commandID,
+		LeaseEpoch:   leaseEpoch,
+		Status:       "completed",
+		Summary:      "docs render OK; inspected feature.go for cross-reference",
+		FilesChanged: []string{"feature.go"}, // outside docs/ — would be rejected pre-fix
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("run_on_main strip must run before expected_paths validation; got rejection: %+v", resp.Error)
+	}
+
+	rfPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	data, err := os.ReadFile(rfPath)
+	if err != nil {
+		t.Fatalf("read result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result file: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
+	}
+	if len(rf.Results[0].FilesChanged) != 0 {
+		t.Errorf("FilesChanged must be stripped (run_on_main read-only contract); got %v", rf.Results[0].FilesChanged)
+	}
+}
+
 func TestResultWrite_CommandIDMismatch(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
@@ -1649,5 +1797,518 @@ func TestResultWrite_ValidateStateTransition_RunningCompletedSilent(t *testing.T
 	}
 	if strings.Contains(logBuf.String(), "invalid_state_transition") {
 		t.Errorf("running worker completion must not log invalid_state_transition, got: %s", logBuf.String())
+	}
+}
+
+// TestComputeWorkerExpectedPathsForVerify_UnionsCompletedTasks asserts that the
+// verify-time expected_paths surface matches Phase B's commit_policy worker-
+// level union: it covers the source task being verified plus every other
+// completed task on the same worker for the same command. Without this union,
+// a worker holding multiple tasks would falsely flag earlier sibling-task
+// dirty files (still uncommitted until phase merge) as out-of-scope.
+func TestComputeWorkerExpectedPathsForVerify_UnionsCompletedTasks(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	commandID := "cmd_0000000001_uniontest"
+	otherCommandID := "cmd_0000000002_other"
+	workerID := "worker1"
+
+	owner := workerID
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:            "task_completed_alpha",
+				CommandID:     commandID,
+				Status:        model.StatusCompleted,
+				ExpectedPaths: []string{"version.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+			{
+				ID:            "task_verify_pending_beta",
+				CommandID:     commandID,
+				Status:        model.StatusVerifyPending,
+				LeaseOwner:    &owner,
+				LeaseEpoch:    1,
+				ExpectedPaths: []string{"version_test.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+			{
+				ID:            "task_completed_gamma_dup",
+				CommandID:     commandID,
+				Status:        model.StatusCompleted,
+				ExpectedPaths: []string{"version.go", "doc.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+			{
+				// Different command — must not contribute to the union.
+				ID:            "task_other_command",
+				CommandID:     otherCommandID,
+				Status:        model.StatusCompleted,
+				ExpectedPaths: []string{"unrelated.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
+		t.Fatalf("write worker queue: %v", err)
+	}
+
+	source := &model.Task{
+		ID:            "task_verify_pending_beta",
+		CommandID:     commandID,
+		ExpectedPaths: []string{"version_test.go"},
+	}
+	got := d.api.result.computeWorkerExpectedPathsForVerify(commandID, workerID, source)
+
+	want := map[string]struct{}{
+		"version.go":      {},
+		"version_test.go": {},
+		"doc.go":          {},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("union size = %d, want %d (got=%v)", len(got), len(want), got)
+	}
+	for _, p := range got {
+		if _, ok := want[p]; !ok {
+			t.Errorf("unexpected path in union: %q", p)
+		}
+		if p == "unrelated.go" {
+			t.Errorf("union must not include cross-command path: %q", p)
+		}
+	}
+}
+
+// TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase pins the
+// 2026-04-29 review fix: when the source task lives in a phase, the verify
+// allowed-path surface must only union with same-phase siblings. Earlier-
+// phase tasks have already been auto-committed and merged at their phase
+// boundary, so admitting their ExpectedPaths would falsely widen the
+// surface for the current phase and let the verify runner miss
+// out-of-scope writes.
+func TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	commandID := "cmd_phase_scope_001"
+	workerID := "worker1"
+
+	// State: two phases. taskAlpha is in phase 1 (already merged), taskBeta
+	// and taskTest are in phase 2 (current). source task is taskTest.
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase_1",
+					Name:    "phase_1",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{"task_alpha"},
+				},
+				{
+					PhaseID: "phase_2",
+					Name:    "phase_2",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: []string{"task_beta", "task_test"},
+				},
+			},
+		},
+		TaskTracking: model.TaskTracking{TaskStates: map[string]model.Status{
+			"task_alpha": model.StatusCompleted,
+			"task_beta":  model.StatusCompleted,
+			"task_test":  model.StatusVerifyPending,
+		}},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:            "task_alpha", // earlier phase — must NOT be unioned
+				CommandID:     commandID,
+				Status:        model.StatusCompleted,
+				ExpectedPaths: []string{"earlier_phase.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+			{
+				ID:            "task_beta", // same phase, completed → unioned
+				CommandID:     commandID,
+				Status:        model.StatusCompleted,
+				ExpectedPaths: []string{"same_phase_sibling.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+			{
+				ID:            "task_test",
+				CommandID:     commandID,
+				Status:        model.StatusVerifyPending,
+				ExpectedPaths: []string{"current.go"},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+
+	source := &model.Task{
+		ID:            "task_test",
+		CommandID:     commandID,
+		ExpectedPaths: []string{"current.go"},
+	}
+	got := d.api.result.computeWorkerExpectedPathsForVerify(commandID, workerID, source)
+
+	want := map[string]struct{}{
+		"current.go":            {},
+		"same_phase_sibling.go": {},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("union size = %d, want %d (got=%v)", len(got), len(want), got)
+	}
+	for _, p := range got {
+		if _, ok := want[p]; !ok {
+			t.Errorf("unexpected path in union: %q", p)
+		}
+		if p == "earlier_phase.go" {
+			t.Errorf("earlier-phase task path leaked into current-phase verify surface: %q", p)
+		}
+	}
+}
+
+// TestReserveOrDeferHeavyVerify covers the phase-aware verify gating that
+// defers `go test ./...` while the phase still has non-terminal sibling
+// tasks. Originally it tested shouldDeferHeavyVerifyForIntermediateTask,
+// but the 2026-04-29 review surfaced a race: with `verify_pending` not
+// counted as terminal, every sibling at verify_pending saw the others as
+// "still running" and all deferred — so no one ever ran heavy verify and
+// the §S1-1 Strong Signal silently disappeared on parallel-completing
+// phases. The function was rewritten as reserveOrDeferHeavyVerify, a
+// state-lock-protected CAS that elects exactly one owner per phase.
+func TestReserveOrDeferHeavyVerify(t *testing.T) {
+	commandID := "cmd_0000000004_phasegate"
+	phaseID := "phase_setup"
+	taskAlpha := "task_alpha_0000000001"
+	taskBeta := "task_beta_0000000002"
+	taskTest := "task_test_0000000003"
+
+	type reservation struct {
+		phaseID string
+		taskID  string
+	}
+	cases := []struct {
+		name             string
+		taskStates       map[string]model.Status
+		phaseTaskIDs     []string
+		preReserved      *reservation
+		sourceTask       *model.Task
+		wantDefer        bool
+		wantOwnerForTest string // expected owner after the call (empty = no owner)
+	}{
+		{
+			name: "intermediate_task_with_running_sibling_defers_heavy",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusVerifyPending,
+				taskBeta:  model.StatusInProgress, // still actively running
+				taskTest:  model.StatusPlanned,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			sourceTask:       &model.Task{ID: taskAlpha, CommandID: commandID},
+			wantDefer:        true,
+			wantOwnerForTest: "", // no reservation while siblings still running
+		},
+		{
+			name: "phase_final_task_reserves_and_runs_heavy",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusCompleted,
+				taskBeta:  model.StatusCompleted,
+				taskTest:  model.StatusVerifyPending,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			sourceTask:       &model.Task{ID: taskTest, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskTest,
+		},
+		{
+			name: "task_outside_any_phase_runs_full_verify",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusVerifyPending,
+				taskBeta:  model.StatusInProgress,
+			},
+			phaseTaskIDs:     []string{taskBeta}, // alpha not in any phase
+			sourceTask:       &model.Task{ID: taskAlpha, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: "",
+		},
+		{
+			name: "unknown_sibling_status_runs_full_verify_defensively",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusVerifyPending,
+				// taskBeta intentionally absent from TaskStates
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta},
+			sourceTask:       &model.Task{ID: taskAlpha, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: "",
+		},
+		{
+			name: "all_siblings_terminal_reserves_and_runs_heavy",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusCompleted,
+				taskBeta:  model.StatusCancelled,
+				taskTest:  model.StatusVerifyPending,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			sourceTask:       &model.Task{ID: taskTest, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskTest,
+		},
+		// 2026-04-29 race coverage: every sibling sits at verify_pending
+		// simultaneously. Without the lock-protected reservation each one
+		// would see the others as non-terminal and defer; with the fix the
+		// first caller wins ownership and runs heavy, sibling callers
+		// observe the reservation and defer.
+		{
+			name: "race_first_caller_wins_reservation",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusVerifyPending,
+				taskBeta:  model.StatusVerifyPending,
+				taskTest:  model.StatusVerifyPending,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			sourceTask:       &model.Task{ID: taskAlpha, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskAlpha,
+		},
+		{
+			name: "race_second_caller_defers_to_reservation_holder",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusVerifyPending,
+				taskBeta:  model.StatusVerifyPending,
+				taskTest:  model.StatusVerifyPending,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			preReserved:      &reservation{phaseID: phaseID, taskID: taskAlpha},
+			sourceTask:       &model.Task{ID: taskBeta, CommandID: commandID},
+			wantDefer:        true,
+			wantOwnerForTest: taskAlpha, // unchanged
+		},
+		{
+			name: "stale_owner_replaced_by_retry_re_evaluates",
+			taskStates: map[string]model.Status{
+				// Original owner taskAlpha is no longer in phase.TaskIDs
+				// (replaced by retry). Its reservation must not block the
+				// surviving sibling.
+				taskBeta: model.StatusVerifyPending,
+				taskTest: model.StatusCompleted,
+			},
+			phaseTaskIDs:     []string{taskBeta, taskTest}, // taskAlpha removed
+			preReserved:      &reservation{phaseID: phaseID, taskID: taskAlpha},
+			sourceTask:       &model.Task{ID: taskBeta, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskBeta, // re-claimed by surviving owner
+		},
+		// 2026-04-29 review pin: retry handler keeps the predecessor in
+		// phase.TaskIDs (only appends the retry), so ownerInPhase(owner)
+		// stays true after a verify-failure retry. The reservation must
+		// also check the owner's STATUS — only verify_pending or
+		// completed should hold the reservation. Any other status means
+		// heavy verify did not pass for the phase and the retry should
+		// be allowed to claim ownership.
+		{
+			name: "owner_cancelled_by_retry_release_to_replacement",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusCancelled,     // original, superseded by retry
+				taskBeta:  model.StatusCompleted,     // sibling, unaffected
+				taskTest:  model.StatusVerifyPending, // taskTest is the retry of taskAlpha
+			},
+			// Predecessor stays in phase.TaskIDs alongside the retry.
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			preReserved:      &reservation{phaseID: phaseID, taskID: taskAlpha},
+			sourceTask:       &model.Task{ID: taskTest, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskTest, // retry re-claims; old owner Cancelled is stale
+		},
+		{
+			name: "owner_failed_release_to_replacement",
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusFailed,
+				taskBeta:  model.StatusCompleted,
+				taskTest:  model.StatusVerifyPending,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			preReserved:      &reservation{phaseID: phaseID, taskID: taskAlpha},
+			sourceTask:       &model.Task{ID: taskTest, CommandID: commandID},
+			wantDefer:        false,
+			wantOwnerForTest: taskTest,
+		},
+		{
+			name: "owner_repair_pending_keeps_phase_unready",
+			// Owner failed verify, sits at repair_pending while the retry
+			// is still being created/dispatched. A second sibling that
+			// reaches verify_pending should NOT claim heavy yet because
+			// the owner's repair task hasn't completed — phase isn't
+			// ready. The reservation gets cleared (so the eventual retry
+			// can claim) but eligibility check defers this caller.
+			taskStates: map[string]model.Status{
+				taskAlpha: model.StatusRepairPending,
+				taskBeta:  model.StatusVerifyPending,
+				taskTest:  model.StatusCompleted,
+			},
+			phaseTaskIDs:     []string{taskAlpha, taskBeta, taskTest},
+			preReserved:      &reservation{phaseID: phaseID, taskID: taskAlpha},
+			sourceTask:       &model.Task{ID: taskBeta, CommandID: commandID},
+			wantDefer:        true,
+			wantOwnerForTest: "", // reservation cleared, no new owner yet
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDaemon(t)
+
+			pt := model.PhaseTracking{
+				Phases: []model.Phase{{
+					PhaseID: phaseID,
+					Name:    "setup",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: tc.phaseTaskIDs,
+				}},
+			}
+			if tc.preReserved != nil {
+				pt.HeavyVerifyOwners = map[string]string{tc.preReserved.phaseID: tc.preReserved.taskID}
+			}
+			state := model.CommandState{
+				SchemaVersion: 1,
+				FileType:      "state_command",
+				CommandID:     commandID,
+				PlanStatus:    model.PlanStatusSealed,
+				PhaseTracking: pt,
+				TaskTracking:  model.TaskTracking{TaskStates: tc.taskStates},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			}
+			path := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+			if err := yamlutil.AtomicWrite(path, state); err != nil {
+				t.Fatalf("write command state: %v", err)
+			}
+
+			got := d.api.result.reserveOrDeferHeavyVerify(commandID, tc.sourceTask)
+			if got != tc.wantDefer {
+				t.Errorf("reserveOrDeferHeavyVerify = %v, want %v", got, tc.wantDefer)
+			}
+
+			// Verify the reservation persisted (or didn't) as expected.
+			persisted, _, err := loadYAMLFile[model.CommandState](path, false)
+			if err != nil {
+				t.Fatalf("reload state: %v", err)
+			}
+			gotOwner := persisted.HeavyVerifyOwners[phaseID]
+			if gotOwner != tc.wantOwnerForTest {
+				t.Errorf("heavy_verify_owners[%s] = %q, want %q", phaseID, gotOwner, tc.wantOwnerForTest)
+			}
+		})
+	}
+}
+
+// TestEmitVerifyOutcomeChangedPlannerSignal_QueuesSupplementarySignal asserts
+// the supplementary signal lands in the planner_signals queue with the
+// `verify_outcome_changed` kind and per-task PhaseID dedup scope. This signal
+// closes the 2026-04 Planner/daemon divergence where notifyPlannerOfWorkerResult
+// had already told Planner the task was completed, but verify subsequently
+// scheduled a retry — without this signal Planner kept progressing while the
+// publish gate stayed blocked.
+func TestEmitVerifyOutcomeChangedPlannerSignal_QueuesSupplementarySignal(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	params := ResultWriteParams{
+		Reporter:  "worker1",
+		TaskID:    "task_outcome_changed_001",
+		CommandID: "cmd_outcome_changed_001",
+		Status:    "completed",
+	}
+	d.api.result.emitVerifyOutcomeChangedPlannerSignal(params,
+		"verify_failed category=test", model.StatusRepairPending)
+
+	signalsPath := filepath.Join(d.maestroDir, "queue", "planner_signals.yaml")
+	data, err := os.ReadFile(signalsPath)
+	if err != nil {
+		t.Fatalf("read planner_signals: %v", err)
+	}
+	var sq model.PlannerSignalQueue
+	if err := yamlv3.Unmarshal(data, &sq); err != nil {
+		t.Fatalf("unmarshal planner_signals: %v", err)
+	}
+	if len(sq.Signals) != 1 {
+		t.Fatalf("signals = %d, want 1 (got=%v)", len(sq.Signals), sq.Signals)
+	}
+	sig := sq.Signals[0]
+	if sig.Kind != "verify_outcome_changed" {
+		t.Errorf("Kind = %q, want verify_outcome_changed", sig.Kind)
+	}
+	if sig.CommandID != params.CommandID {
+		t.Errorf("CommandID = %q, want %q", sig.CommandID, params.CommandID)
+	}
+	if sig.PhaseID != "__task_"+params.TaskID {
+		t.Errorf("PhaseID = %q, want __task_<task_id>", sig.PhaseID)
+	}
+	if !strings.Contains(sig.Message, "worker_reported: completed") {
+		t.Errorf("message must echo worker-reported status, got %q", sig.Message)
+	}
+	if !strings.Contains(sig.Message, "verify_final_status: repair_pending") {
+		t.Errorf("message must echo verify final status, got %q", sig.Message)
+	}
+
+	// Re-emit with the same dedup key — must be a no-op (signalDedupKey collapses
+	// duplicate signals so the Planner doesn't re-receive the same divergence).
+	d.api.result.emitVerifyOutcomeChangedPlannerSignal(params,
+		"verify_failed category=test", model.StatusRepairPending)
+	data, err = os.ReadFile(signalsPath)
+	if err != nil {
+		t.Fatalf("re-read planner_signals: %v", err)
+	}
+	var sq2 model.PlannerSignalQueue
+	if err := yamlv3.Unmarshal(data, &sq2); err != nil {
+		t.Fatalf("unmarshal planner_signals: %v", err)
+	}
+	if len(sq2.Signals) != 1 {
+		t.Errorf("signals after duplicate emit = %d, want 1 (dedup must collapse)", len(sq2.Signals))
+	}
+}
+
+// TestComputeWorkerExpectedPathsForVerify_FallsBackOnQueueLoadFailure asserts
+// that when the worker queue cannot be loaded (e.g. missing file), the verify
+// expected_paths still includes the source task's paths so a transient I/O
+// hiccup never silently widens the allowed surface to "anything".
+func TestComputeWorkerExpectedPathsForVerify_FallsBackOnQueueLoadFailure(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	source := &model.Task{
+		ID:            "task_only_source",
+		CommandID:     "cmd_0000000003_fallback",
+		ExpectedPaths: []string{"only.go"},
+	}
+	got := d.api.result.computeWorkerExpectedPathsForVerify(source.CommandID, "missing_worker", source)
+	if len(got) != 1 || got[0] != "only.go" {
+		t.Fatalf("fallback union = %v, want [only.go]", got)
 	}
 }

@@ -85,13 +85,22 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 			// preventing the Planner from issuing a redundant second plan complete.
 			// Reload the command queue from disk to capture concurrent plan
 			// complete calls that may have run after the Phase A queue load.
+			//
+			// Exception: signals tagged with Reason="deferred_complete_finalized"
+			// are emitted explicitly from the Phase C deferred-completion path
+			// AFTER the daemon flips the command terminal. They must reach the
+			// Planner for parity with the non-deferred publish_completed path
+			// (2026-04-29 e2e asymmetry report). Skip the stale filter for
+			// these.
 			terminalCQ := commandQueue
 			if sig.Kind == "publish_completed" {
 				if freshCQ, _, err := qh.queueStore.LoadCommandQueue(); err == nil {
 					terminalCQ = freshCQ
 				}
 			}
-			if sig.Kind == "publish_completed" && isCommandTerminalInQueue(terminalCQ, sig.CommandID) {
+			if sig.Kind == "publish_completed" &&
+				sig.Reason != "deferred_complete_finalized" &&
+				isCommandTerminalInQueue(terminalCQ, sig.CommandID) {
 				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s (command already terminal)",
 					sig.Kind, sig.CommandID)
 				*dirty = true

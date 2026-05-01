@@ -922,8 +922,41 @@ const LaunchCommand = "maestro agent launch"
 //
 // Falls back to LaunchCommand (bare PATH resolution) if os.Executable() fails or
 // the resolved path does not exist on disk.
+//
+// Deprecated: prefer ResolvedLaunchCommandFor(maestroDir) so that the pane's
+// `maestro agent launch` invocation always sees MAESTRO_DIR. Retained for
+// callers that genuinely cannot supply a maestroDir (legacy tests).
 func ResolvedLaunchCommand() string {
 	return ResolvedBinaryPath() + " agent launch"
+}
+
+// ResolvedLaunchCommandFor returns the shell command to start an agent process
+// in a tmux pane, with MAESTRO_DIR pinned to the supplied project-root
+// .maestro/ directory.
+//
+// Why the env prefix exists: when a worker pane sits inside a worktree whose
+// tracked file set includes a partial .maestro/ subtree (e.g. the user has a
+// global gitignore that masks .maestro/* but force-tracks .maestro/config.yaml
+// so it reappears in worktree checkouts), the bootstrap `maestro agent launch`
+// process would otherwise fall back to findMaestroDir's cwd walk-up and stop
+// at that partial .maestro/. The agent launcher then fails with
+// `.maestro/maestro.md: no such file or directory` because the partial dir
+// has no maestro.md. Setting MAESTRO_DIR via env prefix forces findMaestroDir
+// onto the env-var branch, which points at the real project root.
+//
+// If maestroDir is empty (test paths, edge cases) or fails canonicalisation,
+// this falls back to the bare ResolvedLaunchCommand() so behaviour is no
+// worse than before.
+func ResolvedLaunchCommandFor(maestroDir string) string {
+	cmd := ResolvedLaunchCommand()
+	if maestroDir == "" {
+		return cmd
+	}
+	canonical, err := canonicalMaestroDir(maestroDir)
+	if err != nil {
+		return cmd
+	}
+	return "MAESTRO_DIR=" + shellSingleQuote(canonical) + " " + cmd
 }
 
 // ResolvedBinaryPath returns the absolute, symlink-resolved path of the

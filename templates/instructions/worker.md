@@ -106,14 +106,15 @@ L1（`--disallowedTools` による `Read` の静的拒否）と L2（PreToolUse 
 
 ## ペルソナモード
 
-ペルソナ定義の **正本は `templates/persona/{name}.md`**（init 時に `.maestro/persona/` へ配置）。タスク配信に `persona_hint` が含まれる場合、システムが該当ファイルの行動指針をタスク本文へ自動注入する。Worker が persona ファイルを能動参照する必要はない。
+ペルソナ定義は runtime の `.maestro/persona/{name}.md` から解決される。タスク配信に `persona_hint` が含まれる場合、システムが該当ファイルの行動指針をタスク本文へ自動注入する。Worker が persona ファイルを能動参照する必要はない。
 
 最低限の挙動ルール:
 
 - `persona_hint` はその視点・重点で作業を行うことを示す補助情報であり、SubAgent 使用を強制しない。未指定時は従来通り直接作業
 - 未知の `persona_hint`、またはタスクの明示指示と衝突する場合は、`content` / `acceptance_criteria` を優先し、未知値は未指定扱い
+- `researcher` ペルソナ、または `source-grounded-response` skill が注入されている場合、構造・関係・影響範囲の主張は必ず authoritative source（コード定義、設定、スキーマ、リンク、テスト、実行結果）に基づける。ID・名称・説明文・ディレクトリ構造からの推論は事実として報告せず、必要なら「推定」「不確実」と明示する
 
-利用可能なペルソナ一覧（詳細は `templates/persona/*.md` 参照）:
+利用可能なペルソナ一覧（詳細は runtime の `.maestro/persona/*.md` 参照）:
 
 | persona_hint | 役割 | 推奨 subagent_type |
 |---|---|---|
@@ -178,8 +179,9 @@ SubAgent は Worker の権限範囲を **継承するに過ぎず**、Worker の
 コードベース調査が主目的のタスクを受け取った場合:
 
 1. `Explore` SubAgent に調査を委譲する（thoroughness を調査範囲に応じて指定）
-2. 調査結果を `--summary` に構造化して報告する（後続タスクの Planner が参照するため）
-3. 発見した構造・パターン・注意点は `[注意事項]` タグで明記する
+2. SubAgent への指示には、関係・階層・依存を推測で補完せず、定義元・リンク・設定・スキーマ・テスト・実行結果を確認することを明記する
+3. 調査結果を `--summary` に構造化して報告する（後続タスクの Planner が参照するため）
+4. 主要な主張にはファイルパス:行番号または実行結果を添え、未確認事項は「推定」「不確実」として `[注意事項]` タグで明記する
 
 #### 大規模実装タスク
 
@@ -207,7 +209,7 @@ maestro result write <agent_id> \
   --command-id <command_id> \
   --lease-epoch <epoch> \
   --status completed|failed \
-  --summary "<要約>" \
+  (--summary "<要約>" | --summary-file <path>) \
   [--files-changed <file>]... \
   [--learnings "<知見1>" --learnings "<知見2>" ...] \
   [--skill-candidates "<候補1>" --skill-candidates "<候補2>" ...] \
@@ -217,6 +219,37 @@ maestro result write <agent_id> \
 ```
 
 `<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。`--lease-epoch` は CLI 実装上のデフォルトは -1（未指定 sentinel）であり、未指定時はバリデーションエラーとなる。Daemon が lease epoch 一致を検証するため、配信された値を必ず指定すること（実質必須）。
+
+#### `--summary` と `--summary-file` の使い分け（重要）
+
+**長文 summary は必ず `--summary-file` を使用すること**。Worker の PreToolUse policy hook は Bash コマンド全体に対して `rm -rf /Users/...` のようなパターンを正規表現で検索するため、`--summary "..."` 内に説明として `rm`、`/Users`、`-rf` 等の文字列を含めると D001 (destructive operation) で誤検知され Bash 呼び出しが拒否される。誤検知後の再試行で短い placeholder summary（例: `"test summary"`）を投げると、daemon が最初の result を canonical として採択し、本来の長文 summary は `duplicate_short_circuited` で捨てられる事故が起きる（2026-04-30 e2e で確認）。
+
+- **短く構造化された summary（数行）**: `--summary "..."` でも安全
+- **数百文字以上の summary、または `rm` / `sudo` / `/Users` / `/root` / `-rf` 等のキーワードを文字列として含む summary**: `--summary-file` を使う
+
+`--summary-file` は通常のファイルパスのほか、`-` または `/dev/stdin` を渡すと stdin から読み取る。Worker 内では一時ファイル経由が確実：
+
+```bash
+# 推奨: 一時ファイル経由（Bash の heredoc で安全に書き出す）
+SUMMARY_FILE=$(mktemp)
+cat > "$SUMMARY_FILE" <<'EOF'
+[変更内容]
+- foo.go: バグ修正（rm -rf 周辺の処理を見直し）
+
+[未完了]
+なし
+EOF
+maestro result write worker1 \
+  --task-id "$TASK_ID" \
+  --command-id "$CMD_ID" \
+  --lease-epoch "$EPOCH" \
+  --status completed \
+  --summary-file "$SUMMARY_FILE" \
+  --files-changed foo.go
+rm -f "$SUMMARY_FILE"
+```
+
+`--summary` と `--summary-file` は相互排他で、両方指定するとエラーになる。
 
 `--exit-code` は子プロセス（ビルド・テスト・lint 等）の終了コードを表す。**`--status failed` の場合は必須**。Daemon の自動リトライ判定 (`ShouldRetryTask`) は exit code を入力に取り、未指定だと `evaluateRetry` が即 return して repair pipeline が走らないため。判定不能な失敗（プロセス未起動、自己終了等）は `1` を渡す。
 
@@ -299,11 +332,25 @@ epoch 不一致 / max_runtime / status mismatch は Worker 側のバグではな
 
 | フラグ | 用途 |
 |---|---|
-| `--files-changed` | 変更したファイル（複数指定可: `--files-changed file1 --files-changed file2`） |
+| `--files-changed` | **Edit / Write ツールで実際に変更したファイル** のみを記載する。指定方法は複数指定可（`--files-changed file1 --files-changed file2`）。詳細は §「`--files-changed` の正しい意味」参照 |
 | `--learnings` | 他タスクに有用な知見（複数指定可、推奨・任意） |
 | `--skill-candidates` | スキル候補の報告（複数指定可、任意） |
 | `--partial-changes` | 部分的な変更がリポジトリに残っている場合に指定 |
 | `--no-retry-safe` | リトライが安全でない場合に指定（デフォルトはリトライ可能） |
+
+#### `--files-changed` の正しい意味
+
+`--files-changed` には **Edit / Write ツールで実際に変更したファイル** のみを記載する。Read で読んだだけのファイル、検証対象として参照したファイル、または task の `expected_paths` に書かれているからといってそのまま流すのは**誤り**。
+
+**結果報告の直前に以下を実行する**:
+
+1. `git status --porcelain` を実行（worker worktree / `run_on_main` なら main 作業ディレクトリ / `run_on_integration` なら integration worktree のいずれか、現在の `working_dir` で）
+2. 出力に並ぶファイルパスのみを `--files-changed` に渡す
+3. 出力が空なら `--files-changed` を **一切付けない**
+
+**read-only タスクの典型例 (`run_on_main: true` / `run_on_integration: true` で検証目的)**: 検証は git の状態を変更しないので `git status --porcelain` は空になる。`--files-changed` も空（指定しない）が正しい。`run_on_integration: true` でも publish_conflict 解決系（コンフリクト編集 → daemon が検出して commit）は変更があるので、`git status --porcelain` の出力をそのまま `--files-changed` に渡す。
+
+**過去の事故例**: read-only verification タスクで「検証対象として読んだファイル」を `--files-changed` に含めて報告した結果、後続の path-overlap heuristic が誤発火し、Planner の状況把握を誤らせた。Read で読んだだけのファイルは絶対に含めないこと（2026-04-29 e2e 報告）。
 
 ---
 
@@ -492,7 +539,7 @@ Worktree 無効時に限り、`__system_commit` タスクが Worker へ配信さ
 
 ### Runtime 同期（operator 運用）
 
-本 Instructions（正本 `templates/instructions/worker.md`）の変更を runtime の `.maestro/instructions/worker.md` に反映する際は、operator が `maestro setup sync-instructions` CLI を実行する。Worker 自身が runtime 側 (`.maestro/instructions/**`) を直接書き換えることは想定されておらず、L2 policy hook によりブロックされる可能性がある。
+配布元 instructions の変更を runtime の `.maestro/instructions/worker.md` に反映する際は、operator が `maestro setup sync-instructions` CLI を実行する。Worker 自身が runtime 側 (`.maestro/instructions/**`) を直接書き換えることは想定されておらず、L2 policy hook によりブロックされる可能性がある。
 
 ---
 

@@ -135,6 +135,31 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	}
 
 	sourceTask := tq.Tasks[taskIdx]
+
+	// run_on_main is the strict read-only contract (post-publish verification
+	// against the merged main branch). The Worker must report empty
+	// files_changed; a non-empty value indicates the LLM mistook
+	// "files I inspected" for "files I modified" — observed in the
+	// 2026-04-29 e2e where worker3 reported files_changed:[feature.go] for
+	// a verification task that had `git status --porcelain` empty. We
+	// strip and warn instead of rejecting the result so the (otherwise
+	// successful) read-only check still progresses; rejection here would
+	// stall the publish pipeline on what is essentially a reporting bug.
+	//
+	// The strip MUST run before validateFilesChangedWithinExpectedPaths
+	// so that run_on_main tasks with narrow expected_paths (the common
+	// case — read-only verify tasks usually declare a tight surface)
+	// don't get rejected on the "files I read but did not modify" data
+	// before the strip can take effect. The 2026-04-29 review pin
+	// surfaced the prior ordering inversion.
+	if sourceTask.RunOnMain && len(params.FilesChanged) > 0 {
+		h.logFn(LogLevelWarn,
+			"files_changed_stripped_for_run_on_main task=%s command=%s reported=%v "+
+				"(run_on_main is read-only by contract; see worker.md §`--files-changed` の正しい意味)",
+			params.TaskID, params.CommandID, params.FilesChanged)
+		params.FilesChanged = nil
+	}
+
 	if err := validateFilesChangedWithinExpectedPaths(params.FilesChanged, sourceTask.ExpectedPaths); err != nil {
 		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("files_changed outside expected_paths for task %s: %v", params.TaskID, err)}

@@ -49,151 +49,36 @@ type VerifyCommand struct {
 	Args []string
 }
 
-// DefaultVerifyConfig returns a minimal verification config with safe defaults.
+// DefaultVerifyConfig returns a minimal verification config with a safe,
+// language-agnostic baseline.
 //
-// This is the Go-specific baseline kept as a non-empty fallback so that the
-// §5-6 evolution invariant ("evolution must not run with zero verification
-// commands") continues to hold for the original Go-targeted use case. New
-// production callers should prefer DefaultVerifyConfigForProject so they do
-// not blindly run `go vet ./...` against non-Go repositories — there the
-// command would always fail and mask the real issue ("no verify.yaml
-// configured").
+// 2026-04-30 redesign: the previous implementation hard-coded `go vet ./...`
+// and called language-detection helpers (DetectProjectLanguage,
+// Default*ForLanguage) to switch between npm audit / pip-audit / cargo
+// audit / gosec / etc. That coupled the orchestration daemon to a
+// software-engineering monorepo with a single primary language, which is
+// incompatible with maestro's autonomous-orchestration goal: research,
+// documentation, polyglot, and non-software-engineering repositories must
+// also be supportable. The fallback now always uses `git diff --check`,
+// which works for any git repository regardless of language and still
+// satisfies the §5-6 evolution invariant ("evolution must not run with
+// zero verification commands") because the slice is non-empty. Operators
+// who want richer verification should write `.maestro/verify.yaml` —
+// that file is the language-agnostic source of truth, and the daemon no
+// longer guesses what verify means for the project.
 func DefaultVerifyConfig() *VerifyConfig {
 	return &VerifyConfig{
-		Build: []string{"go vet ./..."},
+		Build: []string{"git diff --check"},
 	}
 }
 
-// DefaultVerifyConfigForProject returns a minimal verification config
-// appropriate for the project at projectRoot:
-//
-//   - Go (go.mod present at projectRoot): `go vet ./...` for build, plus
-//     language-aware Security/Performance commands.
-//   - empty projectRoot: same as DefaultVerifyConfig (legacy compatibility)
-//   - other detected languages: language-appropriate Build / Security /
-//     Performance commands (see DefaultSecurityCommandsForProject /
-//     DefaultPerformanceCommandsForProject).
-//   - undetectable languages: a repository-generic fallback,
-//     `git diff --check`. Security/Performance are left empty so that
-//     extended_verification.security_check has no language-specific tool to
-//     fall back to and silently skips, instead of failing every run.
+// DefaultVerifyConfigForProject returns the language-agnostic baseline.
+// projectRoot is accepted for backward compatibility with call sites that
+// thread the project path through, but is no longer consulted: language
+// detection has been removed (see DefaultVerifyConfig for the rationale).
 func DefaultVerifyConfigForProject(projectRoot string) *VerifyConfig {
-	if projectRoot == "" {
-		return DefaultVerifyConfig()
-	}
-	lang := DetectProjectLanguage(projectRoot)
-	cfg := &VerifyConfig{
-		Security:    DefaultSecurityCommandsForLanguage(lang),
-		Performance: DefaultPerformanceCommandsForLanguage(lang),
-	}
-	switch lang {
-	case "go":
-		cfg.Build = []string{"go vet ./..."}
-	default:
-		cfg.Build = []string{"git diff --check"}
-	}
-	return cfg
-}
-
-// DetectProjectLanguage inspects marker files at projectRoot to identify the
-// primary language ecosystem. Returns one of:
-//
-//	"go"         → go.mod present
-//	"node"       → package.json present (covers JS/TS)
-//	"python"     → pyproject.toml / requirements.txt / setup.py present
-//	"rust"       → Cargo.toml present
-//	"ruby"       → Gemfile present
-//	"java"       → pom.xml / build.gradle / build.gradle.kts present
-//	""           → none of the above (multi-language repo or unknown stack)
-//
-// Detection is order-sensitive: the first match wins, so polyglot repos with
-// both go.mod and package.json classify as Go. Operators who need different
-// behaviour should write an explicit verify.yaml.
-func DetectProjectLanguage(projectRoot string) string {
-	if projectRoot == "" {
-		return ""
-	}
-	probes := []struct {
-		marker   string
-		language string
-	}{
-		{"go.mod", "go"},
-		{"package.json", "node"},
-		{"pyproject.toml", "python"},
-		{"requirements.txt", "python"},
-		{"setup.py", "python"},
-		{"Cargo.toml", "rust"},
-		{"Gemfile", "ruby"},
-		{"pom.xml", "java"},
-		{"build.gradle", "java"},
-		{"build.gradle.kts", "java"},
-	}
-	for _, p := range probes {
-		if _, err := os.Stat(filepath.Join(projectRoot, p.marker)); err == nil {
-			return p.language
-		}
-	}
-	return ""
-}
-
-// DefaultSecurityCommandsForLanguage returns the standard security-scan
-// command for the given language identifier (as produced by
-// DetectProjectLanguage). Tools listed here require operator install; an
-// unrecognised language returns nil so extended_verification.security_check
-// is a no-op rather than a guaranteed verify failure on non-supported stacks.
-//
-//	go     → gosec ./...                       (github.com/securego/gosec)
-//	node   → npm audit --audit-level=high      (bundled with npm)
-//	python → uvx pip-audit                     (auto-fetches pip-audit via uv;
-//	                                            avoids forcing global install)
-//	rust   → cargo audit                       (RustSec)
-//	ruby   → bundle audit check                (rubysec/bundler-audit)
-//	other  → nil (skip)
-func DefaultSecurityCommandsForLanguage(language string) []string {
-	switch language {
-	case "go":
-		return []string{"gosec ./..."}
-	case "node":
-		return []string{"npm audit --audit-level=high"}
-	case "python":
-		return []string{"uvx pip-audit"}
-	case "rust":
-		return []string{"cargo audit"}
-	case "ruby":
-		return []string{"bundle audit check"}
-	default:
-		return nil
-	}
-}
-
-// DefaultPerformanceCommandsForLanguage returns the standard benchmark
-// command for the given language. Performance benches are only well-defined
-// for languages with a built-in convention; everything else returns nil.
-//
-//	go    → go test -bench=. ./...
-//	rust  → cargo bench
-//	other → nil (skip — no canonical benchmark runner)
-func DefaultPerformanceCommandsForLanguage(language string) []string {
-	switch language {
-	case "go":
-		return []string{"go test -bench=. ./..."}
-	case "rust":
-		return []string{"cargo bench"}
-	default:
-		return nil
-	}
-}
-
-// DefaultSecurityCommandsForProject is a convenience wrapper around
-// DetectProjectLanguage + DefaultSecurityCommandsForLanguage.
-func DefaultSecurityCommandsForProject(projectRoot string) []string {
-	return DefaultSecurityCommandsForLanguage(DetectProjectLanguage(projectRoot))
-}
-
-// DefaultPerformanceCommandsForProject is a convenience wrapper around
-// DetectProjectLanguage + DefaultPerformanceCommandsForLanguage.
-func DefaultPerformanceCommandsForProject(projectRoot string) []string {
-	return DefaultPerformanceCommandsForLanguage(DetectProjectLanguage(projectRoot))
+	_ = projectRoot
+	return DefaultVerifyConfig()
 }
 
 // IsEmpty reports whether the config has no commands in any category.

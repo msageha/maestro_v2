@@ -76,13 +76,18 @@ func (b BanditConfig) EffectiveTraceDataRequirement() int {
 
 // --- C-3 Extended Verification Config ---
 
-// ExtendedVerificationConfig controls extended verification perspectives.
+// ExtendedVerificationConfig controls retry-on-fail behaviour for verify
+// runs. The 2026-04-30 redesign reduced this struct to only the two
+// fields that still drive runtime behaviour. The previous configuration
+// surface (security_check, performance_bench, perspective_weights) was
+// removed together with the language-specific auto-injection: those
+// fields had no effect once the daemon stopped synthesising
+// verify-category commands. The single remaining knob is
+// max_auto_retries, which gates how many automatic retries the
+// EnsembleVerifier performs against the operator-supplied verify.yaml.
 type ExtendedVerificationConfig struct {
-	Enabled            *bool              `yaml:"enabled,omitempty"`
-	SecurityCheck      *bool              `yaml:"security_check,omitempty"`
-	PerformanceBench   *bool              `yaml:"performance_bench,omitempty"`
-	PerspectiveWeights map[string]float64 `yaml:"perspective_weights,omitempty"`
-	MaxAutoRetries     *int               `yaml:"max_auto_retries,omitempty"`
+	Enabled        *bool `yaml:"enabled,omitempty"`
+	MaxAutoRetries *int  `yaml:"max_auto_retries,omitempty"`
 }
 
 // EffectiveEnabled returns Enabled, defaulting to false when unset.
@@ -90,27 +95,9 @@ func (ev ExtendedVerificationConfig) EffectiveEnabled() bool {
 	return effectiveValue(ev.Enabled, false)
 }
 
-// EffectiveSecurityCheck returns SecurityCheck, defaulting to false when unset.
-func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool {
-	return effectiveValue(ev.SecurityCheck, false)
-}
-
-// EffectivePerformanceBench returns PerformanceBench, defaulting to false when unset.
-func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool {
-	return effectiveValue(ev.PerformanceBench, false)
-}
-
 // EffectiveMaxAutoRetries returns MaxAutoRetries, or DefaultMaxAutoRetries when unset.
 func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int {
 	return effectiveValue(ev.MaxAutoRetries, DefaultMaxAutoRetries)
-}
-
-// EffectivePerspectiveWeights returns the configured weights or defaults.
-func (ev ExtendedVerificationConfig) EffectivePerspectiveWeights() map[string]float64 {
-	if len(ev.PerspectiveWeights) > 0 {
-		return ev.PerspectiveWeights
-	}
-	return map[string]float64{"build": 1.0, "test": 1.0, "security": 0.5}
 }
 
 // --- C-4 Search Config ---
@@ -300,12 +287,7 @@ func normalizeBandit(b *BanditConfig) {
 
 func normalizeExtendedVerification(ev *ExtendedVerificationConfig) {
 	resolvePtr(&ev.Enabled, false)
-	resolvePtr(&ev.SecurityCheck, false)
-	resolvePtr(&ev.PerformanceBench, false)
 	resolvePtr(&ev.MaxAutoRetries, DefaultMaxAutoRetries)
-	if len(ev.PerspectiveWeights) == 0 {
-		ev.PerspectiveWeights = map[string]float64{"build": 1.0, "test": 1.0, "security": 0.5}
-	}
 }
 
 func normalizeSearch(s *SearchConfig) {

@@ -166,6 +166,14 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 		t.Parallel()
 		// §5-2: Ensemble uses independent evaluation + weighted aggregation, NOT majority vote.
 		v := verification.NewVerifier()
+		if err := v.SetPerspectives([]verification.Perspective{
+			{Name: "build", Weight: 1.0},
+			{Name: "lint", Weight: 0.8},
+			{Name: "test", Weight: 1.0},
+			{Name: "typecheck", Weight: 0.9},
+		}); err != nil {
+			t.Fatalf("SetPerspectives: %v", err)
+		}
 
 		// 3 out of 4 pass, but the critical one (weight >= 1.0) fails → overall fail.
 		results := []verification.PerspectiveResult{
@@ -358,6 +366,14 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 func TestC3_Verification_EnsembleAggregation(t *testing.T) {
 	t.Parallel()
 	v := verification.NewVerifier()
+	if err := v.SetPerspectives([]verification.Perspective{
+		{Name: "build", Weight: 1.0},
+		{Name: "lint", Weight: 0.8},
+		{Name: "test", Weight: 1.0},
+		{Name: "typecheck", Weight: 0.9},
+	}); err != nil {
+		t.Fatalf("SetPerspectives: %v", err)
+	}
 
 	t.Run("AllPass", func(t *testing.T) {
 		t.Parallel()

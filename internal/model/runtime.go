@@ -29,7 +29,11 @@ func DefaultRuntime() string {
 // config fields — no separate runtimes: section required.
 //
 // Rules:
-//   - "codex"       → (RuntimeCodex, "")         — codex CLI, runtime picks its default model
+//   - "codex"       → (RuntimeCodex, "")          — codex CLI, runtime picks its default model
+//   - "codex-*"     → (RuntimeCodex, modelName)   — codex CLI with an explicit model override
+//     (e.g. "codex-5" for ChatGPT account users; symmetric with the gemini-*
+//     handling so misconfigured names do not silently route to claude and
+//     fail with an opaque "model not found" error)
 //   - "gemini"      → (RuntimeGemini, "")         — gemini CLI, runtime picks its default model
 //   - "gemini-*"    → (RuntimeGemini, modelName)  — gemini CLI with an explicit model override
 //   - anything else → (RuntimeClaudeCode, modelName) — claude CLI (existing behavior)
@@ -37,6 +41,8 @@ func ParseRuntimeFromModel(modelName string) (runtime, effectiveModel string) {
 	switch {
 	case modelName == RuntimeCodex:
 		return RuntimeCodex, ""
+	case strings.HasPrefix(modelName, "codex-"):
+		return RuntimeCodex, modelName
 	case modelName == RuntimeGemini:
 		return RuntimeGemini, ""
 	case strings.HasPrefix(modelName, "gemini-"):

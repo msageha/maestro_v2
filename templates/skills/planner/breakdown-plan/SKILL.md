@@ -36,20 +36,25 @@ name: 簡潔な作業名（動詞+目的語）
 purpose: 全体における役割（他タスクとの関係）
 content: 具体的な作業手順（ステップ形式推奨）
 acceptance_criteria: 完了条件（検証可能な形式）
-blocked_by: [依存タスクID]  # なければ省略
-bloom_level: apply | analyze | create
+blocked_by: [同一フェーズ内の依存タスクname]  # なければ []
+bloom_level: 1-6
 persona_hint: implementer | researcher | architect | quality-assurance
+required: true
+expected_paths: ["相対パス"]
+definition_of_abort:
+  max_repair_count: 3
+  max_wall_clock_sec: 1800
 ```
 
 ## Bloom's Taxonomy 判定
 
 | レベル | 用途 | persona_hint |
 |--------|------|-------------|
-| remember/understand | 情報収集・調査 | researcher |
-| apply | 既知パターンの適用実装 | implementer |
-| analyze | 構造分析・影響範囲調査 | researcher / architect |
-| evaluate | レビュー・品質検証 | quality-assurance |
-| create | 新規設計・アーキテクチャ策定 | architect |
+| 1-2 remember/understand | 情報収集・調査 | researcher |
+| 3 apply | 既知パターンの適用実装 | implementer |
+| 4 analyze | 構造分析・影響範囲調査 | researcher / architect |
+| 5 evaluate | レビュー・品質検証 | quality-assurance |
+| 6 create | 新規設計・アーキテクチャ策定 | architect |
 
 ## Worker Persona 割り当て基準
 

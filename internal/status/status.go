@@ -101,6 +101,12 @@ func Run(maestroDir string, jsonOutput bool) error {
 	// Get queue depth
 	status.Queues = getQueueDepths(maestroDir)
 
+	// Cross-reference @status (tmux pane variable) against the queue
+	// depths so a stale busy is observable to operators even when the
+	// daemon has not yet reset it. See annotateStaleBusyAgents for the
+	// reasoning.
+	status.Agents = annotateStaleBusyAgents(status.Agents, status.Queues)
+
 	// Get planner signal queue health (R-3 observability).
 	status.Signals = getSignalsStatus(maestroDir)
 
@@ -202,6 +208,65 @@ func parseAgentStatusLines(lines []string, isShell func(string) bool) []agentSta
 		})
 	}
 	return agents
+}
+
+// annotateStaleBusyAgents flips an agent's Status from "busy" to
+// "busy (stale)" when no queue file shows an in-progress entry for that
+// agent. The 2026-04-29 e2e regression that prompted this rule had
+// worker4 stuck at @status=busy with no queue, no command, no dispatch
+// — `maestro status` faithfully reported "busy" because that's what
+// the tmux pane variable said, even though the daemon's view of the
+// queues showed nothing for the worker. Cross-referencing here gives
+// operators an immediate signal ("stale") without needing to grep
+// daemon.log or inspect queue files manually.
+//
+// Mapping rules:
+//   - workerN  → look for a queue named workerN with InProgress > 0
+//   - planner  → look for queue named planner (commands)
+//   - orchestrator → look for queue named orchestrator (notifications)
+//
+// Anything that doesn't fit (custom agent IDs, agents whose queue
+// doesn't exist) is left untouched: we only annotate when the busy
+// claim is *contradicted* by a parsed queue file. This prevents the
+// annotation from firing for legitimate setups where the queue file
+// happens to live under a different name.
+func annotateStaleBusyAgents(agents []agentStatus, queues []queueStatus) []agentStatus {
+	queueByName := make(map[string]queueStatus, len(queues))
+	for _, q := range queues {
+		queueByName[q.Name] = q
+	}
+	for i := range agents {
+		if agents[i].Status != "busy" {
+			continue
+		}
+		queueName := queueNameForAgent(agents[i].ID, agents[i].Role)
+		q, exists := queueByName[queueName]
+		if !exists {
+			// No queue file with that name means we cannot disprove the
+			// busy claim — leave the row alone.
+			continue
+		}
+		if q.InProgress > 0 {
+			continue
+		}
+		agents[i].Status = "busy (stale)"
+	}
+	return agents
+}
+
+// queueNameForAgent maps an agent ID/role to the queue file name we
+// expect to back its busy claim. Workers map by ID (worker1..workerN);
+// planner and orchestrator map by role since their canonical agent IDs
+// match the queue name already.
+func queueNameForAgent(agentID, role string) string {
+	if role == "planner" {
+		return "planner"
+	}
+	if role == "orchestrator" {
+		return "orchestrator"
+	}
+	// Default: worker IDs are also queue file names.
+	return agentID
 }
 
 type queueFile struct {

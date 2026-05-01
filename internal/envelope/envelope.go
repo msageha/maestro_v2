@@ -140,7 +140,7 @@ func SanitizeEnvelopeBody(s string) string {
 	}, s)
 }
 
-// boundaryMarkerPatterns matches DATA boundary markers case-insensitively
+// boundaryMarkerPatterns matches system section boundary markers case-insensitively
 // to prevent bypass via case variations (e.g., "--- begin learnings").
 var boundaryMarkerPatterns = []struct {
 	re          *regexp.Regexp
@@ -154,7 +154,7 @@ var boundaryMarkerPatterns = []struct {
 	{regexp.MustCompile(`(?i)---\s*END\s+PERSONA`), "--- END\\_PERSONA"},
 }
 
-// SanitizeUserContent escapes DATA boundary markers in user-supplied content
+// SanitizeUserContent escapes system section boundary markers in user-supplied content
 // to prevent premature closing of LEARNINGS/SKILLS/PERSONA sections. This must
 // be called on user content BEFORE system-generated sections are appended,
 // so that the system's own markers remain intact.

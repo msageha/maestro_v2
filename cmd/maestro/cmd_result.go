@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -22,6 +23,24 @@ func (a *cliApp) runResult(args []string) error {
 }
 
 // runResultWrite reports task completion or failure via UDS.
+//
+// 2026-04-30 e2e regression (Worker policy-hook D001 false-positive):
+// long human-readable summaries passed inline as `--summary "..."` are
+// observed end-to-end as a Bash command string by the Worker PreToolUse
+// policy hook (Worker invokes `maestro result write` via Bash). When the
+// summary text happened to contain the substring `rm -rf /Users/...` or
+// any other D001 trigger as part of describing the work, the hook denied
+// the command. The agent then retried with a degenerate `--summary "test
+// summary"` placeholder, which Phase A accepted as the canonical result
+// and short-circuited the legitimate retry as a duplicate, leaving the
+// command stalled with a placeholder result.
+//
+// The fix is to give Worker an off-argv path for the summary text so the
+// policy hook only ever scans short, structured argument values. Mirrors
+// `plan complete --summary-file` (cmd_plan.go) and the shared
+// readFlagInputFile pattern: accepts a path or "-"/"/dev/stdin" for
+// stdin. --summary and --summary-file are mutually exclusive so the
+// daemon receives a single unambiguous value.
 func (a *cliApp) runResultWrite(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro result write: missing reporter\nusage: maestro result write <reporter> [options]"}
@@ -29,8 +48,8 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	reporter := args[0]
 
-	cmd := NewCommand("maestro result write", "maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe] [--exit-code <n>]")
-	var taskID, commandID, resultStatus, summary string
+	cmd := NewCommand("maestro result write", "maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text> | --summary-file <path>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe] [--exit-code <n>]")
+	var taskID, commandID, resultStatus, summary, summaryFile string
 	var leaseEpoch, exitCode int
 	var filesChanged, learnings, skillCandidates stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
@@ -39,7 +58,8 @@ func (a *cliApp) runResultWrite(args []string) error {
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.IntVar(&leaseEpoch, "lease-epoch", -1, "Lease epoch number for fencing")
 	cmd.StringVar(&resultStatus, "status", "", "Result status: completed or failed")
-	cmd.StringVar(&summary, "summary", "", "Result summary text")
+	cmd.StringVar(&summary, "summary", "", "Result summary text (mutually exclusive with --summary-file)")
+	cmd.StringVar(&summaryFile, "summary-file", "", "Read summary from a file or '-' for stdin (mutually exclusive with --summary; recommended for long summaries to avoid Worker policy-hook substring scanning)")
 	cmd.Var(&filesChanged, "files-changed", "Changed file path (repeatable)")
 	cmd.Var(&learnings, "learnings", "Learning insight for other tasks (repeatable)")
 	cmd.Var(&skillCandidates, "skill-candidates", "Skill candidate to report (repeatable)")
@@ -79,7 +99,29 @@ func (a *cliApp) runResultWrite(args []string) error {
 	if err := validate.ID(commandID); err != nil {
 		return cmd.Errorf("invalid --command-id: %v", err)
 	}
+	// Resolve --summary-file before length validation so both inline and
+	// file-backed values flow through the same DefaultMaxEntryContentBytes
+	// guard. resolveSummaryFile rejects the both-set case with a clear
+	// error so the daemon never receives ambiguous input.
+	if err := resolveSummaryFile(cmd, &summary, summaryFile); err != nil {
+		return err
+	}
 	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
+		return cmd.Errorf("%v", err)
+	}
+	// Reject obvious placeholder summaries so a worker that lost its real
+	// result (e.g. policy-hook D001 false-positive followed by a degenerate
+	// retry "test summary") cannot silently land its placeholder as the
+	// canonical result. The 2026-04-30 e2e regression observed exactly this
+	// flow: phase diagnosis reported success because every queue task was
+	// `completed`, but the underlying summary held only "test minimal" /
+	// "test summary" — the actual implementation report was lost in a
+	// duplicate_short_circuited reply on the legitimate retry. Rejecting
+	// these patterns at the CLI boundary forces the worker to construct a
+	// meaningful summary (or use --summary-file for long content) and
+	// surfaces the failure as a clean validation error rather than a
+	// silently-completed task.
+	if err := validateSummaryNotPlaceholder("--summary", summary, resultStatus); err != nil {
 		return cmd.Errorf("%v", err)
 	}
 
@@ -156,4 +198,76 @@ func truncateEntries(flag string, entries stringSliceFlag, maxBytes int) {
 			entries[i] = entry[:maxBytes]
 		}
 	}
+}
+
+// summaryPlaceholderPatterns lists exact-match (case-folded, whitespace-
+// normalised) summary values that are recognised as placeholder content and
+// rejected by validateSummaryNotPlaceholder. The list is intentionally
+// limited to short, content-free strings that real Worker reports never
+// produce — adding entries that legitimate summaries might match (e.g.,
+// "no changes") would create false positives that block working calls.
+var summaryPlaceholderPatterns = map[string]struct{}{
+	"":             {},
+	"test":         {},
+	"test summary": {},
+	"test minimal": {},
+	"summary":      {},
+	"placeholder":  {},
+	"todo":         {},
+	"tbd":          {},
+	"foo":          {},
+	"bar":          {},
+	"foobar":       {},
+	"ok":           {},
+	"okay":         {},
+	"done":         {},
+	"completed":    {},
+	"complete":     {},
+	"success":      {},
+	"successful":   {},
+	"finished":     {},
+	"n/a":          {},
+	"na":           {},
+	"none":         {},
+	"empty":        {},
+	"x":            {},
+	"y":            {},
+	".":            {},
+	"-":            {},
+}
+
+// minSummaryLengthForCompleted is the lower bound on a normalised summary's
+// rune count for a `--status completed` write. The value is set well below
+// the typical worker report length (60–500+ runes) so legitimate short
+// reports such as "fixed off-by-one in foo.go; tests pass" still clear the
+// gate, but degenerate placeholders from a worker scrambling after a
+// policy-hook denial (the 2026-04-30 regression) are rejected. `failed`
+// status is not subject to this floor — failure-mode reports are sometimes
+// genuinely terse ("worker timeout"), and rejecting them would make
+// post-mortem reporting harder.
+const minSummaryLengthForCompleted = 16
+
+// validateSummaryNotPlaceholder returns an error when summary matches a
+// known placeholder pattern, or — for `--status completed` writes — falls
+// below minSummaryLengthForCompleted runes. The check normalises by
+// lowercasing and collapsing internal whitespace so trivial formatting
+// variants do not bypass the rule.
+func validateSummaryNotPlaceholder(flag, summary, resultStatus string) error {
+	normalized := strings.ToLower(strings.Join(strings.Fields(summary), " "))
+	if _, isPlaceholder := summaryPlaceholderPatterns[normalized]; isPlaceholder {
+		return fmt.Errorf("%s value %q is a recognised placeholder; provide a real description of the work performed (or use --summary-file for long-form content)", flag, summary)
+	}
+	if resultStatus == "completed" {
+		runeCount := 0
+		for range normalized {
+			runeCount++
+		}
+		if runeCount < minSummaryLengthForCompleted {
+			return fmt.Errorf(
+				"%s for --status completed must be at least %d non-whitespace characters describing the work performed; got %d. Use --summary-file <path> when the description is long or contains shell-special characters",
+				flag, minSummaryLengthForCompleted, runeCount,
+			)
+		}
+	}
+	return nil
 }

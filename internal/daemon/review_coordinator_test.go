@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,6 +136,147 @@ func TestPersistReviewResult_RecoversFromCorruptFile(t *testing.T) {
 	got := loadTaskReviewLog(t, path)
 	if got.SchemaVersion != 1 || len(got.Results) != 1 {
 		t.Errorf("recovery write produced unexpected log: %+v", got)
+	}
+}
+
+// TestPersistReviewResult_RecordsSkipReason pins the 2026-04-29 audit
+// hygiene fix: ReviewResult.SkipReason must be persisted into the
+// per-task review YAML so an operator can tell at a glance why a
+// status=skipped result happened. Before this, every empty-diff or
+// invocation-failure skip looked identical (just `status: skipped` with
+// 0 findings) and the only way to recover the reason was to grep
+// daemon.log for the matching review_id timestamp.
+func TestPersistReviewResult_RecordsSkipReason(t *testing.T) {
+	maestroDir := t.TempDir()
+	rc := &ReviewCoordinator{
+		maestroDir: maestroDir,
+		log:        func(LogLevel, string, ...any) {},
+	}
+
+	taskID := "task_skip_reason"
+	commandID := "cmd_skip_reason"
+	skipped := model.ReviewResult{
+		RequestID:     "review-" + taskID + "-1",
+		ReviewerModel: "codex",
+		Status:        model.ReviewStatusSkipped,
+		SkipReason:    "empty_diff_content",
+		IsAdvisory:    true,
+		CreatedAt:     time.Date(2026, 4, 29, 22, 0, 0, 0, time.UTC),
+	}
+
+	path := rc.persistReviewResult(taskID, commandID, skipped)
+	got := loadTaskReviewLog(t, path)
+	if len(got.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(got.Results))
+	}
+	if got.Results[0].SkipReason != "empty_diff_content" {
+		t.Errorf("SkipReason = %q, want empty_diff_content", got.Results[0].SkipReason)
+	}
+}
+
+// TestBuildDiffContent_FallsThroughEmptyPrecapture pins the 2026-04-29
+// e2e regression where every codex review came back as
+// `status=skipped findings=0` in under a second because PrecaptureDiff
+// had cached "" before the worker committed and buildDiffContent then
+// short-circuited with that "". The fix has two halves:
+//
+//  1. PrecaptureDiff no longer stores empty diffs (the only legitimate
+//     producer of cache entries was the cleanup-race protector, and
+//     caching "" actively defeated it).
+//  2. buildDiffContent's `cached != ""` guard is still there so a
+//     stale cached "" from an older binary cannot block recovery.
+//
+// This test exercises the second half: even when the cache somehow
+// contains "" for a task (older binary, direct cache poke during a
+// debug session), buildDiffContent must fall through to the summary +
+// files_changed payload so the dispatcher receives non-empty input
+// and codex actually runs.
+func TestBuildDiffContent_FallsThroughEmptyPrecapture(t *testing.T) {
+	rc := &ReviewCoordinator{
+		log:       func(LogLevel, string, ...any) {},
+		diffCache: make(map[string]string),
+	}
+	rc.diffCache["task_with_empty_precapture"] = ""
+
+	params := ResultWriteParams{
+		TaskID:       "task_with_empty_precapture",
+		CommandID:    "cmd_x",
+		Reporter:     "worker1",
+		Summary:      "did the thing",
+		FilesChanged: []string{"a.go", "b.go"},
+	}
+
+	got := rc.buildDiffContent(params)
+	if got == "" {
+		t.Fatalf("buildDiffContent returned empty for cached empty precapture; expected fallback to summary")
+	}
+	if !strings.Contains(got, "did the thing") || !strings.Contains(got, "a.go") {
+		t.Errorf("fallback payload missing summary/files: %q", got)
+	}
+
+	// popPrecapturedDiff inside buildDiffContent must have evicted the
+	// stale entry so a follow-up reader does not see it again.
+	if _, stillCached := rc.popPrecapturedDiff("task_with_empty_precapture"); stillCached {
+		t.Errorf("buildDiffContent did not evict the empty cache entry")
+	}
+}
+
+// TestBuildDiffContent_NeverEmpty pins the 2026-04-29 fallback hygiene
+// rule: buildDiffContent must NEVER return "" — even when the
+// precapture cache is empty, ComputeWorkerDiff returns nothing, AND the
+// worker reported neither a Summary nor FilesChanged. The legacy
+// fallback returned "" in that triple-empty case, the dispatcher saw
+// empty DiffContent and short-circuited to status=skipped, and
+// operators saw "review never ran" with zero diagnostic context. The
+// new floor is a synthetic context-only payload (task/command/reporter
+// identification) so the reviewer at least gets the chance to say
+// "nothing concrete to flag" via Status=Completed with empty Findings.
+func TestBuildDiffContent_NeverEmpty(t *testing.T) {
+	rc := &ReviewCoordinator{
+		log:       func(LogLevel, string, ...any) {},
+		diffCache: make(map[string]string),
+	}
+	// All sources empty: no precapture, no worktreeManager, no Summary,
+	// no FilesChanged.
+	params := ResultWriteParams{
+		TaskID:    "task_floor",
+		CommandID: "cmd_floor",
+		Reporter:  "worker3",
+		Status:    "completed",
+	}
+	got := rc.buildDiffContent(params)
+	if got == "" {
+		t.Fatalf("buildDiffContent must never return empty; got %q", got)
+	}
+	for _, expect := range []string{"task_floor", "cmd_floor", "worker3", "completed"} {
+		if !strings.Contains(got, expect) {
+			t.Errorf("synthetic fallback missing %q: got %q", expect, got)
+		}
+	}
+}
+
+// TestPrecaptureDiff_DoesNotCacheEmpty pins the cache hygiene rule
+// driving the buildDiffContent fallback chain. Calling PrecaptureDiff
+// when the worker worktree has nothing to diff (e.g., the worker has
+// not committed yet, or cleanup already wiped the directory) must NOT
+// store "" in the cache — otherwise the dispatch path would prefer
+// that empty cache over a fresh summary fallback and the reviewer
+// would see status=skipped.
+//
+// The worktreeManager is left nil so PrecaptureDiff returns early
+// without touching the cache. This pins the invariant that "a missing
+// worktree manager is observationally equivalent to a worktree with
+// nothing to diff" — neither one may pollute the cache.
+func TestPrecaptureDiff_DoesNotCacheEmpty(t *testing.T) {
+	rc := &ReviewCoordinator{
+		log:       func(LogLevel, string, ...any) {},
+		diffCache: make(map[string]string),
+	}
+	// worktreeManager is nil — PrecaptureDiff must early-return without
+	// recording anything.
+	rc.PrecaptureDiff("task_no_wm", "cmd_no_wm", "worker_no_wm")
+	if _, ok := rc.popPrecapturedDiff("task_no_wm"); ok {
+		t.Errorf("PrecaptureDiff with nil worktreeManager wrote a cache entry")
 	}
 }
 

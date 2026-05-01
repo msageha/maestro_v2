@@ -5,15 +5,18 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"sync"
 	"sync/atomic"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
+	"github.com/msageha/maestro_v2/internal/daemon/paneactivity"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
 // PhaseDiagnoserFunc produces a diagnosis prompt string from a completed phase's tasks.
@@ -92,6 +95,20 @@ type QueueHandler struct {
 	// undecidedTracker tracks consecutive undecided busy-probe results per agent.
 	undecidedTracker *undecidedTracker
 
+	// paneActivity tracks per-agent pane content snapshots across scans so
+	// the lease-expiry path can extend leases for visibly-active agents
+	// without falling back to the operator-tuned dispatch_lease_sec timer.
+	// Wired to the worker pane capture function (paneCapture) so tests can
+	// stub the tmux call.
+	paneActivity *paneactivity.Tracker
+	// paneCapture returns the joined capture-pane content for paneTarget.
+	// Defaults to internal/tmux.CapturePaneJoined; tests inject a stub.
+	paneCapture func(paneTarget string) (string, error)
+	// paneFinder resolves an agentID to a tmux pane target. Defaults to
+	// tmux.FindPaneByAgentID; tests inject a stub so the activity check
+	// can run without a real tmux session.
+	paneFinder func(agentID string) (string, error)
+
 	// timeCache caches time.Parse(time.RFC3339, ...) results within a scan
 	// cycle to avoid repeated parsing of identical timestamp strings.
 	timeCache *timeParseCache
@@ -140,6 +157,9 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	}
 	qh.undecidedTracker = newUndecidedTracker()
 	qh.timeCache = newTimeParseCache()
+	qh.paneActivity = paneactivity.New(compileBusyPattern(cfg.Watcher.BusyPatterns))
+	qh.paneCapture = capturePaneJoinedFromTmux
+	qh.paneFinder = tmux.FindPaneByAgentID
 	se := newScanPhaseExecutor(qh)
 	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, components.dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se
@@ -161,4 +181,35 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 // leaseOwnerID returns the lease owner identifier in "daemon:{pid}" format per spec §5.8.1.
 func (qh *QueueHandler) leaseOwnerID() string {
 	return fmt.Sprintf("daemon:%d", qh.daemonPID)
+}
+
+// compileBusyPattern returns a compiled regex matching any of the
+// pipe-separated tokens in cfg.Watcher.BusyPatterns, or nil when the
+// pattern is empty/invalid. nil is treated by the activity tracker as
+// "pattern matching disabled — fall back to hash deltas only".
+func compileBusyPattern(pattern string) *regexp.Regexp {
+	if pattern == "" {
+		return nil
+	}
+	re, err := regexp.Compile(pattern)
+	if err != nil {
+		return nil
+	}
+	return re
+}
+
+// capturePaneJoinedFromTmux is the production paneCapture implementation.
+// Indirected through a function so tests can stub the tmux dependency.
+func capturePaneJoinedFromTmux(paneTarget string) (string, error) {
+	return tmux.CapturePaneJoined(paneTarget, 0)
+}
+
+// findPaneTarget routes paneFinder lookups through the QueueHandler so
+// tests can swap the function out without reaching into the tmux
+// package globals.
+func (qh *QueueHandler) findPaneTarget(agentID string) (string, error) {
+	if qh.paneFinder == nil {
+		return tmux.FindPaneByAgentID(agentID)
+	}
+	return qh.paneFinder(agentID)
 }

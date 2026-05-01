@@ -31,7 +31,14 @@ func (p resultPostProcessor) AfterPhaseB(input resultPostPhaseBInput) {
 	h.recordFallback(input.params, input.resultStatus)
 	h.handleRetryRegistration(input.phaseA, input.params)
 	if input.phaseBStatus == model.StatusPausedForReplan {
+		// emitPausedForReplanPlannerSignal requires callers to hold
+		// scanMu.RLock so the signal-queue write does not race
+		// PeriodicScan's flush. handleRetryRegistration above takes the
+		// lock internally and has released it by this point, so we acquire
+		// our own bracket for this signal emission.
+		h.acquireFileLock()
 		h.emitPausedForReplanPlannerSignal(input.params, "worker result requires replanning")
+		h.releaseFileLock()
 	}
 }
 

@@ -147,7 +147,7 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	// Use the absolute path of the current binary to avoid version skew: the pane
 	// shell's PATH may resolve a different (older) maestro binary than the one
 	// that started this formation, which would break flags added in newer versions.
-	launchCmd := agent.ResolvedLaunchCommand()
+	launchCmd := agent.ResolvedLaunchCommandFor(maestroDir)
 	for _, pane := range readyPanes {
 		if err := tmux.SendCommand(pane, launchCmd); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)

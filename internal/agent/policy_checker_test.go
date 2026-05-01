@@ -114,27 +114,27 @@ func TestPolicyChecker_HookSettings_ContainsScriptPath(t *testing.T) {
 	}
 }
 
-func TestHookScript_ContainsDangerousPatternChecks(t *testing.T) {
-	// Verify the hook script checks for all Tier 1 danger categories
+// TestHookScript_ContainsMaestroSpecificChecks verifies that the hook
+// asserts the *maestro-orchestration-specific* contracts only. Generic
+// destructive-command defense (rm -rf, sudo, kill, etc.) was deliberately
+// removed in the 2026-04-30 redesign — that surface duplicates the user's
+// global Claude Code hooks (~/.claude/settings.json) and caused recurring
+// false positives that blocked legitimate Worker `result write --summary`
+// payloads. See worker_policy_hook.sh header for the full rationale.
+func TestHookScript_ContainsMaestroSpecificChecks(t *testing.T) {
 	checks := []struct {
 		id   string
 		text string
 	}{
-		{"D001", "D001"},
-		{"Worker git push", "Worker git push is prohibited"},
-		{"D004", "D004"},
-		{"D005", "D005"},
-		{"D006", "D006"},
-		{"D007", "D007"},
-		{"D008", "D008"},
-		{"D009", "D009"},
-		{"D009 unquarantine", "maestro plan unquarantine"},
-		{"D009 resume-merge", "maestro plan resume-merge"},
-		{"D009 resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
-		{"D009 role env manipulation", "caller-role environment manipulation"},
-		{"D010 verify write", "maestro verify write"},
-		{".maestro/ bypass", ".maestro/"},
-		{"macOS system dirs", "System|Library|Applications"},
+		{"maestro plan control plane", "maestro plan control-plane API is Planner/operator-owned"},
+		{"maestro plan resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
+		{"maestro queue write", "maestro queue write is Orchestrator/operator-owned"},
+		{"maestro verify write", "maestro verify write is Planner-owned"},
+		{"role env manipulation", "role-environment manipulation"},
+		{"git push", "git push blocked for Worker"},
+		{".maestro/ control plane", ".maestro/"},
+		{"WT001 worktree boundary", "WT001"},
+		{"RUN_ON_MAIN", "RUN_ON_MAIN"},
 	}
 
 	for _, tc := range checks {
@@ -259,98 +259,14 @@ func TestHookScript_ProtectsMaestroControlPlanePaths(t *testing.T) {
 }
 
 func TestHookScript_BlocksAllGitPush(t *testing.T) {
-	// Worker hook blocks ALL git push, including --force-with-lease
+	// Worker hook blocks ALL git push (daemon owns publish via
+	// merge_publish/publish_completed); see worker_policy_hook.sh
+	// for the role rationale.
 	if !strings.Contains(hookScript, `git\s+push(\s|$)`) {
 		t.Error("hook script should block all git push for Workers")
 	}
-	if !strings.Contains(hookScript, "Worker git push is prohibited") {
+	if !strings.Contains(hookScript, "git push blocked for Worker") {
 		t.Error("hook script should contain Worker git push prohibition message")
-	}
-}
-
-func TestHookScript_ContainsRestrictedModeBypassChecks(t *testing.T) {
-	checks := []struct {
-		id   string
-		text string
-	}{
-		{"B001", "B001"},
-		{"B002", "B002"},
-		{"B003", "B003"},
-		{"B004", "B004"},
-	}
-
-	for _, tc := range checks {
-		if !strings.Contains(hookScript, tc.text) {
-			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
-		}
-	}
-}
-
-func TestHookScript_BlocksPipeToShell(t *testing.T) {
-	// B001 covers pipe-to-shell patterns. The dynamic per-command check is
-	// kept as a sanity reminder of the inputs the hook is supposed to block;
-	// the actual matching is exercised end-to-end by S-series tests
-	// (TestPolicyChecker_*) that run the hook script against each payload.
-	if !strings.Contains(hookScript, "B001") {
-		t.Fatal("hook script missing B001 section")
-	}
-	// Word-boundary anchored bash/sh detection prevents false positives like
-	// `bash_completion` from triggering B001. F-053 dropped a stale empty-if
-	// branch that had the same intent but no assertion.
-	if !strings.Contains(hookScript, `\b(bash|sh)\s`) {
-		t.Error("hook script should anchor bash/sh detection on a word boundary")
-	}
-}
-
-func TestHookScript_BlocksShellCFlag(t *testing.T) {
-	if !strings.Contains(hookScript, `\b(bash|sh)\s+-[a-zA-Z]*c\b`) {
-		t.Error("hook script should contain B002 pattern for bash/sh -c")
-	}
-}
-
-func TestHookScript_BlocksEval(t *testing.T) {
-	if !strings.Contains(hookScript, `eval\s+`) {
-		t.Error("hook script should contain B003 pattern for eval")
-	}
-}
-
-func TestHookScript_BlocksAbsolutePathShell(t *testing.T) {
-	if !strings.Contains(hookScript, `/bin/(ba)?sh`) {
-		t.Error("hook script should contain B004 pattern for /bin/bash and /bin/sh")
-	}
-}
-
-func TestHookScript_AllowsGitCleanDryRun(t *testing.T) {
-	// git clean -n (dry run) should be excluded from blocking
-	if !strings.Contains(hookScript, `git\s+clean\s+-[a-zA-Z]*n`) {
-		t.Error("hook script should check for git clean -n (dry run) to exclude it from blocking")
-	}
-}
-
-func TestHookScript_D001_BlocksAllFlagOrders(t *testing.T) {
-	// D001 regex must match rm with both r/R and f in any order
-	tests := []struct {
-		pattern     string
-		shouldMatch bool
-	}{
-		// Should be blocked (contains both r/R and f)
-		{`rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`, true}, // pattern A: r before f
-		{`rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`, true}, // pattern B: f before r
-	}
-
-	for _, tc := range tests {
-		if strings.Contains(hookScript, tc.pattern) != tc.shouldMatch {
-			t.Errorf("hook script should contain pattern %q: got %v, want %v",
-				tc.pattern, !tc.shouldMatch, tc.shouldMatch)
-		}
-	}
-
-	// Verify both OR branches exist for D001 to handle -fr, -fR, -Rf variants
-	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`) {
-		t.Error("D001: missing pattern for r/R before f (e.g., rm -rf)")
-	}
-	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`) {
-		t.Error("D001: missing pattern for f before r/R (e.g., rm -fr, rm -fR)")
 	}
 }
 
@@ -388,69 +304,10 @@ func runHookScript(t *testing.T, scriptPath, inputJSON string) string {
 
 // --- S1: D002 Recursive delete outside project root ---
 
-func TestHookScript_S1_D002_DeniesRecursiveDeleteOutsideProject(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf /var/data"}}`
-	output := runHookScript(t, scriptPath, input)
-	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
-		t.Errorf("expected D002 deny for rm -rf /var/data, got: %s", output)
-	}
-}
-
-func TestHookScript_S1_D002_AllowsRecursiveDeleteInsideProject(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	maestroDir := filepath.Join(dir, ".maestro")
-	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// Create a subdirectory inside the project so realpath can resolve it
-	subdir := filepath.Join(dir, "build", "tmp")
-	if err := os.MkdirAll(subdir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + subdir + `"}}`
-	output := runHookScript(t, scriptPath, input)
-	if strings.Contains(output, "deny") {
-		t.Errorf("should allow rm -rf inside project, got: %s", output)
-	}
-}
-
-func TestHookScript_S1_D002_DeniesRecursiveDeleteWithDoubleDash(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm --recursive /tmp/outside"}}`
-	output := runHookScript(t, scriptPath, input)
-	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
-		t.Errorf("expected D002 deny for rm --recursive /tmp/outside, got: %s", output)
-	}
-}
-
-func TestHookScript_S1_D002_ContainsPattern(t *testing.T) {
-	if !strings.Contains(hookScript, "D002") {
-		t.Error("hook script should contain D002 check")
-	}
-	if !strings.Contains(hookScript, "__PROJECT_ROOT__") {
-		t.Error("hook script template should contain __PROJECT_ROOT__ placeholder")
-	}
-}
+// S1 D002 generic recursive-delete checks were removed in the 2026-04-30
+// redesign. Generic destructive-command defense is delegated to the user's
+// global Claude Code hooks (~/.claude/settings.json); see
+// worker_policy_hook.sh header for the rationale.
 
 // --- S2: Relative path .maestro/ blocking ---
 
@@ -507,8 +364,8 @@ func TestHookScript_S2_ContainsRelativePatterns(t *testing.T) {
 	if !strings.Contains(hookScript, ".maestro/config.yaml|") {
 		t.Error("hook script should contain relative .maestro/config.yaml pattern")
 	}
-	if !strings.Contains(hookScript, "control-plane path (relative)") {
-		t.Error("hook script should contain relative path deny message")
+	if !strings.Contains(hookScript, "daemon-owned, relative") {
+		t.Error("hook script should contain relative-path daemon-owned deny marker")
 	}
 }
 
@@ -686,118 +543,10 @@ func TestHookScript_C3_DashboardMdWriteDenied(t *testing.T) {
 	}
 }
 
-// --- Bash dashboard.md access blocking ---
-
-func TestHookScript_BashDashboardMdAccessDenied(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	tests := []struct {
-		name string
-		cmd  string
-	}{
-		{"cat", `cat .maestro/dashboard.md`},
-		{"head", `head .maestro/dashboard.md`},
-		{"grep", `grep pattern .maestro/dashboard.md`},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "deny") {
-				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// --- deny() JSON escaping ---
-
-func TestHookScript_DenyJSONEscapesSpecialChars(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// Use a command that triggers D005 (sudo) — the deny reason contains
-	// fixed text, but the important thing is the output is valid JSON.
-	input := `{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}`
-	output := runHookScript(t, scriptPath, input)
-
-	var parsed map[string]interface{}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &parsed); err != nil {
-		t.Fatalf("deny output is not valid JSON: %v\noutput: %s", err, output)
-	}
-	hso, ok := parsed["hookSpecificOutput"].(map[string]interface{})
-	if !ok {
-		t.Fatal("missing hookSpecificOutput")
-	}
-	if hso["permissionDecision"] != "deny" {
-		t.Error("permissionDecision should be deny")
-	}
-}
-
-// --- D005: chmod -R system path blocking ---
-
-func TestHookScript_D005_ChmodRSystemPathDenied(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []string{
-		`chmod -R 755 /usr/local`,
-		`chmod -R 777 /etc/config`,
-		`chmod -Rv 755 /System/Library`,
-		`chmod -cR 755 /Library/Extensions`,
-	}
-	for _, cmd := range blocked {
-		t.Run(cmd, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "deny") || !strings.Contains(output, "D005") {
-				t.Errorf("expected D005 deny for %q, got: %s", cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_D005_ChmodRProjectPathAllowed(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// chmod -R on a project-local path should be allowed
-	input := `{"tool_name":"Bash","tool_input":{"command":"chmod -R 755 ./build/output"}}`
-	output := runHookScript(t, scriptPath, input)
-	if strings.Contains(output, "deny") {
-		t.Errorf("should allow chmod -R on project path, got: %s", output)
-	}
-}
-
-func TestHookScript_ContainsChmodRPattern(t *testing.T) {
-	if !strings.Contains(hookScript, "chmod") {
-		t.Error("hook script should contain chmod -R check")
-	}
-	if !strings.Contains(hookScript, "D005: Blocked chmod -R") {
-		t.Error("hook script should contain D005 chmod -R deny message")
-	}
-}
+// Bash dashboard read access, deny() JSON escaping for sudo, and chmod -R
+// system-path checks were removed in the 2026-04-30 redesign. Read access
+// to .maestro/* and generic privilege-escalation defenses are delegated to
+// the user's global Claude Code hooks.
 
 func TestHookScript_WriteHookScript_SafeWithSpecialChars(t *testing.T) {
 	requireJq(t)
@@ -875,17 +624,30 @@ func TestHookScript_D009_BlocksMaestroRoleEnvironmentBypass(t *testing.T) {
 		t.Fatalf("WriteHookScript: %v", err)
 	}
 
-	cases := []string{
-		"env -u MAESTRO_AGENT_ROLE maestro plan submit --command-id cmd_1",
-		"env MAESTRO_AGENT_ROLE=cli maestro queue write --type command",
-		"MAESTRO_AGENT_ROLE=cli maestro verify write --command-id cmd_1",
-		"unset TMUX_PANE; maestro plan retry-publish --command-id cmd_1",
+	cases := []struct {
+		name      string
+		cmd       string
+		needsRole bool // true: blocked by role-env rule, false: blocked by maestro plan rule
+	}{
+		{"env -u role bypass", "env -u MAESTRO_AGENT_ROLE maestro plan submit --command-id cmd_1", true},
+		{"env role assignment", "env MAESTRO_AGENT_ROLE=cli maestro queue write --type command", true},
+		{"inline role assignment", "MAESTRO_AGENT_ROLE=cli maestro verify write --command-id cmd_1", true},
+		{"chained unset TMUX_PANE", "unset TMUX_PANE; maestro plan retry-publish --command-id cmd_1", true},
 	}
-	for _, cmd := range cases {
-		t.Run(cmd, func(t *testing.T) {
-			output := runHookScriptInDir(t, scriptPath, makeBashInput(cmd), dir)
-			if !strings.Contains(output, "caller-role environment manipulation") || !strings.Contains(output, "deny") {
-				t.Errorf("expected D009 role-env deny for %q, got: %s", cmd, output)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := runHookScriptInDir(t, scriptPath, makeBashInput(tc.cmd), dir)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
+			}
+			// Either the role-env guard or the maestro-plan-control-plane rule
+			// must catch the call; both are maestro-orchestration-specific.
+			roleHit := strings.Contains(output, "role-environment manipulation")
+			planHit := strings.Contains(output, "Planner/operator-owned") ||
+				strings.Contains(output, "Orchestrator/operator-owned") ||
+				strings.Contains(output, "Planner-owned")
+			if !roleHit && !planHit {
+				t.Errorf("expected role-env or maestro-plan deny for %q, got: %s", tc.cmd, output)
 			}
 		})
 	}
@@ -944,6 +706,55 @@ func TestHookScript_WT001_AllowsWriteInsideWorktree(t *testing.T) {
 	}
 }
 
+// TestHookScript_WT001_AllowsWriteToVarFoldersScratch pins the macOS
+// scratch exemption: a worker whose CWD is inside .maestro/worktrees/
+// must be able to Write to /var/folders/... (where mktemp lands by
+// default on macOS) and to /private/var/folders/... (the resolved
+// canonical form). Previously the exemption only triggered when TMPDIR
+// was set and matched the path; runs that inherited a stripped
+// environment hit WT001 even though /var/folders is the system-default
+// scratch root.
+//
+// The worker_cwd-under-scratch carve-out (which suppresses the scratch
+// exemption when worker_cwd lives inside TMPDIR or /var/folders) is
+// exercised by the existing fixtures because t.TempDir() returns paths
+// under /var/folders on macOS — so this test deliberately uses a /tmp
+// base to mirror the production layout where worker_cwd is rooted under
+// the user's home directory and worktrees do NOT live in TMPDIR.
+func TestHookScript_WT001_AllowsWriteToVarFoldersScratch(t *testing.T) {
+	requireJq(t)
+	base, err := os.MkdirTemp("/tmp", "maestro-wt001-vf-")
+	if err != nil {
+		t.Skipf("/tmp unavailable: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_vf", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	cases := []string{
+		"/var/folders/x9/mock/T/tmp.summary.txt",
+		"/private/var/folders/x9/mock/T/tmp.summary.txt",
+	}
+	for _, target := range cases {
+		input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":"%s","content":"summary"}}`, target)
+		output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+		if strings.Contains(output, "WT001") || strings.Contains(output, "deny") {
+			t.Errorf("expected /var/folders scratch to be allowed for %q, got: %s", target, output)
+		}
+	}
+}
+
 func TestHookScript_WT001_EditOutsideWorktreeDenied(t *testing.T) {
 	requireJq(t)
 	base := t.TempDir()
@@ -993,366 +804,6 @@ func TestHookScript_WT001_NoEnforcementOutsideWorktree(t *testing.T) {
 		t.Errorf("WT001 should not apply when CWD is not inside worktrees, got: %s", output)
 	}
 }
-
-// =============================================================================
-// C1: Shell variable expansion bypass tests
-// =============================================================================
-
-func TestHookScript_C1_BlocksBacktickSubstitution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"backtick rm", "echo `rm -rf /`"},
-		{"backtick echo", "`echo rm` -rf /"},
-		{"backtick in middle", "ls `pwd`/src"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			// Must escape backticks in JSON
-			escaped := strings.ReplaceAll(tc.cmd, "`", "` + \"`\" + `")
-			// Use raw construction to avoid backtick issues
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			_ = escaped
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_C1_BlocksAnsiCQuoting(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"ansi-c simple", "$'hello' arg"},
-		{"ansi-c with space", "echo $'test'"},
-		{"ansi-c at start", "$'cmd' -rf /"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_C1_BlocksUnsafeCommandSubstitution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"echo subst", "$(echo rm) -rf /"},
-		{"printf subst", "$(printf '%s' rm) -rf /"},
-		{"arbitrary subst", "$(cat /tmp/cmd) -rf /"},
-		{"bash subst", "$(bash -c 'echo rm') -rf /"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_C1_AllowsSafeSubstitution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"go env", "echo $(go env GOROOT)"},
-		{"pwd subst", "ls $(pwd)/src"},
-		{"git rev-parse", "cd $(git rev-parse --show-toplevel)"},
-		{"git log", "echo $(git log --oneline -1)"},
-		{"which", "$(which go) version"},
-		{"uname", "echo $(uname -s)"},
-		{"arithmetic", "echo $(( 1 + 2 ))"},
-		{"wc", "echo $(wc -l < file.txt)"},
-		{"env var ref", "echo $HOME"},
-		{"env var brace", "echo ${TMPDIR}"},
-		{"go test plain", "go test -v ./..."},
-		{"git status", "git status"},
-		{"grep plain", "grep -r pattern src/"},
-		{"plain echo", "echo hello world"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "C1") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// C2: D001 regex flag separation bypass tests
-// =============================================================================
-
-func TestHookScript_C2_BlocksSeparatedFlags(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"separated r f", "rm -r -f /"},
-		{"separated f r", "rm -f -r /"},
-		{"with verbose", "rm -v -r -f /"},
-		{"long recursive short force", "rm --recursive -f /"},
-		{"short recursive long force", "rm -r --force /"},
-		{"long both", "rm --recursive --force /"},
-		{"target tilde", "rm -r -f ~"},
-		{"target Users", "rm -r -f /Users"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "D001") || !strings.Contains(output, "deny") {
-				t.Errorf("expected D001 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_C2_AllowsSafeRm(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	maestroDir := filepath.Join(dir, ".maestro")
-	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// Create subdirs for rm targets
-	for _, sub := range []string{"build", "tmp"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
-			t.Fatalf("mkdir: %v", err)
-		}
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"rm file only", "rm -f file.txt"},
-		{"rm dir only", "rm -r " + filepath.Join(dir, "build")},
-		{"rm no force", "rm -r " + filepath.Join(dir, "tmp")},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "D001") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// H1: Absolute path / wrapper bypass tests
-// =============================================================================
-
-func TestHookScript_H1_BlocksAbsolutePathDangerousCommands(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"usr bin kill", "/usr/bin/kill 1234"},
-		{"bin kill", "/bin/kill 1234"},
-		{"usr sbin fdisk", "/usr/sbin/fdisk /dev/sda"},
-		{"usr bin chmod", "/usr/bin/chmod 777 /etc/passwd"},
-		{"sbin mkfs", "/sbin/mkfs.ext4 /dev/sda1"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "H1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected H1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_H1_BlocksWrapperCommands(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"env kill", "env kill 1234"},
-		{"command kill", "command kill 1234"},
-		{"exec kill", "exec kill 1234"},
-		{"env with var kill", "env FOO=bar kill 1234"},
-		{"env with flag kill", "env -i kill 1234"},
-		{"env sudo", "env sudo apt install foo"},
-		{"xargs kill", "echo 123 | xargs kill"},
-		{"xargs rm", "echo file | xargs rm"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "H1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected H1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_H1_AllowsSafeCommands(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"env go test", "env GO111MODULE=on go test ./..."},
-		{"command go", "command go version"},
-		{"usr bin grep", "/usr/bin/grep pattern file.txt"},
-		{"env with var go", "env CGO_ENABLED=0 go build ./..."},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "H1") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// H3: Symlink D002 bypass tests
-// =============================================================================
-
-func TestHookScript_H3_BlocksSymlinkOutsideProject(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	maestroDir := filepath.Join(dir, ".maestro")
-	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// Create a symlink inside the project that points outside
-	outsideDir := t.TempDir()
-	symlinkPath := filepath.Join(dir, "sneaky_link")
-	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + symlinkPath + `"}}`
-	output := runHookScript(t, scriptPath, input)
-	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
-		t.Errorf("expected D002 deny for symlink outside project, got: %s", output)
-	}
-}
-
-func TestHookScript_H3_AllowsSymlinkInsideProject(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	maestroDir := filepath.Join(dir, ".maestro")
-	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	// Create a symlink inside the project that points to another dir inside project
-	targetDir := filepath.Join(dir, "target")
-	if err := os.MkdirAll(targetDir, 0755); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	symlinkPath := filepath.Join(dir, "internal_link")
-	if err := os.Symlink(targetDir, symlinkPath); err != nil {
-		t.Fatalf("symlink: %v", err)
-	}
-
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + symlinkPath + `"}}`
-	output := runHookScript(t, scriptPath, input)
-	if strings.Contains(output, "deny") {
-		t.Errorf("should allow symlink inside project, got: %s", output)
-	}
-}
-
-// =============================================================================
-// H4: WT001 relative path bypass tests
-// =============================================================================
 
 func TestHookScript_H4_AllowsRelativePathInsideWorktree(t *testing.T) {
 	requireJq(t)
@@ -1429,169 +880,6 @@ func TestHookScript_H4_BlocksRelativePathEdit(t *testing.T) {
 	}
 }
 
-// =============================================================================
-// M-AGT1: Alternative destructive tools tests
-// =============================================================================
-
-func TestHookScript_MAGT1_BlocksFindDelete(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"find delete", "find /tmp -name '*.tmp' -delete"},
-		{"find exec rm", `find . -exec rm {} \;`},
-		{"find exec shred", `find . -name '*.log' -exec shred {} \;`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "M-AGT1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected M-AGT1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_MAGT1_BlocksScriptingDestructiveOps(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"perl unlink", `perl -e 'unlink("file.txt")'`},
-		{"python os.remove", `python -c 'import os; os.remove("file.txt")'`},
-		{"python3 rmtree", `python3 -c 'import shutil; shutil.rmtree("dir")'`},
-		{"node unlinkSync", `node -e 'require("fs").unlinkSync("file")'`},
-		{"node rmSync", `node -e 'require("fs").rmSync("dir", {recursive: true})'`},
-		{"ruby File.delete", `ruby -e 'File.delete("file.txt")'`},
-		{"ruby rm_rf", `ruby -e 'FileUtils.rm_rf("dir")'`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "M-AGT1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected M-AGT1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_MAGT1_AllowsSafeFindAndScripting(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"find no delete", "find . -name '*.go'"},
-		{"find type f", "find . -type f -name '*.txt'"},
-		{"python print", "python -c 'print(42)'"},
-		{"node console", "node -e 'console.log(42)'"},
-		{"perl print", "perl -e 'print 42'"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "M-AGT1") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// M-AGT2: .maestro access check expansion tests
-// =============================================================================
-
-func TestHookScript_MAGT2_BlocksFileOpsOnMaestro(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"cp to maestro", "cp file.txt .maestro/state/tasks.yaml"},
-		{"mv to maestro", "mv file.txt .maestro/config.yaml"},
-		{"rsync to maestro", "rsync file.txt .maestro/queue/"},
-		{"ln to maestro state", "ln -s /tmp/x .maestro/state/link"},
-		{"cp read maestro", "cp .maestro/state/tasks.yaml /tmp/"},
-		{"install to maestro", "install -m 644 file.txt .maestro/locks/"},
-		{"tar maestro", "tar czf backup.tar.gz .maestro/state/"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "deny") {
-				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_MAGT2_AllowsSafeFileOps(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"cp normal files", "cp src/file.go dst/file.go"},
-		{"mv normal files", "mv old.txt new.txt"},
-		{"ln normal", "ln -s src/lib dst/lib"},
-		{"rsync normal", "rsync -av src/ dst/"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "deny") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// Legitimate commands should NOT be blocked (comprehensive safety check)
-// =============================================================================
-
 func TestHookScript_LegitimateCommandsNotBlocked(t *testing.T) {
 	requireJq(t)
 	dir := t.TempDir()
@@ -1641,158 +929,6 @@ func TestHookScript_LegitimateCommandsNotBlocked(t *testing.T) {
 				t.Errorf("BLOCKED legitimate command %q, got: %s", tc.cmd, output)
 			}
 		})
-	}
-}
-
-// =============================================================================
-// C-1: ANSI-C quoting after shell operators
-// =============================================================================
-
-func TestHookScript_C1_BlocksAnsiCQuotingAfterOperators(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"after semicolon", "echo hello;$'\\x72\\x6d' -rf /"},
-		{"after pipe", "echo hello|$'cmd' arg"},
-		{"after double ampersand", "true&&$'cmd' arg"},
-		{"after open paren", "($'cmd' arg)"},
-		{"after open brace", "{$'cmd' arg;}"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_C1_AnsiCQuotingRegexContainsOperators(t *testing.T) {
-	// Verify the expanded anchor includes shell operators and quotes/equals (SEC-4)
-	if !strings.Contains(hookScript, `[[:space:];|&({\"'=]`) {
-		t.Error("ANSI-C quoting regex should include shell operator anchors ;|&({\"'=")
-	}
-}
-
-// =============================================================================
-// H-1: Process substitution blocking
-// =============================================================================
-
-func TestHookScript_H1PS_BlocksProcessSubstitution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"input process sub", "diff <(sort file1) <(sort file2)"},
-		{"output process sub", "tee >(grep error > errors.log)"},
-		{"single input sub", "cat <(echo hello)"},
-		{"single output sub", "echo hello > >(cat)"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "H1-PS") || !strings.Contains(output, "deny") {
-				t.Errorf("expected H1-PS deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_H1PS_AllowsNormalRedirects(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"output redirect", "echo hello > output.txt"},
-		{"append redirect", "echo hello >> output.txt"},
-		{"input redirect", "sort < input.txt"},
-		{"stderr redirect", "go test ./... 2>&1"},
-		{"null redirect", "go build ./... > /dev/null 2>&1"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "H1-PS") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// H-2: D001 Linux path coverage
-// =============================================================================
-
-func TestHookScript_D001_BlocksLinuxPaths(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"rm -rf /home", "rm -rf /home"},
-		{"rm -rf /root", "rm -rf /root"},
-		{"rm -rf /opt", "rm -rf /opt"},
-		{"rm -fr /home", "rm -fr /home"},
-		{"rm --recursive --force /home", "rm --recursive --force /home"},
-		{"rm -r -f /root", "rm -r -f /root"},
-		{"rm -f -r /opt", "rm -f -r /opt"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "D001") || !strings.Contains(output, "deny") {
-				t.Errorf("expected D001 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_D001_LinuxPathsInRegex(t *testing.T) {
-	if !strings.Contains(hookScript, "/home") {
-		t.Error("D001 regex should include /home")
-	}
-	if !strings.Contains(hookScript, "/root") {
-		t.Error("D001 regex should include /root")
-	}
-	if !strings.Contains(hookScript, "/opt") {
-		t.Error("D001 regex should include /opt")
 	}
 }
 
@@ -1848,40 +984,6 @@ func TestHookScript_WT001_CaseInsensitiveOnMacOS(t *testing.T) {
 // M-PERL1: Perl indirect execution
 // =============================================================================
 
-// =============================================================================
-// L1: .maestro/queue/ (singular) access blocking tests
-// =============================================================================
-
-func TestHookScript_L1_BlocksBashAccessToMaestroQueue(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"cat queue", "cat .maestro/queue/pending.yaml"},
-		{"ls queue", "ls .maestro/queue/"},
-		{"grep queue", "grep pattern .maestro/queue/tasks.yaml"},
-		{"cp queue", "cp .maestro/queue/pending.yaml /tmp/"},
-		{"mv to queue", "mv file.txt .maestro/queue/"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "deny") {
-				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
 func TestHookScript_L1_BlocksWriteEditToMaestroQueue(t *testing.T) {
 	requireJq(t)
 	dir := t.TempDir()
@@ -1927,275 +1029,6 @@ func TestHookScript_L1_LauncherBlocksReadMaestroQueue(t *testing.T) {
 	}
 }
 
-func TestHookScript_MPERL1_BlocksPerlIndirectExecution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"perl eval", `perl -e 'eval("print 42")'`},
-		{"perl system", `perl -e 'system("echo hello")'`},
-		{"perl exec", `perl -e 'exec("ls", "-la")'`},
-		{"perl -E eval", `perl -E 'eval("code")'`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "M-PERL1") || !strings.Contains(output, "deny") {
-				t.Errorf("expected M-PERL1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_MPERL1_AllowsSafePerlOperations(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"perl print", "perl -e 'print 42'"},
-		{"perl no -e", "perl script.pl"},
-		{"perl regex", "perl -e 'print if /pattern/'"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "M-PERL1") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// SEC-1: git show removed from allowlist
-// =============================================================================
-
-func TestHookScript_SEC1_GitShowNotInAllowlist(t *testing.T) {
-	// Verify git show is NOT in the $() command substitution allowlist
-	if strings.Contains(hookScript, "|show|") {
-		t.Error("SEC-1: git show should be removed from allowlist")
-	}
-	// Verify the allowlist still contains other safe git subcommands
-	for _, sub := range []string{"rev-parse", "log", "diff", "status", "branch"} {
-		if !strings.Contains(hookScript, sub) {
-			t.Errorf("SEC-1: git %s should remain in allowlist", sub)
-		}
-	}
-}
-
-func TestHookScript_SEC1_BlocksGitShowSubstitution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"git show HEAD:file", "echo $(git show HEAD:secret.key)"},
-		{"git show commit", "echo $(git show abc123)"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("SEC-1: expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// SEC-2: Script language indirect execution
-// =============================================================================
-
-func TestHookScript_SEC2_BlocksPythonIndirectExecution(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"python exec", `python3 -c "exec('import os')"`},
-		{"python eval", `python -c "eval('1+1')"`},
-		{"python compile", `python3 -c "compile('code','f','exec')"`},
-		{"python __import__", `python3 -c "__import__('os').system('ls')"`},
-		{"python getattr", `python3 -c "getattr(__builtins__,'eval')('1')"`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
-				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_SEC2_BlocksNodeChildProcess(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"node child_process", `node -e "require('child_process').exec('ls')"`},
-		{"node child_process ref", `node -e "const cp = require('child_process')"`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
-				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_SEC2_BlocksRubySystemExec(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"ruby system", `ruby -e 'system("ls -la")'`},
-		{"ruby Kernel.system", `ruby -e 'Kernel.system("ls")'`},
-		{"ruby exec", `ruby -e 'exec("ls")'`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
-				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_SEC2_AllowsSafeScriptingOperations(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"python print", `python3 -c "print('hello')"`},
-		{"python json", `python3 -c "import json; print(json.dumps({'a':1}))"`},
-		{"node console", `node -e "console.log('hello')"`},
-		{"node fs", `node -e "require('fs').readFileSync('x')"`},
-		{"ruby puts", `ruby -e 'puts "hello"'`},
-		{"ruby File.read", `ruby -e 'File.read("x")'`},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "SEC2") {
-				t.Errorf("SEC-2: should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// SEC-3: realpath -P and TOCTOU documentation
-// =============================================================================
-
-func TestHookScript_SEC3_RealpathUsesPhysicalFlag(t *testing.T) {
-	if !strings.Contains(hookScript, "realpath -P") {
-		t.Error("SEC-3: realpath should use -P flag for physical path resolution")
-	}
-}
-
-func TestHookScript_SEC3_TOCTOUCommentExists(t *testing.T) {
-	if !strings.Contains(hookScript, "TOCTOU") {
-		t.Error("SEC-3: hook script should contain TOCTOU documentation comment")
-	}
-}
-
-// =============================================================================
-// SEC-4: ANSI-C quoting detection after quotes and equals
-// =============================================================================
-
-func TestHookScript_SEC4_BlocksAnsiCQuotingAfterQuotesAndEquals(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"after equals", `var=$'\x72\x6d' && $var -rf /`},
-		{"after double quote", `echo "$'\x72\x6d'" arg`},
-		{"at line start", `$'\x72\x6d' -rf /tmp`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
-				t.Errorf("SEC-4: expected C1 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
 // =============================================================================
 // WT-GIT: Worktree git change command blocking
 // =============================================================================
@@ -2238,7 +1071,7 @@ func TestHookScript_WTGIT_BlocksGitChangeCommandsInWorktree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
-			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+			if !strings.Contains(output, "git mutation blocked in worktree mode") || !strings.Contains(output, "deny") {
 				t.Errorf("expected WT-GIT deny for %q in worktree, got: %s", tc.cmd, output)
 			}
 		})
@@ -2274,7 +1107,7 @@ func TestHookScript_WTGIT_AllowsReadOnlyGitInWorktree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
-			if strings.Contains(output, "WT-GIT") {
+			if strings.Contains(output, "git mutation blocked in worktree mode") {
 				t.Errorf("should allow %q in worktree, got: %s", tc.cmd, output)
 			}
 		})
@@ -2293,29 +1126,8 @@ func TestHookScript_WTGIT_NoEnforcementOutsideWorktree(t *testing.T) {
 	// git add outside worktree should not be blocked by WT-GIT
 	input := makeBashInput("git add file.go")
 	output := runHookScriptInDir(t, scriptPath, input, dir)
-	if strings.Contains(output, "WT-GIT") {
+	if strings.Contains(output, "git mutation blocked in worktree mode") {
 		t.Errorf("WT-GIT should not apply outside worktree, got: %s", output)
-	}
-}
-
-func TestHookScript_BlocksGitAddAllOutsideWorktree(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	cases := []string{"git add -A", "git add --all", "git add .", "cd sub && git add ."}
-	for _, cmd := range cases {
-		t.Run(cmd, func(t *testing.T) {
-			input := makeBashInput(cmd)
-			output := runHookScriptInDir(t, scriptPath, input, dir)
-			if !strings.Contains(output, "git add all") || !strings.Contains(output, "deny") {
-				t.Fatalf("expected git add all deny for %q, got: %s", cmd, output)
-			}
-		})
 	}
 }
 
@@ -2366,7 +1178,7 @@ func TestHookScript_WTGIT_FalsePositive_MaestroResultWriteContainingGitInSummary
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
-			if strings.Contains(output, "WT-GIT") {
+			if strings.Contains(output, "git mutation blocked in worktree mode") {
 				t.Errorf("WT-GIT must not trigger on maestro CLI argument containing git-as-substring: %q, got: %s", tc.cmd, output)
 			}
 		})
@@ -2395,7 +1207,7 @@ func TestHookScript_WTGIT_FalsePositive_MaestroTaskHeartbeat(t *testing.T) {
 
 	input := makeBashInput("maestro task heartbeat --agent-id worker1 --task-id t --lease-epoch 1")
 	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
-	if strings.Contains(output, "WT-GIT") {
+	if strings.Contains(output, "git mutation blocked in worktree mode") {
 		t.Errorf("WT-GIT must not trigger on maestro task heartbeat, got: %s", output)
 	}
 }
@@ -2433,7 +1245,7 @@ func TestHookScript_WTGIT_BlocksChainedGitAfterSeparator(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
-			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+			if !strings.Contains(output, "git mutation blocked in worktree mode") || !strings.Contains(output, "deny") {
 				t.Errorf("expected WT-GIT deny for chained %q, got: %s", tc.cmd, output)
 			}
 		})
@@ -2477,7 +1289,7 @@ func TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktree(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, integrationDir)
-			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+			if !strings.Contains(output, "git mutation blocked in worktree mode") || !strings.Contains(output, "deny") {
 				t.Errorf("expected WT-GIT deny for %q in _integration worktree, got: %s", tc.cmd, output)
 			}
 		})
@@ -2505,7 +1317,7 @@ func TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktreeSubdir(t *testing.
 
 	input := makeBashInput("git add . && git commit -m 'fix'")
 	output := runHookScriptInDir(t, scriptPath, input, subDir)
-	if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+	if !strings.Contains(output, "git mutation blocked in worktree mode") || !strings.Contains(output, "deny") {
 		t.Errorf("expected WT-GIT deny in _integration worktree subdir, got: %s", output)
 	}
 }
@@ -2543,384 +1355,12 @@ func TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, regularDir)
-			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+			if !strings.Contains(output, "git mutation blocked in worktree mode") || !strings.Contains(output, "deny") {
 				t.Errorf("expected WT-GIT deny for %q in non-integration worktree, got: %s", tc.cmd, output)
 			}
 		})
 	}
 }
-
-// =============================================================================
-// M2: Decode command bypass prevention
-// =============================================================================
-
-func TestHookScript_M2_BlocksDecodeCommands(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"base64 -d", "base64 -d encoded.txt"},
-		{"base64 --decode", "base64 --decode encoded.txt"},
-		{"echo pipe base64 -d", "echo cGF5bG9hZA== | base64 -d"},
-		{"xxd -r", "xxd -r hex.txt"},
-		{"xxd -rp", "xxd -rp hex.txt"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "M2") || !strings.Contains(output, "deny") {
-				t.Errorf("expected M2 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_M2_AllowsSafeEncodeCommands(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"base64 encode", "base64 file.txt"},
-		{"xxd hex dump", "xxd file.bin"},
-		{"xxd -i include", "xxd -i file.bin"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "M2") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// M3: Shell variable manipulation bypass prevention
-// =============================================================================
-
-func TestHookScript_M3_BlocksShellVariableBypass(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"IFS assignment", "IFS=/ cmd arg"},
-		{"IFS after semicolon", "echo hello; IFS=x cmd"},
-		{"indirect ref", "echo ${!myvar}"},
-		{"declare -n", "declare -n ref=myvar"},
-		{"declare -rn", "declare -rn ref=myvar"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "M3") || !strings.Contains(output, "deny") {
-				t.Errorf("expected M3 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_M3_AllowsNormalVariableUse(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"normal declare", "declare -r myvar=hello"},
-		{"declare -i", "declare -i num=42"},
-		{"env var brace", "echo ${HOME}"},
-		{"env var simple", "echo $PATH"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "M3") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// m3: rsync --remove-source-files
-// =============================================================================
-
-func TestHookScript_m3_BlocksRsyncRemoveSourceFiles(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"rsync remove-source-files", "rsync --remove-source-files src/ dst/"},
-		{"rsync with other flags", "rsync -av --remove-source-files src/ dst/"},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "m3") || !strings.Contains(output, "deny") {
-				t.Errorf("expected m3 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_m3_AllowsNormalRsync(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"rsync normal", "rsync -av src/ dst/"},
-		{"rsync delete", "rsync -av --delete src/ dst/"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "m3") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// m5: Perl open()/qx//
-// =============================================================================
-
-func TestHookScript_m5_BlocksPerlOpenAndQx(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	blocked := []struct {
-		name string
-		cmd  string
-	}{
-		{"perl open pipe", `perl -e 'open(FH, "| cmd")'`},
-		{"perl qx", `perl -e 'my $out = qx(ls -la)'`},
-		{"perl -E open", `perl -E 'open(my $fh, "<", "file")'`},
-	}
-	for _, tc := range blocked {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "m5") || !strings.Contains(output, "deny") {
-				t.Errorf("expected m5 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-func TestHookScript_m5_AllowsSafePerlOperations(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"perl print", "perl -e 'print 42'"},
-		{"perl no -e", "perl script.pl"},
-		{"perl regex", "perl -e 'print if /pattern/'"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "m5") {
-				t.Errorf("should allow %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// D004: git checkout . (single dot, no double-dashes) destroys tracked files
-// =============================================================================
-
-// TestD004_GitCheckoutDotWithoutDashes verifies that "git checkout ." without
-// the "--" separator is blocked. This form resets all tracked files in the
-// working tree to HEAD (equivalent to wiping uncommitted changes), which is a
-// Tier 1 destructive operation. The existing D004 regex only matched
-// "git checkout -- ." so this form previously leaked through.
-func TestD004_GitCheckoutDotWithoutDashes(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	denyCases := []struct {
-		name string
-		cmd  string
-	}{
-		{"bare git checkout .", "git checkout ."},
-		{"git checkout . with trailing space", "git checkout . "},
-		{"chained after &&", "cd repo && git checkout ."},
-	}
-	for _, tc := range denyCases {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "D004") || !strings.Contains(output, "deny") {
-				t.Errorf("expected D004 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// TestD004_GitCheckoutExistingDenyCasesStillBlocked ensures the new
-// "git checkout ." pattern does not regress the existing D004 deny cases.
-func TestD004_GitCheckoutExistingDenyCasesStillBlocked(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	denyCases := []struct {
-		name string
-		cmd  string
-	}{
-		{"git checkout -- .", "git checkout -- ."},
-		{"git reset --hard", "git reset --hard HEAD"},
-		{"git clean -f", "git clean -f"},
-		{"git clean -fd", "git clean -fd"},
-	}
-	for _, tc := range denyCases {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if !strings.Contains(output, "D004") || !strings.Contains(output, "deny") {
-				t.Errorf("expected D004 deny for %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// TestD004_GitCheckoutFalsePositives ensures benign "git checkout" forms are
-// not accidentally blocked by the new pattern. Branch switching and per-file
-// restore must remain usable for read-only inspection (Workers are allowed to
-// read git state).
-func TestD004_GitCheckoutFalsePositives(t *testing.T) {
-	requireJq(t)
-	dir := t.TempDir()
-	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
-	scriptPath, err := pc.WriteHookScript()
-	if err != nil {
-		t.Fatalf("WriteHookScript: %v", err)
-	}
-
-	allowed := []struct {
-		name string
-		cmd  string
-	}{
-		{"branch switch", "git checkout main"},
-		{"per-file restore", "git checkout -- internal/foo.go"},
-		{"dotfile not single dot", "git checkout .github"},
-		{"relative path not single dot", "git checkout ./path"},
-	}
-	for _, tc := range allowed {
-		t.Run(tc.name, func(t *testing.T) {
-			input := makeBashInput(tc.cmd)
-			output := runHookScript(t, scriptPath, input)
-			if strings.Contains(output, "D004") {
-				t.Errorf("should not D004-deny %q, got: %s", tc.cmd, output)
-			}
-		})
-	}
-}
-
-// =============================================================================
-// Static pattern presence checks for new rules
-// =============================================================================
-
-func TestHookScript_ContainsNewPatternChecks(t *testing.T) {
-	checks := []struct {
-		id   string
-		text string
-	}{
-		{"WT-GIT", "WT-GIT: Blocked git change command"},
-		{"M2 base64", "M2: Blocked base64 decode"},
-		{"M2 xxd", "M2: Blocked xxd reverse"},
-		{"M3 IFS", "M3: Blocked IFS variable manipulation"},
-		{"M3 indirect", "M3: Blocked indirect variable reference"},
-		{"M3 declare", "M3: Blocked declare -n nameref"},
-		{"m3 rsync", "m3: Blocked rsync --remove-source-files"},
-		{"m5 perl", "m5: Blocked perl open()/qx//"},
-	}
-
-	for _, tc := range checks {
-		if !strings.Contains(hookScript, tc.text) {
-			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
-		}
-	}
-}
-
-// --- RUN_ON_MAIN: hard guard against Worker writes to the main worktree ---
 
 // TestHookScript_RunOnMain_ContainsCheck verifies the hook script embeds the
 // run_on_main pattern. The Daemon stamps @run_on_main=1 on the pane before
@@ -3076,6 +1516,15 @@ func runOnMainBashEnv(t *testing.T, flag string) (scriptPath string, env []strin
 // already locked down. Each case is a representative of one denylist family
 // (file-mutating coreutils, in-place editors, redirection, mutating git verbs,
 // package installers, make, archive extraction).
+// TestHookScript_RunOnMain_BashDenylist verifies that core file/git
+// mutations are blocked under @run_on_main=1. Language-specific package
+// installers (npm/pnpm/pip/cargo/go install/make/tar/unzip) are
+// intentionally not in this denylist — verification runs are
+// language-agnostic at the orchestration layer, and per-language safety
+// is the responsibility of the user's global Claude Code hooks plus the
+// project's own .maestro/verify.yaml. The maestro-specific guard only
+// needs to keep the *generic* mutation primitives blocked so a verify
+// task cannot accidentally rewrite the main worktree.
 func TestHookScript_RunOnMain_BashDenylist(t *testing.T) {
 	scriptPath, env := runOnMainBashEnv(t, "1")
 
@@ -3092,20 +1541,9 @@ func TestHookScript_RunOnMain_BashDenylist(t *testing.T) {
 		{"perl_in_place", "perl -i -pe 's/a/b/' file.go"},
 		{"redirect_overwrite", "echo hi > out.txt"},
 		{"redirect_append", "echo hi >> out.txt"},
-		{"tee_pipe", "echo hi | tee out.txt"},
 		{"git_commit", "git commit -m wip"},
 		{"git_push", "git push origin main"},
 		{"git_checkout", "git checkout -b feat"},
-		{"npm_install", "npm install lodash"},
-		{"pnpm_add", "pnpm add lodash"},
-		{"pip_install", "pip install requests"},
-		{"cargo_build", "cargo build --release"},
-		{"go_install", "go install ./cmd/foo"},
-		{"go_generate", "go generate ./..."},
-		{"go_mod_tidy", "go mod tidy"},
-		{"make_default", "make build"},
-		{"tar_extract", "tar -xzf archive.tgz"},
-		{"unzip", "unzip pkg.zip"},
 	}
 
 	for _, tc := range cases {
@@ -3118,7 +1556,11 @@ func TestHookScript_RunOnMain_BashDenylist(t *testing.T) {
 			if err != nil {
 				t.Fatalf("hook script failed: %v, output: %s", err, out)
 			}
-			if !strings.Contains(string(out), "RUN_ON_MAIN") {
+			// Either RUN_ON_MAIN or the unconditional Worker-git-push rule
+			// can fire (the latter wins for `git push`). Both are
+			// maestro-orchestration-specific guards.
+			body := string(out)
+			if !strings.Contains(body, "RUN_ON_MAIN") && !strings.Contains(body, "git push blocked for Worker") {
 				t.Errorf("expected RUN_ON_MAIN deny for %q, got: %s", tc.cmd, out)
 			}
 		})
