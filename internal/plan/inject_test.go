@@ -405,13 +405,13 @@ func TestAddTask_InvalidBloomLevel(t *testing.T) {
 	}
 }
 
-// TestAddTask_RejectsShellDamagedContent verifies the Bug G defence: AddTask
-// must refuse payloads whose purpose / content / acceptance_criteria are so
-// short they are almost certainly the result of shell backtick or `$()`
-// expansion inside double quotes truncating the operator's intent. A
-// multi-byte leftover (e.g. "x" from a failed command substitution) should
-// be blocked before it lands in the queue as a malformed task that would
-// otherwise drive the Planner into a repair loop.
+// TestAddTask_RejectsShellDamagedContent verifies that AddTask refuses
+// payloads whose purpose / content / acceptance_criteria are so short they
+// are almost certainly the result of shell backtick or `$()` expansion
+// inside double quotes truncating the operator's intent. A multi-byte
+// leftover (e.g. "x" from a failed command substitution) is blocked before
+// it lands in the queue as a malformed task that would drive the Planner
+// into a repair loop.
 func TestAddTask_RejectsShellDamagedContent(t *testing.T) {
 	maestroDir, commandID, _ := setupInjectFixture(t)
 	cfg := testConfig()
@@ -454,7 +454,7 @@ func TestAddTask_RejectsShellDamagedContent(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := addTaskTest(tt.opts)
 			if err == nil {
-				t.Fatal("expected error for shell-damaged field (Bug G regression)")
+				t.Fatal("expected error for shell-damaged field")
 			}
 			if !strings.Contains(err.Error(), "too short") {
 				t.Errorf("expected 'too short' in error, got: %v", err)
@@ -796,14 +796,12 @@ func setupInjectFixtureWithPhases(t *testing.T) (string, string, string, string,
 	return maestroDir, commandID, taskID1, phase1ID, phase2ID
 }
 
-// TestAddTask_RejectsExceedingMaxTasks pins the 2026-04-29 follow-up:
-// TestAddTask_AllowsExceedingMaxTasksAdvisory pins the policy that PhaseConstraints.MaxTasks
-// is advisory at injection time. Earlier a hard reject blocked add-task from
-// growing a phase past its declared cap, but operators reported residual
-// scope (verify-driven follow-up tasks, planner-discovered missing deps)
-// being structurally unfixable when a phase had pre-saturated its cap. The
-// cap remains useful as a soft signal — a slog.Warn surfaces the breach —
-// but the injection succeeds so the autonomous flow can recover.
+// TestAddTask_AllowsExceedingMaxTasksAdvisory pins the policy that
+// PhaseConstraints.MaxTasks is advisory at injection time. The cap is a
+// soft signal (a slog.Warn surfaces the breach) but injection succeeds so
+// the autonomous flow can recover when residual scope (verify-driven
+// follow-up tasks, planner-discovered missing deps) needs to grow a phase
+// past its pre-saturated cap.
 func TestAddTask_AllowsExceedingMaxTasksAdvisory(t *testing.T) {
 	maestroDir := setupMaestroDir(t)
 	commandID := "cmd_0000000060_maxtasks"

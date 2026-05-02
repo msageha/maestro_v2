@@ -96,13 +96,11 @@ func TestObservePaneActivityForAgent_NoTrackerReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestCollectExpiredTaskBusyChecks_ExtendsLeaseWhenPaneActive pins the
-// 2026-04-29 e2e refactor at the integration level: when a worker's
-// task lease has expired but the worker pane shows cross-scan activity,
-// collectExpiredTaskBusyChecks must extend the lease in place and emit
-// no busy-check item. This is the behaviour that eliminates the
-// dispatch_lease_sec → re-dispatch loop the operator e2e report
-// surfaced (5-7 minute Sonnet/Opus task vs. 5-minute lease).
+// TestCollectExpiredTaskBusyChecks_ExtendsLeaseWhenPaneActive asserts
+// that when a worker's task lease has expired but the worker pane shows
+// cross-scan activity, collectExpiredTaskBusyChecks extends the lease
+// in place and emits no busy-check item. Eliminates the
+// dispatch_lease_sec → re-dispatch loop on long-running tasks.
 func TestCollectExpiredTaskBusyChecks_ExtendsLeaseWhenPaneActive(t *testing.T) {
 	tracker := paneactivity.New(regexp.MustCompile(`Working|Thinking`))
 
@@ -159,13 +157,12 @@ func TestCollectExpiredTaskBusyChecks_ExtendsLeaseWhenPaneActive(t *testing.T) {
 	}
 }
 
-// TestCollectExpiredTaskBusyChecks_GraceExtendsWhenNoBaseline pins the
-// 2026-04-29 trichotomy refactor: when the pane has no previous
-// snapshot to compare against (worker just admitted, daemon just
-// started, ForgetAgent was called), the verdict is VerdictUncertain
-// and the function must grace-extend the lease for one cycle so the
-// next scan has a real baseline to judge. Releasing the lease on this
-// verdict was the failure mode that re-dispatched workers mid-task.
+// TestCollectExpiredTaskBusyChecks_GraceExtendsWhenNoBaseline asserts
+// that when the pane has no previous snapshot to compare against
+// (worker just admitted, daemon just started, ForgetAgent was called),
+// the verdict is VerdictUncertain and the function grace-extends the
+// lease for one cycle so the next scan has a real baseline to judge.
+// Releasing the lease on this verdict would re-dispatch workers mid-task.
 func TestCollectExpiredTaskBusyChecks_GraceExtendsWhenNoBaseline(t *testing.T) {
 	tracker := paneactivity.New(nil)
 	clock := &fixedClock{now: time.Unix(1_700_000_000, 0).UTC()}

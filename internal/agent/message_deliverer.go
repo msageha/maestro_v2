@@ -12,8 +12,8 @@ import (
 )
 
 // messageDeliverer handles message delivery and /clear confirmation for
-// tmux-based agent communication. Extracted from Executor to isolate
-// the send/clear responsibility from dispatch routing and lifecycle management.
+// tmux-based agent communication. Isolates the send/clear responsibility
+// from dispatch routing and lifecycle management.
 type messageDeliverer struct {
 	paneIO    PaneIO
 	paneState *paneStateManager
@@ -24,7 +24,7 @@ type messageDeliverer struct {
 	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock
 }
 
-// Submit-probe tuning — F-015.
+// Submit-probe tuning.
 //
 // These constants govern how aggressively the deliverer polls a tmux pane
 // after sending a multi-line message to confirm that Claude Code actually
@@ -35,10 +35,6 @@ type messageDeliverer struct {
 //     workflow knobs;
 //   - Both the cap (8 attempts) and the cadence (750ms) are stable across
 //     all currently-supported runtimes.
-//
-// Promote them to WatcherConfig when a runtime emerges that needs different
-// values; the existing call sites already read these constants by name so
-// the migration is mechanical.
 const (
 	// submitRetryProbeDelay is how long the deliverer waits between probes
 	// of pane content after sending Enter, giving Claude Code time to
@@ -138,14 +134,10 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 		ctx = context.Background()
 	}
 	// Capture a pre-paste pane snapshot for the Claude submit probe to use
-	// as its initial growth baseline. Before this (2026-04-28), the probe
-	// recorded its baseline on the first post-paste capture (T+750ms),
-	// which meant content_growth detection only started at probe #2 and a
-	// slow worker that finished its first activity marker outside the
-	// remaining 7 × 750ms window was misclassified as
-	// `probe_budget_exhausted` even though the paste had already landed.
-	// Using the pre-paste hash makes any post-submit pane change a valid
-	// confirmation signal from probe #1 onwards.
+	// as its initial growth baseline. Using the pre-paste hash makes any
+	// post-submit pane change a valid confirmation signal from probe #1
+	// onwards (otherwise probe #1 would be spent capturing the baseline,
+	// shrinking the effective detection window).
 	prePaste := d.captureSubmitProbeBaseline(paneTarget, req)
 	if err := d.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
 		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
@@ -160,17 +152,11 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	}
 	if probe.Uncertain() {
 		err := fmt.Errorf("%w: status=%s attempts=%d", ErrSubmitConfirmUncertain, probe.Status, probe.Attempts)
-		// 2026-04-28 retest8: demoted from WARN to INFO. The historical
-		// WARN double-counted the uncertainty: the queue scan path emits
+		// Logged at INFO (not WARN) because this is the *upstream* false-
+		// negative side: the paste already landed, the probe simply did
+		// not see a confirming UI marker. The queue scan path emits
 		// `dispatch_uncertain_assume_running` (WARN) right after as the
-		// load-bearing operator-facing signal, and at the agent layer this
-		// branch is the *upstream* false-negative side — paste already
-		// landed; the probe simply did not see a confirming UI marker.
-		// 2026-04 retest7/8 flagged this as the dominant ERROR/WARN noise
-		// source: workers had completed task execution while operators saw
-		// `delivery_submit_unconfirmed` WARN lines and read them as
-		// genuine delivery failures. Keeping the structured error so the
-		// caller still distinguishes the path; only the log level moves.
+		// load-bearing operator-facing signal.
 		d.log(logLevelInfo, "delivery_submit_unconfirmed agent_id=%s task_id=%s command_id=%s status=%s attempts=%d (non-retryable to avoid duplicate submit; queue path will surface dispatch_uncertain_assume_running for operator visibility)",
 			req.AgentID, req.TaskID, req.CommandID, probe.Status, probe.Attempts)
 		return ExecResult{Error: err, Retryable: false}
@@ -179,7 +165,7 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	// Update @status to busy. This is a best-effort post-delivery hint used by
 	// the watcher/UI; the message has already been delivered to the pane and
 	// the agent will start processing regardless. Returning an error here
-	// (Bug L) caused the dispatcher's inline retry to re-deliver the same
+	// would cause the dispatcher's inline retry to re-deliver the same
 	// envelope, leading to double plan_submit. Log + continue instead.
 	if err := d.paneState.SetStatus(paneTarget, "busy"); err != nil {
 		d.log(logLevelWarn, "set_status_failed agent_id=%s error=%v (delivery already succeeded; continuing)",
@@ -239,15 +225,11 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 	// The pasted-text placeholder ("Pasted text #") and activity markers
 	// ("Thinking", "Working", "⏺", …) tested by submittedActivityVisible /
 	// pastedTextPlaceholderAtPrompt are Claude Code-specific UI tokens. Other
-	// runtimes (codex, gemini) never render them, so the Claude probe always
-	// exhausts on those panes.
-	// Earlier attempts to handle this by skipping the probe entirely produced
-	// the opposite failure mode: deliveries claimed success even when the
-	// pane was wedged on a blocking modal (codex first-run trust prompt,
-	// gemini onboarding) and the message never reached the runtime —
-	// dispatch_task_success was logged while worker app.txt stayed at the
-	// baseline. The probe is now split per UX family so each path runs the
-	// detection that matches the runtime it is observing.
+	// runtimes (codex, gemini) never render them, so the probe is split per
+	// UX family. Skipping the probe entirely on non-claude runtimes would
+	// claim success when the pane is actually wedged on a blocking modal
+	// (codex first-run trust prompt, gemini onboarding); each branch runs
+	// the detection that matches the runtime it is observing.
 	if d.runtimeUsesClaudePromptUX(paneTarget) {
 		return d.confirmClaudeSubmittedOrRetry(ctx, paneTarget, req, prePaste)
 	}
@@ -314,9 +296,7 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 		// Without this short-circuit the probe would treat the lingering
 		// placeholder as "not yet submitted", fire an Enter retry, and
 		// flag the dispatch as exhausted/uncertain even though delivery
-		// already succeeded — the false-negative pattern surfaced by the
-		// 2026-04-28 retest7 (`submit_confirm pasted_text_still_at_prompt
-		// attempts=8` followed by a successful task completion).
+		// already succeeded.
 		if submittedActivityVisible(content) {
 			status := submitProbeConfirmed
 			if retried {
@@ -355,18 +335,13 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 			return submitProbeResult{Status: status, Attempts: attempt}, nil
 		}
 	}
-	// F-016: probe budget exhausted without seeing either the pasted-text
-	// placeholder OR an activity marker OR any content change. We deliberately
-	// fall through to a non-error return rather than escalating to Retryable:
-	// re-delivering the envelope risks double plan_submit (Bug L).
-	//
-	// 2026-04-28: demoted from WARN to INFO. The historical WARN level
-	// double-counted: dispatch_uncertain_assume_running (which the queue
-	// path emits next) is the load-bearing log line for operators, and
-	// queue lease recovery is the real failure detector. Pre-paste
-	// baseline (above) makes this branch much rarer; when it does fire
-	// the system path documents it as recoverable, so emitting WARN here
-	// added dashboard noise without changing operator action.
+	// Probe budget exhausted without seeing either the pasted-text
+	// placeholder OR an activity marker OR any content change. We
+	// deliberately fall through to a non-error return rather than
+	// escalating to Retryable: re-delivering the envelope risks double
+	// plan_submit. Logged at INFO because dispatch_uncertain_assume_running
+	// (which the queue path emits next) is the load-bearing operator
+	// signal and queue lease recovery is the real failure detector.
 	d.log(logLevelInfo,
 		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d "+
 			"(no marker captured within probe window; non-retryable to avoid double-submit, lease recovery will retry if the worker is genuinely stuck)",
@@ -504,12 +479,8 @@ func submittedActivityVisible(content string) bool {
 // in pane history from previous turns. A "❯ [Pasted text #1 +247 lines]" in
 // the history (e.g. the prior task's input area, now scrolled up two screens)
 // must NOT trigger a retry, otherwise every dispatch on a hot pane racks up
-// false-positive retries and lands at submitProbeExhausted even though the
-// current paste was submitted seconds ago. The 2026-04-28 retest7 surfaced
-// exactly this: `submit_confirm pasted_text_still_at_prompt attempts=8`
-// followed by a successful task completion. The fix here is to consider
-// ONLY the first prompt-marker line walked back from the bottom; anything
-// above is history.
+// false-positive retries. Consider ONLY the first prompt-marker line walked
+// back from the bottom; anything above is history.
 func pastedTextPlaceholderAtPrompt(content string) bool {
 	lines := strings.Split(content, "\n")
 	checked := 0
@@ -538,15 +509,12 @@ func pastedTextPlaceholderAtPrompt(content string) bool {
 // caller must NOT proceed with delivery).
 //
 // Send semantics: SendCommand pastes "/clear" with `send-keys -l` then sends
-// `Enter` as one logical action. The previous implementation followed that with
-// a 500ms wait + second `Enter` because earlier Claude Code releases displayed
-// a completion prompt for slash-commands and required confirmation. Claude
-// Code 2.x executes /clear immediately on the first Enter and treats a
-// subsequent Enter on the (now-cleared) input as "re-run last command",
-// causing /clear to fire twice on every task transition (observed in the
-// 2026-04-27 single-worker E2E run). The unconditional second Enter is
-// therefore removed; reliability is preserved by the existing pollUntilTimeout
-// confirmation and the per-attempt resend in this loop.
+// `Enter` as one logical action. Claude Code 2.x executes /clear immediately
+// on the first Enter and treats a subsequent Enter on the (now-cleared) input
+// as "re-run last command", which would cause /clear to fire twice on every
+// task transition. No second Enter is sent; reliability is preserved by the
+// existing pollUntilTimeout confirmation and the per-attempt resend in this
+// loop.
 //
 // Confirmation checks (per poll, evaluated by clearConfirmationPoller):
 //  1. "/clear" text is NOT visible near the bottom of the pane (primary signal --
@@ -565,18 +533,13 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 	maxAttempts := d.config.ClearMaxAttempts
 	backoffMs := d.config.ClearRetryBackoffMs
 
-	// 2026-04 doubled-/clear E2E investigation: pane transcripts on Claude Code
-	// 2.x show "/clear" twice per task transition even when the daemon only
-	// invokes a single SendCommand. To rule out an extra send happening from
-	// some other code path, every clearAndConfirm call emits an INFO log on
-	// entry and immediately before each SendCommand("/clear"). Operators can
-	// grep `clear_send_invocation` in the agent_executor log: one entry per
-	// observed pane "/clear" line means the doubling is purely a Claude Code
-	// transcript artifact (echo + slash-command history line); two or more
-	// entries per transition would indicate a real double-send and point at a
-	// non-clearAndConfirm caller. The logs are concise and fire at most a
-	// handful of times per dispatch, so leaving them at INFO is a deliberate
-	// observability choice rather than a temporary debug hook.
+	// Pane transcripts on Claude Code 2.x show "/clear" twice per task
+	// transition even when the daemon only invokes a single SendCommand
+	// (echo + slash-command history line). The clear_send_invocation INFO
+	// log here is the canonical counter for "how many times did the daemon
+	// put '/clear' on the wire": one entry per pane "/clear" line means
+	// the doubling is purely a transcript artifact; two or more entries
+	// per transition would indicate a real double-send.
 	d.log(logLevelInfo, "clear_send_begin pane=%s max_attempts=%d", paneTarget, maxAttempts)
 
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
@@ -594,11 +557,8 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 
 		// Send /clear once. SendCommand emits the literal "/clear" string and a
 		// single Enter to submit it. No additional Enter is sent — see the
-		// function-level comment for why a second Enter caused doubled /clear
-		// in Claude Code 2.x. The clear_send_invocation log immediately
-		// preceding this call is the canonical counter for "how many times
-		// did the daemon put '/clear' on the wire" — see the function-level
-		// comment for usage.
+		// function-level comment for why a second Enter would cause doubled
+		// /clear in Claude Code 2.x.
 		d.log(logLevelInfo, "clear_send_invocation pane=%s attempt=%d/%d", paneTarget, attempt, maxAttempts)
 		if err := d.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
 			d.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
@@ -768,10 +728,8 @@ func (p *clearConfirmationPoller) log(level logLevel, format string, args ...any
 }
 
 // backoffDuration returns the exponential delay used by sleepWithBackoff.
-// Extracted as a pure function so unit tests can assert the algebra
-// (`base * 2^(attempt-1)`) without paying the wall-clock cost of an actual
-// Sleep — which previously made the timing-based assertion (F-057) flaky on
-// loaded CI runners.
+// Pure function so unit tests can assert the algebra (`base * 2^(attempt-1)`)
+// without paying the wall-clock cost of an actual Sleep.
 func backoffDuration(baseMs, attempt int) time.Duration {
 	return time.Duration(baseMs*(1<<(attempt-1))) * time.Millisecond
 }

@@ -878,10 +878,8 @@ func runCtx(ctx context.Context, args ...string) error {
 // classified tmux error. Idempotent-cleanup failures (no session, no
 // server) are the load-bearing case for `maestro up`'s pre-cleanup and
 // `maestro down`'s post-kill restore: callers explicitly handle these
-// via errors.Is(err, ErrTmuxSession/ErrTmuxServer) and continue. The
-// 2026-04-28 retest4 reader saw these in tmux_debug.log as "ERROR" and
-// questioned whether the cleanup succeeded; demoting to "DEBUG" matches
-// the actual severity. Genuine failures (timeout, IPC, command missing,
+// via errors.Is(err, ErrTmuxSession/ErrTmuxServer) and continue, so they
+// log at DEBUG. Genuine failures (timeout, IPC, command missing —
 // classified as Generic / Timeout / Cancelled / Conflict) still log as
 // ERROR so post-mortem analysis surfaces them.
 func debugLevelForErrorKind(kind ErrorKind) string {

@@ -77,12 +77,11 @@ func TestRunQueueWrite_UnknownType(t *testing.T) {
 	}
 }
 
-// TestRunQueueWrite_CommandRejectsNonPlannerTarget pins the 2026-04-29
-// e2e regression where `maestro queue write orchestrator --type command`
-// silently routed to the Planner queue (the daemon's queue_write_command
-// handler hard-codes queue:planner) and operators wasted time wondering
-// why Orchestrator never reacted. CLI-level rejection makes the
-// constraint legible at the point of mistake.
+// TestRunQueueWrite_CommandRejectsNonPlannerTarget verifies that
+// `maestro queue write <non-planner> --type command` is rejected at the
+// CLI layer. The daemon's queue_write_command handler hard-codes
+// queue:planner, so without this rejection the call would silently route
+// to the Planner queue and the requested target would never react.
 func TestRunQueueWrite_CommandRejectsNonPlannerTarget(t *testing.T) {
 	err := newCLIApp().runQueueWrite([]string{"orchestrator", "--type", "command",
 		"--content", "do the thing"}, io.Discard)

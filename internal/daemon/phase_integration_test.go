@@ -218,9 +218,9 @@ func (e *recordingExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
 
 func (e *recordingExecutor) Close() error { return nil }
 
-// RespawnPaneToProjectRoot satisfies the AgentExecutor interface added
-// 2026-04-28 for Phase B's pre-cleanup pane respawn. The integration
-// test does not exercise that path, so a no-op stub is sufficient.
+// RespawnPaneToProjectRoot satisfies the AgentExecutor interface for
+// Phase B's pre-cleanup pane respawn. The integration test does not
+// exercise that path, so a no-op stub is sufficient.
 func (e *recordingExecutor) RespawnPaneToProjectRoot(string) error { return nil }
 
 func (e *recordingExecutor) getCalls() []agent.ExecRequest {
@@ -1636,12 +1636,11 @@ func TestPhaseIntegration_BusyFalse_LeaseRelease(t *testing.T) {
 		t.Errorf("After release: expected epoch=3 (preserved), got %d", task.LeaseEpoch)
 	}
 
-	// 2026-05-01: applyTaskBusyCheckResult now stamps NotBefore on
-	// hang-driven release so the next scan does not immediately re-acquire
-	// against the same dead pane (the original loop the user hit on
-	// `sh -c 'sleep 600'`). The task is still re-dispatchable, but only
-	// after the cooldown — verify the cooldown landed and that the
-	// dispatcher honours it.
+	// applyTaskBusyCheckResult stamps NotBefore on hang-driven release
+	// so the next scan does not immediately re-acquire against the same
+	// dead pane. The task is still re-dispatchable, but only after the
+	// cooldown — verify the cooldown landed and that the dispatcher
+	// honours it.
 	tqAfterRelease := piReadTaskQueue(t, maestroDir, "worker1")
 	releasedTask := tqAfterRelease.Tasks[0]
 	if releasedTask.NotBefore == nil {

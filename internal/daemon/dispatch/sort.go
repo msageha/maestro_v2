@@ -27,6 +27,9 @@ type SortKey struct {
 // EffectivePriority computes the aging-adjusted priority.
 // effective_priority = max(0, priority - floor(age_seconds / priority_aging_sec))
 //
+// Uses integer duration arithmetic to avoid float overflow on 32-bit systems
+// and rounding issues with extreme age values.
+//
 // Overflow prevention strategy:
 //   - Input clamping: negative priority is clamped to 0; non-positive priorityAgingSec
 //     disables aging entirely.
@@ -37,9 +40,6 @@ type SortKey struct {
 //   - 32-bit safety: aging is derived from int64(age/interval) and compared against
 //     int64(priority) before the int() cast, guaranteeing no truncation on 32-bit
 //     platforms where int is 32 bits.
-//
-// L-6: Uses integer duration arithmetic instead of float64 to avoid overflow on
-// 32-bit systems and float rounding issues with extreme age values.
 func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int {
 	if priorityAgingSec <= 0 || priority <= 0 {
 		return max(priority, 0)

@@ -159,10 +159,10 @@ func (disp *Dispatcher) SortPendingNotifications(notifications []model.Notificat
 // On failure it logs a structured error with the provided label and entity ID.
 // On success it logs a structured info message.
 //
-// Returns (err, retryable). When retryable is false, the caller MUST NOT retry
-// (Bug L: e.g. SetStatus failure after successful delivery — re-sending would
-// double-submit the same envelope to the planner/worker). Failures from
-// executor creation are treated as retryable since they predate any send.
+// Returns (err, retryable). When retryable is false, the caller MUST NOT retry:
+// e.g. a SetStatus failure after successful delivery would double-submit the
+// same envelope to the planner/worker on retry. Failures from executor
+// creation are treated as retryable since they predate any send.
 func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityID, logExtra string) (retryable bool, err error) {
 	exec, err := disp.execProvider.GetExecutor()
 	if err != nil {
@@ -170,17 +170,12 @@ func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityI
 	}
 	result := exec.Execute(req)
 	if result.Error != nil {
-		// 2026-04-30 e2e regression: ErrSubmitConfirmUncertain is a
-		// false-negative-prone signal — the paste already landed and the
-		// downstream agent will start processing, but the post-paste
-		// probe failed to see a Claude UI marker within its 6s budget.
-		// Logging at ERROR pollutes the operator dashboard with
-		// "dispatch_*_failed" noise that critical-alert channels treat
-		// as a real failure even though the user observation was that
-		// the dispatch ultimately succeeded. Demote to WARN so the
-		// signal is visible but does not page; the
-		// dispatch_uncertain_assume_running path that runs immediately
-		// after in queue_scan_apply.go is the canonical operator-facing
+		// ErrSubmitConfirmUncertain is a false-negative-prone signal: the
+		// paste already landed and the downstream agent will start
+		// processing, but the post-paste probe failed to see a Claude UI
+		// marker within its budget. Demote to WARN so the signal is
+		// visible but does not page; the dispatch_uncertain_assume_running
+		// path in queue_scan_apply.go is the canonical operator-facing
 		// breadcrumb for this case.
 		level := core.LogLevelError
 		if errors.Is(result.Error, agent.ErrSubmitConfirmUncertain) {
@@ -244,7 +239,7 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 			return nil
 		}
 		lastErr = err
-		// Bug L: non-retryable failures must not be retried — the prior send may
+		// Non-retryable failures must not be retried: the prior send may
 		// have already succeeded (e.g. SetStatus error after delivery), so a
 		// retry would re-deliver the envelope and trigger duplicate plan submit.
 		if !retryable {
@@ -258,11 +253,11 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string) error {
-	// §S0-1 / run_on_main hardening: defense-in-depth pre-flight check that
-	// rejects destructive shell snippets in tasks targeting the main branch or
-	// integration worktree. The Bash policy hook (internal/agent/policy_checker)
-	// covers Claude Code workers, but Codex/Gemini bypass that hook entirely;
-	// this check applies to every worker regardless of agent type.
+	// Defense-in-depth pre-flight check that rejects destructive shell
+	// snippets in tasks targeting the main branch or integration worktree.
+	// The Bash policy hook (internal/agent/policy_checker) covers Claude
+	// Code workers, but Codex/Gemini bypass that hook entirely; this check
+	// applies to every worker regardless of agent type.
 	if err := validateRunOnMainContent(task); err != nil {
 		disp.dl.Logf(core.LogLevelError,
 			"dispatch_task_destructive_content_blocked id=%s worker=%s run_on_main=%t run_on_integration=%t error=%v",
@@ -270,25 +265,13 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		return err
 	}
 
-	// run_on_main timing observation (2026-05-01 dispatch-loop fix): the
-	// previous implementation rejected RunOnMain dispatches that arrived
-	// before integration→base publish completed (ErrRunOnMainBeforePublish).
-	// In practice that gate produced a self-deadlocking loop:
-	//
-	//   • run_on_main tasks need publish to finish before they dispatch
-	//   • publish needs every phase task to terminate before it runs
-	//   • a phase that contains the run_on_main task therefore never
-	//     completes, publish never runs, the gate keeps rejecting, and
-	//     the planner re-queues forever (epoch 1..N forever).
-	//
-	// The 2026-05-01 user reproduction (cmd_1777610280_4dd0b6014ace44da)
-	// looped through 7 epochs before the operator killed it. Per the
-	// "self-healing autonomous orchestration" design contract, a defense
-	// that locks the system harder than the failure it tries to prevent
-	// is a regression — drop the gate and let the worker handle stale
-	// main itself (a `git fetch + git checkout main` at task start, or a
-	// circuit-breaker-aware retry if the verification needs newer base
-	// state). Logged as INFO so operators can still spot the pattern.
+	// run_on_main timing observation: RunOnMain dispatch is intentionally
+	// not gated on integration→base publish. Gating here would self-deadlock
+	// (run_on_main tasks need publish; publish needs every phase task to
+	// terminate; a phase containing the run_on_main task therefore never
+	// completes). The worker is responsible for refreshing main itself
+	// (`git fetch + git checkout main`) if it needs newer base state.
+	// Logged as INFO so operators can still spot the pattern.
 	if task != nil && task.RunOnMain {
 		disp.dl.Logf(core.LogLevelInfo,
 			"dispatch_run_on_main_pre_publish_observation id=%s worker=%s command=%s "+
@@ -390,7 +373,7 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 			return nil
 		}
 		lastErr = err
-		// Bug L: same non-retryable abort semantics as DispatchCommand.
+		// Same non-retryable abort semantics as DispatchCommand.
 		if !retryable {
 			disp.dl.Logf(core.LogLevelWarn, "task_dispatch_non_retryable id=%s worker=%s attempt=%d error=%v",
 				task.ID, workerID, attempt+1, err)

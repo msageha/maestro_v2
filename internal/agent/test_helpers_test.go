@@ -326,9 +326,9 @@ func newCovExecutor(mock *mockPaneIO) (*Executor, *bytes.Buffer) {
 	e.processManager = newClaudeProcessManager(mock, ps, &e.config, execCfg, logger, logLevelDebug, "")
 	// Tests use synthetic paths (e.g. "/project/worktree1") that never exist
 	// on the test filesystem. Override dirExists to always report "exists"
-	// so the stale-cwd respawn path added in 2026-04-28 does not fire and
-	// invert the existing test expectations. Tests that exercise the
-	// stale-cwd branch override this field directly.
+	// so the stale-cwd respawn path does not fire and invert the existing
+	// test expectations. Tests that exercise the stale-cwd branch override
+	// this field directly.
 	e.processManager.dirExists = func(string) bool { return true }
 	e.deliverer = newMessageDeliverer(mock, ps, &e.config, execCfg, logger, logLevelDebug)
 	return e, &buf

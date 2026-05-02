@@ -139,19 +139,16 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	// run_on_main is the strict read-only contract (post-publish verification
 	// against the merged main branch). The Worker must report empty
 	// files_changed; a non-empty value indicates the LLM mistook
-	// "files I inspected" for "files I modified" — observed in the
-	// 2026-04-29 e2e where worker3 reported files_changed:[feature.go] for
-	// a verification task that had `git status --porcelain` empty. We
-	// strip and warn instead of rejecting the result so the (otherwise
-	// successful) read-only check still progresses; rejection here would
-	// stall the publish pipeline on what is essentially a reporting bug.
+	// "files I inspected" for "files I modified". Strip and warn instead
+	// of rejecting so the (otherwise successful) read-only check still
+	// progresses; rejection here would stall the publish pipeline on
+	// what is essentially a reporting bug.
 	//
 	// The strip MUST run before validateFilesChangedWithinExpectedPaths
 	// so that run_on_main tasks with narrow expected_paths (the common
 	// case — read-only verify tasks usually declare a tight surface)
 	// don't get rejected on the "files I read but did not modify" data
-	// before the strip can take effect. The 2026-04-29 review pin
-	// surfaced the prior ordering inversion.
+	// before the strip can take effect.
 	if sourceTask.RunOnMain && len(params.FilesChanged) > 0 {
 		h.logFn(LogLevelWarn,
 			"files_changed_stripped_for_run_on_main task=%s command=%s reported=%v "+
@@ -305,9 +302,9 @@ func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResu
 		return taskIdx, "", nil
 	}
 
-	// Fencing: task must be in_progress.
-	// F-019: attach FencingDetails so the CLI / Worker shell wrapper can
-	// branch on a stable schema instead of grepping the message string.
+	// Fencing: task must be in_progress. Attach FencingDetails so the
+	// CLI / Worker shell wrapper can branch on a stable schema instead
+	// of grepping the message string.
 	if queueTask.Status != model.StatusInProgress {
 		return -1, "", newFencingError(uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s status is %s, expected in_progress", params.TaskID, queueTask.Status),
@@ -484,18 +481,16 @@ func (h *ResultWriteAPI) writeOrphanedMarker(reporter, resultID, taskID string) 
 // persists the queue file. Returns true if the queue write failed (H2 sticky
 // error scenario).
 //
-// F-035: Phase A intentionally bypasses lease.Manager.releaseLease here. The
+// Phase A intentionally bypasses lease.Manager.releaseLease here. The
 // canonical release path transitions in_progress→pending, but a worker
 // result is committing a terminal status (completed/failed/cancelled/
-// dead_letter), so the lease lifecycle is collapsed in-place. We keep
-// LeaseEpoch as-is (it is the fencing key for any late heartbeat) and only
-// clear the owner/expiry that lose meaning at terminal. Routing this through
-// releaseLease would require a separate intermediate write and an extra
-// fencing edge for no observable gain.
+// dead_letter), so the lease lifecycle is collapsed in-place. LeaseEpoch
+// is kept as-is (it is the fencing key for any late heartbeat) and only
+// the owner/expiry that lose meaning at terminal are cleared.
 func (h *ResultWriteAPI) updateQueueState(tq *model.TaskQueue, taskIdx int, params ResultWriteParams, resultStatus model.Status, resultID string, now string) bool {
 	queueTask := &tq.Tasks[taskIdx]
 
-	// F-036: validate the in_progress→terminal transition before mutating.
+	// Validate the in_progress→terminal transition before mutating.
 	// validateFencing has already accepted the result, but a parallel
 	// reconciler (e.g. R1 clearing queue_write_failed) may have moved the
 	// task back to pending or another non-in_progress state between the

@@ -1,8 +1,3 @@
-// Coverage gaps for the daemon package are tracked in
-// docs/maestro-review/FINAL_REPORT.md (F-056). The previous in-source
-// priority list lacked owners and dates, drifted out of sync, and tended
-// to mask the fact that several listed files had since gained tests; the
-// review report is the canonical roadmap.
 package daemon
 
 import (

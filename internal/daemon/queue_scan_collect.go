@@ -36,15 +36,13 @@ func detachTaskSlices(t *model.Task) {
 // Planner pane processes one command's instructions at a time and a second
 // dispatch would interrupt it.
 //
-// Planner-idle exception (added 2026-05-01): a command can be in_progress yet
-// require zero Planner attention — for example, every required task has
-// reached paused_for_replan and is waiting for the daemon's R10 deadletter
-// path or for a downstream operator decision. In that case the Planner pane
-// is genuinely idle and the in_progress hold pointlessly blocks every
-// subsequent command for up to the deadletter window. The guard now skips
-// commands whose state shows the Planner has run out of authored tasks,
-// allowing fresh commands to dispatch while the deferred command waits its
-// turn for the deadletter to escalate (or for a manual resume).
+// Planner-idle exception: a command can be in_progress yet require zero
+// Planner attention — for example, every required task has reached
+// paused_for_replan and is waiting for the daemon's R10 deadletter path
+// or for a downstream operator decision. The guard skips commands whose
+// state shows the Planner has run out of authored tasks, allowing fresh
+// commands to dispatch while the deferred command waits its turn for the
+// deadletter to escalate (or for a manual resume).
 //
 // Expired leases are handled by busy-check recovery (auto-extend for
 // commands) and Reconciler R0 for stuck planning.
@@ -264,15 +262,15 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 // Malformed entries (lease_expires_at == nil) are released immediately since
 // Phase C fencing would always reject them as stale.
 //
-// Pane-activity fast path (2026-04-29 e2e refactor): before falling back to
-// the heavy busy-check round trip (which sleeps 5s on its activity probe and
-// is prone to false negatives during a worker's quiet "thinking" phase),
-// consult paneActivity.Tracker to see whether the worker pane has changed
-// across scans. If it has, the worker is alive and we extend the lease in
-// place — eliminating the need for an operator-tuned dispatch_lease_sec
-// that matches per-task wall-clock duration. The slow busy-check path is
-// retained as the fallback for the very first lease expiry (no baseline
-// snapshot yet) and for capture failures.
+// Pane-activity fast path: before falling back to the heavy busy-check
+// round trip (which sleeps 5s on its activity probe and is prone to
+// false negatives during a worker's quiet "thinking" phase), consult
+// paneActivity.Tracker to see whether the worker pane has changed
+// across scans. If it has, the worker is alive and the lease is
+// extended in place — eliminating the need for an operator-tuned
+// dispatch_lease_sec that matches per-task wall-clock duration. The
+// slow busy-check path is retained as the fallback for the very first
+// lease expiry (no baseline snapshot yet) and for capture failures.
 func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID, queueFile string, dirty *bool) []busyCheckItem {
 	var items []busyCheckItem
 	expired := qh.leaseManager.ExpireTasks(tq.Queue.Tasks)
@@ -321,16 +319,13 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 		// visibly alive. The hard cap stays in max_in_progress_min — an
 		// agent that is genuinely runaway still trips the watchdog.
 		//
-		// 2026-04-29 follow-up: trichotomous verdict. The legacy boolean
-		// returned `false` for both VerdictIdle and VerdictUncertain,
-		// which collapsed two materially different cases into the same
-		// busy-check fallback path. Workers reaching their first
-		// lease-expiry before any baseline existed (VerdictUncertain)
-		// were repeatedly re-dispatched mid-task because the busy-check
-		// path then false-released them. Treating Uncertain as a
-		// one-cycle grace extension lets the next scan record a real
-		// baseline and judge correctly, without paying the busy-check
-		// round-trip on a worker that is almost certainly alive.
+		// Trichotomous verdict: collapsing VerdictIdle and VerdictUncertain
+		// into the same busy-check fallback would re-dispatch workers
+		// reaching their first lease-expiry before any baseline existed.
+		// Treating Uncertain as a one-cycle grace extension lets the next
+		// scan record a real baseline and judge correctly, without paying
+		// the busy-check round-trip on a worker that is almost certainly
+		// alive.
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
 		maxTimeout := isMaxInProgressTimeout(qh.clock.Now(), task.UpdatedAt, maxMin, qh.timeCache)
 		// Compute elapsed-since-dispatch so the lease-extend logs surface how
@@ -429,7 +424,7 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 // capture error) so the caller proceeds with the conservative
 // busy-check fallback. Callers MUST distinguish VerdictUncertain from
 // VerdictIdle — see the trichotomy in paneactivity.Verdict and the
-// 2026-04-29 grace-extension rationale in collectExpiredTaskBusyChecks.
+// grace-extension rationale in collectExpiredTaskBusyChecks.
 func (qh *QueueHandler) observePaneVerdictForAgent(agentID string) paneactivity.Verdict {
 	if qh.paneActivity == nil || qh.paneCapture == nil || agentID == "" {
 		return paneactivity.VerdictUnknown
@@ -466,22 +461,20 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 		cmd := &cq.Commands[idx]
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
 		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin, qh.timeCache) {
-			// 2026-04-30 e2e regression: cmd.UpdatedAt is not refreshed
-			// when the Planner makes progress (filling tasks, dispatching
-			// workers, dry-running plan_submit), so a long-running command
-			// can cross the max_in_progress_min threshold while either
-			// live workers are still chipping away OR the Planner is
-			// actively filling/finalising a phase. Releasing the command
-			// then re-dispatches it to Planner as a brand new epoch,
-			// destroying the work in flight (the user reproduced this
-			// with a 30+ minute fix phase whose Planner had passed
-			// dry-run and was about to submit).
+			// cmd.UpdatedAt is not refreshed when the Planner makes
+			// progress (filling tasks, dispatching workers, dry-running
+			// plan_submit), so a long-running command can cross the
+			// max_in_progress_min threshold while either live workers are
+			// still chipping away OR the Planner is actively filling/
+			// finalising a phase. Releasing the command would re-dispatch
+			// it to Planner as a brand new epoch, destroying work in
+			// flight.
 			//
-			// R0b (filling_stuck) and R6 (fill_timeout) reconcilers
-			// handle the truly-stuck cases on their own dedicated
-			// timeouts, so the right behaviour here is "extend while
-			// any sign of activity exists" rather than "release on the
-			// first hard-timeout boundary".
+			// R0b (filling_stuck) and R6 (fill_timeout) reconcilers handle
+			// the truly-stuck cases on their own dedicated timeouts, so
+			// the right behaviour here is "extend while any sign of
+			// activity exists" rather than "release on the first hard-
+			// timeout boundary".
 			if qh.commandHasActivePlannerWork(taskQueues, cmd.ID) {
 				if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
 					qh.log(LogLevelError, "command_lease_extend_on_active_failed id=%s error=%v", cmd.ID, err)
@@ -707,11 +700,11 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		qh.log(LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
-		// F-033: validate the in_progress→cancelled transition before mutating
-		// the queue entry. The scanMu is not held here, so a parallel goroutine
-		// may have already transitioned this task (e.g. R1 reconciler clearing
-		// queue_write_failed). Skipping invalid transitions prevents this code
-		// path from clobbering a freshly-terminal entry with cancelled.
+		// Validate the in_progress→cancelled transition before mutating
+		// the queue entry. The scanMu is not held here, so a parallel
+		// goroutine may have already transitioned this task; skipping
+		// invalid transitions prevents this code path from clobbering a
+		// freshly-terminal entry with cancelled.
 		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
 			qh.log(LogLevelWarn,
 				"dependency_failure_invalid_transition task=%s from=%s to=cancelled error=%v",
@@ -729,16 +722,13 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 			})
 		}
 
-		// F-032: this code path intentionally bypasses lease.Manager.ReleaseTaskLease.
-		// The canonical release path transitions in_progress→pending, but a
-		// dependency-cancelled task is committing a TERMINAL status, so the
-		// lease lifecycle is collapsed in-place — same pattern as Phase A
-		// updateQueueState (see F-035 godoc). LeaseEpoch is retained so any
-		// late heartbeat from the prior holder still fences correctly via the
-		// canonical mismatch path. Routing through ReleaseTaskLease would
-		// require an extra intermediate write (in_progress→pending→cancelled)
-		// for no observable gain — `lease.Manager` tracks no per-release
-		// metrics today (no counters / no audit ledger entry on release).
+		// This path intentionally bypasses lease.Manager.ReleaseTaskLease.
+		// The canonical release path transitions in_progress→pending, but
+		// a dependency-cancelled task is committing a TERMINAL status, so
+		// the lease lifecycle is collapsed in-place — same pattern as
+		// Phase A updateQueueState. LeaseEpoch is retained so any late
+		// heartbeat from the prior holder still fences correctly via the
+		// canonical mismatch path.
 		task.Status = model.StatusCancelled
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil

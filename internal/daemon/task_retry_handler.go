@@ -133,12 +133,11 @@ func (h *TaskRetryHandler) ShouldRepairTask(task *model.Task, failureReason stri
 const MaxRepairCountReasonPrefix = "definition_of_abort.max_repair_count"
 
 // ErrPhaseMaxTasksExceeded is retained as a sentinel for backwards
-// compatibility with tests / callers that still reference it, but the
-// daemon's RegisterRetryTaskInState no longer emits it: the 2026-04-30
-// e2e regression captured several recovery flows stuck because retries
-// were rejected once a phase reached its declared MaxTasks. retry depth
-// is bounded by Retry.TaskExecution.MaxRetries and DefinitionOfAbort
-// .MaxRepairCount, so the budget guard here was redundant.
+// compatibility with tests / callers that still reference it. The
+// daemon's RegisterRetryTaskInState no longer emits it because retry
+// depth is already bounded by Retry.TaskExecution.MaxRetries and
+// DefinitionOfAbort.MaxRepairCount; the per-phase MaxTasks guard was
+// redundant and would block legitimate retries.
 var ErrPhaseMaxTasksExceeded = fmt.Errorf("phase max_tasks exceeded; retry refused")
 
 // IsAbortByMaxRepair reports whether reason originates from
@@ -333,13 +332,11 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(retryTask *model.Task, prede
 		// PhaseConstraints.MaxTasks is intentionally NOT enforced here. The
 		// constraint applies to Planner's explicit task list at plan submit /
 		// add-task time (see internal/plan/validate.go); enforcing it again
-		// during retry/repair turns recovery into a structural failure mode —
-		// the 2026-04-30 e2e regression captured several commands stuck because
-		// max_tasks=3 phases had no headroom for a fourth slot when verify
-		// failed and the daemon (or Planner) tried to retry. Retry depth is
-		// already bounded by Retry.TaskExecution.MaxRetries and per-task
-		// DefinitionOfAbort.MaxRepairCount, so the budget here was redundant
-		// guardrail at the cost of unrecoverable failure flows.
+		// during retry/repair would turn recovery into a structural failure
+		// mode (e.g. a max_tasks=3 phase has no headroom for a fourth slot
+		// when verify fails). Retry depth is already bounded by
+		// Retry.TaskExecution.MaxRetries and per-task DefinitionOfAbort
+		// .MaxRepairCount.
 		if predecessorTaskID != "" {
 			for i := range state.Phases {
 				phase := &state.Phases[i]

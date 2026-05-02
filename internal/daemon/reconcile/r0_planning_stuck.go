@@ -117,7 +117,7 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 			}
 			// Also drop the .bak sibling so a future commandID reuse cannot
 			// be revived by recoverStateDir's ORC-3 epoch floor clamp from a
-			// stale prior generation. See F-030/F-031.
+			// stale prior generation.
 			if err := os.Remove(statePath + ".bak"); err != nil && !os.IsNotExist(err) {
 				run.Log(core.LogLevelWarn, "R0 delete_state_bak command=%s error=%v", stuckCommandID, err)
 			}

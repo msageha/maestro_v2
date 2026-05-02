@@ -8,17 +8,13 @@ import (
 	"testing"
 )
 
-// TestEnsureRoleMaestroWrapper_PATHFallback pins the 2026-04-28 fix for the
-// "in-tree build artifact disappears mid-run" failure mode. Earlier the
-// generated wrapper script `exec`'d the absolute path resolved at startup
-// (e.g. /repo/maestro). When that path was removed by a rebuild or
-// worktree rotation, every subsequent CLI call from the agent died with
-// shell exit 126/127. The wrapper now tests the absolute path with `[ -x
-// ... ]` first and falls back to PATH-resolved `maestro` (the launching
-// binary's directory is already prepended to PATH by buildLaunchEnv, so
-// the same binary is picked when both are valid). This test reads the
-// generated wrapper script and asserts the structural pieces are present;
-// integration coverage is provided by the full agent E2E run.
+// TestEnsureRoleMaestroWrapper_PATHFallback pins the wrapper's behaviour for
+// the "in-tree build artifact disappears mid-run" failure mode. The wrapper
+// tests the absolute path with `[ -x ... ]` first and falls back to PATH-
+// resolved `maestro` (the launching binary's directory is already prepended
+// to PATH by buildLaunchEnv, so the same binary is picked when both are
+// valid). This test reads the generated wrapper script and asserts the
+// structural pieces are present.
 func TestEnsureRoleMaestroWrapper_PATHFallback(t *testing.T) {
 	maestroDir := t.TempDir()
 	for _, role := range []string{"orchestrator", "planner", "worker"} {
@@ -1056,11 +1052,11 @@ func TestLaunchCommand_Format(t *testing.T) {
 	}
 }
 
-// TestResolvedLaunchCommandFor_PrependsMaestroDirEnv pins the 2026-04-29 fix:
-// when the formation re-launches `maestro agent launch` in a worker pane that
-// sits inside a worktree, the command must carry MAESTRO_DIR so that
-// findMaestroDir takes the env-var branch instead of falling back to a cwd
-// walk-up that can stop at a partial worktree-local .maestro/ fragment.
+// TestResolvedLaunchCommandFor_PrependsMaestroDirEnv asserts that when the
+// formation re-launches `maestro agent launch` in a worker pane that sits
+// inside a worktree, the command carries MAESTRO_DIR so that findMaestroDir
+// takes the env-var branch instead of falling back to a cwd walk-up that can
+// stop at a partial worktree-local .maestro/ fragment.
 func TestResolvedLaunchCommandFor_PrependsMaestroDirEnv(t *testing.T) {
 	dir := t.TempDir()
 	got := ResolvedLaunchCommandFor(dir)
@@ -1123,15 +1119,12 @@ func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
 	}
 }
 
-// TestBuildLaunchEnvForAgent_DefaultsGOCACHE pins the 2026-04-28 retest2
-// fix for the Worker `go build` permission failure inside claude-code's
-// sandbox. The Worker hit "permission denied" against the default
-// ~/Library/Caches/go-build path on every fresh run. The launcher now
-// defaults GOCACHE to a project-local path so go-toolchain commands run
-// under the agent never fall back to a sandboxed user-cache directory
-// that's likely to be denied. Operator overrides via an inherited
-// `GOCACHE=...` export must still win, otherwise CI/dev shell setups
-// that share a global cache would lose their cache reuse silently.
+// TestBuildLaunchEnvForAgent_DefaultsGOCACHE asserts that GOCACHE defaults
+// to a project-local path so go-toolchain commands run under the agent
+// never fall back to a sandboxed user-cache directory (e.g. ~/Library/
+// Caches/go-build) that's likely to be denied. Operator overrides via an
+// inherited GOCACHE=... export must still win — CI/dev shell setups that
+// share a global cache would otherwise lose their cache reuse silently.
 func TestBuildLaunchEnvForAgent_DefaultsGOCACHE(t *testing.T) {
 	t.Run("default_points_under_maestro_dir", func(t *testing.T) {
 		maestroDir := t.TempDir()
@@ -1171,18 +1164,14 @@ func envSliceToMap(env []string) map[string]string {
 	return m
 }
 
-// TestBuildLaunchEnvForAgent_NormalizesNoisyEnv pins the 2026-04-28 retest3
-// environment-noise suppression. The retest reported two issues in agent
-// panes that both stem from inherited env:
-//   - TERM=dumb caused starship to spam "unable to determine terminal
-//     type" into the CLI/pane output;
-//   - the default ~/.cache/mise path was sandbox-denied so mise emitted
-//     "Operation not permitted" cache-write WARNs every shell init.
+// TestBuildLaunchEnvForAgent_NormalizesNoisyEnv asserts environment-noise
+// suppression for two inherited-env issues in agent panes:
+//   - TERM=dumb causes starship to spam "unable to determine terminal type";
+//   - the default ~/.cache/mise path is sandbox-denied so mise emits
+//     "Operation not permitted" WARNs every shell init.
 //
-// Both noise sources are configurable via env, so the launcher now
-// normalises them when no operator override is present. Operators that
-// pin TERM or MISE_CACHE_DIR in their dev shell still win — explicit
-// inheritance must beat our defaults.
+// Both are normalised when no operator override is present. Operators that
+// pin TERM or MISE_CACHE_DIR explicitly still win.
 func TestBuildLaunchEnvForAgent_NormalizesNoisyEnv(t *testing.T) {
 	t.Run("term_dumb_promoted_to_xterm", func(t *testing.T) {
 		maestroDir := t.TempDir()

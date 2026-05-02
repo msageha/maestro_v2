@@ -17,15 +17,12 @@ import (
 // R10PausedForReplanDeadletter escalates tasks that have been parked in
 // paused_for_replan beyond the configured deadletter window (see
 // VerifyDaemonConfig.PausedForReplanDeadletterSec; the default lives in
-// model.DefaultPausedForReplanDeadletterSec — 1 hour at time of writing,
-// extended from earlier 10-minute / 4-hour iterations to balance Planner
-// LLM deliberation time against the queue-occupancy cost of leaving a
-// paused command parked for too long). The
-// 2026-04 alpha/beta/test workflow regression demonstrated that without this
-// rule, a Planner LLM that misclassifies the paused_for_replan signal as
-// stale leaves the publish gate blocked indefinitely — the daemon kept
-// emitting worktree_publish_skip_failed every scan because at least one phase
-// stayed in a non-terminal state owned by an unresponsive Planner.
+// model.DefaultPausedForReplanDeadletterSec, currently 1 hour, balancing
+// Planner LLM deliberation time against the queue-occupancy cost of
+// leaving a paused command parked for too long). Without this rule, a
+// Planner that misclassifies the paused_for_replan signal as stale leaves
+// the publish gate blocked indefinitely — at least one phase remains in
+// a non-terminal state owned by an unresponsive Planner.
 //
 // Once the threshold elapses, R10 advances the task's TaskStates entry from
 // paused_for_replan to failed and overwrites the queue task status to failed
@@ -38,7 +35,7 @@ import (
 //   - 0 threshold disables the rule entirely (operator opt-out);
 //   - elapsed time is measured against state.UpdatedAt because no result file
 //     is rewritten when the daemon advances state to paused_for_replan;
-//   - the daemon emits a deadletter audit log so the operator sees the
+//   - the daemon emits a deadletter log so the operator sees the
 //     escalation in the same channel as R7/R8/R9 deadletters.
 type R10PausedForReplanDeadletter struct{}
 
@@ -343,8 +340,8 @@ func r10ResolveStaleAnchor(state *model.CommandState) (time.Time, bool) {
 // Returns ("", err) for transient I/O failures: the caller MUST treat
 // these as "do not advance state, retry next scan" so a transient
 // permission denied or unmarshal error does not silently leave the queue
-// non-terminal while state is escalated to failed (the publish gate
-// dependency that the 2026-04-29 review surfaced).
+// non-terminal while state is escalated to failed (publish gate
+// invariant).
 func r10FindOwningWorker(run *Run, commandID, taskID string) (string, error) {
 	queueDir := filepath.Join(run.Deps.MaestroDir, "queue")
 	entries, err := run.cachedReadDir(queueDir)

@@ -25,9 +25,8 @@ import (
 
 // --- checkCommandTasksTerminal tests ---
 
-// TestCheckCommandTasksTerminal exercises the (allTerminal, hasFailed) outputs
-// of checkCommandTasksTerminal across the matrix of task statuses. F-058
-// table-driven consolidation of seven previously-duplicated test functions.
+// TestCheckCommandTasksTerminal exercises the (allTerminal, hasFailed)
+// outputs of checkCommandTasksTerminal across the matrix of task statuses.
 func TestCheckCommandTasksTerminal(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -326,12 +325,12 @@ func TestCollectWorktreePublish_IntegrationFailedEmitsSynthetic(t *testing.T) {
 }
 
 // TestCollectWorktreePublish_RecoveryAfterFailedPhasePublishes verifies the
-// post-2026-04-30 race-safe publish gate: when a verify-repair (or planner-
-// driven retry) replaces a failed task with a successor that completes, the
-// publish gate must honor the live derivation — not the stale persisted
-// plan_status. With retry_lineage threaded through DeriveStatus the
-// predecessor's superseded-cancelled status no longer counts as a failure,
-// the dead phase fragment is recognised as recovered, and the command
+// race-safe publish gate: when a verify-repair (or planner-driven retry)
+// replaces a failed task with a successor that completes, the publish
+// gate honors the live derivation — not the stale persisted plan_status.
+// With retry_lineage threaded through DeriveStatus the predecessor's
+// superseded-cancelled status no longer counts as a failure, the dead
+// phase fragment is recognised as recovered, and the command
 // publishes normally rather than being poisoned by synthetic_failure.
 func TestCollectWorktreePublish_RecoveryAfterFailedPhasePublishes(t *testing.T) {
 	t.Parallel()
@@ -1166,11 +1165,10 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsOnFailure(t *testing.T) {
 
 func TestCollectWorktreePhaseMerges_NoPhasesIncrementalWhenSomeTerminal(t *testing.T) {
 	t.Parallel()
-	// 2026-05-02: implicit-phase merge now runs incrementally — a single
-	// completed task is enough to start collecting merge work, so a worker
-	// whose dependent task completed early can hand off its output to
-	// integration before the rest of the command finishes. This is the
-	// fix for the user's "worker2 cannot see worker1 output" regression.
+	// Implicit-phase merge runs incrementally: a single completed task is
+	// enough to start collecting merge work, so a worker whose dependent
+	// task completed early can hand off its output to integration before
+	// the rest of the command finishes.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
 		"t1": model.StatusCompleted,
 		"t2": model.StatusInProgress,
@@ -1186,10 +1184,10 @@ func TestCollectWorktreePhaseMerges_NoPhasesIncrementalWhenSomeTerminal(t *testi
 
 func TestCollectWorktreePhaseMerges_NoPhasesAllowsRecollectAfterMerged(t *testing.T) {
 	t.Parallel()
-	// 2026-05-02: integration_status=merged is no longer a hard skip for
-	// implicit-phase commands. New completions can keep flowing in while
-	// the command runs, and each one needs the merge collector to pick it
-	// up; MergeToIntegration's per-worker idempotency keeps duplicate scans
+	// integration_status=merged is not a hard skip for implicit-phase
+	// commands: new completions keep flowing in while the command runs
+	// and each one needs the merge collector to pick it up.
+	// MergeToIntegration's per-worker idempotency keeps duplicate scans
 	// cheap.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusMerged, map[string]model.Status{
 		"t1": model.StatusCompleted,
@@ -1232,10 +1230,10 @@ func TestCollectImplicitWorktreeMerge_Failed(t *testing.T) {
 
 func TestCollectImplicitWorktreeMerge_AlreadyMerged_IncrementalReentry(t *testing.T) {
 	t.Parallel()
-	// 2026-05-02: __implicit_phase membership in MergedPhases is no longer
-	// a gate. Incremental merge expects to re-enter on every completed
-	// task; the actual idempotency lives inside MergeToIntegration where
-	// up-to-date worker branches are skipped without spending git ops.
+	// __implicit_phase membership in MergedPhases is not a gate.
+	// Incremental merge expects to re-enter on every completed task; the
+	// actual idempotency lives inside MergeToIntegration where up-to-date
+	// worker branches are skipped without spending git ops.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusPartialMerge, map[string]model.Status{
 		"t1": model.StatusCompleted,
 	}, map[string]string{"__implicit_phase": "2026-01-01T00:00:00Z"})
@@ -1481,17 +1479,15 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 				t.Errorf("merge should have been skipped: err=%v conflicts=%v", mr.Error, mr.Conflicts)
 			}
 
-			// Integration status is intentionally NOT marked Failed here
-			// (2026-05-01 fix): pinning the integration to a terminal status on
-			// the first all-commits-failed observation made transient errors
-			// (e.g. .git/index.lock contention) unrecoverable even when the
-			// next scan's stepRetryCommitFailedWorkers would have succeeded.
-			// The publish gate now blocks via len(CommitFailedWorkers)>0
-			// alone; CommitFailedWorkers gets set on every failure, and
-			// stepRetryCommitFailedWorkers retries every scan. The integration
-			// status therefore stays at its prior value (Created/Merged) and
-			// the operator-visible signal of permanent failure is the
-			// publish_blocked log emitting on every scan, not a status flip.
+			// Integration status is intentionally NOT marked Failed here:
+			// pinning the integration to a terminal status on the first
+			// all-commits-failed observation would make transient errors
+			// (e.g. .git/index.lock contention) unrecoverable. The publish
+			// gate blocks via len(CommitFailedWorkers)>0 alone, and
+			// stepRetryCommitFailedWorkers retries every scan. The
+			// integration status stays at its prior value and the operator-
+			// visible signal of permanent failure is the publish_blocked log
+			// emitting on every scan.
 			state, err := wm.GetCommandState(commandID)
 			if err != nil {
 				t.Fatalf("GetCommandState: %v", err)
@@ -1861,14 +1857,13 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	}
 }
 
-// TestPeriodicScanPhaseC_PublishCompletedEmittedAfterDeferredFinalize covers
-// the 2026-04-29 e2e symmetry fix: when the deferred plan-complete intent is
-// finalised inside Phase C, the daemon must still emit publish_completed so
-// the Planner sees parity with the non-deferred path. Pre-fix the signal was
-// suppressed because the command went terminal during deferred finalisation.
-// The signal is tagged Reason="deferred_complete_finalized" to bypass the
-// Phase A dispatch-time stale filter, which is exercised by
-// TestStepPlannerSignalsDeferred_PublishCompletedRetainedAfterDeferredFinalize.
+// TestPeriodicScanPhaseC_PublishCompletedEmittedAfterDeferredFinalize asserts
+// the symmetry contract: when the deferred plan-complete intent is
+// finalised inside Phase C, the daemon emits publish_completed so the
+// Planner sees parity with the non-deferred path. The signal is tagged
+// Reason="deferred_complete_finalized" to bypass the Phase A dispatch-
+// time stale filter (exercised by
+// TestStepPlannerSignalsDeferred_PublishCompletedRetainedAfterDeferredFinalize).
 func TestPeriodicScanPhaseC_PublishCompletedEmittedAfterDeferredFinalize(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -2351,12 +2346,10 @@ func TestStepPlannerSignalsDeferred_PublishCompletedRetainedWhenNonTerminal(t *t
 // TestPeriodicScanPhaseC_DeferredComplete verifies that when a deferred plan
 // complete intent exists for a command, a successful publish triggers
 // auto-completion AND emits a publish_completed signal tagged with
-// Reason="deferred_complete_finalized" (2026-04-29 symmetry fix). Pre-fix
-// the daemon silently swallowed the signal in the deferred path, breaking
-// parity with the non-deferred publish_completed path observed by the
-// Planner; the tag lets the dispatch-side stale filter keep the signal so
-// the Planner sees a uniform notification regardless of which path
-// finalised the command.
+// Reason="deferred_complete_finalized" (symmetry with the non-deferred
+// publish_completed path). The tag lets the dispatch-side stale filter
+// keep the signal so the Planner sees a uniform notification regardless
+// of which path finalised the command.
 func TestPeriodicScanPhaseC_DeferredComplete(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)

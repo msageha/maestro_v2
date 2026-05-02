@@ -175,7 +175,7 @@ func (sm *StateManager) SaveState(state *model.CommandState) error {
 // valid prior generation if a new state file is later created at the same
 // path (commandID reuse) and then becomes corrupt — the ORC-3 epoch floor
 // clamp would then re-inject a stale lease_epoch derived from the old
-// generation. See F-030 / F-031 in docs/maestro-review/FINAL_REPORT.md.
+// generation.
 func (sm *StateManager) DeleteState(commandID string) error {
 	path, err := sm.StatePath(commandID)
 	if err != nil {
@@ -262,9 +262,9 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				// the plan once publish succeeds, and the Planner does not
 				// have to poll/retry.
 				//
-				// **Eligibility** (2026-04-29 review pin): the deferred-publish
-				// path is only valid when Phase B will actually merge this
-				// phase. Phase B only merges on the success path: it expects
+				// **Eligibility**: the deferred-publish path is only valid
+				// when Phase B will actually merge this phase. Phase B only
+				// merges on the success path: it expects
 				// every task to be at StatusCompleted (with StatusCancelled
 				// admitted because cancellation here always means "superseded
 				// by retry sibling"; a genuine plan-level cancel marks the

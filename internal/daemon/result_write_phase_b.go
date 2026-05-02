@@ -238,10 +238,9 @@ func (h *ResultWriteAPI) advanceOrForce(state *model.CommandState, params Result
 //
 // scanMu.RLock is held for the duration of the state write so the
 // state/commands/<cmd>.yaml mutation is serialised against PeriodicScan
-// Phase A. Without it, Phase A could publish a worktree (queue task already
-// terminal) one scan tick after the state still showed verify_pending —
-// the precise sequence the 2026-04-30 e2e regression captured as
-// "published_to_base 0.7s before verify_runner_workdir_disappeared".
+// Phase A. Without it, Phase A could publish a worktree (queue task
+// already terminal) one scan tick after the state still showed
+// verify_pending, racing the verify outcome.
 func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus model.Status, reason string) error {
 	h.acquireFileLock()
 	defer h.releaseFileLock()

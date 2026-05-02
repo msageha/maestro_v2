@@ -657,14 +657,13 @@ func TestCheckPhaseTransitions_MergeGateAllowsActivationAfterMerge(t *testing.T)
 	}
 }
 
-// TestStepAwaitingFillWatchdog_FiresOnceAfterThreshold pins the 2026-04-30
-// e2e regression contract: a phase that has been at awaiting_fill longer
-// than the configured stall window must emit a single
-// `awaiting_fill_stall` planner signal and record
+// TestStepAwaitingFillWatchdog_FiresOnceAfterThreshold asserts that a
+// phase at awaiting_fill longer than the configured stall window emits
+// a single `awaiting_fill_stall` planner signal and records
 // AwaitingFillStallNotifiedAt so subsequent scans do not refire. The
 // original `awaiting_fill` signal is one-shot at phase entry; without
-// this watchdog a stalled Planner waits up to 3 hours (R6 fill_deadline)
-// before any retry.
+// the watchdog a stalled Planner would wait up to 3 hours
+// (R6 fill_deadline) before any retry.
 func TestStepAwaitingFillWatchdog_FiresOnceAfterThreshold(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupPhaseIntegrationDir(t)

@@ -103,9 +103,9 @@ func (dc *DebounceController) Trigger(trigger string) {
 	})
 }
 
-// executeDebouncedScan is the timer callback extracted from Trigger. It handles
-// shutdown guards, running-state CAS, first-trigger reset, panic recovery, and
-// the actual scanFn invocation.
+// executeDebouncedScan is the timer callback that handles shutdown guards,
+// running-state CAS, first-trigger reset, panic recovery, and the actual
+// scanFn invocation.
 func (dc *DebounceController) executeDebouncedScan(trigger string, done chan struct{}) {
 	defer close(done)
 

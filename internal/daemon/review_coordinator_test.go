@@ -13,9 +13,7 @@ import (
 )
 
 // TestPersistReviewResult_AppendsAndReplaces pins the audit-trail file
-// shape introduced 2026-04-28 to address the operator-visible
-// "finding 本文の保存先も見つけにくい" gap surfaced in the conflict-recovery
-// E2E run. The advisory review pipeline never gates completion, so the
+// shape. The advisory review pipeline never gates completion, so the
 // only path to recover full Finding text post hoc is this YAML mirror at
 // .maestro/state/reviews/<task_id>.yaml. Behaviour pinned:
 //   - first result for a task creates the file and seeds schema_version /
@@ -139,13 +137,12 @@ func TestPersistReviewResult_RecoversFromCorruptFile(t *testing.T) {
 	}
 }
 
-// TestPersistReviewResult_RecordsSkipReason pins the 2026-04-29 audit
-// hygiene fix: ReviewResult.SkipReason must be persisted into the
-// per-task review YAML so an operator can tell at a glance why a
-// status=skipped result happened. Before this, every empty-diff or
-// invocation-failure skip looked identical (just `status: skipped` with
-// 0 findings) and the only way to recover the reason was to grep
-// daemon.log for the matching review_id timestamp.
+// TestPersistReviewResult_RecordsSkipReason asserts that
+// ReviewResult.SkipReason is persisted into the per-task review YAML so
+// an operator can tell at a glance why a status=skipped result
+// happened. Without this, empty-diff and invocation-failure skips would
+// look identical and the reason would only be recoverable from
+// daemon.log.
 func TestPersistReviewResult_RecordsSkipReason(t *testing.T) {
 	maestroDir := t.TempDir()
 	rc := &ReviewCoordinator{
@@ -174,23 +171,13 @@ func TestPersistReviewResult_RecordsSkipReason(t *testing.T) {
 	}
 }
 
-// TestBuildDiffContent_FallsThroughEmptyPrecapture pins the 2026-04-29
-// e2e regression where every codex review came back as
-// `status=skipped findings=0` in under a second because PrecaptureDiff
-// had cached "" before the worker committed and buildDiffContent then
-// short-circuited with that "". The fix has two halves:
-//
-//  1. PrecaptureDiff no longer stores empty diffs (the only legitimate
-//     producer of cache entries was the cleanup-race protector, and
-//     caching "" actively defeated it).
-//  2. buildDiffContent's `cached != ""` guard is still there so a
-//     stale cached "" from an older binary cannot block recovery.
-//
-// This test exercises the second half: even when the cache somehow
-// contains "" for a task (older binary, direct cache poke during a
-// debug session), buildDiffContent must fall through to the summary +
-// files_changed payload so the dispatcher receives non-empty input
-// and codex actually runs.
+// TestBuildDiffContent_FallsThroughEmptyPrecapture asserts that even
+// when the cache somehow contains "" for a task, buildDiffContent
+// falls through to the summary + files_changed payload so the
+// dispatcher receives non-empty input. PrecaptureDiff itself no longer
+// stores empty diffs, but the `cached != ""` guard in buildDiffContent
+// is the second line of defence against a stale cached "" blocking
+// recovery.
 func TestBuildDiffContent_FallsThroughEmptyPrecapture(t *testing.T) {
 	rc := &ReviewCoordinator{
 		log:       func(LogLevel, string, ...any) {},
@@ -221,16 +208,14 @@ func TestBuildDiffContent_FallsThroughEmptyPrecapture(t *testing.T) {
 	}
 }
 
-// TestBuildDiffContent_NeverEmpty pins the 2026-04-29 fallback hygiene
-// rule: buildDiffContent must NEVER return "" — even when the
-// precapture cache is empty, ComputeWorkerDiff returns nothing, AND the
-// worker reported neither a Summary nor FilesChanged. The legacy
-// fallback returned "" in that triple-empty case, the dispatcher saw
-// empty DiffContent and short-circuited to status=skipped, and
-// operators saw "review never ran" with zero diagnostic context. The
-// new floor is a synthetic context-only payload (task/command/reporter
-// identification) so the reviewer at least gets the chance to say
-// "nothing concrete to flag" via Status=Completed with empty Findings.
+// TestBuildDiffContent_NeverEmpty asserts the fallback hygiene rule:
+// buildDiffContent must NEVER return "" — even when the precapture
+// cache is empty, ComputeWorkerDiff returns nothing, AND the worker
+// reported neither a Summary nor FilesChanged. Returning "" would let
+// the dispatcher short-circuit to status=skipped with zero diagnostic
+// context. The floor is a synthetic context-only payload so the
+// reviewer at least gets the chance to return Status=Completed with
+// empty Findings.
 func TestBuildDiffContent_NeverEmpty(t *testing.T) {
 	rc := &ReviewCoordinator{
 		log:       func(LogLevel, string, ...any) {},

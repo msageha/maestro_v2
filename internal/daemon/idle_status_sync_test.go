@@ -107,15 +107,12 @@ func TestHasInProgressCommands(t *testing.T) {
 	}
 }
 
-// TestSyncAllConfiguredWorkers_ResetsBusyOnQueueLessWorkers pins the
-// 2026-04-29 e2e regression: worker4 stayed at @status=busy while no
-// task queue file existed, no command was active, no dispatch was in
-// flight, and yet `maestro status --json` reported the worker as busy.
-// The prior implementation iterated only the queue files present in
-// s.tasks, so a worker without a queue file was never visited and a
-// stale @status=busy from a previous session never got cleared. The
-// fix enumerates every configured worker and forces idle on those
-// without an in-progress task.
+// TestSyncAllConfiguredWorkers_ResetsBusyOnQueueLessWorkers asserts that
+// every configured worker (workerN by Count) is enumerated, and a
+// worker without a queue file is forced to idle. Iterating only the
+// queue files present in s.tasks would leave a worker that has never
+// been dispatched stuck at a stale @status=busy from a previous
+// session.
 func TestSyncAllConfiguredWorkers_ResetsBusyOnQueueLessWorkers(t *testing.T) {
 	rec := installStatusRecorder(t)
 	qh := &QueueHandler{}

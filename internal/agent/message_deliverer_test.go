@@ -117,7 +117,7 @@ func TestSendAndConfirm_SendTextFails(t *testing.T) {
 
 func TestSendAndConfirm_SetStatusFails(t *testing.T) {
 	t.Parallel()
-	// Bug L: SetStatus failure must NOT propagate as a delivery error.
+	// SetStatus failure must NOT propagate as a delivery error.
 	// The message was already sent successfully, so returning an error
 	// would cause the dispatcher's inline retry to re-deliver the same
 	// envelope and trigger a duplicate plan_submit on the planner side.
@@ -178,12 +178,11 @@ func TestSendAndConfirm_MultilinePastedPlaceholderRetriesEnter(t *testing.T) {
 	mock.currentCommand = "claude"
 	mock.isShell = false
 	mock.captureJoinedSeq = []mockResp{
-		// 2026-04-28 pre-paste baseline capture. The deliverer now
-		// snapshots the pane before SendTextAndSubmit so the submit
-		// probe's content-growth detector starts with a real baseline
-		// instead of waiting for its own first observation. Tests must
-		// supply this entry so the scripted post-paste sequence stays
-		// aligned with what the probe actually sees.
+		// Pre-paste baseline capture: the deliverer snapshots the pane
+		// before SendTextAndSubmit so the submit probe's content-growth
+		// detector starts with a real baseline instead of waiting for
+		// its own first observation. Tests must supply this entry so
+		// the scripted post-paste sequence stays aligned.
 		{val: "Welcome\n❯ \n"},
 		{val: "Welcome\n❯ [Pasted text #1 +248 lines]\n"},
 		{val: "Working...\n"},
@@ -292,19 +291,12 @@ func TestSendAndConfirm_SubmitProbeCaptureFailureIsNonRetryable(t *testing.T) {
 	}
 }
 
-// TestSendAndConfirm_ActivityFirstShortCircuitsStalePlaceholder is the
-// regression test for the 2026-04-28 retest7 false-negative cascade. A
-// previous-turn pasted-text line was scrolled into the bottom-N-line search
-// window while the live prompt was already empty and Claude was visibly
-// processing ("Working..."). The old probe ordering checked the
-// pasted-text placeholder first, fired Enter retries at a pane that did not
-// need them, and ran out the 8-attempt budget — surfacing as
-// `submit_confirm pasted_text_still_at_prompt attempts=8` followed by a
-// successful task completion.
-//
-// New ordering: activity check first; once Claude is processing the dispatch
-// is confirmed without further Enter retries even if history holds a stale
-// placeholder.
+// TestSendAndConfirm_ActivityFirstShortCircuitsStalePlaceholder verifies
+// the false-negative guard: when a previous-turn pasted-text line is
+// scrolled into the bottom-N-line search window while the live prompt is
+// already empty and Claude is visibly processing ("Working..."), the
+// activity check runs first and confirms the dispatch without firing
+// unnecessary Enter retries.
 func TestSendAndConfirm_ActivityFirstShortCircuitsStalePlaceholder(t *testing.T) {
 	mock := newMockPaneIO()
 	mock.currentCommand = "claude"
@@ -378,10 +370,7 @@ func TestSendAndConfirm_SingleLineSkipsSubmitConfirmation(t *testing.T) {
 // never appear on those panes, so the deliverer compares pane snapshots
 // over the probe window: any change is treated as evidence that the
 // runtime accepted the input and started rendering, while a fully stable
-// pane indicates a blocking modal swallowed the paste. This is the
-// regression test for the 2026-04 false-positive audit where
-// dispatch_task_success was logged on codex / gemini workers that never
-// actually saw the message.
+// pane indicates a blocking modal swallowed the paste.
 func TestSendAndConfirm_NonClaudeRuntimeProgressDetectsChange(t *testing.T) {
 	t.Parallel()
 	for _, rt := range []string{"codex", "gemini"} {
@@ -445,14 +434,12 @@ func TestSendAndConfirm_NonClaudeRuntimeProgressDetectsChange(t *testing.T) {
 }
 
 // TestSendAndConfirm_ClaudePaneContentChangeFallbackConfirms covers the
-// 2026-04 codex/gemini E2E regression where Orchestrator → Planner dispatch
-// logged dispatch_command_failed (status=exhausted attempts=8) even though
-// the Planner had finished plan_submit. Root cause: the Claude probe only
-// looked for activity markers ("Thinking", "⏺", …) in the captured 12
-// lines, and missed cases where the marker scrolled past the viewport or
-// rendered between probes. The probe now treats any normalized
-// content-change after the first marker-free, placeholder-free snapshot as
-// confirmation. This test pins that contract.
+// content-growth fallback: when an activity marker scrolls past the
+// captured viewport or renders between probes, the Claude probe still
+// treats any normalized content-change after the first marker-free,
+// placeholder-free snapshot as confirmation. Without this fallback the
+// probe would exhaust its 8-attempt budget and surface a spurious
+// dispatch_command_failed.
 func TestSendAndConfirm_ClaudePaneContentChangeFallbackConfirms(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
@@ -532,9 +519,9 @@ func TestSendAndConfirm_ClaudePlaceholderResetsContentChangeBaseline(t *testing.
 	mock.isShell = false
 	mock.userVars["runtime"] = model.RuntimeClaudeCode
 	mock.captureJoinedSeq = []mockResp{
-		// Pre-paste baseline (2026-04-28): the deliverer now snapshots
-		// the pane before SendTextAndSubmit so subsequent probes can
-		// detect any post-submit growth from the very first attempt.
+		// Pre-paste baseline: the deliverer snapshots the pane before
+		// SendTextAndSubmit so subsequent probes can detect any post-
+		// submit growth from the very first attempt.
 		{val: "Welcome\n❯ \n"},
 		// Probe 1: placeholder visible → resend Enter, baseline reset.
 		{val: "Welcome\n❯ [Pasted text #1 +12 lines]\n"},
@@ -565,20 +552,16 @@ func TestSendAndConfirm_ClaudePlaceholderResetsContentChangeBaseline(t *testing.
 }
 
 // TestSendAndConfirm_PrePasteBaselineConfirmsOnFirstProbe pins the
-// 2026-04-28 structural fix for the dispatch_confirm false-negative the
-// E2E run flagged ("worker1 received the prompt and completed, but the
-// daemon emitted submit_confirm probe_budget_exhausted →
-// dispatch_uncertain_assume_running"). With the pre-paste baseline, a
-// pane that grows by even a single line on the very first probe is
-// treated as confirmed — the historical implementation wasted the first
-// probe on baseline capture, so a worker that finished its only visible
-// growth before probe #2 was misclassified as exhausted.
+// pre-paste baseline contract: a pane that grows by even a single line
+// on the very first probe is treated as confirmed. Without this
+// behaviour the first probe is wasted on baseline capture and a worker
+// that finishes its only visible growth before probe #2 is
+// misclassified as exhausted.
 //
 // Scenario: pre-paste pane has 1 non-blank line ("❯"). Probe #1
 // captures 2 non-blank lines ("❯", "Pasted snippet"); no activity
-// marker, no placeholder. Old logic sets baseline at 2 lines on probe
-// #1, then probes #2..8 see 2 lines and exhaust. New logic sees 2 > 1
-// (vs pre-paste baseline) and confirms immediately.
+// marker, no placeholder. The probe sees 2 > 1 (vs pre-paste baseline)
+// and confirms immediately.
 func TestSendAndConfirm_PrePasteBaselineConfirmsOnFirstProbe(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
@@ -743,12 +726,11 @@ func TestPastedTextPlaceholderAtPrompt(t *testing.T) {
 			want:    false,
 		},
 		{
-			// Regression for the 2026-04-28 retest7 false-negative: a stale
-			// "[Pasted text #1 +247 lines]" line from a previous turn is
-			// scrolled into the bottom-N-line search window, and the live
-			// input prompt below it is empty. Old logic would have flagged
-			// this as still-at-prompt; new logic only consults the bottom-
-			// most prompt-marker line.
+			// A stale "[Pasted text #1 +247 lines]" line from a previous
+			// turn scrolled into the bottom-N-line search window, with
+			// the live input prompt below it empty. Only the bottom-most
+			// prompt-marker line is consulted, so the stale history must
+			// not trigger a still-at-prompt detection.
 			name:    "stale history above empty prompt is ignored",
 			content: "❯ [Pasted text #1 +247 lines]\n⏺ done\n❯ \n",
 			want:    false,
@@ -950,8 +932,6 @@ func TestSleepWithBackoff_NormalCompletion(t *testing.T) {
 
 // TestBackoffDuration_ExactSchedule asserts the exponential schedule directly
 // against the pure function so the test does not depend on scheduler latency.
-// F-057 replaced the prior wall-clock check (`elapsed < 3ms`) which was
-// vulnerable to single-millisecond jitter.
 func TestBackoffDuration_ExactSchedule(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

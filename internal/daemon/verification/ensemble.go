@@ -1,5 +1,5 @@
 // Package verification provides multi-perspective verification ensemble
-// for task output validation (C-3).
+// for task output validation.
 package verification
 
 import (
@@ -112,11 +112,11 @@ func (v *Verifier) AddPerspective(p Perspective) error {
 
 // Aggregate computes a weighted score from the provided perspective results.
 //
-// Scoring rules (mechanical only, no LLM override per S5-1):
+// Scoring rules (mechanical only, no LLM override):
 //   - TotalScore = sum(weight * passed) / sum(weight), where passed = 1 if true, 0 otherwise
 //   - Passed = false when any perspective with Weight >= 1.0 fails (critical perspectives)
 //   - Non-critical perspectives (Weight < 1.0) contribute to TotalScore but do not force Passed = false
-//   - Each perspective is evaluated independently (not majority-vote, per S5-2)
+//   - Each perspective is evaluated independently (not majority-vote)
 //
 // Empty results yield AggregatedResult{Passed: true, TotalScore: 0}.
 func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
@@ -161,10 +161,10 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 	}
 }
 
-// ShouldRetry implements C-3-2 probabilistic retry logic.
+// ShouldRetry implements probabilistic retry logic.
 // A retry is recommended when the failure fingerprint has not been seen before
 // (i.e., it is a novel error). If the fingerprint already appears in
-// seenFingerprints, retry is suppressed (S2-1 Failure Fingerprint linkage).
+// seenFingerprints, retry is suppressed (Failure Fingerprint linkage).
 func (v *Verifier) ShouldRetry(result AggregatedResult, fingerprint string, seenFingerprints []string) bool {
 	if result.Passed {
 		return false

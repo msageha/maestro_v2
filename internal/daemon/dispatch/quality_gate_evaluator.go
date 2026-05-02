@@ -58,7 +58,7 @@ func (e *QualityGateEvaluator) ShouldEvaluate() bool {
 
 // EvaluatePreTask evaluates quality gates before task execution and returns the result.
 //
-// L-7: There is a TOCTOU window between this pre-task gate check and actual task dispatch.
+// There is a TOCTOU window between this pre-task gate check and actual task dispatch.
 // A gate condition could change between evaluation and dispatch. This is acceptable because:
 //   - Phase C's epoch fencing is the authoritative guard against stale dispatches.
 //   - The pre-task gate check is a best-effort early filter (advisory), not a guarantee.

@@ -148,8 +148,7 @@ func (wm *Manager) RetryPublish(commandID string) error {
 // allWorkersMergeTerminal, revertContentMismatchedWorkers, verifyWorkersMerged,
 // attemptResolvedMerges, tryMergeWorker, commitResolvedWorkerChanges,
 // resetWorkersToActive, mergeResolvedWorker, abortAndReturnMergeError,
-// checkoutResolvedFilesFromBranch) lives in recover_resume.go after the
-// F-041 step 4 physical file split.
+// checkoutResolvedFilesFromBranch) lives in recover_resume.go.
 
 // ResetResolvingWorkerToConflict transitions a single worker from
 // WorktreeStatusResolving back to WorktreeStatusConflict, but only when it is
@@ -216,8 +215,8 @@ func (wm *Manager) ResetResolvingWorkerToConflict(commandID, workerID string) er
 // AutoRecover dispatch + state-driven action selection (AutoRecoverAction
 // type/const, AutoRecover, AutoRecoverAfterResolution,
 // tryPublishConflictResolutionRecovery, tryMergeConflictResolutionRecovery,
-// workerIsResolving, selectAutoRecoverAction, publishBackoffElapsed) live in
-// recover_auto.go after the F-041 step 4 physical file split.
+// workerIsResolving, selectAutoRecoverAction, publishBackoffElapsed) lives
+// in recover_auto.go.
 
 // ResolveConflict marks a per-phase, per-worker merge conflict as resolved
 // after an operator has manually fixed up the integration branch. It removes

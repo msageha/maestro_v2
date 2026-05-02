@@ -2,10 +2,6 @@
 // processing and orchestration. It is the composition root: UDS endpoint
 // adapters live in daemonapi, and the major domains (worktree, reconcile,
 // dispatch, lease, …) live in sub-packages.
-//
-// Outstanding decomposition work — incremental, do not attempt en masse —
-// is tracked in docs/maestro-review/FINAL_REPORT.md (F-014/F-040..F-043
-// at the time of writing). See those entries for current priorities.
 package daemon
 
 import (

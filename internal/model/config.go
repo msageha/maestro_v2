@@ -1,6 +1,6 @@
 // Package model holds the configuration types and state-machine status
 // values shared across maestro_v2. Detailed package-level documentation
-// lives in doc.go (including the F-049 naming convention for
+// lives in doc.go (including the naming convention for
 // Status / State / Phase); this file only re-asserts the package
 // directive in the form revive's package-comments check expects.
 package model
@@ -98,13 +98,12 @@ type MaestroConfig struct {
 	// AwaitingFillStallNotifyMinutes is the elapsed time after which the
 	// daemon's awaiting-fill watchdog re-emits an `awaiting_fill_stall`
 	// signal to the Planner. The original `awaiting_fill` signal is fired
-	// on phase entry, but if the Planner pane stops making progress (the
-	// 2026-04-30 e2e regression captured a 6+ minute "Thinking" stall with
-	// no `plan submit` follow-up), the signal queue empties after delivery
-	// and there is no further re-prompt until R6 fires the hard
-	// fill_deadline_at timeout, which defaults to 3 hours. The watchdog
-	// closes that gap. 0 disables the watchdog (no re-prompt, R6 still
-	// applies). Default 5 minutes.
+	// on phase entry; if the Planner pane stalls afterwards (long
+	// "Thinking" with no `plan submit`), the signal queue empties and
+	// there is no further re-prompt until R6 fires the hard
+	// fill_deadline_at timeout (defaults to 3 hours). The watchdog closes
+	// that gap. 0 disables the watchdog (no re-prompt; R6 still applies).
+	// Default 5 minutes.
 	AwaitingFillStallNotifyMinutes *int `yaml:"awaiting_fill_stall_notify_minutes,omitempty"`
 }
 
@@ -202,13 +201,12 @@ type WatcherConfig struct {
 	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
 	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
 	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
-	// Deprecated since 2026-04: clearAndConfirm no longer sends a second Enter
-	// after /clear. Older Claude Code releases displayed a completion prompt for
-	// slash commands and required confirmation, but Claude Code 2.x executes
-	// /clear immediately on the first Enter and treats a trailing Enter as
-	// "re-run last command" — causing /clear to fire twice per task transition.
-	// The field is kept so existing config.yaml files continue to validate; the
-	// value is ignored by clearAndConfirm.
+	// Deprecated: clearAndConfirm no longer sends a second Enter after
+	// /clear. Claude Code 2.x executes /clear immediately on the first
+	// Enter and treats a trailing Enter as "re-run last command", which
+	// causes /clear to fire twice per task transition. The field is kept
+	// so existing config.yaml files continue to validate; the value is
+	// ignored by clearAndConfirm.
 	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"`
 
 	// Shell readiness timeout for formation startup (default 10s)

@@ -84,12 +84,12 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 			continue
 		}
 
-		// F-031: ensure the .bak belongs to the same commandID as the file
-		// being recovered. DeleteState now removes the sibling .bak (F-030),
-		// but on older daemons (or after manual intervention) a stale .bak
-		// from a prior generation could still be present. Restoring it would
-		// resurrect a logically dead state and combine with the ORC-3 epoch
-		// floor clamp below to re-inject a stale lease_epoch.
+		// Ensure the .bak belongs to the same commandID as the file being
+		// recovered. DeleteState removes the sibling .bak, but on older
+		// daemons (or after manual intervention) a stale .bak from a
+		// prior generation could still be present. Restoring it would
+		// resurrect a logically dead state and combine with the ORC-3
+		// epoch floor clamp below to re-inject a stale lease_epoch.
 		expectedCommandID := strings.TrimSuffix(name, ".yaml")
 		if bakCommandID, err := extractCommandID(bakContent); err == nil && bakCommandID != "" && bakCommandID != expectedCommandID {
 			logger.logf(LogLevelWarn,

@@ -287,25 +287,16 @@ func TestApplyTaskDispatchResult_Success(t *testing.T) {
 	}
 }
 
-// TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning is
-// the regression guard for the 2026-04-27 single-worker E2E run. After a
-// long task1 (~70s) completed, task2 dispatch raised
-// ErrSubmitConfirmUncertain because the deliverer's 6-second probe
-// exhausted without seeing a Claude UI marker — even though the worker had
-// already received the prompt and was actively writing the task's expected
-// output to its worktree. The previous code released the lease on every
-// non-retryable failure, which let the next scan re-dispatch the same task
-// (epoch 2, then epoch 3) and corrupted the run: the worker's eventual
-// result_write hit FENCING_REJECT because the queue entry had bounced back
-// to "pending" during a lease_release window. The fix treats
-// ErrSubmitConfirmUncertain as an "assumed delivered" outcome on the task
-// path: lease retained, task remains in_progress, lease epoch unchanged,
-// markTaskRunning advances the extended state machine, and
+// TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning
+// asserts that ErrSubmitConfirmUncertain is treated as "assumed delivered"
+// on the task path: lease retained, task remains in_progress, lease epoch
+// unchanged, markTaskRunning advances the extended state machine, and
 // TasksDispatchedUncertain (rather than TasksDispatched or LeaseReleases)
 // is incremented so operators can monitor probe false-negative rates
-// separately. If the worker really didn't receive (rare), the dispatch
-// lease TTL is the recovery boundary — hasExpiredLeases picks up
-// in_progress tasks past their TTL via the standard expired-lease path.
+// separately. Releasing the lease in this state would let the next scan
+// re-dispatch the same task and corrupt the run with a FENCING_REJECT on
+// the worker's eventual result_write. The dispatch lease TTL is the
+// recovery boundary if the worker really didn't receive.
 func TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
@@ -381,9 +372,7 @@ func TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning(t *
 	}
 }
 
-// TestApplyTaskDispatchResult_PublishPending_PreservesRetryBudget was
-// removed in the 2026-05-01 dispatch-loop fix. The publish guard it
-// covered (ErrRunOnMainBeforePublish) was retired because the gate
+// The publish guard ErrRunOnMainBeforePublish was retired because it
 // produced a self-deadlocking dispatch loop. See
 // internal/daemon/dispatch/validate_run_on_main.go for the rationale.
 

@@ -10,7 +10,7 @@ import (
 )
 
 // fencingErrorEnvelope is the single-line JSON shape written to stderr for
-// fencing-related daemon rejects. F-019 step 2.
+// fencing-related daemon rejects.
 //
 // The discriminator key is `maestro_error`; its value is the UDS error code
 // (e.g. "FENCING_REJECT_EPOCH"). Worker shell wrappers can identify the
@@ -23,14 +23,13 @@ type fencingErrorEnvelope struct {
 }
 
 // classifyFencingExitCode maps a UDS error response to the structured exit
-// code introduced by F-019. Returns 0 when the response does not represent
-// a fencing reject the CLI should surface with a typed exit code; the
-// caller falls back to ExitCodeRetryable / 1 in that case.
+// code. Returns 0 when the response does not represent a fencing reject
+// the CLI should surface with a typed exit code; the caller falls back to
+// ExitCodeRetryable / 1 in that case.
 //
-// The dispatch is intentionally driven by the structured Details.Kind first
-// (set by the daemon since F-019 step 1) so legacy / unparseable details
-// fall through gracefully to UDS error code matching, which preserves the
-// pre-F-019 behaviour for older daemons.
+// The dispatch is intentionally driven by the structured Details.Kind
+// first so legacy / unparseable details fall through gracefully to UDS
+// error code matching for older daemons.
 func classifyFencingExitCode(resp *uds.Response) int {
 	if resp == nil || resp.Error == nil {
 		return 0
@@ -79,8 +78,8 @@ func decodeFencingDetails(resp *uds.Response) (uds.FencingDetails, bool) {
 // emitFencingStderrEnvelope writes a single JSON line to stderr (or the
 // supplied writer in tests) with the structured payload. Returns true when
 // it actually wrote a line so the caller can decide whether the legacy
-// Message-style line is still useful (we always emit both for a transition
-// window — see codex consultation in F-019 step 1).
+// Message-style line is still useful (both are emitted during a
+// transition window).
 func emitFencingStderrEnvelope(resp *uds.Response, w io.Writer) bool {
 	d, ok := decodeFencingDetails(resp)
 	if !ok {

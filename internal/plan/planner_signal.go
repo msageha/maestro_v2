@@ -21,9 +21,9 @@ func plannerSignalQueuePath(maestroDir string) string {
 
 // emitPausedForReplanSignal appends a paused_for_replan PlannerSignal to the
 // shared signal queue. Used as a recovery escape hatch when phase-fill
-// rollback itself fails (F-005): the on-disk queue/state is now ambiguous, so
-// we surface a structured signal to the planner instead of letting the
-// command silently rot.
+// rollback itself fails: the on-disk queue/state is now ambiguous, so we
+// surface a structured signal to the planner instead of letting the command
+// silently rot.
 //
 // Locking:
 //   - Callers MUST NOT hold the state lock; this helper acquires

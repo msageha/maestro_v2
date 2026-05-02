@@ -579,16 +579,11 @@ func TestRunPlanComplete_SummaryTooLong(t *testing.T) {
 	}
 }
 
-// TestRunPlanComplete_SummaryFile pins the --summary-file flag added in
-// 2026-04-28. The Planner agent reaching plan_complete with a long
-// human-readable summary used to fail with an "unknown flag" error because
-// only the inline --summary form was accepted; the agent then either
-// truncated the message or pasted multi-kilobyte text directly onto the CLI
-// argv (which is unreliable across tmux paste-buffer + Enter). The flag now
-// mirrors the (--content | --content-file) shape from plan add-task. This
-// test validates: file content is loaded, --summary and --summary-file are
-// mutually exclusive, and a missing file produces a clear error rather than
-// silently sending an empty summary to the daemon.
+// TestRunPlanComplete_SummaryFile pins the --summary-file flag, mirroring the
+// (--content | --content-file) shape from plan add-task. It validates: file
+// content is loaded, --summary and --summary-file are mutually exclusive, and
+// a missing file produces a clear error rather than silently sending an empty
+// summary to the daemon.
 func TestRunPlanComplete_SummaryFile(t *testing.T) {
 	t.Run("loads_summary_from_file", func(t *testing.T) {
 		dir := t.TempDir()
@@ -645,13 +640,9 @@ func TestRunPlanComplete_SummaryFile(t *testing.T) {
 		}
 	})
 
-	// 2026-04-28 E2E follow-up: Planner agents pipe long summaries on
-	// stdin via `maestro plan complete --summary-file -`. The dash form
-	// silently fell through to os.ReadFile("-"), which surfaced as
-	// "open -: no such file or directory" and forced a temp-file
-	// fallback. Mirroring `plan submit --tasks-file -`, "-" and
-	// "/dev/stdin" now consume os.Stdin directly so the agent's primary
-	// path succeeds without a workaround.
+	// "-" and "/dev/stdin" must consume os.Stdin directly so Planner agents
+	// piping long summaries via `--summary-file -` succeed without a
+	// temp-file fallback.
 	t.Run("dash_reads_stdin", func(t *testing.T) {
 		withStdin(t, "piped\nsummary\n", func() {
 			var summary string
@@ -864,11 +855,8 @@ func TestResolveContentFile_RejectsMixedSources(t *testing.T) {
 }
 
 // TestResolveAcceptanceCriteriaFile_ReadsFile pins the
-// --acceptance-criteria-file flag added 2026-04-28 retest2 follow-up.
-// The Planner agent attempted this flag (assuming symmetry with
-// --content-file), the call failed with "unknown flag", and the agent
-// then fell back to argv quoting which hit a shell quote error on the
-// multi-line value. Adding the file form removes both failure modes.
+// --acceptance-criteria-file flag, which mirrors --content-file so Planner
+// agents do not have to argv-quote multi-line acceptance criteria values.
 func TestResolveAcceptanceCriteriaFile_ReadsFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ac.txt")

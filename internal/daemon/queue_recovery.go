@@ -12,17 +12,17 @@ import (
 // attempts to restore corrupted files from their sibling .bak. Recovery
 // failures are logged as warnings; daemon startup is never aborted.
 //
-// F-034: prior to this routine, a queue file truncated by a SIGKILL or
-// out-of-disk situation would silently start the daemon with an empty queue,
-// erasing the in-flight `lease_epoch` history of every task it referenced.
-// recoverQueueFiles parallels recoverStateFiles so the same .bak rotation
-// produced by yaml.AtomicWriteRaw can be used to restore the prior payload.
+// A queue file truncated by SIGKILL or out-of-disk would otherwise silently
+// start the daemon with an empty queue, erasing the in-flight `lease_epoch`
+// history of every task it referenced. recoverQueueFiles parallels
+// recoverStateFiles so the same .bak rotation produced by
+// yaml.AtomicWriteRaw can be used to restore the prior payload.
 func (d *Daemon) recoverQueueFiles() {
 	recoverQueueDir(queueDirPath(d.maestroDir), daemonStateLogger{d: d})
 }
 
 // recoverQueueDir is the queue counterpart of recoverStateDir. The
-// commandID-integrity guard (F-031) does not apply because queue files are
+// commandID-integrity guard does not apply here because queue files are
 // keyed by worker / endpoint name (planner.yaml, orchestrator.yaml,
 // planner_signals.yaml, worker{N}.yaml) and aggregate many command-scoped
 // entries; instead the routine relies on the ORC-3 epoch floor clamp to

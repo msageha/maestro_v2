@@ -1029,15 +1029,12 @@ func TestComplete_WorktreeEnabled_PartialMerge_Deferred(t *testing.T) {
 }
 
 // TestComplete_PhaseActiveAllTasksTerminal_Deferred verifies the
-// Planner-side fix for the 2026-04-29 race window. When the daemon's
-// queue_scan_phase_a defers a phase's Active → Completed transition on
-// the merge_recorded gate, the Planner observing all tasks terminal
-// will call plan complete before phase.Status flips. Previously this
-// returned a non-retryable validation error and the Planner re-issued
-// after a long delay (~30s+). With the fix, Complete() returns
-// deferred_publish and writes a deferred_complete intent so the
-// daemon's deferredPlanCompleter (Phase C, post-publish) finalises
-// the plan automatically.
+// Planner-side fix for the race where the daemon's queue_scan_phase_a
+// defers a phase's Active → Completed transition on the merge_recorded
+// gate while the Planner observes all tasks terminal and calls plan
+// complete. Complete() returns deferred_publish and writes a
+// deferred_complete intent so the daemon's deferredPlanCompleter
+// (Phase C, post-publish) finalises the plan automatically.
 func TestComplete_PhaseActiveAllTasksTerminal_Deferred(t *testing.T) {
 	commandID := "cmd_0000000060_aabbccdd"
 	taskID := "task_0000000060_11111111"

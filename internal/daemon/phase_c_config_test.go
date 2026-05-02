@@ -11,10 +11,8 @@ import (
 )
 
 // makeMaestroDir builds a fake .maestro directory under a fresh temp
-// project root. The 2026-04-30 redesign removed language detection, so
-// the marker-file (go.mod / package.json / etc.) plumbing previous
-// fixtures used is no longer relevant — every test now exercises the
-// language-agnostic baseline.
+// project root. Language detection is intentionally absent — every test
+// exercises the language-agnostic baseline.
 func makeMaestroDir(t *testing.T) string {
 	t.Helper()
 	maestroDir := filepath.Join(t.TempDir(), ".maestro")

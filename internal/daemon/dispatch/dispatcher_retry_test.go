@@ -134,7 +134,7 @@ func (f *fakeAliveChecker) IsDispatchActive(_ string, _ string, _ int) bool {
 }
 
 // TestDispatchTask_AbortsRetryWhenAliveCheckerReportsTerminal pins the
-// Issue B fix: once a worker completes (or its lease epoch is bumped) the
+// invariant: once a worker completes (or its lease epoch is bumped) the
 // dispatcher's inline retry loop must short-circuit on the next iteration
 // instead of pumping more paste-Enter waves at a pane that already has
 // the next task / has gone idle. Without this guard the operator-visible

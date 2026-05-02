@@ -36,7 +36,7 @@ func (r *refreshTrackingResolver) RefreshWorkerWorktreeToIntegrationHead(string,
 	return nil
 }
 
-// TestResolveTaskWorkingDir_SkipsRefreshForRepairTask pins the 2026-04-29 fix:
+// TestResolveTaskWorkingDir_SkipsRefreshForRepairTask pins the invariant:
 // when a verify_repair (or planner-side retry) task is dispatched, the worker
 // worktree still carries the original task's uncommitted edits because Phase B
 // auto-commit only runs after verify succeeds. Calling

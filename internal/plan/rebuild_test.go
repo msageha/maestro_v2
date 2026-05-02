@@ -374,13 +374,11 @@ func TestRebuild_PrunesStaleAppliedResultIDs(t *testing.T) {
 	}
 }
 
-// TestRebuild_FailsPhantomPlannedTasksWithoutQueueEntry pins the
-// 2026-04-29 e2e regression: a retry/repair task registered in
-// state.TaskStates as `planned` but never enqueued to a worker queue
-// would block phase termination forever, and `plan rebuild` reported
-// no-op success without surfacing the inconsistency. Rebuild must
-// detect such phantoms (planned in state, absent from every worker
-// queue) and force them to failed so the phase can advance.
+// TestRebuild_FailsPhantomPlannedTasksWithoutQueueEntry verifies that
+// Rebuild detects phantom tasks (planned in state, absent from every worker
+// queue) and forces them to failed so the phase can advance. Without this,
+// such a task blocks phase termination forever and `plan rebuild` reports
+// no-op success without surfacing the inconsistency.
 func TestRebuild_FailsPhantomPlannedTasksWithoutQueueEntry(t *testing.T) {
 	dir, lm := setupRebuildDir(t)
 	if err := os.MkdirAll(filepath.Join(dir, "queue"), 0o755); err != nil {

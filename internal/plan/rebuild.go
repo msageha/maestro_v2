@@ -140,14 +140,14 @@ func Rebuild(opts RebuildOptions) error {
 		state.AppliedResultIDs[taskID] = lr.resultID
 	}
 
-	// Phantom-task pass (2026-04-29 e2e regression): a retry/repair task can
-	// land in TaskStates as `planned` while the corresponding queue write
-	// silently failed (or was rolled back without the RetryEnqueueFailed
-	// bookkeeping). Without intervention the entry stays `planned`
-	// indefinitely, blocking phase termination and leaving `plan rebuild`
-	// reporting "no-op success" while the command is actually wedged.
-	// Detect such entries by cross-referencing every worker queue file and
-	// flip them to failed so the next scan can advance the phase.
+	// Phantom-task pass: a retry/repair task can land in TaskStates as
+	// `planned` while the corresponding queue write silently failed (or
+	// was rolled back without the RetryEnqueueFailed bookkeeping). Without
+	// intervention the entry stays `planned` indefinitely, blocking phase
+	// termination and leaving `plan rebuild` reporting "no-op success"
+	// while the command is actually wedged. Detect such entries by
+	// cross-referencing every worker queue file and flip them to failed
+	// so the next scan can advance the phase.
 	//
 	// Conservative scope: we only act on `planned` status because that is
 	// the deterministic post-RegisterRetryTaskInState state. Any other

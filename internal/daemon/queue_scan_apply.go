@@ -133,35 +133,24 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							task.ID, task.Status, err)
 					}
 
-					// 2026-05-01: ErrRunOnMainBeforePublish was retired together
-					// with the dispatcher-side guard because the gate produced
-					// a self-deadlocking dispatch loop (publish-waits-for-task
-					// + task-waits-for-publish). The branch that handled it
-					// here is intentionally absent — run_on_main tasks now
-					// dispatch normally and the worker is responsible for
-					// refreshing main if needed. See dispatch/dispatcher.go
-					// for the full rationale.
-
 					// ErrSubmitConfirmUncertain: the deliverer's submit-probe
-					// budget exhausted without seeing a Claude UI marker. In the
-					// 2026-04-27 single-worker E2E run the worker had ALREADY
-					// received the task prompt and was actively writing the
-					// task's expected output to the worktree by the time this
-					// failure surfaced — the probe was over-cautious, not the
-					// runtime. Releasing the lease in that state caused the next
-					// scan to re-dispatch the same task (epoch 2, then epoch 3),
-					// and the worker's eventual result_write hit FENCING_REJECT
-					// because the queue entry had bounced back to "pending"
-					// during the lease_release window. Treat this case
-					// symmetrically to dispatch success: keep the lease, mark the
-					// task running, count it as an "assumed" dispatch via
+					// budget exhausted without seeing a Claude UI marker. In
+					// practice the worker has typically already received the
+					// task prompt and is actively writing output by the time
+					// this failure surfaces — the probe is over-cautious, not
+					// the runtime. Releasing the lease in that state would
+					// cause the next scan to re-dispatch the same task and the
+					// worker's eventual result_write would hit FENCING_REJECT
+					// because the queue entry bounced back to "pending" during
+					// the lease_release window. Treat this symmetrically to
+					// dispatch success: keep the lease, mark the task running,
+					// count it as an "assumed" dispatch via
 					// TasksDispatchedUncertain so operators can monitor probe
 					// false-negative rates separately from confirmed dispatches.
 					// If the worker truly didn't receive (rare), the lease will
-					// expire after the dispatch lease TTL (5 min default) and
-					// hasExpiredLeases picks it up via the standard expired-
-					// in_progress recovery path — same recovery the daemon
-					// already runs for crashed workers.
+					// expire after the dispatch lease TTL and hasExpiredLeases
+					// picks it up via the standard expired-in_progress recovery
+					// path.
 					if errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain) {
 						qh.log(LogLevelWarn,
 							"dispatch_uncertain_assume_running type=task id=%s command=%s lease_epoch=%d error=%v "+
@@ -332,17 +321,13 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			markDirty:    func() { taskDirty[bc.Item.QueueFile] = true },
 		})
 
-		// Hang-release cooldown (2026-05-01 fix for the pane-idle dispatch
-		// loop): the busy-check path used to flip the task back to
-		// StatusPending with no NotBefore guard, so the very next scan would
-		// re-acquire the lease and re-dispatch against the same dead pane.
-		// The result was a tight idle→release→re-dispatch→idle loop that
-		// burned the retry budget invisibly. Stamping NotBefore enforces a
-		// minimum quiet period before another scan can re-acquire, and bumps
-		// Attempts so the dead-letter processor still terminates the entry
-		// after retry.task_dispatch_attempts cycles. The cooldown is a hard
-		// constant (5 minutes) — the autonomous-orchestration contract
-		// forbids per-language tuning, and 5 minutes is a deliberate
+		// Hang-release cooldown: when busy-check flips a task back to
+		// StatusPending, stamping NotBefore enforces a minimum quiet period
+		// before another scan can re-acquire, breaking the tight idle→
+		// release→re-dispatch→idle loop that would otherwise burn the
+		// retry budget invisibly. Attempts is bumped so the dead-letter
+		// processor still terminates the entry after
+		// retry.task_dispatch_attempts cycles. 5 minutes is a deliberate
 		// compromise between "give a slow Worker a chance to recover" and
 		// "do not let a hung worker freeze the queue indefinitely".
 		if statusBefore == model.StatusInProgress && task.Status == model.StatusPending && !bc.Busy && !bc.Undecided {
@@ -429,22 +414,14 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 
 		// Submit confirmation uncertain: tmux submitted the message but the
 		// planner pane's read-back did not confirm landing within the
-		// observation window. Historically this dead-lettered immediately
-		// to avoid double-submission, but the 2026-05-01 e2e captured
-		// false-positive deadletter records (paused_for_replan signals
-		// that the Planner clearly *did* consume) — the conservative
-		// policy was throwing away healthy phase-progression signals and
-		// metrics.signal_dead_letters drifted from real failures.
-		//
-		// Updated policy: allow one bounded retry. If the message actually
-		// landed the first time, the Planner's reaction will surface in
-		// the next scan and the second delivery turns into a duplicate the
-		// Planner already absorbed. If it did not land, the retry has the
-		// chance to deliver. Only after the *second* uncertain result do
-		// we dead-letter — the same operator-attention signal as before,
-		// but without the false positives. Two attempts is the smallest
-		// bound that still discriminates "tmux/pane glitch" (resolves
-		// next tick) from "structural breakage" (every tick suspect).
+		// observation window. Allow one bounded retry: if the message
+		// actually landed the first time, the Planner's reaction will
+		// surface in the next scan and the second delivery turns into a
+		// duplicate the Planner already absorbed. If it did not land, the
+		// retry has the chance to deliver. Only after the *second*
+		// uncertain result do we dead-letter — two attempts is the smallest
+		// bound that still discriminates "tmux/pane glitch" (resolves next
+		// tick) from "structural breakage" (every tick suspect).
 		if errors.Is(dlErr, agent.ErrSubmitConfirmUncertain) {
 			if sig.Attempts < 2 {
 				nextAttempt := qh.computeSignalBackoff(sig.Attempts)

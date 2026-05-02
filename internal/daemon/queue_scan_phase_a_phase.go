@@ -216,16 +216,15 @@ func (qh *QueueHandler) isPhaseMergeRecorded(commandID, phaseID string) bool {
 // stepAwaitingFillWatchdog — Step 0.7.5: re-prompt a Planner that has
 // stopped making progress on an awaiting_fill phase.
 //
-// Motivation (2026-04-30 e2e regression): Phase transitions to
-// awaiting_fill emit a one-shot `awaiting_fill` planner signal in
-// stepPhaseTransitions. Phase B delivers it to the Planner pane via tmux
-// and then removes it from the signal queue. If the Planner LLM stops
-// making progress (the user observed a 6+ minute "Thinking" stall after
-// signal delivery, with `task_ids` still empty), there is no further
-// re-prompt until R6 fires the hard `fill_deadline_at` timeout — which
-// defaults to 3 hours. The watchdog closes that gap by detecting a
-// per-phase elapsed window since `awaiting_fill_since` and re-emitting
-// a different-Kind signal so the Planner sees a fresh prompt.
+// Phase transitions to awaiting_fill emit a one-shot `awaiting_fill`
+// planner signal in stepPhaseTransitions. Phase B delivers it to the
+// Planner pane via tmux and then removes it from the signal queue. If
+// the Planner LLM stops making progress (e.g. multi-minute "Thinking"
+// stall with empty `task_ids`), there is no further re-prompt until R6
+// fires the hard `fill_deadline_at` timeout — which defaults to 3 hours.
+// The watchdog closes that gap by detecting a per-phase elapsed window
+// since `awaiting_fill_since` and re-emitting a different-Kind signal so
+// the Planner sees a fresh prompt.
 //
 // The watchdog fires at most once per awaiting_fill window, gated by
 // Phase.AwaitingFillStallNotifiedAt. On the first observed elapsed

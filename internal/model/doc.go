@@ -1,7 +1,7 @@
 // Package model defines the data structures for Maestro's configuration,
 // state, and queue entries.
 //
-// # Naming convention (F-049)
+// # Naming convention
 //
 // The codebase uses three closely-related but distinct nouns. Reviewers and
 // new contributors routinely conflate them, so the boundaries are pinned

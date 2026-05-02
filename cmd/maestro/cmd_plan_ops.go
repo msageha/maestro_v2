@@ -90,18 +90,14 @@ func (a *cliApp) runPlanRebuild(args []string) error {
 // runPlanUnquarantine clears quarantine state on a command's integration
 // branch so the next queue scan can re-enqueue merge attempts.
 //
-// F-017 / F-020 design decision (intentionally NOT exposed to Orchestrator
-// / Planner agents):
+// Design decision (intentionally NOT exposed to Orchestrator / Planner
+// agents):
 //
 // Quarantine is the daemon's last-resort backstop for "3+ consecutive merge
 // failures" or "publish_failed past the retry budget". Reaching quarantine
-// means the automated retry loop has converged on a failure mode the
-// agents themselves did not resolve, so handing the unquarantine button
-// back to those same agents would defeat the safety semantics. The reviewer
-// suggested either (a) opening unquarantine to Planner or (b) adding a
-// high-level Orchestrator wrapper; both options reintroduce the
-// "self-healing loop on the very surface that already failed" failure mode
-// that the operator-only gate exists to prevent.
+// means the automated retry loop has converged on a failure mode the agents
+// themselves did not resolve, so handing the unquarantine button back to
+// those same agents would defeat the safety semantics.
 //
 // What IS available to the agents:
 //   - `maestro plan resume-merge`   (Planner / operator) — replays merge
@@ -247,20 +243,12 @@ func (a *cliApp) runPlanRetryPublish(args []string) error {
 // commit failures** (where the worker's worktree could not be committed
 // during integration), NOT for in-phase merge_conflict signals.
 //
-// 2026-04-28 E2E follow-up: an operator-style invocation by the Planner on a
-// regular merge_conflict was rejected with
-//
-//	plan_resolve_conflict error=integration is already resolved:
-//	worker worker2 is not in commit_failed_workers ...
-//
-// because phase merge_conflicts are surfaced via the merge_conflict signal
-// (Planner → `plan add-task --worker-id <worker>` for the resolution task,
-// then the daemon's AutoRecoverAfterResolution auto-fires resume_merge).
-// This command's job is the narrower "the worker has been verified back to
-// a publishable state, take it off the commit-failed gating list so
-// publish-to-base can proceed" — the wording in the help / docs is now
-// explicit about that scope so future Planner / operator runs do not pick
-// the wrong recovery command for a normal merge conflict.
+// Phase merge_conflicts are surfaced via the merge_conflict signal (Planner
+// uses `plan add-task --worker-id <worker>` for the resolution task; the
+// daemon's AutoRecoverAfterResolution auto-fires resume_merge). This
+// command's narrower job is "the worker has been verified back to a
+// publishable state, take it off the commit-failed gating list so
+// publish-to-base can proceed" — do not use it for in-phase merge_conflict.
 //
 // Usage:
 //

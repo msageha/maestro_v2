@@ -652,13 +652,11 @@ func TestResultWrite_FilesChangedOutsideExpectedPathsRejected(t *testing.T) {
 	}
 }
 
-// TestResultWrite_RunOnMainStripsFilesChanged covers the 2026-04-29
-// regression where a Worker LLM running a read-only run_on_main / verify
-// task self-reported `--files-changed` populated with files it had only
-// inspected (not modified). The daemon must strip this field for tasks
-// flagged RunOnMain because the dispatch contract guarantees the task
-// runs read-only against the merged main branch — any non-empty
-// files_changed there is necessarily a Worker reporting bug.
+// TestResultWrite_RunOnMainStripsFilesChanged asserts that the daemon
+// strips a self-reported `--files-changed` for tasks flagged RunOnMain.
+// The dispatch contract guarantees the task runs read-only against the
+// merged main branch, so any non-empty files_changed is necessarily a
+// Worker reporting bug.
 func TestResultWrite_RunOnMainStripsFilesChanged(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
@@ -724,12 +722,11 @@ func TestResultWrite_RunOnMainStripsFilesChanged(t *testing.T) {
 	}
 }
 
-// TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation pins the
-// 2026-04-29 review fix: the run_on_main strip-and-warn path must run
-// BEFORE validateFilesChangedWithinExpectedPaths so that read-only verify
+// TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation asserts
+// that the run_on_main strip-and-warn path runs BEFORE
+// validateFilesChangedWithinExpectedPaths so that read-only verify
 // tasks declaring narrow expected_paths don't get rejected on a Worker
-// reporting bug. The original ordering had validation first, defeating
-// the strip's "instead of rejecting" comment.
+// reporting bug.
 //
 // Setup: RunOnMain task with expected_paths restricted to a docs/
 // subtree, but the Worker incorrectly reports files_changed=[feature.go]
@@ -1884,13 +1881,12 @@ func TestComputeWorkerExpectedPathsForVerify_UnionsCompletedTasks(t *testing.T) 
 	}
 }
 
-// TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase pins the
-// 2026-04-29 review fix: when the source task lives in a phase, the verify
-// allowed-path surface must only union with same-phase siblings. Earlier-
-// phase tasks have already been auto-committed and merged at their phase
-// boundary, so admitting their ExpectedPaths would falsely widen the
-// surface for the current phase and let the verify runner miss
-// out-of-scope writes.
+// TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase asserts
+// that when the source task lives in a phase, the verify allowed-path
+// surface only unions with same-phase siblings. Earlier-phase tasks
+// have already been auto-committed and merged at their phase boundary,
+// so admitting their ExpectedPaths would falsely widen the surface for
+// the current phase.
 func TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
@@ -1994,14 +1990,11 @@ func TestComputeWorkerExpectedPathsForVerify_RestrictsToSamePhase(t *testing.T) 
 }
 
 // TestReserveOrDeferHeavyVerify covers the phase-aware verify gating that
-// defers `go test ./...` while the phase still has non-terminal sibling
-// tasks. Originally it tested shouldDeferHeavyVerifyForIntermediateTask,
-// but the 2026-04-29 review surfaced a race: with `verify_pending` not
-// counted as terminal, every sibling at verify_pending saw the others as
-// "still running" and all deferred — so no one ever ran heavy verify and
-// the §S1-1 Strong Signal silently disappeared on parallel-completing
-// phases. The function was rewritten as reserveOrDeferHeavyVerify, a
-// state-lock-protected CAS that elects exactly one owner per phase.
+// defers heavy verify while the phase still has non-terminal sibling
+// tasks. reserveOrDeferHeavyVerify is a state-lock-protected CAS that
+// elects exactly one owner per phase, so parallel-completing phases
+// don't end up with every sibling deferring (which would silently
+// disable the §S1-1 Strong Signal).
 func TestReserveOrDeferHeavyVerify(t *testing.T) {
 	commandID := "cmd_0000000004_phasegate"
 	phaseID := "phase_setup"
@@ -2080,11 +2073,11 @@ func TestReserveOrDeferHeavyVerify(t *testing.T) {
 			wantDefer:        false,
 			wantOwnerForTest: taskTest,
 		},
-		// 2026-04-29 race coverage: every sibling sits at verify_pending
-		// simultaneously. Without the lock-protected reservation each one
-		// would see the others as non-terminal and defer; with the fix the
-		// first caller wins ownership and runs heavy, sibling callers
-		// observe the reservation and defer.
+		// Race coverage: every sibling sits at verify_pending
+		// simultaneously. Without the lock-protected reservation each
+		// one would see the others as non-terminal and defer; with the
+		// reservation the first caller wins ownership and runs heavy,
+		// sibling callers observe the reservation and defer.
 		{
 			name: "race_first_caller_wins_reservation",
 			taskStates: map[string]model.Status{
@@ -2125,13 +2118,13 @@ func TestReserveOrDeferHeavyVerify(t *testing.T) {
 			wantDefer:        false,
 			wantOwnerForTest: taskBeta, // re-claimed by surviving owner
 		},
-		// 2026-04-29 review pin: retry handler keeps the predecessor in
-		// phase.TaskIDs (only appends the retry), so ownerInPhase(owner)
-		// stays true after a verify-failure retry. The reservation must
-		// also check the owner's STATUS — only verify_pending or
-		// completed should hold the reservation. Any other status means
-		// heavy verify did not pass for the phase and the retry should
-		// be allowed to claim ownership.
+		// Retry handler keeps the predecessor in phase.TaskIDs (only
+		// appends the retry), so ownerInPhase(owner) stays true after a
+		// verify-failure retry. The reservation must also check the
+		// owner's STATUS — only verify_pending or completed should
+		// hold the reservation. Any other status means heavy verify did
+		// not pass for the phase and the retry should be allowed to
+		// claim ownership.
 		{
 			name: "owner_cancelled_by_retry_release_to_replacement",
 			taskStates: map[string]model.Status{
@@ -2233,10 +2226,10 @@ func TestReserveOrDeferHeavyVerify(t *testing.T) {
 // TestEmitVerifyOutcomeChangedPlannerSignal_QueuesSupplementarySignal asserts
 // the supplementary signal lands in the planner_signals queue with the
 // `verify_outcome_changed` kind and per-task PhaseID dedup scope. This signal
-// closes the 2026-04 Planner/daemon divergence where notifyPlannerOfWorkerResult
+// closes the Planner/daemon divergence where notifyPlannerOfWorkerResult
 // had already told Planner the task was completed, but verify subsequently
-// scheduled a retry — without this signal Planner kept progressing while the
-// publish gate stayed blocked.
+// scheduled a retry — without this signal Planner would keep progressing
+// while the publish gate stayed blocked.
 func TestEmitVerifyOutcomeChangedPlannerSignal_QueuesSupplementarySignal(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)

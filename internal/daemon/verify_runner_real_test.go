@@ -71,21 +71,19 @@ func (rr *recordingRunner) run(_ context.Context, _ string, cmd string) (string,
 	return out.output, out.exitCode, out.err
 }
 
-// TestRealVerifyRunner_FallbackUsesGitDiffCheck pins the language-agnostic
-// fallback added in the 2026-04-30 redesign. When verify.yaml is missing,
-// the runner executes the single generic check `git diff --check` for
-// every project regardless of which marker files happen to be present at
-// the project root. Language detection (DetectProjectLanguage) and the
-// Default*ForLanguage helpers were deleted because the assumption "this
-// is a software-engineering monorepo with one primary language" does not
-// hold for polyglot, research, or documentation projects.
+// TestRealVerifyRunner_FallbackUsesGitDiffCheck asserts the language-
+// agnostic fallback: when verify.yaml is missing, the runner executes
+// the single generic check `git diff --check` for every project
+// regardless of which marker files happen to be present at the project
+// root. Language detection is intentionally absent because polyglot,
+// research, and documentation projects do not match the assumption of
+// a single-language software-engineering monorepo.
 func TestRealVerifyRunner_FallbackUsesGitDiffCheck(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
-	// A go.mod sitting in the project root used to flip the fallback to
-	// the Go-specific (go vet / gosec / go bench) bundle. After the
-	// redesign the marker is irrelevant — the seeding here exists only to
-	// pin that no language-conditional behaviour remains.
+	// A go.mod sitting in the project root must NOT flip the fallback to
+	// any Go-specific bundle — this test pins that no language-
+	// conditional behaviour exists.
 	if err := os.WriteFile(filepath.Join(r.projectDir, "go.mod"), []byte("module test\n"), 0o600); err != nil {
 		t.Fatalf("seed go.mod: %v", err)
 	}
@@ -219,13 +217,12 @@ func TestRealVerifyRunner_CommandWithoutSnapshotIgnoresMutableGlobal(t *testing.
 	}
 }
 
-// TestRealVerifyRunner_MissingWorkdirFailsClosed pins the 2026-04-29
-// review fix: when the worker worktree has been cleaned up between
-// dispatch and verify (e.g. fast-track stall cleanup races a verify
-// already in flight), the runner must surface a hard failure rather
-// than letting the per-category advisory path classify the chdir
-// errors as passed_with_advisory_failures. Prior behaviour silently
-// marked tasks completed even though no verify command actually ran.
+// TestRealVerifyRunner_MissingWorkdirFailsClosed asserts that when the
+// worker worktree has been cleaned up between dispatch and verify
+// (e.g. fast-track stall cleanup races a verify already in flight),
+// the runner surfaces a hard failure rather than letting the per-
+// category advisory path classify the chdir errors as
+// passed_with_advisory_failures.
 func TestRealVerifyRunner_MissingWorkdirFailsClosed(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
@@ -455,19 +452,12 @@ func TestRealVerifyRunner_TimeoutReportsTimeoutReason(t *testing.T) {
 }
 
 // TestRealVerifyRunner_WorkdirDisappearsDuringRunFailsAsEnvironmental
-// pins the 2026-04-30 review correction: when worktree cleanup races a
-// still-running verify command and the subprocess fails on a missing
-// cwd (`getcwd: No such file or directory`), the runner must surface
-// the failure as Passed=false with a `verify_runner_workdir_inaccessible`
-// reason. The earlier behavior returned Passed=true under the assumption
-// that the publish gate had already moved past the point where verify
-// mattered, but the new state-side gate (collectWorktreePublishAndCleanup
-// + HasNonTerminalTaskState) blocks publish exactly while a task is at
-// verify_pending — so swallowing the failure here would mark the task
-// completed in state, bypass the gate, and let an unverified change
-// land on the base branch. Routing the disappearance through
-// repair_pending preserves the gate and keeps the audit log truthful:
-// verify did NOT pass, the runner just could not observe the outcome.
+// asserts that when worktree cleanup races a still-running verify
+// command and the subprocess fails on a missing cwd, the runner
+// surfaces Passed=false with a `verify_runner_workdir_inaccessible`
+// reason. Returning Passed=true would let an unverified change land on
+// the base branch (the state-side publish gate blocks while a task is
+// at verify_pending; swallowing the failure here would bypass it).
 func TestRealVerifyRunner_WorkdirDisappearsDuringRunFailsAsEnvironmental(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
@@ -577,13 +567,11 @@ func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 	}
 }
 
-// TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths pins the
-// 2026-04-30 e2e regression fix: changes outside expected_paths must be
-// advisory (logged, verify continues) rather than a hard failure. The
-// previous strict gate routinely false-failed legitimate fixes that
-// touched ancillary files (proxy/cmd/osv-ingest/main.go in the
-// reproduced case) and forced commands into permanent stuck states.
-// Commit-policy still enforces the boundary at integration time.
+// TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths asserts
+// that changes outside expected_paths are advisory (logged, verify
+// continues) rather than a hard failure. A strict gate would false-fail
+// legitimate fixes that touch ancillary files. Commit-policy still
+// enforces the boundary at integration time.
 func TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -624,15 +612,11 @@ func TestRealVerifyRunner_AdvisoryOnDirtyFilesOutsideExpectedPaths(t *testing.T)
 	}
 }
 
-// TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory pins the
-// 2026-04-29 fix: when a task creates a new directory containing a file,
-// `git status --porcelain` (default `-unormal`) collapses the directory to
-// a single entry like `notes/`, which then false-fails the expected_paths
-// matcher because `notes` does not match `notes/note_b.txt`. Without
-// `-uall`, every task that introduces a fresh directory hits a 100%
-// reproducible verify_expected_paths_violation. This test wires the
-// scenario end-to-end: a fresh `notes/note_b.txt` in a virgin git repo
-// must be recognised as inside expected_paths=["notes/note_b.txt"].
+// TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory asserts
+// that when a task creates a new directory containing a file,
+// `git status --porcelain -uall` enumerates the file individually so
+// the expected_paths matcher sees `notes/note_b.txt` rather than a
+// collapsed `notes/` entry that would false-fail.
 func TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -664,15 +648,12 @@ func TestRealVerifyRunner_AllowsUntrackedFileInsideNewDirectory(t *testing.T) {
 	}
 }
 
-// TestRealVerifyRunner_AllowsDependencyManifestChanges pins the 2026-04-29
-// dependency-manifest auto-allow rule. Routine package-manager operations
-// (npm install -D vitest, pip install ..., cargo add ...) update lockfiles
-// and source manifests as a side effect. Before this fix, every Node task
-// that pulled in a new dev dependency tripped expected_paths_violation
-// because the planner naturally declares only the source files it intends
-// the task to touch — not the lockfile that the package manager mutates
-// automatically. The auto-allow lets workers add legitimate dependencies
-// without forcing a planner repair cycle to widen expected_paths.
+// TestRealVerifyRunner_AllowsDependencyManifestChanges asserts the
+// dependency-manifest auto-allow rule. Routine package-manager
+// operations (npm install -D vitest, pip install ..., cargo add ...)
+// update lockfiles and source manifests as a side effect. The auto-
+// allow lets workers add legitimate dependencies without forcing a
+// planner repair cycle to widen expected_paths.
 func TestRealVerifyRunner_AllowsDependencyManifestChanges(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -909,14 +890,13 @@ func TestTailBytes_TrimsPartialUTF8Prefix(t *testing.T) {
 	_ = got
 }
 
-// TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails pins the
-// 2026-04-30 advisory contract: when expected_paths is supplied but
-// `git status` fails (e.g. running outside a git repository), the
-// runner must NOT fail verify — it logs an advisory and proceeds to
-// run the configured commands. expected_paths is only meaningful for
-// software engineering inside a git repo; orchestrating research /
-// documentation tasks outside git must still reach the verify
-// commands the operator listed in verify.yaml.
+// TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails asserts the
+// advisory contract: when expected_paths is supplied but `git status`
+// fails (e.g. running outside a git repository), the runner does NOT
+// fail verify — it logs an advisory and proceeds to run the configured
+// commands. expected_paths is only meaningful for software engineering
+// inside a git repo; research / documentation tasks outside git must
+// still reach the operator's verify.yaml commands.
 func TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails(t *testing.T) {
 	t.Parallel()
 	if _, err := exec.LookPath("git"); err != nil {
@@ -943,11 +923,8 @@ func TestRealVerifyRunner_AdvisoryWhenExpectedPathsCheckFails(t *testing.T) {
 	}
 }
 
-// 2026-04-30 redesign: the previous EnsembleVerifier perspective tests
-// (TestRealVerifyRunner_EnsembleVerifierAddsMissingPerspectiveCommands,
-// TestRealVerifyRunner_EnsembleAdvisoryFailureDoesNotFailRun,
-// TestRealVerifyRunner_EnsembleCriticalFailureFailsRun) were removed
-// alongside the perspective_weights / advisory-vs-critical wiring.
-// verify.yaml is now the single source of truth: every listed category
+// EnsembleVerifier perspective tests are absent because the
+// perspective_weights / advisory-vs-critical wiring was removed.
+// verify.yaml is the single source of truth: every listed category
 // runs at the critical weight, and non-listed categories do not run.
-// See buildVerifyCategories for the simplified merge.
+// See buildVerifyCategories for the merge.

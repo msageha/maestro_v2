@@ -58,12 +58,12 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 
 	if !resp.Success {
 		if resp.Error != nil {
-			// F-019 step 2: surface fencing rejects with structured exit
-			// codes (10/11/12). max_runtime_exceeded keeps the legacy
-			// silent-exit behaviour so existing Worker scripts that
-			// blanket-tolerate `$?==2` continue to terminate cleanly; we
-			// just map it to the more specific code 11 so callers that DO
-			// want to differentiate can.
+			// Surface fencing rejects with structured exit codes
+			// (10/11/12). max_runtime_exceeded keeps the legacy silent-exit
+			// behaviour so existing Worker scripts that blanket-tolerate
+			// `$?==2` continue to terminate cleanly; it just maps to the
+			// more specific code 11 so callers that DO want to differentiate
+			// can.
 			if exit := classifyFencingExitCode(resp); exit != 0 {
 				silent := exit == ExitCodeMaxRuntimeExceeded
 				return fencingCLIError(resp, silent, "maestro task heartbeat")

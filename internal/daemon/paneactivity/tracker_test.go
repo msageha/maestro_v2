@@ -121,14 +121,12 @@ func TestTracker_TailChangesAreActive(t *testing.T) {
 	}
 }
 
-// TestTracker_NumericTickerInTailIsIdle covers the 2026-05-01 user report:
-// `sh -c 'sleep 900'` ran in a worker pane while the surrounding LLM agent
-// UI kept ticking an elapsed-time counter. The tail hash differed every
-// scan and pinned the verdict to Active for 11 minutes, so the lease
-// extended forever instead of releasing on the busy-check fallback.
-// Numeric normalisation collapses the timer noise so a hung process is
-// detected as Idle while real output (filenames, log lines, test names)
-// still flips the verdict to Active.
+// TestTracker_NumericTickerInTailIsIdle: when a hung process is wrapped by
+// an LLM agent UI that ticks an elapsed-time counter, the tail hash differs
+// every scan and could pin the verdict to Active forever. Numeric
+// normalisation collapses timer noise so a hung process is detected as
+// Idle while real output (filenames, log lines, test names) still flips
+// the verdict to Active.
 func TestTracker_NumericTickerInTailIsIdle(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
@@ -161,13 +159,10 @@ func TestTracker_NumericTickerInTailIsIdle(t *testing.T) {
 	}
 }
 
-// TestTracker_SpinnerOnlyChangeIsIdle covers the 2026-05-02 user report:
-// `sh -c 'sleep 600'` continued to be classified Active because Claude UI
-// rotates a spinner glyph (✻ → ⠋ → ⠙ → ...) every animation frame in
-// addition to the numeric timer. Numeric normalisation alone left the
-// spinner difference, the tail hash differed every scan, and the verdict
-// pinned to Active for 11+ minutes. Now both numeric and spinner noise
-// are collapsed before hashing.
+// TestTracker_SpinnerOnlyChangeIsIdle: spinner glyph rotation
+// (✻ → ⠋ → ⠙ → ...) plus a ticking counter is pure UI animation, not
+// real progress. Both numeric and spinner noise must be collapsed
+// before hashing so the verdict resolves to Idle.
 func TestTracker_SpinnerOnlyChangeIsIdle(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
@@ -202,13 +197,11 @@ func TestTracker_SpinnerOnlyChangeIsIdle(t *testing.T) {
 	}
 }
 
-// TestTracker_TimerUnitFlipIsIdle covers the 2026-05-01 user report:
-// `sh -c 'sleep 600'` continued to be classified Active because the
-// elapsed-time counter rolled over from "45s" → "1m 5s" between scans.
-// Numeric normalisation alone treated "45" → "1" but the trailing unit
-// letters "s" → "m 5s" still differed and the tail hash flipped. The
-// unit-aware normalisation collapses the digit-and-unit pair so a unit
-// roll-over produces a stable hash.
+// TestTracker_TimerUnitFlipIsIdle: a timer counter rolling from "45s" to
+// "1m 5s" between scans must collapse to the same hash. Pure numeric
+// normalisation would leave the trailing unit letters "s" -> "m 5s"
+// differing; unit-aware normalisation collapses the digit-and-unit pair
+// so a unit roll-over produces a stable hash.
 func TestTracker_TimerUnitFlipIsIdle(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
@@ -262,12 +255,11 @@ func TestTracker_TokenCountFlipIsIdle(t *testing.T) {
 	}
 }
 
-// TestTracker_ActivityVerbAnimationIsIdle covers the 2026-05-01 user
-// reproduction: a hung worker pane whose Claude Code UI rotates the
-// activity verb between scans ("Thinking…" → "Pondering…" → "Crafting…")
-// produced a fresh tail hash on every observation and pinned the
-// verdict to Active. This regression had to be killed at the
-// normalisation layer because no busy_pattern could distinguish a real
+// TestTracker_ActivityVerbAnimationIsIdle: a hung worker pane whose
+// Claude Code UI rotates the activity verb between scans ("Thinking…" ->
+// "Pondering…" -> "Crafting…") would otherwise produce a fresh tail hash
+// every observation. The verb churn must be collapsed at the
+// normalisation layer; no busy_pattern alone can distinguish a real
 // agent doing real work (which also matches the verbs) from a stuck
 // one whose only motion is the cosmetic verb spinner.
 func TestTracker_ActivityVerbAnimationIsIdle(t *testing.T) {
@@ -394,11 +386,10 @@ func TestTracker_SetBusyPatternUpdatesPattern(t *testing.T) {
 }
 
 // TestTracker_ObserveVerdict_ReturnsUncertainOnFirstObservation pins the
-// 2026-04-29 lease-expiry regression: the legacy Observe()/IsActiveAfter()
-// returned `false` for a worker that had never been observed, which the
-// caller treated as "agent dead — release lease". ObserveVerdict must
-// distinguish that case (VerdictUncertain) from "baseline exists and
-// shows no change" (VerdictIdle) so the caller can grace-extend instead.
+// invariant: ObserveVerdict must distinguish "no baseline yet"
+// (VerdictUncertain) from "baseline exists and shows no change"
+// (VerdictIdle) so the caller can grace-extend instead of releasing on
+// the first observation.
 func TestTracker_ObserveVerdict_ReturnsUncertainOnFirstObservation(t *testing.T) {
 	tr := New(nil)
 	now := time.Now().UTC()
@@ -456,13 +447,11 @@ func TestTracker_ObserveVerdict_UncertainOnSameScanDuplicate(t *testing.T) {
 }
 
 // TestTracker_ObserveVerdict_ConsecutiveUncertainCapsAtIdle pins the
-// 2026-04-30 e2e regression cap: consecutive no-baseline VerdictUncertain
-// results for the same agent must downgrade to VerdictIdle once the
-// streak crosses MaxUncertainStreak. The previous behaviour grace-
-// extended the lease on every Uncertain, which let a stuck worker pane
-// (Claude API content-filter error → pane returned to prompt) keep its
-// lease forever because each lease-expiry observation produced Uncertain
-// and the busy-check fallback never ran.
+// streak cap: consecutive no-baseline VerdictUncertain results for the
+// same agent must downgrade to VerdictIdle once the streak crosses
+// MaxUncertainStreak. Without this cap a stuck pane whose snapshot
+// keeps getting cleared would be grace-extended forever and the
+// busy-check release path would never run.
 //
 // We force the no-baseline path on the second call by ForgetAgent-ing
 // between observations, simulating the production pattern where the
@@ -515,14 +504,14 @@ func TestTracker_ObserveVerdict_SameScanDuplicateNotStreaked(t *testing.T) {
 	}
 }
 
-// TestTracker_ObserveVerdict_BlockedPromptForcesIdle verifies the
-// 2026-04-30 e2e regression fix: when the captured pane content
-// contains a confirmation-prompt shape (the agent CLI is blocked
-// asking the operator to choose Yes/No), ObserveVerdict overrides to
-// VerdictIdle so the lease can drain and the busy-check release path
-// can pick up. Critical because the busy-pattern match would otherwise
-// pin the verdict to Active forever, leaving the worker stuck on the
-// prompt while the daemon perceives liveness from leftover scrollback.
+// TestTracker_ObserveVerdict_BlockedPromptForcesIdle: when the captured
+// pane content contains a confirmation-prompt shape (the agent CLI is
+// blocked asking the operator to choose Yes/No), ObserveVerdict
+// overrides to VerdictIdle so the lease can drain and the busy-check
+// release path can pick up. Critical because the busy-pattern match
+// would otherwise pin the verdict to Active forever, leaving the
+// worker stuck on the prompt while the daemon perceives liveness from
+// leftover scrollback.
 func TestTracker_ObserveVerdict_BlockedPromptForcesIdle(t *testing.T) {
 	tr := New(regexp.MustCompile(`Working|Thinking`))
 	t0 := time.Now().UTC()

@@ -212,17 +212,16 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 // can cause Phase B to see a phase as mergeable while the resolver still treats
 // it as active (or vice versa).
 //
-// Lineage-aware (Bug-D' follow-up): a task whose lineage successor has
-// already completed is treated as effectively completed even though the
-// raw status is Cancelled (superseded_by_*). This keeps the merge gate
-// consistent with checkActivePhaseCompletion's lineage view, which is the
-// only way to publish a phase whose verify-repair retry succeeded.
+// Lineage-aware: a task whose lineage successor has already completed is
+// treated as effectively completed even though the raw status is
+// Cancelled (superseded_by_*). This keeps the merge gate consistent with
+// checkActivePhaseCompletion's lineage view, which is the only way to
+// publish a phase whose verify-repair retry succeeded.
 //
-// Bug-J follow-up (2026-05-02): observes phase.TaskIDs (every task) when
-// available, falling back to RequiredTaskIDs for legacy callers/tests
-// that have not been updated. An all-optional phase otherwise had an
-// empty RequiredTaskIDs slice, so this helper returned false even when
-// every task finished — and the merge gate stayed shut indefinitely.
+// Observes phase.TaskIDs (every task) when available, falling back to
+// RequiredTaskIDs for legacy callers/tests. An all-optional phase
+// otherwise has an empty RequiredTaskIDs slice and would keep the merge
+// gate shut indefinitely.
 func phaseTasksAllCompleted(stateReader StateReader, commandID string, phase PhaseInfo) bool {
 	if stateReader == nil {
 		return false
@@ -462,16 +461,13 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 
 	// State-side gate: even when every queue task has reached a terminal
 	// status, the command-state TaskStates view can still hold non-terminal
-	// entries (verify_pending, repair_pending, paused_for_replan, or a freshly
-	// registered repair task at planned). The 2026-04-30 e2e regression
-	// observed published_to_base firing 0.7s after worker_committed while an
-	// async verify command was still mid-flight against the worker worktree —
-	// the verify failure was then masked by the worktree being torn down on
-	// the publish-driven cleanup pass. Refusing to publish until the state
-	// side has also drained means a verify failure has time to schedule its
-	// repair task (and eventually paused_for_replan) before main accepts the
-	// commit. Errors here fail closed (skip publish) to avoid premature
-	// publishing on transient state-read failures.
+	// entries (verify_pending, repair_pending, paused_for_replan, or a
+	// freshly registered repair task at planned). Without this gate, a
+	// verify command mid-flight against the worker worktree could be
+	// masked when the worktree is torn down on the publish-driven cleanup
+	// pass. Refusing to publish until the state side has also drained
+	// means a verify failure has time to schedule its repair task before
+	// main accepts the commit. Errors here fail closed (skip publish).
 	if hasNonTerminal, err := qh.dependencyResolver.GetStateReader().HasNonTerminalTaskState(commandID); err != nil {
 		if !errors.Is(err, ErrStateNotFound) {
 			qh.log(LogLevelWarn, "worktree_publish_state_check_failed command=%s error=%v", commandID, err)
@@ -647,24 +643,21 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 			})
 		}
 	case model.IntegrationStatusFailed:
-		// Bug-L fix (2026-05-02): an integration that has been marked
-		// Failed (typically by fast_track_cleanup's MarkIntegrationFailed)
-		// is a dead-end for the publish gate — there's no path forward
-		// other than synthesising a planner result so R3PlannerQueue can
-		// walk the queue command terminal and Orchestrator can be
-		// notified. Without this branch the command sat in_progress
-		// forever, emitting `worktree_publish_not_ready integration_status=failed`
-		// every scan and blocking Continuous Mode from advancing iteration.
+		// An integration marked Failed (typically by fast_track_cleanup's
+		// MarkIntegrationFailed) is a dead-end for the publish gate —
+		// there's no path forward other than synthesising a planner
+		// result so R3PlannerQueue can walk the queue command terminal
+		// and Orchestrator can be notified. Without this branch the
+		// command would sit in_progress forever and block Continuous
+		// Mode from advancing iteration.
 		//
-		// 2026-05-01 follow-up: if the failure marker landed while there
-		// are still unresolved commit_failed workers, defer the synthetic
-		// failure so the daemon's auto-commit retry path (see
-		// commit_failed_retry_succeeded in queue_scan_phase_a.go) has a
-		// chance to clear the failure on the next scan and reopen the
-		// publish gate. Without this gate, a transient .git/index.lock
-		// rendered the command terminal even though the next scan would
-		// have succeeded. CommitFailedWorkers is the durable signal —
-		// once cleared, the next scan re-evaluates this branch.
+		// If the failure marker landed while there are still unresolved
+		// commit_failed workers, defer the synthetic failure so the
+		// daemon's auto-commit retry path has a chance to clear the
+		// failure on the next scan and reopen the publish gate. Without
+		// this gate, a transient .git/index.lock would render the command
+		// terminal even though the next scan would have succeeded.
+		// CommitFailedWorkers is the durable signal.
 		if len(cmdState.CommitFailedWorkers) > 0 {
 			qh.log(LogLevelWarn,
 				"worktree_publish_integration_failed_commit_retry_pending command=%s workers=%v "+
@@ -718,16 +711,15 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 				commandID, cmdState.Integration.Status)
 			return publishes, cleanups
 		}
-		// 2026-05-02: defer no_op_terminal cleanup if any worker is still
-		// at WorktreeStatusActive — that worker has uncommitted output and
+		// Defer no_op_terminal cleanup if any worker is still at
+		// WorktreeStatusActive — that worker has uncommitted output and
 		// the implicit-phase incremental merge has not yet picked it up.
 		// Without this gate, a transient race between the final-task scan
 		// and the incremental-merge collector would tear down a worktree
 		// holding real work, causing main publish to silently lose the
-		// command's output. The implicit-phase merge runs on every scan;
-		// once the worker auto-commit succeeds, its status advances to
-		// committed/integrated and this branch falls through to the real
-		// no-op path.
+		// command's output. Once the worker auto-commit succeeds, its
+		// status advances to committed/integrated and this branch falls
+		// through to the real no-op path.
 		var pendingWorker string
 		for _, ws := range cmdState.Workers {
 			if ws.Status == model.WorktreeStatusActive {
@@ -956,12 +948,10 @@ func (qh *QueueHandler) checkCommandTasksTerminal(
 // at StatusCompleted across all worker queues. Used by the implicit-phase
 // merge collector so a long-running command whose first task has finished
 // can begin an incremental merge — without waiting for every task to
-// terminate. The 2026-05-02 e2e regression captured a case where a Planner
-// emitted dependent tasks across multiple workers without declaring phases:
-// worker1 completed task A, worker2 then needed A's output but observed an
-// empty integration branch (no auto-commit had run), and the dependency
-// chain failed. Incremental merge by completed task is the autonomous
-// recovery for that pattern.
+// terminate. This is the autonomous recovery for Planner patterns that
+// emit dependent tasks across multiple workers without declaring phases:
+// worker2 needs worker1's output, which would otherwise be invisible on
+// the integration branch until the whole command finishes.
 //
 // hasFailed mirrors checkCommandTasksTerminal: a failed task short-circuits
 // the merge collection so partial outputs are not pushed onto integration
@@ -991,15 +981,13 @@ func commandHasAnyCompletedTask(
 // collectImplicitWorktreeMerge aggregates worktree merge work for commands
 // that declare no phases.
 //
-// Behaviour (2026-05-02): incremental merge. The collector emits a merge
-// item as soon as at least one task has reached StatusCompleted, instead of
-// waiting for every task to terminate. The earlier "all tasks terminal"
-// gate broke a common Planner pattern — emitting dependent tasks across
-// multiple workers without declaring phases. With that gate, worker1's
-// completed output never reached the integration branch, and worker2's
-// dispatcher fast-forward to integration HEAD pulled an empty branch,
-// causing dependency-chain failures and a no_op_terminal cleanup at the
-// end even when real work had been produced.
+// Behaviour: incremental merge. The collector emits a merge item as soon
+// as at least one task has reached StatusCompleted, instead of waiting
+// for every task to terminate. Without this, dependent tasks across
+// multiple workers without declared phases would deadlock: worker1's
+// completed output would never reach the integration branch, and
+// worker2's dispatcher fast-forward to integration HEAD would pull an
+// empty branch.
 //
 // Idempotency under repeated scans: MergeToIntegration's worker iteration
 // already skips up-to-date worker branches and the auto-commit pass is a

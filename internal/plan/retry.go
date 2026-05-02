@@ -26,7 +26,7 @@ const stateSaveTimeout = 30 * time.Second
 // This prevents a hung filesystem from blocking the caller indefinitely
 // while holding locks.
 //
-// F-029: when ctx fires before saveFn returns, saveFn keeps running. AtomicWrite
+// When ctx fires before saveFn returns, saveFn keeps running. AtomicWrite
 // cannot be cancelled mid-rename, so any persistence side effect from a late
 // completion is still observable on disk. We can't prevent that here, but we
 // flip an atomic flag so the goroutine logs a `state_save_late_completion`
@@ -84,9 +84,8 @@ type logSuppressor struct {
 	burst  int
 	counts map[string]*suppressEntry
 	// nowFn lets tests inject a fake clock so window-expiry behaviour can be
-	// asserted without `time.Sleep` (F-060). Production paths use
-	// newLogSuppressor which leaves nowFn nil; allow() then defaults to
-	// time.Now.
+	// asserted without `time.Sleep`. Production paths use newLogSuppressor
+	// which leaves nowFn nil; allow() then defaults to time.Now.
 	nowFn func() time.Time
 }
 
@@ -486,26 +485,26 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	// Accepted retry-of statuses: failed, paused_for_replan, repair_pending,
 	// and a constrained subset of cancelled.
 	//
-	// repair_pending was added in the 2026-04-30 e2e regression: the
-	// daemon's auto-repair sequence can leave a task at repair_pending
-	// without successfully enqueuing the repair task (e.g. RetryTaskAtomically
-	// hit ErrPhaseMaxTasksExceeded, or the worker queue write raced with a
-	// scan). Planner-side add_retry_task is the operator-visible escape
-	// hatch for those cases — refusing it forced commands into permanent
-	// stuck states. The replaceTaskMembership / phase.TaskIDs append below
-	// supersede any daemon-side pending repair, so a double-retry is not
-	// possible: state transitions to the new retry's lifecycle.
+	// repair_pending: the daemon's auto-repair sequence can leave a task
+	// at repair_pending without successfully enqueuing the repair task
+	// (e.g. RetryTaskAtomically hit ErrPhaseMaxTasksExceeded, or the
+	// worker queue write raced with a scan). Planner-side add_retry_task
+	// is the operator-visible escape hatch for those cases. The
+	// replaceTaskMembership / phase.TaskIDs append below supersede any
+	// daemon-side pending repair, so double-retry is not possible: state
+	// transitions to the new retry's lifecycle.
 	//
-	// cancelled handling (2026-05-02): a daemon-side verify-repair injects
-	// a repair task without going through AddRetryTask, so cascade-cancelled
-	// downstream tasks (CancelledReasons[id] = "blocked_dependency_terminal:<dep>")
-	// stay cancelled even after the upstream lineage completes. The
-	// Bug-D'-prime fix unwinds those for plan completion, but if the Planner
-	// chooses to *re-execute* such a task explicitly, AddRetryTask is the
-	// natural entry point. Allow the call when the cancellation reason is
-	// either empty or a cascade marker; refuse for operator-initiated
-	// cancellation (command_cancel_requested) and for tasks already
-	// superseded by another retry/repair (superseded_by_retry, superseded_by_verify_repair).
+	// cancelled handling: a daemon-side verify-repair injects a repair
+	// task without going through AddRetryTask, so cascade-cancelled
+	// downstream tasks (CancelledReasons[id] =
+	// "blocked_dependency_terminal:<dep>") stay cancelled even after the
+	// upstream lineage completes. If the Planner chooses to *re-execute*
+	// such a task explicitly, AddRetryTask is the natural entry point.
+	// Allow the call when the cancellation reason is either empty or a
+	// cascade marker; refuse for operator-initiated cancellation
+	// (command_cancel_requested) and for tasks already superseded by
+	// another retry/repair (superseded_by_retry,
+	// superseded_by_verify_repair).
 	cancelledReason := state.CancelledReasons[opts.RetryOf]
 	switch retryOfStatus {
 	case model.StatusFailed, model.StatusPausedForReplan, model.StatusRepairPending:

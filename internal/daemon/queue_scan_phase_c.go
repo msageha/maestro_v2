@@ -365,11 +365,9 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			// publish_completed is emitted in two cases:
 			//   (a) deferredFinalized == true — the Planner explicitly asked
 			//       for deferred completion and the daemon just finalised it.
-			//       The 2026-04-29 e2e flagged the previous suppression here
-			//       as asymmetric: the non-deferred path sends the signal so
-			//       the deferred path should too. Both branches are
-			//       informational only (Planner already finished its turn
-			//       via deferred_publish), so emitting is safe.
+			//       Both branches are informational only (Planner already
+			//       finished its turn via deferred_publish), so emitting is
+			//       safe and symmetric with the non-deferred path.
 			//   (b) command is not yet terminal in the queue — the standard
 			//       "publish succeeded, Planner has not yet called complete"
 			//       flow.

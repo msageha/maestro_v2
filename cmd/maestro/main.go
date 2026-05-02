@@ -34,7 +34,7 @@ const ExitCodeRetryable = 2
 // pane (or the daemon log if dispatched via queue) before deciding.
 const ExitCodeSubmitUncertain = 3
 
-// Fencing exit codes (F-019 step 2).
+// Fencing exit codes.
 //
 // These let the Worker shell wrapper (templates/instructions/worker.md) and
 // any other downstream consumer branch on `$?` instead of grepping the
@@ -118,13 +118,11 @@ func main() {
 
 // normalizeProcessEnvironment promotes a missing or `dumb` TERM to a real
 // terminfo entry so subshells that maestro (CLI or daemon) spawns do not
-// inherit a degraded prompt environment from the parent. The 2026-04-28
-// retest4 reported `[ERROR] - (starship::print): Under a 'dumb' terminal
-// (TERM=dumb).` mixing into CLI output every invocation — a noise source
-// the operator could not silence from outside maestro because
-// claude-code propagates TERM=dumb to the maestro process. Setting the
-// var here is process-local: the operator's interactive shell is
-// untouched, and any explicit TERM the operator exports still wins.
+// inherit a degraded prompt environment (e.g. starship printing
+// `Under a 'dumb' terminal` errors) from a parent like claude-code that
+// propagates TERM=dumb. The mutation is process-local: the operator's
+// interactive shell is untouched, and any explicit TERM the operator
+// exports still wins.
 //
 // Mirrors the agent-pane normalisation in
 // internal/agent/launcher.go:buildLaunchEnvForAgent so the rule is

@@ -52,20 +52,12 @@ type VerifyCommand struct {
 // DefaultVerifyConfig returns a minimal verification config with a safe,
 // language-agnostic baseline.
 //
-// 2026-04-30 redesign: the previous implementation hard-coded `go vet ./...`
-// and called language-detection helpers (DetectProjectLanguage,
-// Default*ForLanguage) to switch between npm audit / pip-audit / cargo
-// audit / gosec / etc. That coupled the orchestration daemon to a
-// software-engineering monorepo with a single primary language, which is
-// incompatible with maestro's autonomous-orchestration goal: research,
-// documentation, polyglot, and non-software-engineering repositories must
-// also be supportable. The fallback now always uses `git diff --check`,
-// which works for any git repository regardless of language and still
-// satisfies the §5-6 evolution invariant ("evolution must not run with
-// zero verification commands") because the slice is non-empty. Operators
-// who want richer verification should write `.maestro/verify.yaml` —
-// that file is the language-agnostic source of truth, and the daemon no
-// longer guesses what verify means for the project.
+// The fallback uses `git diff --check`, which works for any git repository
+// regardless of language and still satisfies the §5-6 evolution invariant
+// ("evolution must not run with zero verification commands") because the
+// slice is non-empty. Operators who want richer verification should write
+// `.maestro/verify.yaml` — that file is the language-agnostic source of
+// truth; the daemon does not guess what verify means for the project.
 func DefaultVerifyConfig() *VerifyConfig {
 	return &VerifyConfig{
 		Build: []string{"git diff --check"},

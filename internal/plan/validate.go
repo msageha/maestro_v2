@@ -18,8 +18,8 @@ var workerIDPattern = regexp.MustCompile(`^worker[1-9][0-9]*$`)
 // validateTaskWorkerPins runs the count-aware existence check for every
 // task's worker_id pin. Format-only validation (workerN shape) already
 // runs inside validateTaskFieldsCore; this layer additionally requires
-// that the numeric suffix is in [1, workerCount] so dry-run cannot pass
-// a typo like worker99 in a 2-worker config (2026-04-28 E2E retest2).
+// that the numeric suffix is in [1, workerCount] so dry-run cannot pass a
+// typo like worker99 in a 2-worker config.
 //
 // fieldPrefix is the YAML path prefix used for error messages
 // ("tasks" for flat submits, "phases[<name>].tasks" for phased ones)
@@ -81,10 +81,10 @@ const (
 	MaxWallClockSec          = 86400 // 24 hours
 )
 
-// Minimum lengths enforced on add-task-injected fields (Bug G defence).
-// These defend against shell-quoting mishaps (e.g. “ ` “ / `$()` expansion
-// inside double quotes) that would otherwise let a malformed task land in
-// the queue. Thresholds are intentionally very conservative — they catch
+// Minimum lengths enforced on add-task-injected fields. These defend
+// against shell-quoting mishaps (e.g. backtick / `$()` expansion inside
+// double quotes) that would otherwise let a malformed task land in the
+// queue. Thresholds are intentionally very conservative — they catch
 // obviously truncated payloads (1–3 byte leftovers from command
 // substitution) without rejecting the kind of terse content that appears
 // in legitimate unit test fixtures. Not applied to `plan submit` because

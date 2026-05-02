@@ -661,9 +661,9 @@ func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
 		LeaseEpoch: leaseEpoch,
 		Status:     "completed",
 		Summary:    "done",
-		// Two distinct payloads suffixed with ZZZ/YYY (rather than XXX/YYY) so
-		// repo-wide grep for "XXX" markers does not surface this fixture as a
-		// pending marker text. F-066.
+		// Two distinct payloads suffixed with ZZZ/YYY (rather than XXX/YYY)
+		// so repo-wide grep for "XXX" markers does not surface this
+		// fixture as a pending marker text.
 		Learnings: []string{"AAAAAZZZ", "AAAAAYYY"},
 	})
 

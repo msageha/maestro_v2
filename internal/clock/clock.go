@@ -1,13 +1,9 @@
 // Package clock holds the canonical Clock abstraction used across the
 // codebase. Centralising the interface here lets test packages and feature
 // packages (daemon/core, metrics, testutil, …) share a single contract
-// without importing each other.
-//
-// F-038: prior to this package, three independent declarations existed
-// (core.Clock, metrics.Clock, testutil.Clock). They were structurally
-// identical but required adapter shims at every boundary. Use clock.Clock
-// for production wiring and embed it when extra methods are needed (see
-// testutil.Clock for the Since() extension).
+// without importing each other. Use clock.Clock for production wiring and
+// embed it when extra methods are needed (see testutil.Clock for the
+// Since() extension).
 package clock
 
 import "time"

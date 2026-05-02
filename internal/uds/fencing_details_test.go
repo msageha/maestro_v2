@@ -5,11 +5,10 @@ import (
 	"testing"
 )
 
-// TestErrorResponseWithDetails_RoundTrip pins the F-019 wire shape: the
-// Details payload must round-trip as a structured JSON object so CLI
-// consumers (and the Worker shell wrapper through them) can read fields
-// like current_epoch / current_status by JSON path instead of grepping
-// Message.
+// TestErrorResponseWithDetails_RoundTrip pins the wire shape: the Details
+// payload must round-trip as a structured JSON object so CLI consumers (and
+// the Worker shell wrapper through them) can read fields like
+// current_epoch / current_status by JSON path instead of grepping Message.
 func TestErrorResponseWithDetails_RoundTrip(t *testing.T) {
 	t.Parallel()
 	want := FencingDetails{

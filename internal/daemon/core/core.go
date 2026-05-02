@@ -147,7 +147,7 @@ func (m *LogMixin) Log(level LogLevel, format string, args ...any) {
 // ---------------------------------------------------------------------------
 
 // Clock is an alias for clock.Clock kept here for backwards compatibility.
-// New code should import internal/clock directly. F-038.
+// New code should import internal/clock directly.
 type Clock = clock.Clock
 
 // RealClock is an alias for clock.RealClock kept here for backwards compatibility.
@@ -202,10 +202,10 @@ type StateReader interface {
 	// GetNonTerminalTaskStates returns a snapshot of every TaskStates entry
 	// at a non-terminal status, keyed by task ID. Used by the phantom-task
 	// detector in fast-track cleanup: when state has non-terminal entries
-	// whose IDs are absent from every worker queue file (a 2026-04-29 e2e
-	// regression where a state-only retry task left a Phase permanently
-	// blocked), the cleanup step force-fails them so phase progression can
-	// resume. Returns ErrStateNotFound when the state file does not exist.
+	// whose IDs are absent from every worker queue file (state-only retry
+	// tasks that would otherwise leave a Phase permanently blocked), the
+	// cleanup step force-fails them so phase progression can resume.
+	// Returns ErrStateNotFound when the state file does not exist.
 	GetNonTerminalTaskStates(commandID string) (map[string]model.Status, error)
 }
 
@@ -308,7 +308,7 @@ type PlanExecutor interface {
 // ModelSelector is the method set an adaptive model selector must expose to
 // participate in worker assignment. Aliased to contract.ModelSelector so
 // daemon/core and plan share a single definition; the bridge layer can
-// then hand a selector across the boundary without an adapter shim. F-039.
+// then hand a selector across the boundary without an adapter shim.
 type ModelSelector = contract.ModelSelector
 
 // PlanExecutorModelSelectorSettable is an optional extension of PlanExecutor

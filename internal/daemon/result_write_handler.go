@@ -227,15 +227,12 @@ func (h *ResultWriteAPI) maybeAutoRecoverAfterResolution(
 			return
 		}
 		if action != worktree.AutoRecoverNone {
-			// 2026-04-28 follow-up: distinguish "ResumeMerge ran and the
-			// reporter worker is no longer Resolving" (key=
-			// _completed) from "ResumeMerge ran but tryMergeWorker
-			// deferred the merge until the dispatched resolution task
-			// lands its commit" (key=_deferred). Before this split, both
-			// outcomes printed the same `_completed action=resume_merge`
-			// line and operators misread it as "publish has run" even when
-			// the inner log said deferred. The action value itself encodes
-			// which branch ran: AutoRecoverResumeMergeDeferred → deferred.
+			// Distinguish "ResumeMerge ran and the reporter worker is no
+			// longer Resolving" (key=_completed) from "ResumeMerge ran
+			// but tryMergeWorker deferred the merge until the dispatched
+			// resolution task lands its commit" (key=_deferred). The
+			// action value encodes which branch ran:
+			// AutoRecoverResumeMergeDeferred → deferred.
 			key := "auto_recover_after_resolution_completed"
 			if action == worktree.AutoRecoverResumeMergeDeferred {
 				key = "auto_recover_after_resolution_deferred"
@@ -351,8 +348,8 @@ func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, re
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
 	resultWritePhaseAResult, err := newResultPhaseAService(h).Run(params, resultStatus)
 	if err != nil {
-		// F-019: prefer the fencing-typed error first so the structured
-		// Details payload is forwarded to the UDS response.
+		// Prefer the fencing-typed error first so the structured Details
+		// payload is forwarded to the UDS response.
 		fencingErr := &resultWriteFencingError{}
 		if errors.As(err, &fencingErr) {
 			return uds.ErrorResponseWithDetails(fencingErr.Code, fencingErr.Message, fencingErr.Details)
@@ -366,17 +363,15 @@ func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, re
 	resultID := resultWritePhaseAResult.resultID
 	isDuplicate := resultWritePhaseAResult.duplicate
 
-	// Capture-before-cleanup snapshot (2026-04-29 e2e regression): Phase A
-	// has just transitioned the queue task to terminal, which makes the
-	// command eligible for the next scan's worktree cleanup. Async verify
-	// and the eventual review dispatch run AFTER that. By the time
-	// ReviewCoordinator.buildDiffContent calls ComputeWorkerDiff, the
-	// worker worktree may have been wiped, leaving an empty diff that the
-	// reviewer dispatcher records as status=skipped and codex never runs.
-	// Capturing the diff here — while the worker worktree is still alive —
-	// pins a stable snapshot that the dispatch path retrieves via
-	// popPrecapturedDiff. Only fired for completed results; failed/cancelled
-	// results never trigger a review so the cost is wasted.
+	// Capture-before-cleanup snapshot: Phase A has just transitioned the
+	// queue task to terminal, which makes the command eligible for the
+	// next scan's worktree cleanup. Async verify and the eventual review
+	// dispatch run AFTER that, so the worker worktree may have been wiped
+	// by the time ReviewCoordinator.buildDiffContent calls
+	// ComputeWorkerDiff. Capturing the diff here — while the worker
+	// worktree is still alive — pins a stable snapshot that the dispatch
+	// path retrieves via popPrecapturedDiff. Only fired for completed
+	// results; failed/cancelled results never trigger a review.
 	if !isDuplicate && resultStatus == model.StatusCompleted {
 		if rc := h.reviewCoord(); rc != nil && rc.Enabled() {
 			rc.PrecaptureDiff(params.TaskID, params.CommandID, params.Reporter)
@@ -474,7 +469,6 @@ type resultVerifyInput struct {
 // verify_pending in parallel would each see the others at verify_pending
 // (which is not a terminal status) and all defer — leaving no task to
 // actually run repo-wide verification, breaking the §S1-1 Strong Signal.
-// This was the race surfaced in the 2026-04-29 review.
 //
 // Decision rules, evaluated under the state lock:
 //
@@ -548,9 +542,9 @@ func (h *ResultWriteAPI) reserveOrDeferHeavyVerify(commandID string, sourceTask 
 		// phase. The reservation is stale and must be cleared so a fresh
 		// owner (typically the retry that replaced the failed one) can
 		// reclaim ownership and run heavy verify. Without this clearance,
-		// the 2026-04-29 review pin reproduces: a failed owner sits in
-		// phase.TaskIDs forever, retries always defer, repo-wide verify
-		// is never re-run, and a half-fixed phase merges silently.
+		// a failed owner would sit in phase.TaskIDs forever, retries
+		// would always defer, repo-wide verify would never re-run, and a
+		// half-fixed phase could merge silently.
 		mutated := false
 		if owner, ok := state.HeavyVerifyOwners[phase.PhaseID]; ok {
 			ownerLive := false
@@ -628,14 +622,13 @@ func (h *ResultWriteAPI) reserveOrDeferHeavyVerify(commandID string, sourceTask 
 //     the whole phase reaches a terminal state. Verification therefore must
 //     admit those paths.
 //
-// **Scope** (2026-04-29 review): the union is intentionally restricted to
-// tasks in the *same* phase as sourceTask. Earlier-phase tasks have already
-// been auto-committed at their phase's merge boundary and the worktree is
-// fast-forwarded to integration HEAD before the next phase's tasks dispatch
-// (see internal/daemon/dispatch/dispatcher.go), so their ExpectedPaths must
-// not silently widen the verify surface for the current phase. Including
-// them would let the current task's verify see paths it never declared and
-// miss out-of-scope writes.
+// **Scope**: the union is intentionally restricted to tasks in the
+// *same* phase as sourceTask. Earlier-phase tasks have already been
+// auto-committed at their phase's merge boundary and the worktree is
+// fast-forwarded to integration HEAD before the next phase's tasks
+// dispatch (see internal/daemon/dispatch/dispatcher.go), so their
+// ExpectedPaths must not silently widen the verify surface for the
+// current phase.
 //
 // Falls back to the legacy "every completed task in the command" union when
 // no phase context is available (implicit-phase commands or queue load
@@ -792,16 +785,13 @@ func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVe
 			queueStatus = model.StatusFailed
 		}
 	}
-	// Cleanup-race fix (2026-04-29 e2e regression): dispatch the advisory
-	// review BEFORE syncQueueStatusAfterVerify marks the queue task
-	// terminal. Once the queue task lands at completed/failed, the next
-	// queue scan may schedule a worktree cleanup that wipes the worker
-	// worktree directory; ReviewCoordinator.buildDiffContent then computes
-	// an empty diff (ComputeWorkerDiff returns "" when ws.Path is gone),
-	// the dispatcher sees an empty payload and records status=skipped, and
-	// codex never actually runs. Capturing the diff while the task is
-	// still parked at verify_pending keeps the worktree gated against
-	// cleanup so the diff is real and the review actually fires.
+	// Dispatch the advisory review BEFORE syncQueueStatusAfterVerify marks
+	// the queue task terminal. Once the queue task lands at
+	// completed/failed, the next queue scan may schedule a worktree
+	// cleanup that wipes the worker worktree directory; the review
+	// would then compute an empty diff and record status=skipped.
+	// Capturing while the task is still parked at verify_pending keeps
+	// the worktree gated against cleanup so the diff is real.
 	h.dispatchAdvisoryReview(params, finalStatus)
 
 	h.syncQueueStatusAfterVerify(params, queueStatus)
@@ -840,9 +830,9 @@ func (e *resultWriteWrappedError) Unwrap() []error {
 }
 
 // resultWriteFencingError extends resultWriteError with structured fencing
-// context for F-019. handleValidatedResultWrite branches on this type via
-// errors.As to attach the Details payload to the UDS error response so the
-// CLI / Worker can read machine-readable fields without grepping Message.
+// context. handleValidatedResultWrite branches on this type via errors.As
+// to attach the Details payload to the UDS error response so the CLI /
+// Worker can read machine-readable fields without grepping Message.
 //
 // resultWriteError is embedded by pointer so existing `errors.As(err, &rErr)`
 // call sites that target *resultWriteError continue to work unchanged.
@@ -866,17 +856,16 @@ func newFencingError(code, message string, details uds.FencingDetails) *resultWr
 // locks at the same time, so it must not be moved under Phase A's queue/result
 // locks.
 //
-// scanMu serialization (2026-04-30 e2e regression): RetryTaskAtomically
-// writes the worker queue file via lockMap("queue:{worker}") only. PeriodicScan
-// Phase A loads worker queues into an in-memory snapshot, performs scan
-// mutations, and flushes the snapshot back under the same lockMap key. Without
-// scanMu.RLock here, Phase A's flush can race the retry-add and overwrite the
-// file with its pre-retry snapshot — the user observed this as a state-side
-// retry task with zero queue presence (`task_state=planned, queue empty`),
-// which then made phantom_task cleanup loop on an illegal `planned -> failed`
-// transition. Holding scanMu.RLock for the whole RetryTaskAtomically call
-// makes the retry write atomic vs. PeriodicScan, matching the canonical
-// "queue writes hold scanMu.RLock + lockMap" invariant documented in doc.go.
+// scanMu serialization: RetryTaskAtomically writes the worker queue file
+// via lockMap("queue:{worker}") only. PeriodicScan Phase A loads worker
+// queues into an in-memory snapshot, performs scan mutations, and
+// flushes the snapshot back under the same lockMap key. Without
+// scanMu.RLock here, Phase A's flush can race the retry-add and
+// overwrite the file with its pre-retry snapshot — leaving a state-side
+// retry task with zero queue presence which the phantom_task cleanup
+// then loops on. Holding scanMu.RLock for the whole RetryTaskAtomically
+// call matches the canonical "queue writes hold scanMu.RLock + lockMap"
+// invariant documented in doc.go.
 func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseAResult, params ResultWriteParams) {
 	if phaseAResult.retryTask == nil {
 		return
@@ -942,20 +931,15 @@ func (h *ResultWriteAPI) handleVerifyRepairRegistration(sourceTask *model.Task, 
 			fmt.Sprintf("verify_repair_enqueue_failed: %v", err))
 		return false, model.StatusPausedForReplan
 	}
-	// Predecessor cleanup (2026-04-29 e2e regression): the verify repair
-	// path leaves the original task at StatusRepairPending in state.
-	// That status is non-terminal, so plan/state.go:CanComplete rejects
-	// any subsequent plan_complete with "phase X is terminal but task Y
-	// is non-terminal (repair_pending)". The user observed the Planner
-	// burning two LLM round-trips on failed plan_complete calls before
-	// some out-of-band reconcile (R4 backoff in the original report) flipped
-	// the task to terminal. Now that the repair successor has been
+	// Predecessor cleanup: the verify repair path leaves the original
+	// task at StatusRepairPending in state. That status is non-terminal,
+	// so plan/state.go:CanComplete rejects any subsequent plan_complete
+	// with "phase X is terminal but task Y is non-terminal
+	// (repair_pending)". Now that the repair successor has been
 	// successfully enqueued, the original task is by construction
-	// superseded — its lifecycle is complete from the planner's
-	// perspective. Eagerly transitioning it to StatusCancelled with a
-	// descriptive reason both unblocks plan_complete and gives operators
-	// a self-describing audit trail (the cancellation reason links to
-	// the successor ID).
+	// superseded. Eagerly transitioning it to StatusCancelled with a
+	// descriptive reason unblocks plan_complete and gives operators an
+	// audit trail (the cancellation reason links to the successor ID).
 	supersededReason := fmt.Sprintf(
 		"superseded_by_verify_repair: repair_task=%s reason=%s",
 		repairTask.ID, reason,
@@ -1127,11 +1111,9 @@ func (h *ResultWriteAPI) emitPausedForReplanPlannerSignal(params ResultWritePara
 // notifyPlannerOfWorkerResult delivers the *worker-reported* status (typically
 // "completed") via the per-result task_result notification path, but does not
 // re-fire when verify subsequently routes the task to repair_pending. Without
-// this supplementary signal, the Planner's mental model treats the task as
-// finished while the daemon has actually scheduled a retry — the divergence
-// observed in the 2026-04 alpha/beta/test workflow regression where Planner
-// proceeded to the next phase while a hidden repair task still kept the
-// publish gate blocked.
+// this supplementary signal, the Planner would treat the task as finished
+// while the daemon has actually scheduled a retry, and could proceed to the
+// next phase while a hidden repair task kept the publish gate blocked.
 //
 // The dedicated paused_for_replan signal already covers the
 // repair_pending → paused_for_replan branch (max_repair / non-retryable). This

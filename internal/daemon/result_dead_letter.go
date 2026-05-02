@@ -1,9 +1,9 @@
 package daemon
 
-// Notification dead-letter handling extracted from result_handler.go (F-042
-// step 4 physical file split). Covers: detecting retry-exhausted entries,
-// transitioning them under the result-file lock, and archiving them outside
-// the lock so the on-disk dead-letter store mirrors the in-memory state.
+// Notification dead-letter handling. Covers: detecting retry-exhausted
+// entries, transitioning them under the result-file lock, and archiving
+// them outside the lock so the on-disk dead-letter store mirrors the
+// in-memory state.
 
 import (
 	"fmt"
@@ -40,8 +40,7 @@ func sweepExhaustedNotifications[T any, PT interface {
 // applyDeadLetterTransitions transitions every retry-exhausted result entry
 // to notify_dead_lettered under the spec's lock and persists the change.
 // Returns the IDs that transitioned in this pass so the caller can run
-// archive + onDeadLetter callbacks after releasing the lock. F-042 step 1
-// helper extracted from sweepExhaustedNotifications.
+// archive + onDeadLetter callbacks after releasing the lock.
 func applyDeadLetterTransitions[T any, PT interface {
 	*T
 	model.Notifiable
@@ -89,10 +88,9 @@ func applyDeadLetterTransitions[T any, PT interface {
 
 // archiveAndInvokeDeadLetterCallbacks reloads the result file under the
 // lock, then archives each transitioned entry and runs the spec's
-// onDeadLetter callback OUTSIDE the lock. F-042 step 1 helper extracted
-// from sweepExhaustedNotifications. The reload is necessary because the
-// transition was committed by applyDeadLetterTransitions and the in-memory
-// snapshot here may be stale relative to other writers.
+// onDeadLetter callback OUTSIDE the lock. The reload is necessary
+// because the transition was committed by applyDeadLetterTransitions
+// and the in-memory snapshot here may be stale relative to other writers.
 func archiveAndInvokeDeadLetterCallbacks[T any, PT interface {
 	*T
 	model.Notifiable

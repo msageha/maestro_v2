@@ -141,9 +141,8 @@ func getAgentStatuses() []agentStatus {
 	// @agent_state lets the daemon tell us "this pane is shell on purpose"
 	// (set during respawn-to-project-root before worktree cleanup) so the
 	// shell-detection branch below does not flip a daemon-evicted pane to
-	// "dead". Without this, every successful command ended with worker
-	// rows showing "dead" until the next dispatch — a false alarm the
-	// 2026-04-28 retest2 reported as 運用上は誤解を招く.
+	// "dead". Without this, every successful command ends with worker rows
+	// showing "dead" until the next dispatch — a misleading false alarm.
 	lines, err := tmux.ListAllPanes("#{@agent_id}\t#{@role}\t#{@model}\t#{@status}\t#{pane_current_command}\t#{@runtime}\t#{@agent_state}")
 	if err != nil {
 		return nil

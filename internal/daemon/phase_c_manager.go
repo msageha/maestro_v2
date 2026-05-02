@@ -111,22 +111,18 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 
 	// C-3 Extended Verification
 	//
-	// The 2026-04-30 redesign drops every language-specific auto-injection
-	// (npm audit / pip-audit / cargo audit / gosec / go test / cargo test /
-	// etc.). Auto-detecting a "project language" and running language-bound
-	// commands assumes a software-engineering monorepo with a single stack;
-	// it breaks for polyglot repositories, research/documentation projects,
-	// and any context that doesn't ship the assumed toolchain. Verification
-	// is now driven purely by what the operator writes in
-	// .maestro/verify.yaml — that file is language-agnostic and lets the
-	// project's own concept of "verification" survive without the daemon
-	// guessing.
+	// Verification is driven purely by .maestro/verify.yaml (language-
+	// agnostic). Auto-detecting a "project language" and running language-
+	// bound commands would assume a software-engineering monorepo with a
+	// single stack and would break for polyglot repositories, research/
+	// documentation projects, and any context that doesn't ship the
+	// assumed toolchain.
 	//
 	// EnsembleVerifier is still wired (when extended_verification.enabled
 	// is true) so operator-supplied per-perspective weights from
 	// PerspectiveWeights continue to apply to verify.yaml-loaded categories
-	// via buildVerifyCategories — this preserves the criticality/advisory
-	// distinction without re-introducing language detection.
+	// via buildVerifyCategories — preserves the criticality/advisory
+	// distinction without language detection.
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
 		m.EnsembleVerifier.SetMaxAutoRetries(cfg.ExtendedVerification.EffectiveMaxAutoRetries())
@@ -201,19 +197,12 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	return m
 }
 
-// configureVerificationPerspectives was removed in the 2026-04-30 redesign.
-// The previous implementation auto-injected language-specific perspectives
-// (build/lint/test/typecheck/security/performance) by detecting marker
-// files like go.mod or package.json and dispatching tool-specific commands.
-// That approach baked in the assumption that maestro is always running
-// against a single-language software-engineering project, which is
-// incompatible with the autonomous-orchestration philosophy: the harness
-// must be useful for polyglot monorepos, research, documentation, and any
-// other context where the host project defines verification on its own
-// terms via .maestro/verify.yaml. EnsembleVerifier remains in place so
-// operator-supplied PerspectiveWeights still influence the criticality of
-// verify.yaml categories via buildVerifyCategories, but commands no longer
-// originate inside the daemon.
+// Verification commands are not auto-injected by the daemon based on
+// language detection (go.mod / package.json / etc.) — verification is
+// driven by .maestro/verify.yaml so the harness remains useful for
+// polyglot monorepos, research, and documentation projects.
+// EnsembleVerifier still applies operator-supplied PerspectiveWeights to
+// verify.yaml categories via buildVerifyCategories.
 
 // SaveState persists stateful Phase C components that must survive daemon
 // restarts.

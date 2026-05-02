@@ -33,9 +33,9 @@ func forceWorkerStatus(t *testing.T, wm *Manager, commandID, workerID string, st
 }
 
 // commitWorkerFile writes a tracked file in the worker worktree, stages and
-// commits it on the worker branch. Returns the new HEAD SHA. Used by R10/F-040
-// refresh tests to evolve a worker branch without going through the full
-// auto-commit pipeline.
+// commits it on the worker branch. Returns the new HEAD SHA. Lets refresh
+// tests evolve a worker branch without going through the full auto-commit
+// pipeline.
 func commitWorkerFile(t *testing.T, wm *Manager, workerPath, message, name, body string) string {
 	t.Helper()
 	if err := os.WriteFile(filepath.Join(workerPath, name), []byte(body), 0o644); err != nil {
@@ -126,17 +126,13 @@ func TestRefreshWorker_FastForwardsBehindWorker(t *testing.T) {
 	_ = state // silence unused warning (state is loaded for sanity but not asserted)
 }
 
-// TestRefreshWorker_SoftSkipsUntrackedOnlyDirty pins the 2026-04-29
-// e2e regression where read-only investigation tasks leave benign
-// untracked residue (.tmp-*, log files) and the next dispatch's
-// refresh aborted, drove the inline-retry attempts cap to 0, and dead-
-// lettered the next task. The fix: when the dirty state is exclusively
-// untracked entries (no tracked modifications), refresh logs a warning
-// and returns nil instead of failing — sensitive-file gates still run
-// at phase boundary, so this only defers the integration fast-forward
-// by one clean cycle. Tracked-modification residue (the wave-crossing
-// case) is still handled by the inline auto-commit path tested
-// separately.
+// TestRefreshWorker_SoftSkipsUntrackedOnlyDirty: when the dirty state
+// is exclusively untracked entries (no tracked modifications), refresh
+// logs a warning and returns nil instead of failing. Sensitive-file
+// gates still run at phase boundary, so this only defers the
+// integration fast-forward by one clean cycle. Tracked-modification
+// residue (the wave-crossing case) is still handled by the inline
+// auto-commit path tested separately.
 func TestRefreshWorker_SoftSkipsUntrackedOnlyDirty(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -290,14 +286,12 @@ func TestRefreshWorker_AutoCommitsTrackedDirtyChanges(t *testing.T) {
 	}
 }
 
-// TestRefreshWorker_AutoResetsDivergedHistory pins the 2026-04-30 e2e
-// regression fix: when worker history has truly diverged (own commits
-// AND integration moved on), the refresh path used to abort with a hard
-// error and trigger 3-4 minutes of `worktree_refresh_failed` log spam
-// before the task dead-lettered. Auto-recovery resets the worker
-// worktree to integration HEAD with a warning log, accepting the loss
-// of the diverged worker commits in exchange for unblocking dispatch.
-// The Planner/operator can re-dispatch any lost work as a fresh task.
+// TestRefreshWorker_AutoResetsDivergedHistory: when worker history has
+// truly diverged (own commits AND integration moved on), the refresh
+// path resets the worker worktree to integration HEAD with a warning
+// log, accepting the loss of the diverged worker commits in exchange
+// for unblocking dispatch. The Planner/operator can re-dispatch any
+// lost work as a fresh task.
 func TestRefreshWorker_AutoResetsDivergedHistory(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -374,10 +368,9 @@ func TestRefreshWorker_NoOpWhenWorkerAhead(t *testing.T) {
 // resolution dispatch path: when a worker is intentionally diverged from
 // integration so a Planner-issued resolution task can edit the conflicted
 // state, RefreshWorkerWorktreeToIntegrationHead must NOT raise the diverged
-// error (which would block the resolution task in a 5-attempt → dead-letter
-// loop, the 2026-04 follow-up regression). The skip is narrow — only the
-// Conflict and Resolving statuses — so other statuses still get refreshed
-// or fail-closed on real divergence.
+// error (which would block the resolution task in a 5-attempt -> dead-letter
+// loop). The skip is narrow — only the Conflict and Resolving statuses —
+// so other statuses still get refreshed or fail-closed on real divergence.
 func TestRefreshWorker_SkipsConflictAndResolvingWorkers(t *testing.T) {
 	t.Parallel()
 	for _, status := range []model.WorktreeStatus{

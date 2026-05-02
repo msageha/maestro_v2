@@ -198,13 +198,12 @@ func TestTrackPartialDispatch_Partial(t *testing.T) {
 	}
 }
 
-// TestTrackPartialDispatch_UncertainOnlyDoesNotEscalate is the regression
-// test for the 2026-04-28 retest8 false-positive WARN. A worker pane that
-// fails the submit-confirm probe but receives the paste fine produces a
-// dispatchResult with Success=false and Error wrapping ErrSubmitConfirmUncertain.
-// The new bucketing keeps that out of the failed count, so when the rest
-// of the batch succeeded the operator-facing log stays at INFO. WARN is
-// reserved for genuine delivery failures.
+// TestTrackPartialDispatch_UncertainOnlyDoesNotEscalate asserts that a
+// dispatchResult with Success=false and Error wrapping
+// ErrSubmitConfirmUncertain (worker pane received the paste but failed
+// the submit-confirm probe) is bucketed out of the failed count, so the
+// operator-facing log stays at INFO when the rest of the batch
+// succeeded. WARN is reserved for genuine delivery failures.
 func TestTrackPartialDispatch_UncertainOnlyDoesNotEscalate(t *testing.T) {
 	t.Parallel()
 	var logBuf bytes.Buffer
@@ -604,11 +603,11 @@ func TestSignalCascadeTracker_DisabledWhenThresholdZero(t *testing.T) {
 	}
 }
 
-// TestRecordCascadeBreakOutcome_AccumulatesAcrossScans pins the cross-scan
-// meta-circuit added for the 2026-04 R-2 finding: per-tick cascade-break
-// caps log/CPU spend within a scan, but a long-tail tmux-server outage that
-// trips break every tick should escalate to ERROR after a few consecutive
-// trips so the operator sees the degradation above the per-tick WARN noise.
+// TestRecordCascadeBreakOutcome_AccumulatesAcrossScans asserts the
+// cross-scan meta-circuit: per-tick cascade-break caps log/CPU spend
+// within a scan, but a long-tail tmux-server outage that trips break
+// every tick escalates to ERROR after a few consecutive trips so the
+// operator sees the degradation above the per-tick WARN noise.
 //
 // The recovery branch must clear the counter exactly once when a successful
 // scan tick (any signal delivered, no break) lands.

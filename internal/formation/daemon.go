@@ -98,7 +98,9 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	pid := validateDaemonPID(maestroDir)
 
 	if isValidPID(pid) {
-		// Capture process start time to detect PID reuse (Fix #7)
+		// Capture process start time so we can detect PID reuse: if the OS
+		// recycles this PID for an unrelated process during shutdown, the
+		// start time will differ and terminateProcess will refuse to kill it.
 		origStartTime := c.ProcMgr.StartTime(pid)
 
 		// PID-based monitoring: poll process exit, then escalate
@@ -111,7 +113,9 @@ func (c *Config) stopDaemon(maestroDir string) error {
 			time.Sleep(c.DaemonPollInterval)
 		}
 
-		// Use terminateProcess with PID + start time identity check (Fix #7, #8)
+		// Identity check pairs the PID with origStartTime so terminateProcess
+		// only signals a process that is still the same daemon we observed
+		// above — guarding against PID reuse during the poll window.
 		sameProcess := c.daemonIdentityChecker(maestroDir, pid, origStartTime)
 		result, err := c.terminateProcess(pid, sameProcess, 5*time.Second)
 		if result == terminateNotTarget {

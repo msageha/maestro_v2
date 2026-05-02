@@ -358,24 +358,20 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	if opts.Content == "" {
 		return &planValidationError{Msg: "content is required (pass --content <text> or --content-file -)"}
 	}
-	// 2026-04-28 retest3 follow-up: when the Planner agent's shell quoting
-	// strips a multi-line --acceptance-criteria value, the CLI sends an
-	// empty string and this branch fires. Hint at the stdin form so the
-	// Planner's self-recovery picks the safe path on the second attempt
-	// instead of guessing more shell quoting permutations.
+	// Hint at the stdin form so a Planner whose shell quoting stripped a
+	// multi-line --acceptance-criteria value picks the safe path on retry
+	// instead of guessing more shell-quoting permutations.
 	if opts.AcceptanceCriteria == "" {
 		return &planValidationError{Msg: "acceptance_criteria is required (pass --acceptance-criteria <text> or --acceptance-criteria-file -)"}
 	}
 
-	// Bug G: sanity-check minimum lengths for add-task-injected fields.
-	// An earlier incident showed the Planner submitting an add-task with
-	// content / acceptance_criteria reduced to a few bytes (or empty) by
-	// shell backtick expansion inside a broken double-quoted `--content`
-	// invocation. The CLI's non-empty check let this through, producing a
-	// corrupted queue entry. Rejecting obviously-truncated payloads here
-	// prevents the Planner from accidentally spawning a repair loop of
-	// malformed tasks. Thresholds are intentionally lax so only clearly
-	// damaged input trips them; legitimate terse descriptions still pass.
+	// Sanity-check minimum lengths for add-task-injected fields. Shell
+	// backtick / $() expansion inside broken double-quoted invocations can
+	// reduce content / acceptance_criteria to a few bytes; rejecting
+	// obviously-truncated payloads prevents the Planner from spawning a
+	// repair loop of malformed tasks. Thresholds are intentionally lax so
+	// only clearly damaged input trips them; legitimate terse descriptions
+	// still pass.
 	if len(opts.Purpose) < MinInjectedPurposeBytes {
 		return &planValidationError{Msg: fmt.Sprintf(
 			"purpose is too short (%d bytes, minimum %d): check shell quoting on the invocation — backticks and `$()` inside double quotes are expanded before being sent",

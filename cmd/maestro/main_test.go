@@ -300,12 +300,9 @@ func TestRun_Help(t *testing.T) {
 	}
 }
 
-// TestNormalizeProcessEnvironment_PromotesDumbTERM pins the 2026-04-28
-// retest4 fix that prevents `[ERROR] - (starship::print): Under a
-// 'dumb' terminal (TERM=dumb).` from leaking into CLI output via
-// subprocess spawns inheriting TERM from a claude-code parent that
-// itself sets TERM=dumb. Operator overrides win — explicit non-empty,
-// non-"dumb" values are preserved.
+// TestNormalizeProcessEnvironment_PromotesDumbTERM verifies that TERM=dumb
+// (or unset) is promoted to a real terminfo entry, while operator overrides
+// win — explicit non-empty, non-"dumb" values are preserved.
 func TestNormalizeProcessEnvironment_PromotesDumbTERM(t *testing.T) {
 	cases := []struct {
 		name      string

@@ -186,15 +186,14 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// Worktree publish guard: when worktree mode is enabled, the integration
 	// branch must be published before the command can complete *successfully*.
 	//
-	// 2026-04-30 e2e regression: failed/cancelled commands hit this guard and
-	// looped on `deferred_publish` forever — `worktree_publish_skip_failed`
-	// fires every scan because phases are non-Completed, so publish never
-	// happens, so deferred_complete is never finalised. Bypassing the guard
-	// for non-success outcomes is correct: failed commands should NOT be
-	// merged to base, and skipping the publish step lets the queue/state
-	// transition to terminal failed cleanly. The guard is retained for
-	// successful commands so that "command completed" never lies about the
-	// base branch state.
+	// Failed/cancelled commands bypass this guard so they do not loop on
+	// `deferred_publish` forever — `worktree_publish_skip_failed` would
+	// otherwise fire every scan (phases stay non-Completed), publish never
+	// happens, and deferred_complete is never finalised. Failed commands
+	// should NOT be merged to base, so skipping the publish step lets the
+	// queue/state transition to terminal failed cleanly. The guard is
+	// retained for successful commands so "command completed" never lies
+	// about the base branch state.
 	if resultStatus == model.StatusCompleted {
 		if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
 			var notPub *worktreeNotPublishedError

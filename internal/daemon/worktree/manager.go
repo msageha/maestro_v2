@@ -989,10 +989,7 @@ func (wm *Manager) AutoMerge() bool { return wm.config.AutoMerge }
 // is safe to do so. The dispatcher invokes this just before handing a worker a
 // new task; without it, a worker that was Integrated by an earlier phase merge
 // keeps its old branch tip when re-used in a later phase, so sibling-worker
-// commits already merged into integration are invisible to the worker. The
-// 2026-04 alpha/beta/test workflow regression bisected to exactly this stale
-// HEAD: a verify_integration test ran on worker1's worktree which had
-// Version() = "alpha" while integration HEAD already carried "alpha+beta".
+// commits already merged into integration are invisible to the worker.
 //
 // Behaviour:
 //   - Worktree must be clean. Dirty worktree → error; the caller fails the
@@ -1047,10 +1044,10 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 	// *intentionally* diverged from integration: the diverged state IS the
 	// conflict that the resolution task is being dispatched to fix. Treating
 	// that divergence as a refresh failure would block the resolution task
-	// dispatch in a 5-attempt → dead-letter → planner-replan loop (the
-	// 2026-04 follow-up regression). The skip is narrow: only Conflict /
-	// Resolving statuses, so Integrated / Active / Created etc. still get
-	// fast-forwarded (or fail-closed on real divergence) as designed.
+	// dispatch in a 5-attempt -> dead-letter -> planner-replan loop. The
+	// skip is narrow: only Conflict / Resolving statuses, so Integrated /
+	// Active / Created etc. still get fast-forwarded (or fail-closed on
+	// real divergence) as designed.
 	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
 		wm.Log(core.LogLevelDebug,
 			"worker_worktree_refresh_skipped_for_conflict_resolution command=%s worker=%s status=%s",
@@ -1061,25 +1058,19 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 	// Refuse to touch a dirty worktree — uncommitted edits whose provenance we
 	// cannot reconstruct must never be silently merged with integration.
 	//
-	// Wave-crossing inline auto-commit (2026-04-29 e2e regression): when a
-	// worker has just finished task A in the same phase as task B about to
-	// be dispatched, Phase B's canonical auto-commit has not yet fired
-	// (it runs at phase boundary, not wave boundary). The result is a
-	// dirty worktree at task B dispatch time; without this fast-path
-	// commit, refresh aborts → dispatch fails → attempts climbs to the
-	// retry cap → the task lands in dead-letter and the phase fails. The
-	// inline commit deliberately avoids the heavy CommitWorkerChanges
-	// path (status transition, expected_paths gate, commit-policy
-	// scanning): all of that runs again at phase boundary, and applying
-	// it now would either reject legitimate intermediate state (the
-	// commit-policy gate is sized for whole-phase output, not wave
-	// output) or prematurely flip the worker to `committed`. Untracked
-	// files are intentionally NOT staged here because we cannot evaluate
-	// expected_paths or sensitive-file filters cheaply mid-phase; they
-	// are deferred to the phase-boundary auto-commit. If any untracked
-	// file remains after `git add -u`, we still abort — sibling-worker
-	// fast-forward is too risky when we cannot account for the working
-	// tree.
+	// Wave-crossing inline auto-commit: when a worker has just finished
+	// task A in the same phase as task B about to be dispatched, Phase B's
+	// canonical auto-commit has not yet fired (it runs at phase boundary,
+	// not wave boundary). The result is a dirty worktree at task B
+	// dispatch time; without this fast-path commit, refresh aborts and
+	// the task eventually dead-letters. The inline commit deliberately
+	// avoids the heavy CommitWorkerChanges path (status transition,
+	// expected_paths gate, commit-policy scanning) — those run again at
+	// phase boundary, and applying them mid-phase would either reject
+	// legitimate intermediate state or prematurely flip the worker to
+	// `committed`. Untracked files are intentionally NOT staged here
+	// because expected_paths / sensitive-file filters cannot be evaluated
+	// cheaply mid-phase; they defer to the phase-boundary auto-commit.
 	statusOut, statusErr := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 	if statusErr != nil {
 		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, statusErr)
@@ -1093,26 +1084,16 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 			return fmt.Errorf("git status post-inline-commit (worker=%s, command=%s): %w", workerID, commandID, statusErr)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			// Untracked-only soft-skip (2026-04-29 e2e regression):
-			// inline auto-commit deliberately does not stage untracked
-			// files (replicating the sensitive-file gate and
-			// expected_paths filter mid-phase is unsafe). Without
-			// soft-skip, the post-check fails, dispatch fails, the
-			// inline retry loop burns through the configured attempts
-			// cap in seconds, and the next task lands in the dead-letter
-			// queue — blocking phase progression on what may be benign
-			// tmp output OR legitimate task artefacts that the
-			// expected_paths gate will commit at phase-boundary time.
-			// When the remaining dirty bits are exclusively untracked
-			// entries, log loud and skip the fast-forward for this
-			// cycle. The phase-boundary commit still applies the full
-			// sensitive-file / expected_paths gates before merge.
-			//
-			// Wording note (2026-05-01): earlier copy described these as
-			// "read-only investigation residue", which mis-classified
-			// legitimate task artefacts in operator logs. The message
-			// now states what we observed (untracked files post inline
-			// commit) without inferring intent.
+			// Untracked-only soft-skip: inline auto-commit deliberately
+			// does not stage untracked files (replicating the
+			// sensitive-file gate and expected_paths filter mid-phase is
+			// unsafe). When the remaining dirty bits are exclusively
+			// untracked entries, log loud and skip the fast-forward for
+			// this cycle so the task does not dead-letter on what may be
+			// legitimate task artefacts that the expected_paths gate will
+			// commit at phase-boundary time. The phase-boundary commit
+			// still applies the full sensitive-file / expected_paths
+			// gates before merge.
 			if onlyUntrackedDirty(statusOut) {
 				wm.Log(core.LogLevelWarn,
 					"worker_worktree_refresh_soft_skipped_untracked_only command=%s worker=%s status=%q "+
@@ -1156,18 +1137,13 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 	case workerHEAD:
 		// Worker HEAD is a strict ancestor of integration → safe fast-forward.
 	default:
-		// 2026-04-30 e2e regression: a worker that has truly diverged (own
-		// commits + integration also moved on) used to be a hard failure
-		// here, which produced 3-4 minutes of `worktree_refresh_failed`
-		// log spam (each scan re-dispatches and re-fails) before the task
-		// finally dead-letters. For autonomous orchestration the right
-		// graceful degradation is to reset the worker worktree to
-		// integration HEAD so the next task dispatch can proceed: the
-		// diverged commits represent work that never made it into
-		// integration anyway (a race or a stale worker carryover) and
-		// clinging to them only blocks recovery. The Planner can
-		// re-dispatch the lost work as a fresh task if needed; staying
-		// stuck is the worse outcome.
+		// Truly diverged worker (own commits + integration also moved on):
+		// reset the worker worktree to integration HEAD so the next task
+		// dispatch can proceed. The diverged commits represent work that
+		// never made it into integration anyway (a race or a stale worker
+		// carryover) and clinging to them only blocks recovery. The
+		// Planner can re-dispatch the lost work as a fresh task if needed;
+		// staying stuck is the worse outcome for autonomous orchestration.
 		wm.Log(core.LogLevelWarn,
 			"worker_worktree_diverged_resetting command=%s worker=%s "+
 				"worker_head=%s integration_head=%s merge_base=%s "+

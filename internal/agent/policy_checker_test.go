@@ -116,11 +116,10 @@ func TestPolicyChecker_HookSettings_ContainsScriptPath(t *testing.T) {
 
 // TestHookScript_ContainsMaestroSpecificChecks verifies that the hook
 // asserts the *maestro-orchestration-specific* contracts only. Generic
-// destructive-command defense (rm -rf, sudo, kill, etc.) was deliberately
-// removed in the 2026-04-30 redesign — that surface duplicates the user's
-// global Claude Code hooks (~/.claude/settings.json) and caused recurring
-// false positives that blocked legitimate Worker `result write --summary`
-// payloads. See worker_policy_hook.sh header for the full rationale.
+// destructive-command defense (rm -rf, sudo, kill, etc.) is intentionally
+// not handled here — that surface duplicates the user's global Claude
+// Code hooks (~/.claude/settings.json). See worker_policy_hook.sh header
+// for the full rationale.
 func TestHookScript_ContainsMaestroSpecificChecks(t *testing.T) {
 	checks := []struct {
 		id   string
@@ -304,10 +303,9 @@ func runHookScript(t *testing.T, scriptPath, inputJSON string) string {
 
 // --- S1: D002 Recursive delete outside project root ---
 
-// S1 D002 generic recursive-delete checks were removed in the 2026-04-30
-// redesign. Generic destructive-command defense is delegated to the user's
-// global Claude Code hooks (~/.claude/settings.json); see
-// worker_policy_hook.sh header for the rationale.
+// Generic recursive-delete checks are delegated to the user's global
+// Claude Code hooks (~/.claude/settings.json); see worker_policy_hook.sh
+// header for the rationale.
 
 // --- S2: Relative path .maestro/ blocking ---
 
@@ -543,10 +541,8 @@ func TestHookScript_C3_DashboardMdWriteDenied(t *testing.T) {
 	}
 }
 
-// Bash dashboard read access, deny() JSON escaping for sudo, and chmod -R
-// system-path checks were removed in the 2026-04-30 redesign. Read access
-// to .maestro/* and generic privilege-escalation defenses are delegated to
-// the user's global Claude Code hooks.
+// Read access to .maestro/* and generic privilege-escalation defenses are
+// delegated to the user's global Claude Code hooks (not handled here).
 
 func TestHookScript_WriteHookScript_SafeWithSpecialChars(t *testing.T) {
 	requireJq(t)

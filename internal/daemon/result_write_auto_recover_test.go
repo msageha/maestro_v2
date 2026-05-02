@@ -73,14 +73,11 @@ func hasLogAt(logs []capturedLog, level LogLevel, contains string) bool {
 	return false
 }
 
-// TestMaybeAutoRecoverAfterResolution_NoWorktreeStateIsSwallowed pins the
-// post-publish run_on_main verification regression: once the worktree
-// pipeline has cleaned up the command's state file, AutoRecoverAfterResolution
-// returns ErrNoWorktreeState. That is the *expected* shape for a successful
-// publish (there is nothing left to recover), so it must be logged at debug
-// rather than warn — emitting "auto_recover_after_resolution_failed" for
-// every successful publish drowned operators in false-positive noise during
-// the 2026-04 audit.
+// TestMaybeAutoRecoverAfterResolution_NoWorktreeStateIsSwallowed asserts
+// that ErrNoWorktreeState (the expected shape after a successful publish
+// has cleaned up the command's state file) is logged at debug rather
+// than warn — emitting "auto_recover_after_resolution_failed" for every
+// successful publish would flood operators with false-positive noise.
 func TestMaybeAutoRecoverAfterResolution_NoWorktreeStateIsSwallowed(t *testing.T) {
 	t.Parallel()
 	stub := &stubAutoRecoverWorktreeManager{

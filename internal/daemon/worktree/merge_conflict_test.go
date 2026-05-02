@@ -1084,17 +1084,13 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	}
 }
 
-// TestResumeMerge_ContentMismatchDoesNotPromoteToMerged is the 2026-04 audit
-// Bug 2 regression. Scenario: worker2 is in Conflict, its resolution edits
-// are only sensitive files (e.g. *.key) that get filtered by stageNewFiles,
-// so commitResolvedWorkerChanges fails (nothing staged → `git commit` error).
-// The prior implementation treated the commit failure as non-fatal, let
-// mergeResolvedWorker early-return on an empty branch diff, marked worker2
-// Integrated, and flipped integration to Merged — all while the resolution
-// content never reached any branch and integration still had only worker1's
-// pre-conflict content. The fix must (a) keep worker2 in Conflict, and
-// (b) leave integration status in a non-Merged recovery state so publish
-// cannot be triggered.
+// TestResumeMerge_ContentMismatchDoesNotPromoteToMerged: when worker2 is
+// in Conflict and its resolution edits are only sensitive files (e.g.
+// *.key) that stageNewFiles filters out, commitResolvedWorkerChanges
+// fails (nothing staged -> `git commit` error). The pipeline must
+// (a) keep worker2 in Conflict, and (b) leave integration status in a
+// non-Merged recovery state so publish cannot be triggered against an
+// integration that did not actually absorb the resolution content.
 func TestResumeMerge_ContentMismatchDoesNotPromoteToMerged(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)

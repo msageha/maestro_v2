@@ -103,7 +103,7 @@ func taskLeaseRef(task *model.Task) leaseRef {
 			}
 		},
 		postRelease: func() {
-			// H5: clear InProgressAt so the next AcquireTaskLease records a fresh
+			// Clear InProgressAt so the next AcquireTaskLease records a fresh
 			// dispatch timestamp. Otherwise the original (stale) value would block
 			// max_in_progress_min checks from ever firing on the re-dispatched task.
 			task.InProgressAt = nil

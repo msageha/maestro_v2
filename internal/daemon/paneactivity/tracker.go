@@ -2,22 +2,13 @@
 // scans so the lease-expiry path can decide between "still working" and
 // "actually dead" without relying on operator-tuned timeouts.
 //
-// Design rationale (2026-04-29 e2e regression):
-//
-// The previous lease model used a fixed dispatch_lease_sec (default 5
-// minutes). Real Sonnet/Opus implementation tasks routinely run 5–7
-// minutes, which means the lease expired mid-task and the daemon
-// re-dispatched against a still-working worker, polluting the pane with
-// repeated `/clear` attempts. Operators were left to guess "the right"
-// timeout per workload — a UX failure.
-//
-// The cure is to derive liveness from observable pane state:
+// Liveness is derived from observable pane state:
 //
 //  1. Each periodic scan, the daemon records a snapshot of every
 //     in-progress agent's pane (content hash + busy_pattern match) via
 //     RecordObservation.
 //  2. When a lease appears to have expired, IsActive compares the
-//     current snapshot against the previous one (≥ scan_interval old).
+//     current snapshot against the previous one (>= scan_interval old).
 //     A change in the hash, OR a busy_pattern still matching, is taken
 //     as evidence of liveness and the caller proactively extends the
 //     lease.
@@ -26,8 +17,8 @@
 //     released.
 //
 // Cross-scan comparison (typically 60 seconds apart) is far less
-// false-negative-prone than the legacy in-line activity probe (which
-// used a 5-second sleep — easily missed during a "thinking" pause).
+// false-negative-prone than an in-line activity probe — short "thinking"
+// pauses do not collapse the verdict to Idle.
 package paneactivity
 
 import (
@@ -237,14 +228,10 @@ var defaultBlockedRegex = regexp.MustCompile(
 
 // MaxUncertainStreak is the maximum number of consecutive VerdictUncertain
 // outcomes per agent before the next Uncertain is downgraded to
-// VerdictIdle. The 2026-04-30 e2e regression captured a stuck worker
-// pane (Claude API content-filter error → pane returned to prompt) whose
-// every lease-expiry observation produced VerdictUncertain because the
-// busy-pattern intermittently matched leftover scrollback. The stream of
-// grace extensions blocked the busy-check fallback indefinitely. Capping
-// at 1 (a single grace extension) preserves the original "give a brand-
-// new agent one cycle to establish a baseline" intent without letting
-// the cap turn into an infinite extension loop.
+// VerdictIdle. Capping at 1 (a single grace extension) preserves the
+// "give a brand-new agent one cycle to establish a baseline" intent
+// while preventing a stuck pane (e.g. Claude API content-filter error
+// returning to prompt) from being grace-extended indefinitely.
 const MaxUncertainStreak = 1
 
 // New creates a Tracker pre-loaded with the given busy-pattern regex.
@@ -420,18 +407,12 @@ func (v Verdict) String() string {
 // so the caller atomically (a) gets a three-way liveness verdict and
 // (b) advances the rolling baseline for the next call.
 //
-// The trichotomy matters for the lease-expiry path: if a worker's lease
-// has just expired and the tracker has never recorded a snapshot for
-// that agent (daemon just started, agent newly admitted, etc.), the
-// previous binary Observe()/IsActiveAfter() returned false and the
-// caller treated that as "agent is dead — release the lease". The
-// 2026-04-29 e2e regression (one worker correctly extended, the next
-// re-dispatched mid-task) reproduced exactly this pattern: workers
-// reaching their first lease-expiry before any baseline existed were
-// repeatedly re-dispatched. ObserveVerdict's VerdictUncertain lets the
-// caller distinguish "no baseline yet" from "baseline exists and shows
-// no change" so the response can be a one-cycle grace extension
-// instead of a destructive release.
+// The trichotomy matters for the lease-expiry path: when the tracker has
+// never recorded a snapshot for an agent (daemon just started, agent newly
+// admitted, etc.), VerdictUncertain lets the caller distinguish "no
+// baseline yet" from "baseline exists and shows no change" so the
+// response can be a one-cycle grace extension instead of a destructive
+// release.
 func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Duration, now time.Time) Verdict {
 	t.mu.RLock()
 	prev, hasPrev := t.snapshots[agentID]
@@ -492,16 +473,11 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	}
 
 	// Cap consecutive no-baseline Uncertain results so a stuck pane
-	// cannot be grace-extended indefinitely. The 2026-04-30 e2e
-	// regression reproduced a worker whose pane returned to a shell
-	// prompt after a Claude API content-filtering error; the
-	// observation path produced Uncertain on every call (snapshot
-	// kept missing for unclear reasons) and the lease was extended
-	// on each scan, never reaching the busy-check release path. Once
-	// an agent has accrued MaxUncertainStreak no-baseline Uncertain
-	// results in a row, the next no-baseline Uncertain is downgraded
-	// to VerdictIdle so the caller falls through to the busy-check
-	// probe (which can release the lease).
+	// cannot be grace-extended indefinitely. Once an agent has accrued
+	// MaxUncertainStreak no-baseline Uncertain results in a row, the
+	// next no-baseline Uncertain is downgraded to VerdictIdle so the
+	// caller falls through to the busy-check probe (which can release
+	// the lease).
 	if uncertainCounted && streak >= MaxUncertainStreak {
 		verdict = VerdictIdle
 		uncertainCounted = false

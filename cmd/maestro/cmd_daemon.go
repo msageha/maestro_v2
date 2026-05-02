@@ -95,10 +95,10 @@ func runDaemon(args []string) error {
 	// instead of os.Stderr. When `maestro up` starts the daemon in the
 	// background, internal/formation/daemon.go discards stdout/stderr so
 	// stderr-routed logs vanish, leaving operators unable to confirm that
-	// e.g. `gosec ./...` actually executed during verification (2026-04-29
-	// e2e report). A second append-mode handle to daemon.log is safe:
-	// POSIX guarantees atomic appends below PIPE_BUF, so verify lines
-	// interleave cleanly with the daemon's primary logger.
+	// e.g. `gosec ./...` actually executed during verification. A second
+	// append-mode handle to daemon.log is safe: POSIX guarantees atomic
+	// appends below PIPE_BUF, so verify lines interleave cleanly with the
+	// daemon's primary logger.
 	verifyLogPath := filepath.Join(maestroDir, "logs", "daemon.log")
 	verifyLogFile, err := os.OpenFile(verifyLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) //nolint:gosec // verifyLogPath is constructed from a controlled application log directory
 	if err != nil {
@@ -107,10 +107,9 @@ func runDaemon(args []string) error {
 	defer func() {
 		// Best-effort close on runDaemon return. d.Run() blocks until shutdown,
 		// so by this point no verify goroutine is still writing. Closing here
-		// flushes the final log line on graceful shutdown and avoids the
-		// fd-leak flag that 2026-04-29 review raised; the OS would reclaim
-		// the fd at process exit anyway, but explicit close is the cleaner
-		// pattern matching the daemon's own log file lifecycle.
+		// flushes the final log line on graceful shutdown and avoids fd-leak;
+		// the OS would reclaim the fd at process exit anyway, but explicit
+		// close matches the daemon's own log file lifecycle.
 		_ = verifyLogFile.Close()
 	}()
 	verifyLogger := slog.New(slog.NewTextHandler(verifyLogFile, nil)).With(

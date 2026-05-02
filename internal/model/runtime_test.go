@@ -25,7 +25,7 @@ func TestParseRuntimeFromModel(t *testing.T) {
 		// edge cases
 		{"", RuntimeClaudeCode, ""},
 		{"claude-code", RuntimeClaudeCode, "claude-code"},
-		{"geminiZZZ", RuntimeClaudeCode, "geminiZZZ"}, // not "gemini-" prefix; "ZZZ" suffix avoids being mistaken for an XXX-style marker (F-066)
+		{"geminiZZZ", RuntimeClaudeCode, "geminiZZZ"}, // not "gemini-" prefix; "ZZZ" suffix avoids being mistaken for an XXX-style marker
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

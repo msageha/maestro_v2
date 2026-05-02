@@ -128,10 +128,9 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 // genuine failures: the upstream agent dispatch already landed the paste in
 // the worker pane and the queue path immediately emits
 // `dispatch_uncertain_assume_running` to keep the lease and let the worker
-// proceed. Counting them as `failed` produced the 2026-04 retest7/8 noise
-// where every successful task execution still surfaced a
-// `phase_b_partial_dispatch ... failed=1` WARN. Splitting the buckets means
-// the WARN only fires on actual failures and the uncertain count is
+// proceed. Counting them as `failed` would surface a spurious WARN on every
+// successful task execution. Splitting the buckets means the WARN only
+// fires on actual failures and the uncertain count is
 // surfaced as INFO so operators see both signals without being misled.
 func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
 	if len(result.dispatches) == 0 {
@@ -217,12 +216,11 @@ func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
 // healthy ones), and (b) once we hit 5 in a row the cause is almost always
 // tmux server-wide degradation (load-buffer / send-keys timing out across
 // every planner pane), not per-signal. Without the gate, a long-running
-// degradation produced thousands of identical "phase_b_signal_failed"
-// log lines per scan and burned scan-cycle CPU on doomed deliveries — the
-// 2026-04-27 retest log showed signal_delivery_failed accumulating into the
-// 10k range before daemon shutdown. The remaining signals are retained in
-// the queue (no Attempts increment, no NextAttemptAt update) so the next
-// scan retries from the same point once tmux recovers.
+// degradation would produce thousands of identical "phase_b_signal_failed"
+// log lines per scan and burn scan-cycle CPU on doomed deliveries. The
+// remaining signals are retained in the queue (no Attempts increment, no
+// NextAttemptAt update) so the next scan retries from the same point once
+// tmux recovers.
 const signalCascadeBreakThreshold = 5
 
 // sustainedCascadeBreakThreshold sets the consecutive scan-tick count at
@@ -423,20 +421,15 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 		}
 
 		// All-failed observation: when every worker's commit failed, do not
-		// immediately MarkIntegrationFailed. The 2026-05-01 e2e regression
-		// showed this is hostile to transient errors: a single .git/index.lock
-		// race during the auto-commit pass flipped the integration to Failed,
-		// the helpers' IntegrationStatusFailed branch synthesised a planner
-		// failed-result, and the next scan's stepRetryCommitFailedWorkers
-		// could no longer reopen publish even after the commit succeeded
-		// because the synthetic failure had already terminated the queue.
-		// AddCommitFailedWorker (called from autoCommitWorkerWithRetry) has
-		// already recorded the failure on every affected worker, so the
-		// publish gate stays blocked via len(CommitFailedWorkers)>0 and
-		// stepRetryCommitFailedWorkers will retry every scan. If retries
-		// keep failing, the operator-visible publish_blocked log surfaces
-		// the situation; tying integration_status to a single tick's
-		// outcome over-commits the daemon to a recoverable error.
+		// immediately MarkIntegrationFailed. Tying integration_status to a
+		// single tick's outcome would be hostile to transient errors (e.g. a
+		// .git/index.lock race) — the synthetic failure would terminate the
+		// queue and stepRetryCommitFailedWorkers could no longer reopen
+		// publish. AddCommitFailedWorker has already recorded the failure
+		// on every affected worker, so the publish gate stays blocked via
+		// len(CommitFailedWorkers)>0 and stepRetryCommitFailedWorkers
+		// reattempts every scan. If retries keep failing, the operator-
+		// visible publish_blocked log surfaces the situation.
 		if qh.worktreeManager != nil && len(mr.CommitFailures) > 0 && len(committedWorkerIDs) == 0 {
 			qh.log(LogLevelWarn,
 				"worktree_all_commits_failed command=%s commit_failures=%d "+
@@ -489,15 +482,14 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 // stepCleanupWorktrees executes worktree cleanup operations
 // (Phase A collected items + post-publish additional cleanups).
 //
-// 2026-04-28: each cleanup now respawns the worker panes attached to the
-// command into the project root before `git worktree remove` runs. The
-// worker pane's cwd is the worktree path, so deleting the worktree
-// underneath a still-open claude-code process leaves any subsequent
-// posix_spawn (typically Stop hook) failing with ENOENT for /bin/sh —
-// node.js reports the chdir failure as if the binary itself were
-// missing. The pane respawn is best-effort: a failure aborts the
-// matching CleanupCommand call so the next scan retries rather than
-// deleting a worktree that still has a pane pointed at it.
+// Each cleanup respawns the worker panes attached to the command into the
+// project root before `git worktree remove` runs. The worker pane's cwd
+// is the worktree path, so deleting the worktree underneath a still-open
+// claude-code process leaves any subsequent posix_spawn (typically Stop
+// hook) failing with ENOENT for /bin/sh. The pane respawn is best-effort:
+// a failure aborts the matching CleanupCommand call so the next scan
+// retries rather than deleting a worktree that still has a pane pointed
+// at it.
 func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult, additionalCleanups []worktreeCleanupItem) {
 	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
 	if err := forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {

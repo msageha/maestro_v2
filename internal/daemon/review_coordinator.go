@@ -33,12 +33,12 @@ type ReviewCoordinator struct {
 	worktreeManager *WorktreeManager
 	// diffCache stores precomputed diffs keyed by taskID so the review
 	// dispatch path can use a stable snapshot even when the worker worktree
-	// has been cleaned up by the time DispatchIfEligible runs (2026-04-29
-	// e2e regression). Result-write callers populate it via PrecaptureDiff
-	// before relinquishing the worker queue lock; consumers (buildDiffContent)
-	// look it up first and fall back to ComputeWorkerDiff only when the cache
-	// has nothing for the task. Entries are evicted in DispatchIfEligible to
-	// bound memory.
+	// has been cleaned up by the time DispatchIfEligible runs.
+	// Result-write callers populate it via PrecaptureDiff before
+	// relinquishing the worker queue lock; consumers (buildDiffContent)
+	// look it up first and fall back to ComputeWorkerDiff only when the
+	// cache has nothing for the task. Entries are evicted in
+	// DispatchIfEligible to bound memory.
 	diffCacheMu sync.Mutex
 	diffCache   map[string]string
 }
@@ -98,12 +98,11 @@ func (rc *ReviewCoordinator) SetWorktreeManager(wm *WorktreeManager) {
 // Reviews are advisory by design: IsAdvisory=true is hard-coded in the
 // dispatcher, so findings never gate task completion. Without persistence,
 // the full Finding bodies (severity, file path, message, suggested fix)
-// would only live in memory — operators reviewing a regression would have
-// to scrape daemon.log to recover what the reviewer flagged. The 2026-04-28
-// E2E run hit exactly that gap ("finding 本文の保存先も見つけにくい状態だった"),
-// so each result is now mirrored to .maestro/state/reviews/<task_id>.yaml
-// before any tracker bookkeeping. The persistence path is observability;
-// failures are logged at warn and never propagate to the dispatch loop.
+// would only live in memory and operators would need to scrape daemon.log
+// to recover what the reviewer flagged. Each result is mirrored to
+// .maestro/state/reviews/<task_id>.yaml before any tracker bookkeeping.
+// The persistence path is observability; failures are logged at warn and
+// never propagate to the dispatch loop.
 func (rc *ReviewCoordinator) MonitorResults() {
 	for result := range rc.dispatcher.Results() {
 		taskID := extractTaskIDFromRequestID(result.RequestID)
@@ -284,11 +283,8 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 // An empty diff (worktree gone, no commits since the merge base, etc.) is
 // intentionally NOT cached: caching "" would suppress the buildDiffContent
 // fallback chain (worktreeManager.ComputeWorkerDiff retry → summary +
-// files_changed payload), and the dispatcher records the resulting empty
-// payload as status=skipped. The 2026-04-29 e2e regression observed exactly
-// this — every codex review came back as `status=skipped findings=0` in
-// under a second because PrecaptureDiff cached "" before the worker had
-// committed and the dispatch path then deferred to that cached "".
+// files_changed payload), and the dispatcher would record the resulting
+// empty payload as status=skipped.
 //
 // Errors during capture are logged and result in no cache entry, so the
 // dispatch path keeps its existing fallback behaviour.
@@ -337,21 +333,17 @@ func (rc *ReviewCoordinator) popPrecapturedDiff(taskID string) (string, bool) {
 // buildDiffContent produces the diff payload sent to the advisory reviewer.
 // Prefers, in order:
 //
-//  1. a precaptured diff from PrecaptureDiff (stable across cleanup races —
-//     the 2026-04-29 e2e regression where the worker worktree was wiped
-//     before DispatchIfEligible ran),
+//  1. a precaptured diff from PrecaptureDiff (stable across cleanup races
+//     where the worker worktree gets wiped before DispatchIfEligible runs),
 //  2. a fresh `git diff <merge-base>` via WorktreeManager.ComputeWorkerDiff,
 //  3. a synthetic "summary + files changed" payload (legacy fallback).
 //
 // The fallback always produces non-empty content (it includes task/command
 // IDs and the reporter at minimum) so the dispatcher's "DiffContent empty
-// → status=skipped" early-return never fires from the daemon side. If the
-// reviewer model still cannot find anything to review, it returns 0
-// findings as completed — that is a meaningfully different signal than
-// "we never even sent a payload", which is what the legacy fallback used
-// to produce when params.Summary and params.FilesChanged were both empty
-// (the 2026-04-29 TS-repo regression where every codex review ended in
-// skipped after under 1 second of duration).
+// → status=skipped" early-return never fires from the daemon side. If
+// the reviewer model still cannot find anything to review, it returns 0
+// findings as completed — a meaningfully different signal than "we never
+// sent a payload".
 func (rc *ReviewCoordinator) buildDiffContent(params ResultWriteParams) string {
 	if cached, ok := rc.popPrecapturedDiff(params.TaskID); ok && cached != "" {
 		return cached

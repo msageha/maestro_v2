@@ -34,10 +34,7 @@ func parseInput(data []byte) (*SubmitInput, error) {
 		// are caused by operator input shape, not by a daemon bug. Mirror
 		// the size-limit branch and surface them as validation errors so
 		// the CLI prints `[VALIDATION_ERROR]` and the operator sees the
-		// underlying yaml.v3 message verbatim. The 2026-04-28 E2E pass hit
-		// this exact path with `field worker_id not found in type
-		// plan.TaskInput` and reported INTERNAL_ERROR — that misclassification
-		// is the bug we are fixing here.
+		// underlying yaml.v3 message verbatim.
 		return nil, &planValidationError{Msg: fmt.Sprintf("parse tasks YAML: %v", err)}
 	}
 	return &input, nil
@@ -85,11 +82,9 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 //
 //   - worktree mode disabled → Worker mutates the main checkout in place;
 //     without an explicit commit task the changes sit dirty after the
-//     command completes (2026-04-28 E2E confirmed `value.go`/`value_test.go`
-//     left uncommitted with `worktree.enabled=false` + `continuous=false`).
-//     Inject __system_commit in this mode regardless of continuous, so the
-//     "completed = work persisted to git history" contract holds for both
-//     single-shot and continuous runs.
+//     command completes. Inject __system_commit in this mode regardless of
+//     continuous, so the "completed = work persisted to git history"
+//     contract holds for both single-shot and continuous runs.
 //   - worktree mode enabled → the Daemon commits worktree changes itself
 //     during merge/publish; a Worker-side commit task would race with
 //     that pipeline and is both redundant and harmful.

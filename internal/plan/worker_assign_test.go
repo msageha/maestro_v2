@@ -533,20 +533,15 @@ func TestAssignWorkers_BoostMode(t *testing.T) {
 	}
 }
 
-// AdaptiveModelSelector / BanditSelector tests previously here have been
-// moved alongside their production implementation in internal/daemon
-// (banditModelSelector). The plan-side duplicate selector was removed when
-// the test coverage migrated; see internal/daemon/model_selector_test.go
-// for warm-up, trace-requirement, and fallback behavior.
+// See internal/daemon/model_selector_test.go for AdaptiveModelSelector /
+// BanditSelector coverage (warm-up, trace-requirement, fallback behavior).
 
-// TestAssignWorkers_PinnedWorkerHonored pins the (2026-04-28) PinnedWorkerID
+// TestAssignWorkers_PinnedWorkerHonored verifies the PinnedWorkerID
 // shortcut: when TaskAssignmentRequest names a configured worker, the
 // bloom-derived auto-assignment is bypassed and the task lands on that
 // worker regardless of load. This is the path Planner agents use when
-// fanning two parallel tasks into worker1 / worker2 lanes from a fresh
-// plan submit; before this field existed they had to either tolerate
-// non-deterministic auto-assignment or fall back to plan add-task per
-// worker after the initial submit.
+// fanning parallel tasks into worker1 / worker2 lanes from a fresh plan
+// submit.
 func TestAssignWorkers_PinnedWorkerHonored(t *testing.T) {
 	config := model.WorkerConfig{
 		Count:        2,

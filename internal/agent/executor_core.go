@@ -225,8 +225,7 @@ func (e *Executor) CleanupPaneMutex(paneTarget string) {
 // tmux pane and respawns the shell into the project root. Phase B uses
 // this just before `git worktree remove` so the pane never holds a cwd
 // the daemon is about to delete — claude-code's Stop hook posix_spawn
-// '/bin/sh' fails with ENOENT when its cwd has been removed, which the
-// 2026-04-28 conflict-recovery E2E run reported as a recurring warning.
+// '/bin/sh' fails with ENOENT when its cwd has been removed.
 //
 // No-op when the worker pane cannot be located (worker never started, or
 // already torn down). Errors are returned so the caller can decide
@@ -277,8 +276,8 @@ const (
 	defaultClearRetryBackoffMs    = 500 // milliseconds backoff between /clear retries
 	// defaultClearSecondEnterDelayMs is retained for backward compatibility with
 	// existing config.yaml files that still set clear_second_enter_delay_ms.
-	// Since 2026-04 clearAndConfirm no longer sends a second Enter (Claude Code 2.x
-	// re-runs /clear when it sees the trailing Enter), so the value is unused at
+	// clearAndConfirm no longer sends a second Enter (Claude Code 2.x re-runs
+	// /clear when it sees the trailing Enter), so the value is unused at
 	// runtime; only applyDefaults still touches it to keep the field round-trippable.
 	defaultClearSecondEnterDelayMs = 500
 )

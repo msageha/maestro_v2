@@ -51,35 +51,25 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		if !allTerm {
 			continue
 		}
-		// State-side gate (2026-04-29 review pin): the queue tasks may all
-		// be at a terminal queue status (e.g. completed) while the state
-		// file still tracks an in-flight resolution path — most commonly
-		// paused_for_replan after max-retries verify failure, where the
-		// Planner is composing an add-retry-task call. Without this gate
-		// the 10-minute stall cleanup races the Planner: cleanup deletes
-		// the worktree, the Planner's add-retry-task lands moments later,
-		// and the dispatcher fails to resolve the worktree path. Skip
-		// cleanup whenever any task in state is non-terminal so the
-		// Planner has the worktree it needs when it acts.
+		// State-side gate: the queue tasks may all be at a terminal queue
+		// status (e.g. completed) while the state file still tracks an
+		// in-flight resolution path — most commonly paused_for_replan
+		// after max-retries verify failure, where the Planner is composing
+		// an add-retry-task call. Without this gate, the 10-minute stall
+		// cleanup races the Planner: cleanup deletes the worktree, the
+		// Planner's add-retry-task lands moments later, and the
+		// dispatcher fails to resolve the worktree path. Skip cleanup
+		// whenever any task in state is non-terminal.
 		//
-		// Phantom-task escape (2026-04-29 e2e regression): the state-side
-		// gate above could trap a command forever when a retry/repair task
-		// landed in state.TaskStates as `planned`/`pending` but never made
-		// it into any worker queue (the queue write silently lost or the
-		// rollback also failed without RetryEnqueueFailed bookkeeping). All
-		// queue tasks were terminal, so the queue gate let us through, but
-		// the state gate then bailed indefinitely because the phantom
-		// TaskStates entry remained non-terminal. Once the cleanup window
-		// elapsed against cmd.UpdatedAt, it is safe to detect TaskStates
-		// entries whose IDs do not appear in *any* worker queue and force-
-		// fail them — they are by definition undispatchable, and clearing
-		// them either (a) lets the state-side gate become satisfied so the
-		// cleanup proceeds, or (b) at least unblocks Phase termination on
-		// the next scan. The legitimate paused_for_replan scenario the
-		// gate was originally written to protect is unaffected: those
-		// tasks remain in their owning worker queue (typically as
-		// `completed` or `verify_pending`), so the queue-presence check
-		// keeps them out of the phantom set.
+		// Phantom-task escape: the state-side gate could trap a command
+		// forever when a retry/repair task lands in state.TaskStates as
+		// `planned`/`pending` but never makes it into any worker queue.
+		// Once the cleanup window has elapsed, detect TaskStates entries
+		// whose IDs do not appear in *any* worker queue and force-fail
+		// them — they are by definition undispatchable. Legitimate
+		// paused_for_replan tasks remain in their owning worker queue
+		// (typically as `completed` or `verify_pending`), so the queue-
+		// presence check keeps them out of the phantom set.
 		qh.tryClearPhantomTasks(cmd, s.tasks, threshold, now)
 		if hasPending, err := qh.dependencyResolver.GetStateReader().HasNonTerminalTaskState(cmd.ID); err == nil && hasPending {
 			continue
@@ -109,20 +99,15 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 			if p.Status == model.PhaseStatusAwaitingFill {
 				continue
 			}
-			// Pending phases are dependency-bound (2026-04-29 review pin):
-			// a deferred phase declared via plan submit starts at
-			// `pending` and only transitions to `awaiting_fill` when the
-			// dependency resolver observes every upstream phase as
-			// terminal. Killing a pending phase whose declared deps are
-			// still active false-fails legitimate multi-phase workflows —
-			// the user reproduced this where parallel_conflict completed,
-			// report_integration was filling, and integration_verification
-			// (pending, depends_on=report_integration) got force-failed
-			// because the cleanup window elapsed against the command's
-			// UpdatedAt timestamp. Only flag a pending phase as stuck
-			// when every declared dependency is itself terminal — at
-			// that point the dep resolver should have advanced the
-			// phase, and the failure to do so is genuine.
+			// Pending phases are dependency-bound: a deferred phase
+			// declared via plan submit starts at `pending` and only
+			// transitions to `awaiting_fill` when the dependency resolver
+			// observes every upstream phase as terminal. Killing a
+			// pending phase whose declared deps are still active false-
+			// fails legitimate multi-phase workflows. Only flag a pending
+			// phase as stuck when every declared dependency is itself
+			// terminal — at that point the dep resolver should have
+			// advanced the phase, and the failure to do so is genuine.
 			if p.Status == model.PhaseStatusPending {
 				allDepsTerminal := true
 				for _, depID := range p.DependsOn {
@@ -149,11 +134,9 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		// dispatch / result-write paths refresh task.UpdatedAt reliably,
 		// but cmd.UpdatedAt is not touched by every internal transition
 		// (e.g., result_write Phase A holds the per-worker queue lock and
-		// leaves cmd.UpdatedAt as last set at command dispatch). The
-		// 2026-04-29 e2e regression hit this: a phase ran for 16m through
-		// retry + verify, every task's UpdatedAt was within seconds of
-		// `now`, yet cmd.UpdatedAt was stuck at the original dispatch and
-		// the 10-minute fast-track threshold force-failed an active phase.
+		// leaves cmd.UpdatedAt as last set at command dispatch). Without
+		// this max() the fast-track threshold would force-fail an active
+		// phase whose tasks were progressing.
 		//
 		// Use max(cmd.UpdatedAt, latest task.UpdatedAt for this command)
 		// so the threshold honours real progress. cmd.CreatedAt is the
@@ -175,18 +158,15 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 			continue
 		}
 
-		// Bug-K guard (2026-05-02): before nuking phases and the
-		// integration branch, ask the lineage-aware DeriveStatus what
-		// the live state thinks. If the plan would derive Completed
-		// AND the integration branch has actually been merged (the
-		// publish gate is one step away from advancing it), the "stuck"
-		// phase is just waiting for the resolver to flip it —
-		// fast_track_cleanup must NOT preempt that with
-		// MarkIntegrationFailed because the publish path then has no
-		// way out. Operators reported a deadlock where
-		// derived_status=completed and integration_status=failed
-		// coexisted for over an hour, blocking publish and Orchestrator
-		// notification.
+		// Before nuking phases and the integration branch, ask the
+		// lineage-aware DeriveStatus what the live state thinks. If the
+		// plan would derive Completed AND the integration branch has
+		// actually been merged (the publish gate is one step away from
+		// advancing it), the "stuck" phase is just waiting for the
+		// resolver to flip it — fast_track_cleanup must NOT preempt
+		// that with MarkIntegrationFailed because the publish path then
+		// has no way out (would deadlock with derived_status=completed
+		// and integration_status=failed).
 		//
 		// Restricted to Integration.Status==Merged so that the original
 		// stall-relief use case (integration still Created because a
@@ -307,14 +287,11 @@ func (qh *QueueHandler) tryClearPhantomTasks(cmd *model.Command, tasks map[strin
 		//   - in_progress / running: failed is reachable AND semantically right —
 		//     execution actually started but its result is unrecoverable.
 		//
-		// Using `cancelled` for non-execution states avoids the silent loop
-		// the user reported (2026-04-30 e2e regression):
-		//
-		//     invalid task state transition: "planned" → "failed"
-		//
-		// which previously left the phantom task wedged because the scan kept
-		// retrying an illegal transition. CancelledReason carries the audit
-		// string so log searches can still correlate against this code path.
+		// Using `cancelled` for non-execution states avoids an "invalid
+		// task state transition: planned → failed" loop that would
+		// otherwise leave the phantom task wedged. CancelledReason
+		// carries the audit string so log searches can still correlate
+		// against this code path.
 		nextStatus := phantomTerminalStatus(status)
 		reason := "phantom_task_no_queue_entry: state retained non-terminal entry past stall_cleanup_after"
 		if err := qh.dependencyResolver.GetStateManager().UpdateTaskState(
@@ -352,10 +329,9 @@ func phantomTerminalStatus(current model.Status) model.Status {
 // back to cmd.CreatedAt when UpdatedAt is empty) and every queue task's
 // UpdatedAt that belongs to this command.
 //
-// The 2026-04-29 e2e regression that motivated this helper: cmd.UpdatedAt
-// is not refreshed by every internal transition, so a phase that ran for
-// 16 minutes through retry + verify could see fast-track cleanup fire
-// against a 10-minute threshold even though every task had reported
+// cmd.UpdatedAt is not refreshed by every internal transition, so a
+// phase that runs through retry + verify could see fast-track cleanup
+// fire against the threshold even though every task had reported
 // progress within the last few seconds. Considering task UpdatedAt
 // timestamps closes that gap without requiring every Phase A path to
 // remember to update cmd.UpdatedAt.

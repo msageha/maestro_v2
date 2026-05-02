@@ -1,9 +1,8 @@
 package worktree
 
-// ResumeMerge pipeline + worker-resolved merge primitives extracted from
-// recover.go (F-041 step 4 physical file split). This file owns the
-// "operator/agent triggered ResumeMerge" code path and its helpers
-// (attemptResolvedMerges → tryMergeWorker → mergeResolvedWorker /
+// ResumeMerge pipeline + worker-resolved merge primitives. This file owns
+// the "operator/agent triggered ResumeMerge" code path and its helpers
+// (attemptResolvedMerges -> tryMergeWorker -> mergeResolvedWorker /
 // abortAndReturnMergeError / checkoutResolvedFilesFromBranch) so the
 // integration-branch reflow logic stays close together.
 
@@ -151,8 +150,7 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 }
 
 // finalizeResumeMergeIntegrationStatus drives the post-merge integration
-// status transition logic extracted from ResumeMerge (F-041 step 1). It
-// keeps the original verbatim behaviour:
+// status transition after ResumeMerge has merged the resolved workers:
 //
 //  1. Skip if any non-terminal worker remains (allIntegrated=false) or no
 //     workers were resolved this round.
@@ -208,7 +206,7 @@ func (wm *Manager) finalizeResumeMergeIntegrationStatus(
 
 // allWorkersMergeTerminal reports whether every worker is in a status that
 // counts as "done for merge purposes" — integrated, published, or one of the
-// cleanup terminals. F-041 step 1 helper.
+// cleanup terminals.
 func allWorkersMergeTerminal(state *model.WorktreeCommandState) bool {
 	for _, ws := range state.Workers {
 		switch ws.Status {
@@ -224,8 +222,7 @@ func allWorkersMergeTerminal(state *model.WorktreeCommandState) bool {
 
 // revertContentMismatchedWorkers transitions each badWorker back to
 // Conflict so the resolution pipeline re-attempts on the next scan instead
-// of leaving them wedged in a false "integrated" state. F-041 step 1
-// helper extracted from ResumeMerge.
+// of leaving them wedged in a false "integrated" state.
 func (wm *Manager) revertContentMismatchedWorkers(
 	state *model.WorktreeCommandState,
 	badWorkers []string,
@@ -685,10 +682,6 @@ func (wm *Manager) mergeResolvedWorker(
 // abortAndReturnMergeError aborts the in-flight merge and returns primaryErr.
 // If `merge --abort` itself fails, recoverWorktreeAfterMerge is attempted.
 // When the recovery also fails, all three errors are joined and returned.
-//
-// F-041 step 2: extracted from mergeResolvedWorker so the caller does not
-// repeat the abort/recover/joined-error scaffolding for every failure
-// branch (3× before extraction).
 func (wm *Manager) abortAndReturnMergeError(
 	integrationPath, preMergeHEAD, commandID, workerID string,
 	primaryErr error,
@@ -710,8 +703,7 @@ func (wm *Manager) abortAndReturnMergeError(
 // checkoutResolvedFilesFromBranch runs `git checkout <branch> -- <file>` for
 // every conflict file so the conflicting hunks are replaced with the
 // worker's resolved version (working tree + index). On the first checkout
-// failure it aborts the merge and returns the joined error. F-041 step 2
-// helper extracted from mergeResolvedWorker.
+// failure it aborts the merge and returns the joined error.
 func (wm *Manager) checkoutResolvedFilesFromBranch(
 	integrationPath, preMergeHEAD, commandID string,
 	ws *model.WorktreeState,

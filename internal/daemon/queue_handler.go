@@ -122,11 +122,8 @@ type QueueHandler struct {
 	// with the signal cascade-break tripped. Persists across scans (the
 	// per-tick signalCascadeTracker is local to stepDeliverSignals) so the
 	// daemon can surface the meta-circuit "tmux delivery has been degraded
-	// for N consecutive ticks" instead of only the per-tick message. The
-	// historical R-2 gap from the 2026-04 review was that single-tick
-	// cascade-break did not escalate when the underlying tmux degradation
-	// persisted across many ticks; this counter is the primitive an
-	// operator-facing meta-circuit reads.
+	// for N consecutive ticks" instead of only the per-tick message. This
+	// counter is the primitive an operator-facing meta-circuit reads.
 	consecutiveCascadeBreakScans atomic.Int32
 }
 

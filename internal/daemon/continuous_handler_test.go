@@ -613,9 +613,9 @@ func TestContinuous_RunningNoNotification(t *testing.T) {
 // when CommandResult.Status arrives as failed (e.g. a stale synthetic_failure
 // from a prior scan) but state.plan_status has already been reconciled to
 // completed by R4PlanStatus, continuous mode trusts the state file and does
-// NOT pause. Defense-in-depth fix for the 2026-04-30 e2e regression where a
-// false synthetic_failure paused continuous after the daemon's own recovery
-// path had already driven the command to completed.
+// NOT pause. Defense-in-depth so a false synthetic_failure cannot pause
+// continuous after the daemon's own recovery path has already driven the
+// command to completed.
 func TestContinuous_ReconcileWithPlanStatus_OverridesStaleFailure(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)

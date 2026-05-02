@@ -142,13 +142,11 @@ func TestR10PausedForReplan_NoEscalationWithinThreshold(t *testing.T) {
 }
 
 // TestR10PausedForReplan_RequiredEscalation_WritesSyntheticPlannerResult
-// pins the 2026-04-30 e2e regression fix: when R10 escalates a *required*
-// task past the paused_for_replan deadletter window, R10 must publish a
-// synthetic failed CommandResult to results/planner.yaml so R3 can
-// reconcile the planner queue command (in_progress → failed) on the
-// next scan without waiting for the unresponsive Planner to write a
-// real result. Operators previously saw failure-flow commands sit on
-// the planner queue indefinitely after their tasks were R10-escalated.
+// pins the invariant: when R10 escalates a *required* task past the
+// paused_for_replan deadletter window, R10 must publish a synthetic
+// failed CommandResult to results/planner.yaml so R3 can reconcile the
+// planner queue command (in_progress -> failed) on the next scan
+// without waiting for an unresponsive Planner to write a real result.
 func TestR10PausedForReplan_RequiredEscalation_WritesSyntheticPlannerResult(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
@@ -285,11 +283,10 @@ func TestR10PausedForReplan_DisabledByZeroThreshold(t *testing.T) {
 }
 
 // TestR10PausedForReplan_QueueWriteFailure_LeavesStateRetryable pins the
-// 2026-04-29 review fix: when r10MarkQueueTaskFailed fails, the state
-// transition for that task must NOT be applied — otherwise the next R10
-// scan would skip the task (state already failed, no longer
-// paused_for_replan), leaving the queue stuck at non-terminal forever and
-// the publish gate blocked.
+// invariant: when r10MarkQueueTaskFailed fails, the state transition for
+// that task must NOT be applied. Otherwise the next R10 scan would skip
+// the task (state already failed, no longer paused_for_replan), leaving
+// the queue stuck at non-terminal forever and the publish gate blocked.
 //
 // We simulate the queue write failure by making the queue file's parent
 // directory read-only while keeping the file path valid for the read. R10
@@ -363,14 +360,12 @@ func TestR10PausedForReplan_QueueWriteFailure_LeavesStateRetryable(t *testing.T)
 }
 
 // TestR10PausedForReplan_QueueUnmarshalFailure_LeavesStateRetryable pins
-// the 2026-04-29 review fix #2: r10FindOwningWorker must distinguish
-// "queue entry definitively absent" from "transient read/unmarshal
-// error". A corrupted queue file used to be silently swallowed (returning
-// "" alongside a missing-entry case), which let R10 advance state to
-// failed while the queue task stayed at non-terminal — blocking the
-// publish gate exactly the way the original "queue write failure" bug
-// did. The fix returns the error, the caller skips the task, and the
-// next scan retries.
+// the invariant: r10FindOwningWorker must distinguish "queue entry
+// definitively absent" from "transient read/unmarshal error". A
+// corrupted queue file must propagate the error so the caller skips
+// the task and the next scan retries; otherwise R10 would advance
+// state to failed while the queue task stayed at non-terminal,
+// blocking the publish gate.
 func TestR10PausedForReplan_QueueUnmarshalFailure_LeavesStateRetryable(t *testing.T) {
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)

@@ -1,10 +1,9 @@
 package worktree
 
-// Forward-merge primitives extracted from merge_publish.go (F-040 step 3
-// physical file split). Covers the base → integration forward merge that
-// runs at the start of PublishToBase to keep integration up-to-date with
-// the base branch, including in-flight merge re-entry, daemon-side staging
-// of worker-resolved conflict files, and conflict-marker detection.
+// Forward-merge primitives. Covers the base → integration forward merge
+// that runs at the start of PublishToBase to keep integration up-to-date
+// with the base branch, including in-flight merge re-entry, daemon-side
+// staging of worker-resolved conflict files, and conflict-marker detection.
 
 import (
 	"bytes"
@@ -119,8 +118,7 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 // recordForwardMergeConflict captures the conflict file set produced by a
 // failed `git merge` of baseBranch into integration and persists it on
 // `state` so the publish_conflict planner signal can be emitted on the next
-// scan. Extracted from forwardMergeBaseToIntegration (F-046) so the merge
-// happy-path stays flat.
+// scan.
 //
 // Critical invariants preserved from the inline implementation:
 //   - The merge is NOT aborted. Conflict markers must remain in the
@@ -290,8 +288,8 @@ func bytesContainConflictMarkers(data []byte) bool {
 		return true
 	}
 	// Pathological edge case: a file that opens with the divider or closing
-	// marker on the very first byte has no leading newline, so the "\n…"
-	// substrings above miss it. Cover that case explicitly (F-013).
+	// marker on the very first byte has no leading newline, so the "\n..."
+	// substrings above miss it. Cover that case explicitly.
 	if bytes.HasPrefix(data, []byte("=======")) ||
 		bytes.HasPrefix(data, []byte(">>>>>>>")) {
 		return true

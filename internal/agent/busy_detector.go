@@ -285,7 +285,7 @@ func (bd *busyDetector) undecidedSoftRetryInterval() time.Duration {
 
 // isClaudeReadyFast reports whether the pane's runtime is claude-code AND
 // the captured content shows the input prompt glyph (❯). This is the
-// fast-path idle signal used to skip the activity probe (Bug N).
+// fast-path idle signal used to skip the activity probe.
 //
 // Runtime resolution is fail-closed for non-claude runtimes: when the
 // runtime user variable is missing/unreadable or set to anything other

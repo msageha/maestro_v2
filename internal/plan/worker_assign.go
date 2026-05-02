@@ -30,7 +30,7 @@ type WorkerAssignment struct {
 // Implementations must be safe for concurrent use.
 //
 // Aliased to contract.ModelSelector so plan and daemon/core share a single
-// definition. F-039.
+// definition.
 type ModelSelector = contract.ModelSelector
 
 // assignConfig carries optional AssignWorkers behavior.
@@ -58,10 +58,8 @@ type WorkerState struct {
 // PinnedWorkerID, when set, forces AssignWorkers to bypass the bloom-based
 // auto-assignment and place the task on the named worker — same shape as
 // the inject path's TargetWorkerID but reachable from the initial-submit
-// route. Surfaced 2026-04-28: Planner agents that try to fan tasks into
-// fixed lanes (e.g. worker1 vs worker2 for separate features) had no
-// way to express that on a fresh plan submit; the YAML schema dropped
-// the field as "unknown" and the call failed with INTERNAL_ERROR.
+// route, so Planner agents can fan tasks into fixed lanes (e.g. worker1 vs
+// worker2 for separate features) on a fresh plan submit.
 type TaskAssignmentRequest struct {
 	Name           string
 	BloomLevel     int

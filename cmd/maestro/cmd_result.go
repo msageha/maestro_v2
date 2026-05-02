@@ -24,23 +24,10 @@ func (a *cliApp) runResult(args []string) error {
 
 // runResultWrite reports task completion or failure via UDS.
 //
-// 2026-04-30 e2e regression (Worker policy-hook D001 false-positive):
-// long human-readable summaries passed inline as `--summary "..."` are
-// observed end-to-end as a Bash command string by the Worker PreToolUse
-// policy hook (Worker invokes `maestro result write` via Bash). When the
-// summary text happened to contain the substring `rm -rf /Users/...` or
-// any other D001 trigger as part of describing the work, the hook denied
-// the command. The agent then retried with a degenerate `--summary "test
-// summary"` placeholder, which Phase A accepted as the canonical result
-// and short-circuited the legitimate retry as a duplicate, leaving the
-// command stalled with a placeholder result.
-//
-// The fix is to give Worker an off-argv path for the summary text so the
-// policy hook only ever scans short, structured argument values. Mirrors
-// `plan complete --summary-file` (cmd_plan.go) and the shared
-// readFlagInputFile pattern: accepts a path or "-"/"/dev/stdin" for
-// stdin. --summary and --summary-file are mutually exclusive so the
-// daemon receives a single unambiguous value.
+// Long summaries can be passed via --summary-file (path or "-" for stdin) so
+// the Worker PreToolUse policy hook only ever scans short, structured argv
+// values. --summary and --summary-file are mutually exclusive so the daemon
+// receives a single unambiguous value.
 func (a *cliApp) runResultWrite(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro result write: missing reporter\nusage: maestro result write <reporter> [options]"}
@@ -110,15 +97,8 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return cmd.Errorf("%v", err)
 	}
 	// Reject obvious placeholder summaries so a worker that lost its real
-	// result (e.g. policy-hook D001 false-positive followed by a degenerate
-	// retry "test summary") cannot silently land its placeholder as the
-	// canonical result. The 2026-04-30 e2e regression observed exactly this
-	// flow: phase diagnosis reported success because every queue task was
-	// `completed`, but the underlying summary held only "test minimal" /
-	// "test summary" — the actual implementation report was lost in a
-	// duplicate_short_circuited reply on the legitimate retry. Rejecting
-	// these patterns at the CLI boundary forces the worker to construct a
-	// meaningful summary (or use --summary-file for long content) and
+	// result cannot silently land a placeholder as the canonical result.
+	// Forcing a meaningful summary (or --summary-file for long content)
 	// surfaces the failure as a clean validation error rather than a
 	// silently-completed task.
 	if err := validateSummaryNotPlaceholder("--summary", summary, resultStatus); err != nil {
@@ -169,9 +149,9 @@ func (a *cliApp) runResultWrite(args []string) error {
 	}
 
 	if !resp.Success {
-		// F-019 step 2: structured fencing exit codes when the daemon
-		// surfaced FencingDetails. Unknown error codes still fall through
-		// to the legacy generic handler.
+		// Structured fencing exit codes when the daemon surfaced
+		// FencingDetails. Unknown error codes fall through to the legacy
+		// generic handler.
 		if exit := classifyFencingExitCode(resp); exit != 0 {
 			return fencingCLIError(resp, false, "maestro result write")
 		}
@@ -241,10 +221,9 @@ var summaryPlaceholderPatterns = map[string]struct{}{
 // the typical worker report length (60–500+ runes) so legitimate short
 // reports such as "fixed off-by-one in foo.go; tests pass" still clear the
 // gate, but degenerate placeholders from a worker scrambling after a
-// policy-hook denial (the 2026-04-30 regression) are rejected. `failed`
-// status is not subject to this floor — failure-mode reports are sometimes
-// genuinely terse ("worker timeout"), and rejecting them would make
-// post-mortem reporting harder.
+// policy-hook denial are rejected. `failed` status is not subject to this
+// floor — failure-mode reports are sometimes genuinely terse ("worker
+// timeout"), and rejecting them would make post-mortem reporting harder.
 const minSummaryLengthForCompleted = 16
 
 // validateSummaryNotPlaceholder returns an error when summary matches a

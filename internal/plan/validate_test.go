@@ -35,9 +35,9 @@ func TestValidateTasksInput_Valid(t *testing.T) {
 }
 
 // TestValidateTasksInput_RunOnMainAndIntegrationMutuallyExclusive verifies that
-// setting both run_on_main and run_on_integration on the same task is rejected
-// (Bug F). The dispatcher selects exactly one target directory, so the two
-// fields cannot be combined.
+// setting both run_on_main and run_on_integration on the same task is rejected.
+// The dispatcher selects exactly one target directory, so the two fields cannot
+// be combined.
 func TestValidateTasksInput_RunOnMainAndIntegrationMutuallyExclusive(t *testing.T) {
 	tsk := validTask("task-a")
 	tsk.RunOnMain = true

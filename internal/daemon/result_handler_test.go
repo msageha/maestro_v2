@@ -294,7 +294,7 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 // the previous behaviour pinned the periodic-scan goroutine for ~96s on
 // a single uncertain delivery, which directly blocked queue_write /
 // plan_complete / verify_write UDS handlers waiting on scanMu.RLock and
-// surfaced as 30s CLI timeouts (2026-04-29 default-config E2E run).
+// would surface as 30s CLI timeouts on default-config retries.
 func TestResultHandler_WorkerNotification_SubmitConfirmUncertain_NotRetried(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)

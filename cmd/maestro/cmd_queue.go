@@ -139,12 +139,9 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	case "command":
 		// Commands have a single canonical consumer (the Planner) — the
 		// daemon's queue_write handler always writes to planner.yaml and
-		// silently ignores the target argument. Reject any other target
-		// at the CLI so operators get an immediate error instead of a
-		// confusing "I queued it but the wrong agent reacted" experience
-		// (the 2026-04-29 e2e session hit exactly that — `maestro queue
-		// write orchestrator --type command ...` looked successful but
-		// Planner consumed the entry and Orchestrator stayed idle).
+		// silently ignores the target argument. Reject any other target at
+		// the CLI so operators get an immediate error instead of "I queued
+		// it but the wrong agent reacted".
 		if target != "planner" {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf(
 				"maestro queue write: --type command requires target=planner (the only command consumer); got target=%q",

@@ -281,15 +281,13 @@ func TestCanComplete_ActivePhaseSomeTasksPendingNotRetryable(t *testing.T) {
 	}
 }
 
-// TestCanComplete_ActivePhaseFailedTaskNotRetryable pins the 2026-04-29
-// review fix: the deferred_publish path is only valid when Phase B will
-// actually merge the phase, which requires every task at completed (or
-// cancelled, the supersede-by-retry marker). A failed task means the
-// phase is destined for PhaseStatusFailed via the dependency resolver
-// and there is no merge for the deferred completer to ride on. Without
-// this fix the deferred-publish path would write an intent file that
-// never gets cleared (publish never runs) and hand the Planner a
-// misleading "publish 待ち" status.
+// TestCanComplete_ActivePhaseFailedTaskNotRetryable verifies that the
+// deferred_publish path is only valid when Phase B will actually merge the
+// phase, which requires every task at completed (or cancelled, the
+// supersede-by-retry marker). A failed task means the phase is destined
+// for PhaseStatusFailed via the dependency resolver, so without this guard
+// the deferred-publish path would write an intent file that never gets
+// cleared and hand the Planner a misleading "publish 待ち" status.
 func TestCanComplete_ActivePhaseFailedTaskNotRetryable(t *testing.T) {
 	state := &model.CommandState{
 		CommandID:  "cmd-active-failed-001",

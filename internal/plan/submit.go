@@ -67,8 +67,8 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 		return nil, fmt.Errorf("read input: %w", err)
 	}
 
-	// Bug M: route phase-fill submissions BEFORE the generic empty-tasks check
-	// so that submitPhaseFill (which loads state under lock) can produce a
+	// Route phase-fill submissions BEFORE the generic empty-tasks check so
+	// that submitPhaseFill (which loads state under lock) can produce a
 	// state-aware diagnostic — e.g. "phase X status must be awaiting_fill,
 	// got filling" — when a stale awaiting_fill signal triggers a duplicate
 	// re-submit. Surfacing the structured planValidationError instead of a
@@ -103,7 +103,7 @@ func validateRequiredVerifySnapshot(opts SubmitOptions) error {
 	cfg, err := model.LoadVerifyConfig(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			// F-023: include both the exact CLI form and a stdin form so the
+			// Include both the exact CLI form and a stdin form so the
 			// planner's recovery path doesn't require operator lookups. The
 			// stdin variant matches the daemonapi VerifyWrite contract.
 			return &planValidationError{Msg: fmt.Sprintf(
@@ -284,10 +284,10 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	}
 
 	// Worker pin existence: format-only validation lives in
-	// validateTaskFieldsCore; the count-aware existence check happens here so
-	// it runs even on the dry-run path. Without this, `plan submit --dry-run`
-	// reports valid=true for `worker_id: worker99` (2026-04-28 E2E retest2);
-	// the operator only learns the pin is bogus on the real submit.
+	// validateTaskFieldsCore; the count-aware existence check happens here
+	// so it runs even on the dry-run path. Without this, `plan submit
+	// --dry-run` reports valid=true for `worker_id: worker99` and the
+	// operator only learns the pin is bogus on the real submit.
 	if verr := validateTaskWorkerPins(tasks, opts.Config.Agents.Workers.Count, "tasks"); verr != nil {
 		return nil, verr
 	}
@@ -592,9 +592,9 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if queueErr != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_queue_write", false, "manual_intervention", "phase_state+queue_entries")
-			// F-005: rollback itself failed — disk state is now ambiguous.
-			// Drop the state lock before emit_paused_for_replan_signal so
-			// canonical lock order (queue → state → result) is preserved.
+			// Rollback itself failed — disk state is now ambiguous. Drop the
+			// state lock before emit_paused_for_replan_signal so canonical
+			// lock order (queue → state → result) is preserved.
 			sm.UnlockCommand(opts.CommandID)
 			stateLocked = false
 			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,

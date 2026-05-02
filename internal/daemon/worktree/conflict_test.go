@@ -867,11 +867,10 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 // The test reaches this state by forcing it on disk rather than driving it
 // through MergeToIntegration, because determineMergeOutcome deliberately
 // refuses to mark integration Merged while any worker is still in
-// Conflict/Resolving (2026-04 audit: integration=merged with worker=resolving
-// Bug). Driving through the merge path would (correctly) produce PartialMerge
-// and PublishToBase would be unreachable — but the invariant this test
-// guards is the publish loop's own filter, which still matters if a future
-// bug reintroduces the bad state.
+// Conflict/Resolving. Driving through the merge path would (correctly)
+// produce PartialMerge and PublishToBase would be unreachable — but the
+// invariant this test guards is the publish loop's own filter, which
+// still matters if a future bug reintroduces the bad state.
 func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -985,20 +984,18 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	}
 }
 
-// TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict verifies
-// the fix for the 2026-04 audit bug where a second merge round — called with
-// only already-Integrated workers after a previous conflict left one worker
-// in Conflict state — incorrectly flipped integration to Merged. That false
-// Merged transition cascaded into: (1) Phase C's MarkPhaseMerged gate passing,
-// (2) Phase A's isPhaseMergeRecorded returning true, and (3) downstream
-// phases (verification) activating against an integration branch that had
-// not actually absorbed the conflicting worker's resolution.
+// TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict pins the
+// invariant: a second merge round called with only already-Integrated
+// workers must NOT flip integration to Merged when another worker is
+// still in Conflict. Otherwise downstream phase activation and publish
+// gate would proceed against an integration branch that had not absorbed
+// the conflicting worker's resolution.
 //
-// Post-fix invariant: determineMergeOutcome must detect workers in state.Workers
-// that are still in Conflict/Resolving — even if they were excluded from the
-// current merge round's workerIDs — and refuse the Merged transition. The
-// correct status with a pending resolution is PartialMerge (mergedCount > 0)
-// or the pre-merge status (mergedCount == 0).
+// determineMergeOutcome must detect workers in state.Workers that are
+// still in Conflict/Resolving — even if they were excluded from the
+// current merge round's workerIDs — and refuse the Merged transition.
+// The correct status with a pending resolution is PartialMerge
+// (mergedCount > 0) or the pre-merge status (mergedCount == 0).
 func TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -1065,7 +1062,7 @@ func TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict(t *testing.
 	}
 	if state.Integration.Status == model.IntegrationStatusMerged {
 		t.Fatalf("integration status = %q; must NOT be Merged while a worker is in Conflict "+
-			"(this is the 2026-04 audit bug — downstream phase activation and publish gate would break)",
+			"(downstream phase activation and publish gate would break)",
 			state.Integration.Status)
 	}
 	// The expected status after the second merge is PartialMerge: worker1

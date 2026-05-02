@@ -105,15 +105,13 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 // This is called transparently by the executor before task delivery, so that
 // Workers run in their worktree directory without being aware of worktrees.
 //
-// 2026-04-28: even when the requested cwd matches the tracked cwd, we still
-// re-stat the tracked path. The Phase B publish/cleanup pipeline removes a
-// worktree directory after its worker reports completion, which leaves the
-// pane's @cwd label pointing at a deleted path. Claude Code's Stop hook can
-// then fire from that pane and `posix_spawn '/bin/sh'` surfaces an
-// `ENOENT, no such file or directory` warning (node.js reports the chdir
-// failure as if the binary itself was missing). Forcing a respawn when the
-// tracked cwd no longer exists puts the pane back into a real directory
-// before the next dispatch and silences the spurious warning.
+// Even when the requested cwd matches the tracked cwd, the tracked path is
+// re-stat'd: the Phase B publish/cleanup pipeline removes a worktree
+// directory after its worker reports completion, leaving the pane's @cwd
+// label pointing at a deleted path. Claude Code's Stop hook firing from
+// that pane surfaces a spurious `posix_spawn '/bin/sh' ENOENT` warning.
+// Forcing a respawn when the tracked cwd no longer exists puts the pane
+// back into a real directory before the next dispatch.
 func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget, workingDir string) error {
 	if workingDir == "" {
 		return nil
@@ -227,11 +225,11 @@ func directoryExists(path string) bool {
 // next dispatch supplies — that path also re-launches claude, so this
 // helper does not need to relaunch it itself.
 //
-// 2026-04-28 retest2: also sets @agent_state="evicted" so status.go
-// distinguishes "daemon evicted the pane on purpose" (sit in shell, no
-// claude process) from "claude crashed back to shell". Without this
-// flag, `maestro status` flipped the worker to "dead" between cleanup
-// and the next dispatch even though the daemon owns the gap.
+// Sets @agent_state="evicted" so status.go distinguishes "daemon evicted
+// the pane on purpose" (sit in shell, no claude process) from "claude
+// crashed back to shell". Without this flag, `maestro status` would flip
+// the worker to "dead" between cleanup and the next dispatch even though
+// the daemon owns the gap.
 func (pm *ClaudeProcessManager) respawnToProjectRoot(paneTarget, workerID, projectRoot string) error {
 	pm.log(logLevelInfo,
 		"respawn_to_project_root worker=%s pane=%s target=%s "+

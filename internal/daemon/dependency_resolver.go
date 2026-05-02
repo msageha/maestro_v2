@@ -266,25 +266,15 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 // Lineage-aware: when a task has been superseded by a verify-repair or
 // planner-driven retry, the predecessor's raw cancelled status would
 // otherwise drive the phase to PhaseStatusCancelled — and the dependency
-// resolver would then cascade-cancel every downstream phase. The 2026-05-01
-// e2e regression (Bug-D') reproduced exactly this: worker A completed,
-// verify failed, repair task replaced A, A flipped to cancelled with
-// superseded_by_verify_repair reason, this routine then cancelled the
-// containing phase, and the cancellation cascaded to the downstream phase
-// before the repair successor had any chance to complete. The plan-level
-// DeriveStatus already walks retry_lineage; the same effective view must
-// drive phase-level transitions or the phase machine produces decisions
-// the plan machine then has to undo.
+// resolver would then cascade-cancel every downstream phase. The plan-
+// level DeriveStatus already walks retry_lineage; the same effective view
+// must drive phase-level transitions or the phase machine produces
+// decisions the plan machine then has to undo.
 //
-// Bug-J fix (2026-05-02): the prior implementation observed only
-// RequiredTaskIDs and bailed out when that slice was empty. Phases whose
-// tasks were exclusively classified as optional thus never reached
-// PhaseStatusCompleted no matter how many tasks finished, and
-// fast_track_cleanup eventually marked the integration as failed despite
-// every task succeeding. The transition now observes phase.TaskIDs (the
-// full set of tasks attached to the phase) so an all-optional phase still
-// completes when its work is done. RequiredTaskIDs still informs plan-
-// level pass/fail policy via DeriveStatus; phase-level transitions stay
+// Observes phase.TaskIDs (the full set of tasks attached to the phase),
+// not just RequiredTaskIDs, so an all-optional phase still completes
+// when its work is done. RequiredTaskIDs still informs plan-level
+// pass/fail policy via DeriveStatus; phase-level transitions stay
 // neutral on the required/optional distinction.
 func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase PhaseInfo) *PhaseTransitionResult {
 	taskIDs := phase.TaskIDs
@@ -310,7 +300,7 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 		// daemon-side verify-repair path delivered the upstream work
 		// without going through cascadeRecover. Without this, the phase
 		// stays Active forever and downstream phases / plan completion
-		// stall (Bug-D'-prime).
+		// stall.
 		status, err := dr.stateManager.GetEffectiveTaskStatusForCompletion(commandID, taskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "phase_check task_state error phase=%s task=%s error=%v",

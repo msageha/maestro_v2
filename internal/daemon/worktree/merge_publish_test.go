@@ -930,8 +930,8 @@ func TestPublishToBase_NoFalsePositiveStash(t *testing.T) {
 	}
 }
 
-// TestBytesContainConflictMarkers covers the F-013 edge cases that the
-// original strings.Contains-based detector silently missed.
+// TestBytesContainConflictMarkers covers edge cases where a naive
+// strings.Contains-based detector would miss conflict markers.
 func TestBytesContainConflictMarkers(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -944,7 +944,7 @@ func TestBytesContainConflictMarkers(t *testing.T) {
 		{"opening marker", []byte("a\n<<<<<<< HEAD\nx\n"), true},
 		{"divider after newline", []byte("a\n=======\nx\n"), true},
 		{"closing marker after newline", []byte("a\n>>>>>>> branch\n"), true},
-		// F-013: pathological files that begin with the divider/closing marker
+		// Pathological files that begin with the divider/closing marker
 		// without a leading newline must still be flagged.
 		{"divider at file head", []byte("=======\nrest\n"), true},
 		{"closing at file head", []byte(">>>>>>> branch\nrest\n"), true},

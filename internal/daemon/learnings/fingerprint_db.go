@@ -17,7 +17,7 @@ import (
 // thresholds are NOT subject to self-improvement. Only Planner/Worker
 // prompts, configuration, and personas may be improved.
 //
-// Field invariants — F-011:
+// Field invariants:
 //   - SuccessCount and SuccessRate are derived metrics maintained together
 //     by FingerprintDB.RecordOutcome (and equivalents). External callers
 //     MUST NOT mutate either field independently; doing so leaves the pair

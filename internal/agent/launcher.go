@@ -40,7 +40,7 @@ var knownRoles = map[string]bool{
 //
 // Workers have no tool restriction (they need full access for task execution).
 //
-// F-002 invariant: changes to allowedToolsByRole or the sibling deny lists
+// MAINTENANCE INVARIANT: changes to allowedToolsByRole or the sibling deny lists
 // (appendDisallowedTools / workerDisallowedTools) must ship with matching
 // templates/instructions/{orchestrator,planner,worker,maestro}.md updates.
 var allowedToolsByRole = map[string][]string{
@@ -222,14 +222,11 @@ func buildAlternativeWorkerEnv(agentRuntime string) ([]string, error) {
 
 // prepareCodexHomeForCurrentWorker materialises a per-worker CODEX_HOME so
 // codex skips the first-run "Do you trust the contents of this directory?"
-// prompt in maestro worker panes. codex 0.125.0 still surfaces that prompt
-// in panes opened by tmux even with `--dangerously-bypass-approvals-and-
-// sandbox` set, and the `-c projects."<path>".trust_level="trusted"`
+// prompt in maestro worker panes. The `-c projects."<path>".trust_level=...`
 // command-line override is parsed inconsistently for paths with embedded
-// quotes (the 2026-04 audit reproduced both: codex worker panes idled on
-// the trust prompt while dispatch_task_success was logged). Writing the
-// trust entry into a real config file under a dedicated CODEX_HOME bypasses
-// the `-c` parser entirely and matches the documented codex config schema.
+// quotes; writing the trust entry into a real config file under a dedicated
+// CODEX_HOME bypasses the `-c` parser entirely and matches the documented
+// codex config schema.
 //
 // Layout:
 //
@@ -238,11 +235,11 @@ func buildAlternativeWorkerEnv(agentRuntime string) ([]string, error) {
 //	                                 cache, history, etc.)
 //
 // The dir is keyed by (PID, agent_id) so concurrent workers and concurrent
-// formations do not contend for the same path. We intentionally skip any
-// CODEX_HOME setup when the user has no ~/.codex (codex's own defaults
-// will then apply, including the trust prompt — but in that case the user
-// has never run codex interactively either, so the trust prompt is the
-// expected and correct first-run flow).
+// formations do not contend for the same path. CODEX_HOME setup is skipped
+// when the user has no ~/.codex (codex's own defaults will then apply,
+// including the trust prompt — but in that case the user has never run
+// codex interactively either, so the trust prompt is the expected first-run
+// flow).
 func prepareCodexHomeForCurrentWorker() (string, error) {
 	userCodex := defaultUserCodexHome()
 	if userCodex == "" {
@@ -1037,38 +1034,29 @@ func buildLaunchEnvForAgent(base []string, role, maestroDir string) ([]string, e
 
 	// Default GOCACHE to a project-local path so the agent's `go build`,
 	// `go test`, etc. don't hit `permission denied` against
-	// ~/Library/Caches/go-build inside the claude-code sandbox.
-	// The 2026-04-28 retest2 reported Workers manually re-running with
-	// `GOCACHE=$TMPDIR/go-cache` after the first build failed; pinning a
-	// safe default here removes that workaround. Operators that need a
-	// shared cache (CI, dev shells) can still override by exporting
-	// GOCACHE before launching the daemon — explicit env beats our default.
+	// ~/Library/Caches/go-build inside the claude-code sandbox. Operators
+	// that need a shared cache (CI, dev shells) can still override by
+	// exporting GOCACHE before launching the daemon — explicit env beats
+	// our default.
 	if !envHasKey(env, "GOCACHE") {
 		env = setEnv(env, "GOCACHE", filepath.Join(canonicalDir, "cache", "go-build"))
 	}
 
 	// Force TERM to a usable terminfo entry when the inherited value is
-	// missing or stuck at "dumb". 2026-04-28 retest3 surfaced two noise
-	// modes that both trace back to TERM:
-	//   - starship in the agent pane prints "unable to determine terminal
-	//     type" each time the prompt redraws because it cannot read the
-	//     terminfo capabilities for "dumb";
-	//   - operators monitoring CLI output saw the starship banner mixed
-	//     into the structured maestro output, complicating log parsing.
-	// "xterm-256color" is the broadest-compat entry that ships with
-	// macOS and most Linux distributions; tmux itself rewrites the value
-	// inside its panes to "tmux-256color" on capable systems, so this
-	// only kicks in when the operator's outer shell already lost the
-	// real value (e.g. starting from an SSH session with TERM=dumb).
+	// missing or stuck at "dumb". starship and similar prompts otherwise
+	// print "unable to determine terminal type" repeatedly and pollute
+	// log captures. "xterm-256color" is the broadest-compat entry that
+	// ships with macOS and most Linux distributions; tmux rewrites the
+	// value inside panes to "tmux-256color" on capable systems, so this
+	// only kicks in when the outer shell already lost the real value
+	// (e.g. SSH session with TERM=dumb).
 	if v := envValue(env, "TERM"); v == "" || v == "dumb" {
 		env = setEnv(env, "TERM", "xterm-256color")
 	}
 	// Move mise's cache to a project-local writable path. The default
 	// ~/.cache/mise often hits "Operation not permitted" inside the
-	// claude-code sandbox (retest3 Planner pane), and the WARN line
-	// every shell init pollutes daemon log captures. Operators using
-	// mise for language version pinning still get the cache benefit —
-	// just under .maestro/cache/mise instead of $HOME/.cache/mise.
+	// claude-code sandbox, and the WARN line emitted on every shell init
+	// pollutes daemon log captures.
 	if !envHasKey(env, "MISE_CACHE_DIR") {
 		env = setEnv(env, "MISE_CACHE_DIR", filepath.Join(canonicalDir, "cache", "mise"))
 	}
@@ -1119,20 +1107,15 @@ func ensureRoleMaestroWrapper(maestroDir, role string) (string, error) {
 		return "", fmt.Errorf("create role wrapper dir: %w", err)
 	}
 	wrapperPath := filepath.Join(wrapperDir, "maestro")
-	// 2026-04-28 E2E: when the launching binary lives in a short-lived path
-	// (e.g. an in-tree build artifact like /repo/maestro that gets removed by
-	// `make clean` or a worktree rotation), the wrapper's hard-coded `exec`
-	// fails with shell exit 126/127 in the middle of a long agent session,
-	// breaking every CLI call (`maestro plan ...`, `maestro queue ...`) the
-	// agent makes. The wrapper now tries the absolute path FIRST (preserves
-	// version-skew protection — same binary that started the formation), and
-	// if that file no longer exists falls back to the PATH-resolved `maestro`.
-	// buildLaunchEnv already prepends the launching binary's directory to PATH,
-	// so when both paths are valid the fallback resolves to the same binary;
-	// when the absolute path has been removed but a stable PATH-installed
-	// `maestro` is still available (e.g. ~/Works/bin/maestro), the agent stays
-	// functional. The warning written to stderr surfaces in the pane and the
-	// agent's own logs so operators can correlate the fallback with a rebuild.
+	// When the launching binary lives in a short-lived path (e.g. an in-tree
+	// build artifact removed by `make clean` or worktree rotation), the
+	// wrapper tries the absolute path FIRST (preserves version-skew
+	// protection — same binary that started the formation), and falls back
+	// to the PATH-resolved `maestro` when that file no longer exists.
+	// buildLaunchEnv already prepends the launching binary's directory to
+	// PATH, so when both paths are valid the fallback resolves to the same
+	// binary. The stderr warning surfaces in the pane and agent logs so
+	// operators can correlate the fallback with a rebuild.
 	body := "#!/bin/sh\n" +
 		"export " + uds.CallerRoleEnv + "=" + shellSingleQuote(role) + "\n" +
 		"export MAESTRO_DIR=" + shellSingleQuote(canonicalDir) + "\n" +

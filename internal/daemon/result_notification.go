@@ -1,8 +1,7 @@
 package daemon
 
-// Notification delivery and dedup helpers extracted from result_handler.go
-// (F-042 step 4 physical file split). Covers two responsibilities that share
-// the (source_result_id, type) dedup contract:
+// Notification delivery and dedup helpers. Covers two responsibilities
+// that share the (source_result_id, type) dedup contract:
 //   - delivering Worker → Planner notifications via the agent executor.
 //   - writing Planner / dead-letter notifications into queue/orchestrator.yaml
 //     with idempotency guarantees.
@@ -137,7 +136,7 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 }
 
 // notificationAction is the 3-state outcome of the dedup/supersede helper
-// used by writeNotificationToOrchestratorQueue. F-042 step 3 helper.
+// used by writeNotificationToOrchestratorQueue.
 type notificationAction int
 
 const (
@@ -148,8 +147,7 @@ const (
 
 // notificationTypeForStatus maps a terminal task / command status to the
 // orchestrator notification type. Defaults to CommandCompleted; unknown
-// terminal states fall through, preserving prior behaviour. F-042 step 3
-// helper extracted from writeNotificationToOrchestratorQueue.
+// terminal states fall through.
 func notificationTypeForStatus(status model.Status) model.NotificationType {
 	switch status {
 	case model.StatusFailed:
@@ -163,7 +161,6 @@ func notificationTypeForStatus(status model.Status) model.NotificationType {
 
 // indexNotificationBySourceResult returns the index of the first
 // notification whose SourceResultID matches resultID, or -1 if none.
-// F-042 step 3 helper.
 func indexNotificationBySourceResult(notifs []model.Notification, resultID string) int {
 	for i := range notifs {
 		if notifs[i].SourceResultID == resultID {
@@ -185,8 +182,6 @@ func indexNotificationBySourceResult(notifs []model.Notification, resultID strin
 //     notificationActionSuperseded. ID / CreatedAt / Priority are
 //     preserved so downstream observers see the same notification identity.
 //   - no match → return notificationActionAppend; caller appends a fresh entry.
-//
-// F-042 step 3 helper extracted from writeNotificationToOrchestratorQueue.
 func (rh *ResultHandler) supersedeOrSkipNotification(
 	notifs []model.Notification,
 	resultID string,
@@ -217,7 +212,7 @@ func (rh *ResultHandler) supersedeOrSkipNotification(
 }
 
 // appendNewNotification creates a fresh model.Notification with a generated
-// ID and appends it to nq. F-042 step 3 helper.
+// ID and appends it to nq.
 func appendNewNotification(
 	nq *model.NotificationQueue,
 	commandID, resultID string,

@@ -142,17 +142,14 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 		runDir = r.projectDir
 	}
 
-	// Fail-fast on inaccessible runDir (2026-04-29 review pin). When a
-	// worktree has been cleaned up between dispatch and verify (e.g.
-	// fast-track stall cleanup races a verify already in flight), every
-	// downstream `cmd.Run()` will fail with `chdir … : no such file or
-	// directory`. Prior behaviour pushed those errors through the
-	// per-category advisory path and could end up returning Passed=true
-	// with "passed_with_advisory_failures", silently marking the task
+	// Fail-fast on inaccessible runDir. When a worktree has been cleaned
+	// up between dispatch and verify (e.g. fast-track stall cleanup races
+	// a verify already in flight), every downstream `cmd.Run()` would fail
+	// with `chdir … : no such file or directory` and the per-category
+	// advisory path could end up returning Passed=true with
+	// "passed_with_advisory_failures" — silently marking the task
 	// completed even though no verify command actually executed. A hard
-	// failure here surfaces the missing worktree as a real verify
-	// failure so the daemon can route it to repair_pending /
-	// paused_for_replan rather than green-light a non-event.
+	// failure here surfaces the missing worktree as a real verify failure.
 	if info, err := os.Stat(runDir); err != nil {
 		return VerifyOutcome{
 			Passed: false,
@@ -165,18 +162,14 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 		}, nil
 	}
 
-	// 2026-04-30 e2e regression: the expected_paths gate was promoted from
-	// "advisory warning" to "hard verify failure" in earlier work, but the
-	// constraint is software-engineering specific (commit-boundary policy
-	// for refactor tasks) and routinely produces false-positive failures
-	// on legitimate fixes that touch ancillary files (the reproduced case:
-	// a lint repair required a one-line change in proxy/cmd/osv-ingest/
-	// main.go which was not in the predicted expected_paths). For
-	// research / documentation / polyglot orchestration the constraint is
-	// inapplicable. The check is now advisory: changes outside the
-	// declared paths are logged for operator review but do not fail
-	// verify. Commit-boundary enforcement still happens at commit_policy
-	// time when the worktree is staged for integration.
+	// expected_paths is advisory: changes outside the declared paths are
+	// logged for operator review but do not fail verify. The constraint
+	// is software-engineering specific (commit-boundary policy for
+	// refactor tasks) and produces false-positive failures on legitimate
+	// fixes that touch ancillary files; for research / documentation /
+	// polyglot orchestration the constraint is inapplicable. Commit-
+	// boundary enforcement still happens at commit_policy time when the
+	// worktree is staged for integration.
 	if len(expectedPaths) > 0 {
 		changed, err := gitChangedFiles(ctx, runDir)
 		if err != nil {
@@ -231,9 +224,8 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 			timedOut := errors.Is(cmdCtx.Err(), context.DeadlineExceeded)
 			failed := timedOut || runErr != nil || exitCode != 0
 
-			// Mid-run worktree disappearance check (2026-04-29 e2e
-			// regression originally; updated 2026-04-30 review): when a
-			// worktree cleanup races a still-running verify command, the
+			// Mid-run worktree disappearance check: when a worktree
+			// cleanup races a still-running verify command, the
 			// subprocess inherits an unlinked cwd and commands like
 			// `uvx pip-audit` fail with FileNotFoundError on os.getcwd().
 			// Re-stat the workdir after each failed command so the audit
@@ -347,12 +339,9 @@ type verifyCategory struct {
 
 // buildVerifyCategories converts the verify.yaml-derived configuration
 // into the verifyCategory slice consumed by the runner. Every category
-// listed in verify.yaml is run at the critical weight (1.0) — the
-// pre-2026-04-30 design used per-perspective weights from
-// extended_verification.perspective_weights, but those are gone now that
-// the daemon no longer auto-injects category commands. The operator's
-// verify.yaml is the single source of truth: if a category is listed,
-// it is critical; if it is absent, it does not run.
+// listed in verify.yaml runs at the critical weight (1.0): verify.yaml
+// is the single source of truth — if a category is listed, it is
+// critical; if absent, it does not run.
 func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []verifyCategory {
 	cfgCategories := []struct {
 		name string
@@ -462,9 +451,7 @@ func filesOutsideExpectedPaths(files, expectedPaths []string) []string {
 // alongside expected_paths so that a routine `npm install -D vitest`,
 // `pip install ...`, `cargo add ...` etc. does not flunk verify with an
 // expected_paths_violation and force the planner into an extra repair
-// cycle just to widen the path declaration. The 2026-04-29 e2e regression
-// hit this on every Node task: workers pulled in vitest, package-lock.json
-// changed, and the verify runner rejected the entire result.
+// cycle just to widen the path declaration.
 //
 // Inclusion criteria: the file MUST be (a) machine-generated by the
 // language's package manager, (b) safe-to-commit (not a credential or

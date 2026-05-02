@@ -176,29 +176,19 @@ func (qh *QueueHandler) stepWorktreeOrphanCleanup(s *scanState) {
 			refTime = intTime
 		}
 		elapsed := now.Sub(refTime)
-		// 2026-05-01: bypass the staleness threshold for the no-op (created)
-		// case. A terminal command whose integration branch never received
-		// any commits is a definitively no-op outcome — there is no race
-		// window where a late commit could land, and the
-		// `worktree_publish_skip_no_commits` log was failing to appear in
-		// user reports because either (a) collectWorktreePublishAndCleanup
-		// returned early on a phase-status check before reaching its
-		// IntegrationStatusCreated branch, or (b) the orphan cleanup waited
-		// the full stall_cleanup_after window after cmd.Status went
-		// terminal. Cleaning up as soon as the command terminates removes
-		// both failure modes and aligns with the autonomous-orchestration
-		// design: a finished command must not leave queue/dashboard noise
-		// behind.
+		// Bypass the staleness threshold for the no-op (created) case.
+		// A terminal command whose integration branch never received any
+		// commits is definitively a no-op outcome — there is no race
+		// window where a late commit could land, and cleaning up as soon
+		// as the command terminates aligns with the design that a
+		// finished command must not leave queue/dashboard noise behind.
 		//
-		// 2026-05-02 follow-up: also require all workers to be past
-		// WorktreeStatusActive before the no-op fast-path fires. An active
-		// worker indicates uncommitted output that the implicit-phase
-		// incremental merge has not yet picked up. Tearing down its
-		// worktree here loses real work — the user's regression had
-		// worker1 carrying the cycle1 output uncommitted, then this
-		// step racing the merge and cleaning it up. Falling back to the
-		// elapsed≥threshold gate gives the merge collector at least one
-		// scan cycle to run.
+		// All workers must be past WorktreeStatusActive before the no-op
+		// fast-path fires. An active worker indicates uncommitted output
+		// that the implicit-phase incremental merge has not yet picked
+		// up. Tearing down its worktree here would lose real work.
+		// Falling back to the elapsed≥threshold gate gives the merge
+		// collector at least one scan cycle to run.
 		if isNoOpCreated {
 			hasActive := false
 			for _, ws := range cmdState.Workers {

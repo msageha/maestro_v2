@@ -172,13 +172,9 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 
 	if strings.TrimSpace(req.DiffContent) == "" {
 		// Empty diff means nothing to review; record as skipped with no findings.
-		// SkipReason makes the audit-trail YAML self-describing — operators
-		// reviewing 0-finding reviews can tell at a glance whether the model
-		// genuinely cleared the diff or whether the dispatch path never had
-		// anything to send. The 2026-04-29 e2e regression hit exactly this
-		// gap: every review came back as "skipped findings=0" and the only
-		// way to tell empty_diff from a model parse failure was to correlate
-		// daemon.log timestamps to review_id strings.
+		// SkipReason keeps the result YAML self-describing so operators can
+		// distinguish empty-diff skips from model/parse failures without
+		// cross-referencing log timestamps.
 		result.Status = model.ReviewStatusSkipped
 		result.SkipReason = "empty_diff_content"
 		return nil

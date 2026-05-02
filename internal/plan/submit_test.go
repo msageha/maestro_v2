@@ -30,9 +30,8 @@ func testConfig() model.Config {
 		},
 		// Match the production template default (worktree.enabled=true)
 		// so submit-side tests do not see __system_commit injected by
-		// shouldInsertSystemCommit, which now fires whenever worktree mode
-		// is off (2026-04-28: closed the dirty-main footgun for single-shot
-		// runs). Tests that intentionally exercise worktree=false override
+		// shouldInsertSystemCommit (which fires whenever worktree mode is
+		// off). Tests that intentionally exercise worktree=false override
 		// this field explicitly.
 		Worktree: model.WorktreeConfig{Enabled: true},
 	}
@@ -148,11 +147,8 @@ tasks:
 	if !strings.Contains(err.Error(), "field acceptence_criteria not found") {
 		t.Fatalf("expected strict YAML unknown-field error, got: %v", err)
 	}
-	// 2026-04-28 follow-up: the typed wrapper is what makes the daemon's
-	// plan handler route this error to ErrCodeValidation. Before this,
-	// `field XXX not found` surfaced as `[INTERNAL_ERROR]` because the
-	// plain fmt.Errorf wrap missed the type assertion in
-	// daemonapi/plan.go. Pinning the *planValidationError shape here so
+	// The typed wrapper is what makes the daemon's plan handler route this
+	// error to ErrCodeValidation; pinning the *planValidationError shape so
 	// future refactors don't silently regress the operator-facing error
 	// classification.
 	var pve *planValidationError
@@ -161,14 +157,11 @@ tasks:
 	}
 }
 
-// TestSubmit_DryRunRejectsUnknownWorkerID pins the 2026-04-28 retest2
-// follow-up: `plan submit --dry-run` was returning {"valid": true} for
-// a task tagged `worker_id: worker99` even when only 2 workers were
-// configured. The format-only check inside validateTaskFieldsCore could
-// not catch this — `worker99` matches the workerN regex but does not
-// reference a real slot. The fix runs validateTaskWorkerPins before the
-// dry-run early return so the operator sees the existence error from
-// the same place the real submit reports it.
+// TestSubmit_DryRunRejectsUnknownWorkerID verifies that `plan submit
+// --dry-run` rejects worker_id values that match the workerN regex but do
+// not reference a configured slot. validateTaskWorkerPins runs before the
+// dry-run early return so the operator sees the existence error from the
+// same place the real submit reports it.
 func TestSubmit_DryRunRejectsUnknownWorkerID(t *testing.T) {
 	maestroDir := setupMaestroDir(t)
 	cfg := testConfig() // workers.count=2
@@ -207,11 +200,9 @@ func TestSubmit_DryRunRejectsUnknownWorkerID(t *testing.T) {
 	}
 }
 
-// TestParseInput_AcceptsWorkerID pins that the worker_id pinning field
-// added 2026-04-28 actually decodes off the YAML wire. Before this, a
-// Planner-supplied worker_id was rejected by SafeUnmarshalStrict as
-// "unknown field" and the call surfaced as INTERNAL_ERROR — the exact
-// regression flagged in the conflict-recovery E2E run.
+// TestParseInput_AcceptsWorkerID verifies that the worker_id pinning field
+// decodes off the YAML wire (SafeUnmarshalStrict must not reject it as
+// "unknown field" — that would surface as INTERNAL_ERROR for the operator).
 func TestParseInput_AcceptsWorkerID(t *testing.T) {
 	parsed, err := parseInput([]byte(`
 tasks:
@@ -236,10 +227,8 @@ tasks:
 }
 
 // TestParseInput_OversizedInputIsValidationError pins that input size
-// rejection is also surfaced as a validation error, not an internal one.
-// Before the 2026-04-28 fix, this case used plain fmt.Errorf and the
-// daemon mislabelled it as INTERNAL_ERROR — same misclassification as the
-// strict-decode path.
+// rejection is surfaced as a validation error, not an internal one — the
+// same classification as the strict-decode path.
 func TestParseInput_OversizedInputIsValidationError(t *testing.T) {
 	oversized := make([]byte, model.DefaultMaxYAMLFileBytes+1)
 	for i := range oversized {
@@ -783,12 +772,10 @@ func TestSubmit_PhaseFill_Success(t *testing.T) {
 	}
 }
 
-// TestSubmit_PhaseFill_HonorsWorkerID covers the 2026-04-29 regression
-// observed in e2e: a Planner reported "plan submit YAML does not accept
-// worker_id" after a verification task they meant for worker3 ended up
-// on worker1. The pipeline DOES honor worker_id (resolveAndAssignTasks
-// → AssignWorkers PinnedWorkerID branch); this test pins it down so
-// future refactors cannot quietly regress the deferred-phase path.
+// TestSubmit_PhaseFill_HonorsWorkerID verifies that the deferred-phase
+// pipeline honors worker_id (resolveAndAssignTasks → AssignWorkers
+// PinnedWorkerID branch) so a verification task pinned to a specific worker
+// is not silently reassigned.
 func TestSubmit_PhaseFill_HonorsWorkerID(t *testing.T) {
 	maestroDir, _, commandID := setupAwaitingFillFixture(t)
 	cfg := testConfig()
@@ -1125,13 +1112,11 @@ func TestSubmit_PhaseFill_ConstraintViolation(t *testing.T) {
 	}
 }
 
-// TestShouldInsertSystemCommit pins the (post-2026-04-28) invariant that
-// __system_commit insertion is driven solely by worktree mode being
-// disabled. Continuous mode is independent: a single-shot run with
-// worktree.enabled=false still needs the commit task, otherwise the
-// Worker's in-place edits to main stay dirty after `completed`. The
-// previous predicate gated insertion on continuous=true, which is the
-// footgun we are fixing here.
+// TestShouldInsertSystemCommit pins the invariant that __system_commit
+// insertion is driven solely by worktree mode being disabled. Continuous
+// mode is independent: a single-shot run with worktree.enabled=false still
+// needs the commit task, otherwise the Worker's in-place edits to main
+// stay dirty after `completed`.
 func TestShouldInsertSystemCommit(t *testing.T) {
 	tests := []struct {
 		name       string
@@ -1275,21 +1260,17 @@ func TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
 	}
 }
 
-// --- Bug M: empty tasks in phase-fill mode must surface as a structured
-// validation error (not a generic ErrCodeInternal), and stale awaiting_fill
+// --- empty tasks in phase-fill mode must surface as a structured
+// validation error (not a generic ErrCodeInternal); stale awaiting_fill
 // signals against a phase that has already moved on must produce the
 // state-aware "must be awaiting_fill" diagnostic rather than the generic
 // "either tasks or phases must be specified" error. ---
 
 func TestSubmit_PhaseFill_EmptyTasks_StateAwareDiagnostic(t *testing.T) {
-	// Reproduces Bug M: a Planner with a stale awaiting_fill signal re-submits
-	// after the phase has already transitioned to "filling". The submission
-	// arrives with the phase-fill PhaseName set and (in some race variants)
-	// empty tasks. Before the fix, Submit's empty-tasks guard fired BEFORE
-	// the phase-fill router, returning a bare fmt.Errorf that surfaced as
-	// ErrCodeInternal in the daemon log. After the fix, the phase-fill router
-	// runs first and submitPhaseFill's state-aware check produces a
-	// planValidationError with "must be awaiting_fill" wording.
+	// Stale awaiting_fill signal: a Planner re-submits after the phase has
+	// already transitioned to "filling". The phase-fill router must run
+	// before the empty-tasks guard so submitPhaseFill's state-aware check
+	// produces a planValidationError with "must be awaiting_fill" wording.
 	cfg := testConfig()
 	maestroDir := setupMaestroDir(t)
 	cmdID := "cmd_0000000099_bugmtest"
@@ -1344,7 +1325,7 @@ func TestSubmit_PhaseFill_EmptyTasks_StateAwareDiagnostic(t *testing.T) {
 		t.Errorf("expected state-aware diagnostic mentioning awaiting_fill, got %q", err.Error())
 	}
 	if strings.Contains(err.Error(), "either tasks or phases must be specified") {
-		t.Errorf("Bug M regression: empty-tasks guard fired before phase-fill router: %q", err.Error())
+		t.Errorf("empty-tasks guard fired before phase-fill router: %q", err.Error())
 	}
 }
 

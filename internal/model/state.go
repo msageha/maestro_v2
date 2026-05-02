@@ -36,7 +36,7 @@ type PhaseTracking struct {
 	// optimisation in result_write_handler.shouldDeferHeavyVerifyForIntermediateTask
 	// cannot turn into a race where every sibling sees the others at
 	// verify_pending (non-terminal) and all defer, leaving no task to
-	// actually run repo-wide verification (the 2026-04-29 review pin).
+	// actually run repo-wide verification.
 	//
 	// Map key: Phase.PhaseID. Value: the Task.ID that has been granted
 	// heavy-verify ownership under the state lock. Tasks observe this
@@ -199,14 +199,11 @@ type PhaseInfo struct {
 	// resolver's phase-completion check uses this set as the authoritative
 	// "what must finish before the phase can transition" view, falling back
 	// to RequiredTaskIDs only when an explicit required-only judgment is
-	// needed (which is rare). The 2026-05-01 Bug-J regression reproduced
-	// the failure mode of relying solely on RequiredTaskIDs: a phase whose
-	// tasks were all classified as optional ended up with an empty
-	// RequiredTaskIDs slice, so checkActivePhaseCompletion early-returned
-	// without ever marking the phase Completed even after every task
-	// finished. Plan-level required/optional policy still drives whether
-	// the *plan* succeeds or fails (DeriveStatus), but phase-level
-	// transitions must observe every task in the phase.
+	// needed (which is rare). Phase-level transitions must observe every
+	// task in the phase: a phase whose tasks were all classified as
+	// optional would otherwise have an empty RequiredTaskIDs slice and
+	// never transition. Plan-level required/optional policy still drives
+	// whether the *plan* succeeds or fails (DeriveStatus).
 	TaskIDs          []string
 	DependsOn        []string // phase IDs
 	FillDeadlineAt   *string

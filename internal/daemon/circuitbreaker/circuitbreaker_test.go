@@ -164,13 +164,10 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 	}
 }
 
-// TestUpdateCounterOnResult_LineageFailureNotDoubleCounted pins the
-// 2026-05-02 fix: when a retry-of-a-failed-task itself fails, the counter
-// must NOT increment again — the lineage represents the same root-cause
-// failure. Otherwise an automatic retry chain trips the breaker on a
-// command whose underlying problem is a single environmental issue
-// (e.g. a stale worker worktree triggering the same compile error
-// repeatedly while the eventual fix already landed on integration).
+// TestUpdateCounterOnResult_LineageFailureNotDoubleCounted verifies that
+// when a retry-of-a-failed-task itself fails, the counter does NOT
+// increment again because the lineage represents the same root-cause
+// failure.
 func TestUpdateCounterOnResult_LineageFailureNotDoubleCounted(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
@@ -211,14 +208,10 @@ func TestUpdateCounterOnResult_LineageFailureNotDoubleCounted(t *testing.T) {
 	}
 }
 
-// TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted pins the
-// 2026-05-01 user reproduction: when result_write_phase_b's
-// retry_lineage_superseded path marks the predecessor StatusCancelled
-// (rather than leaving it Failed), the lineage guard must still prevent
-// the counter from incrementing on the successor's failure. The original
-// fix only matched StatusFailed, so verify-repair retries whose
-// predecessor was non-terminal at supersede time slipped through and
-// the breaker tripped on the third failure of a single lineage.
+// TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted verifies
+// that when the predecessor in a retry lineage is StatusCancelled
+// (rather than StatusFailed), the lineage guard still prevents the
+// counter from incrementing on the successor's failure.
 func TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
@@ -241,11 +234,9 @@ func TestUpdateCounterOnResult_LineageCancelledNotDoubleCounted(t *testing.T) {
 		t.Fatalf("after t1 first failure, counter = %d, want 1", got)
 	}
 
-	// Step 2: result_write_phase_b's retry_lineage_superseded path
-	// flips t1 from Failed → Cancelled when the t1_retry result lands
-	// (when t1 was non-terminal at supersede time the path leaves it
-	// Cancelled instead of Failed). Simulate that transition before the
-	// successor failure arrives.
+	// Step 2: simulate the retry_lineage_superseded path flipping t1 from
+	// Failed → Cancelled before the successor failure arrives (happens when
+	// t1 was non-terminal at supersede time).
 	state.TaskStates["t1"] = model.StatusCancelled
 
 	// Step 3: t1_retry fails — predecessor is now Cancelled (NOT Failed).

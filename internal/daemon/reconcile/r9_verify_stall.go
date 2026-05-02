@@ -382,7 +382,7 @@ func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reas
 
 func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
 	now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
-	// F-004: dedup is keyed on (Kind, CommandID, PhaseID, WorkerID,
+	// Planner-signal dedup is keyed on (Kind, CommandID, PhaseID, WorkerID,
 	// ConflictGeneration) — see plannerSignalDuplicate / signalDedupKey for
 	// the canonical definition. paused_for_replan signals embed the task ID
 	// in PhaseID via the "__task_" prefix so each task gets its own

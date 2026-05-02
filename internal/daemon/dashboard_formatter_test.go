@@ -14,11 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestDashboardFormatter_WorktreeWarningsVisible is the 2026-04 audit Bug 3
-// regression. Dashboard must surface (a) integration statuses that block
-// recovery (conflict, partial_merge, failed, publish_failed, quarantined) and
-// (b) commit_failed_workers entries — previously both vanished into a "0
-// warnings" summary.
+// TestDashboardFormatter_WorktreeWarningsVisible asserts that the dashboard
+// surfaces (a) integration statuses that block recovery (conflict,
+// partial_merge, failed, publish_failed, quarantined) and (b)
+// commit_failed_workers entries.
 func TestDashboardFormatter_WorktreeWarningsVisible(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

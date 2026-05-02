@@ -15,13 +15,12 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// TestRespawnWorkerPanesForCleanup_EvictsBeforeCleanup pins the 2026-04-28
-// (round 2) Phase B integration: every worker attached to the worktree
-// being torn down has its tmux pane respawned to the project root before
-// `git worktree remove` runs. Without this, claude-code's Stop hook can
-// fire from inside the just-deleted worktree directory and posix_spawn
-// '/bin/sh' fails with ENOENT — the warning the user reported recurring
-// after the first round of fixes.
+// TestRespawnWorkerPanesForCleanup_EvictsBeforeCleanup asserts the Phase
+// B integration: every worker attached to the worktree being torn down
+// has its tmux pane respawned to the project root before `git worktree
+// remove` runs. Without this, claude-code's Stop hook can fire from
+// inside the just-deleted worktree directory and posix_spawn '/bin/sh'
+// fails with ENOENT.
 //
 // Setup uses a real WorktreeManager so the GetCommandState path is
 // exercised end-to-end (state file → in-memory state → worker iteration);

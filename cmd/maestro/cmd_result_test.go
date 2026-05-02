@@ -256,10 +256,8 @@ func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	// F-019 step 2: FENCING_REJECT now maps to the structured exit code 12
-	// (status mismatch) via the legacy-code fallback in
-	// classifyFencingExitCode. Pre-F-019 builds returned the generic 2
-	// (ExitCodeRetryable); this test pins the new contract.
+	// FENCING_REJECT maps to the structured exit code 12 (status mismatch)
+	// via the legacy-code fallback in classifyFencingExitCode.
 	if ce.Code != ExitCodeFencingStatus {
 		t.Errorf("expected exit code %d (ExitCodeFencingStatus) for FENCING_REJECT, got %d", ExitCodeFencingStatus, ce.Code)
 	}
@@ -574,12 +572,11 @@ func TestRunResultWrite_NormalEntriesNotTruncated(t *testing.T) {
 }
 
 // TestValidateSummaryNotPlaceholder pins the placeholder/min-length contract
-// so a worker that lost its real result during a policy-hook denial cannot
-// silently land a degenerate summary as the canonical task result. The 2026-04-30
-// e2e regression captured exactly this flow ("test minimal" / "test summary"
-// shows up as the only completed-task report); the helper is unit-tested
-// here so future edits to summaryPlaceholderPatterns or the length floor
-// remain auditable in isolation from the rest of result_write.
+// so a worker that lost its real result (e.g. during a policy-hook denial)
+// cannot silently land a degenerate summary like "test minimal" / "test
+// summary" as the canonical task result. The helper is unit-tested here so
+// future edits to summaryPlaceholderPatterns or the length floor remain
+// auditable in isolation from the rest of result_write.
 func TestValidateSummaryNotPlaceholder(t *testing.T) {
 	cases := []struct {
 		name      string

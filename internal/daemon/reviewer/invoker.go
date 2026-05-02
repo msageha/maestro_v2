@@ -131,14 +131,12 @@ func invokeCodex(ctx context.Context, modelName, systemPrompt, userPrompt string
 			return "", ctx.Err()
 		}
 		stderrTail := truncate(stderr.String(), 512)
-		// Surface a targeted hint when the daemon was launched inside a
-		// caller-side sandbox (most commonly Claude Code) that denies
-		// writes to ~/.codex. codex CLI emits "Failed to create session"
-		// + "Operation not permitted" when it cannot persist its session
-		// file, and the resulting reviewer skip is hard to diagnose from
-		// the raw stderr alone — the 2026-04-30 e2e regression burned
-		// hours on it. Detecting the pattern here lets operators spot the
-		// cause from a single log line.
+		// Surface a targeted hint when the daemon runs inside a caller-side
+		// sandbox (e.g. Claude Code) that denies writes to ~/.codex. codex
+		// CLI emits "Failed to create session" + "Operation not permitted"
+		// when it cannot persist its session file; detecting the pattern
+		// here lets operators identify the cause from a single log line
+		// rather than the raw stderr.
 		if codexSandboxBlocked(stderrTail) {
 			return "", fmt.Errorf(
 				"codex review invocation failed: %w; stderr=%s "+

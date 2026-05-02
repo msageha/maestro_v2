@@ -234,13 +234,10 @@ signals:
 	}
 }
 
-// TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork pins the
-// 2026-04-29 e2e regression: worker4 reported @status=busy in tmux
-// while no queue file showed an in-progress task. `maestro status`
-// previously reported "busy" verbatim, leaving operators no signal
-// that the busy claim was unbacked. The annotation rewrites such
-// rows to "busy (stale)" so the inconsistency is immediately
-// observable.
+// TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork verifies that an
+// agent reporting @status=busy with no queue file showing an in-progress
+// task is rewritten to "busy (stale)" so the inconsistency is immediately
+// observable in `maestro status`.
 func TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork(t *testing.T) {
 	agents := []agentStatus{
 		{ID: "worker1", Role: "worker", Status: "busy"},

@@ -77,14 +77,9 @@ func (b BanditConfig) EffectiveTraceDataRequirement() int {
 // --- C-3 Extended Verification Config ---
 
 // ExtendedVerificationConfig controls retry-on-fail behaviour for verify
-// runs. The 2026-04-30 redesign reduced this struct to only the two
-// fields that still drive runtime behaviour. The previous configuration
-// surface (security_check, performance_bench, perspective_weights) was
-// removed together with the language-specific auto-injection: those
-// fields had no effect once the daemon stopped synthesising
-// verify-category commands. The single remaining knob is
-// max_auto_retries, which gates how many automatic retries the
-// EnsembleVerifier performs against the operator-supplied verify.yaml.
+// runs. The single runtime knob is max_auto_retries, which gates how many
+// automatic retries the EnsembleVerifier performs against the
+// operator-supplied verify.yaml.
 type ExtendedVerificationConfig struct {
 	Enabled        *bool `yaml:"enabled,omitempty"`
 	MaxAutoRetries *int  `yaml:"max_auto_retries,omitempty"`

@@ -30,10 +30,10 @@ type PlanExecutorImpl struct {
 // Safe to call concurrently with in-flight plan operations; subsequent calls
 // take effect on the next Submit / AddRetryTask / AddTask invocation.
 //
-// The daemon invokes this via core.PlanExecutorModelSelectorSettable. Since
-// F-039 unified `core.ModelSelector` and `plan.ModelSelector` as type
-// aliases of `contract.ModelSelector`, the selector flows through with a
-// direct assignment — no adapter shim required.
+// The daemon invokes this via core.PlanExecutorModelSelectorSettable.
+// `core.ModelSelector` and `plan.ModelSelector` are type aliases of
+// `contract.ModelSelector`, so the selector flows through with a direct
+// assignment.
 func (pe *PlanExecutorImpl) SetModelSelector(s core.ModelSelector) {
 	pe.selectorMu.Lock()
 	defer pe.selectorMu.Unlock()

@@ -78,9 +78,8 @@ func TestSnapshot_Accuracy(t *testing.T) {
 
 // TestClassifyTask_PurposeIgnored locks in the deterministic-classification
 // invariant: even when Purpose contains verify/repair keywords, an unset
-// OperationType MUST classify as OpUnknown. This guards against the pre-2026
-// Purpose-substring behaviour that misclassified normal user tasks (e.g.
-// "Repair broken auth flow") into the admission-controlled bucket.
+// OperationType MUST classify as OpUnknown. Purpose is a free-form
+// human-readable hint and MUST NOT influence admission classification.
 func TestClassifyTask_PurposeIgnored(t *testing.T) {
 	t.Parallel()
 	c := NewController(defaultCfg())

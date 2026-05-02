@@ -150,7 +150,7 @@ func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	// F-019 step 2: max_runtime_exceeded now uses the dedicated exit code 11.
+	// max_runtime_exceeded uses the dedicated exit code 11.
 	if ce.Code != ExitCodeMaxRuntimeExceeded {
 		t.Errorf("expected exit code %d (ExitCodeMaxRuntimeExceeded), got %d", ExitCodeMaxRuntimeExceeded, ce.Code)
 	}
@@ -159,11 +159,9 @@ func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 	}
 }
 
-// TestRunTaskHeartbeat_UDSFencingReject pins F-019 step 2: a generic
-// FENCING_REJECT (no structured Details — older daemons) maps to the
-// status-mismatch exit code via the legacy-code fallback in
-// classifyFencingExitCode. Renamed from `_UDSOtherError` because the prior
-// behaviour (exit 1) was the F-019 step 2 target to fix.
+// TestRunTaskHeartbeat_UDSFencingReject verifies that a generic
+// FENCING_REJECT (no structured Details) maps to the status-mismatch exit
+// code via the legacy-code fallback in classifyFencingExitCode.
 func TestRunTaskHeartbeat_UDSFencingReject(t *testing.T) {
 	withMaestroDir(t)
 	app := newTestApp(&mockUDSClient{
@@ -181,7 +179,7 @@ func TestRunTaskHeartbeat_UDSFencingReject(t *testing.T) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
 	if ce.Code != ExitCodeFencingStatus {
-		t.Errorf("expected exit code %d (ExitCodeFencingStatus, F-019 fallback), got %d", ExitCodeFencingStatus, ce.Code)
+		t.Errorf("expected exit code %d (ExitCodeFencingStatus), got %d", ExitCodeFencingStatus, ce.Code)
 	}
 	if ce.Silent {
 		t.Error("FENCING_REJECT must NOT be silent (operator visibility)")

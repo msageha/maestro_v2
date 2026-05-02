@@ -27,9 +27,8 @@ func TestVerifyConfig_YAMLRoundTrip(t *testing.T) {
 	assert.Equal(t, original, decoded)
 }
 
-// TestDefaultVerifyConfig pins the language-agnostic baseline. The 2026-04-30
-// redesign replaced the Go-specific `go vet ./...` default with
-// `git diff --check`, which works for any git repository regardless of
+// TestDefaultVerifyConfig pins the language-agnostic baseline. The default
+// is `git diff --check`, which works for any git repository regardless of
 // language and keeps the §5-6 evolution invariant satisfied (non-empty
 // command list).
 func TestDefaultVerifyConfig(t *testing.T) {

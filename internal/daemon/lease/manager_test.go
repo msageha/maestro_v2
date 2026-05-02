@@ -113,7 +113,7 @@ func TestExtendCommandLease(t *testing.T) {
 		t.Errorf("new expiry %v should be after old expiry %v", newExpires, oldExpires)
 	}
 
-	// QA-008: UpdatedAt must NOT change on lease extension
+	// UpdatedAt must NOT change on lease extension.
 	if cmd.UpdatedAt != originalUpdatedAt {
 		t.Errorf("UpdatedAt changed after ExtendCommandLease: got %s, want %s", cmd.UpdatedAt, originalUpdatedAt)
 	}
@@ -141,7 +141,7 @@ func TestExtendTaskLease_UpdatedAtUnchanged(t *testing.T) {
 		t.Fatalf("extend: %v", err)
 	}
 
-	// QA-008: UpdatedAt must NOT change on lease extension
+	// UpdatedAt must NOT change on lease extension.
 	if task.UpdatedAt != originalUpdatedAt {
 		t.Errorf("UpdatedAt changed after ExtendTaskLease: got %s, want %s", task.UpdatedAt, originalUpdatedAt)
 	}
@@ -536,7 +536,7 @@ func TestReleaseTaskLease_ClearsInProgressAt(t *testing.T) {
 
 	lm.ReleaseTaskLease(task)
 	if task.InProgressAt != nil {
-		t.Error("InProgressAt should be nil after ReleaseTaskLease (H5)")
+		t.Error("InProgressAt should be nil after ReleaseTaskLease")
 	}
 }
 

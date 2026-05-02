@@ -107,7 +107,7 @@ func (r *PlanStateReader) loadStateWithCache(commandID string) (*model.CommandSt
 // then transitioned to repair_pending or paused_for_replan in state without
 // touching the queue. Fast-track stall cleanup must consult this view so it
 // does not delete a worktree while a pending retry-task or replan signal is
-// still in flight (2026-04-29 review pin).
+// still in flight.
 //
 // Returns ErrStateNotFound when the state file does not exist; the caller
 // can treat that as "no in-flight resolution" (commands without state files

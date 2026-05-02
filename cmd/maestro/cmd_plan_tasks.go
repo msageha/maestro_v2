@@ -209,12 +209,8 @@ func resolveContentFile(cmd *CommandBuilder, content *string, contentFile string
 }
 
 // resolveAcceptanceCriteriaFile is the analogue of resolveContentFile for
-// --acceptance-criteria-file. The 2026-04-28 retest2 caught a Planner
-// agent attempting `--acceptance-criteria-file` on the assumption it
-// would mirror --content-file; the flag did not exist, so the call
-// failed and the agent fell back to argv quoting (which then hit a
-// shell quote error on a multi-line value). Adding the file form
-// removes both failure modes.
+// --acceptance-criteria-file, mirroring --content-file so Planner agents
+// can pass multi-line acceptance criteria without argv quoting.
 func resolveAcceptanceCriteriaFile(cmd *CommandBuilder, acceptance *string, acceptanceFile string) error {
 	return resolveTextOrFile(cmd, "--acceptance-criteria", "--acceptance-criteria-file", acceptance, acceptanceFile)
 }

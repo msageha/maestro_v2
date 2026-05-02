@@ -74,15 +74,15 @@ func (d *Daemon) prepareStartup() error {
 	// its sibling .bak. Failures are logged as warnings; startup continues.
 	d.recoverStateFiles()
 
-	// F-034: Same recovery for queue YAMLs. A truncated planner.yaml /
+	// Same recovery for queue YAMLs. A truncated planner.yaml /
 	// worker{N}.yaml / planner_signals.yaml / orchestrator.yaml would
 	// otherwise look "empty" and the daemon would silently lose the
 	// in-flight lease_epoch history.
 	d.recoverQueueFiles()
 
-	// F-037: GC stale flock files in .maestro/locks/. Run exactly once,
-	// here at startup, before any other lock acquisition begins. Concurrent
-	// GC is unsafe (inode-split race after unlink + recreate). daemon.lock
+	// GC stale flock files in .maestro/locks/. Run exactly once, here at
+	// startup, before any other lock acquisition begins. Concurrent GC
+	// is unsafe (inode-split race after unlink + recreate). daemon.lock
 	// is excluded because the running daemon holds it.
 	locksDir := filepath.Join(d.maestroDir, "locks")
 	stats, gcErr := lock.GCStaleLockFiles(locksDir, lock.DefaultLockGCAge,

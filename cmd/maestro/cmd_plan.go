@@ -132,17 +132,11 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 
 // runPlanComplete reports command completion to the daemon.
 //
-// 2026-04-28 E2E follow-up: Planner agents reaching the publish step often
-// have a long human-readable summary ready and try `maestro plan complete
-// --summary-file <path>`. The flag did not exist, so the call failed and the
-// agent had to either truncate the summary or paste a multi-kilobyte string
-// onto the CLI argv (which is fragile across tmux paste-buffer + Enter).
 // Mirroring the (--content | --content-file) pattern from `plan add-task` /
-// `plan add-retry-task`, we now accept --summary-file as an alternative
-// source for the summary text. The two flags are mutually exclusive — having
-// both set would create ambiguity about which value the daemon receives —
-// and the file path is read with the same content-size validation as the
-// inline flag.
+// `plan add-retry-task`, --summary-file is accepted as an alternative source
+// for the summary text. The two flags are mutually exclusive (the daemon
+// must receive a single unambiguous value) and the file path is read with
+// the same content-size validation as the inline flag.
 func (a *cliApp) runPlanComplete(args []string) error {
 	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> (--summary <text> | --summary-file <path>)")
 	var commandID, summary, summaryFile string

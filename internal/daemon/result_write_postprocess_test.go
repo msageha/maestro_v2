@@ -3,10 +3,10 @@ package daemon
 import "testing"
 
 // TestShouldRunAfterVerificationSync pins the sync-path AfterVerification
-// guard introduced by F-012. The two downstream side effects
-// (maybeAutoRecoverAfterResolution + dispatchAdvisoryReview) MUST share a
-// single gate so that adding a third side effect later cannot accidentally
-// invoke one path and skip the other.
+// guard. The two downstream side effects (maybeAutoRecoverAfterResolution
+// + dispatchAdvisoryReview) MUST share a single gate so that adding a
+// third side effect later cannot accidentally invoke one path and skip
+// the other.
 func TestShouldRunAfterVerificationSync(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -16,7 +16,7 @@ func TestShouldRunAfterVerificationSync(t *testing.T) {
 		want               bool
 	}{
 		{"fresh sync write — both side effects must run", false, false, true},
-		{"duplicate — both side effects must skip (Bug H)", true, false, false},
+		{"duplicate — both side effects must skip", true, false, false},
 		{"async verify — sync path defers to async completion", false, true, false},
 		{"duplicate AND async — definitely skip", true, true, false},
 	}

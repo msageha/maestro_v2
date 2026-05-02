@@ -431,12 +431,12 @@ func TestResultWrite_CompletedVerifyFailsSchedulesRepairTask(t *testing.T) {
 	}
 
 	st := readCommandStateForLifecycle(t, d, commandID)
-	// 2026-04-29 follow-up: once the verify repair successor is enqueued,
-	// the original task's state is auto-flipped from repair_pending to
-	// cancelled (superseded_by_verify_repair). That eliminates the
-	// plan-complete validation failure where phase=terminal coexisted
-	// with task=repair_pending, which forced the Planner to burn LLM
-	// round-trips on plan_complete retries until R4PlanStatus backed off.
+	// Once the verify repair successor is enqueued, the original task's
+	// state is auto-flipped from repair_pending to cancelled
+	// (superseded_by_verify_repair) — eliminating the plan-complete
+	// validation failure where phase=terminal would coexist with
+	// task=repair_pending and force the Planner to burn LLM round-trips
+	// on plan_complete retries.
 	if got := st.TaskStates[taskID]; got != model.StatusCancelled {
 		t.Fatalf("original task state = %q, want %q (superseded by verify repair successor)",
 			got, model.StatusCancelled)

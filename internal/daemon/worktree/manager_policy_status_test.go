@@ -857,10 +857,10 @@ func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
 
 // TestCommitWorkerChanges_WorkerOwnedByResumeMerge verifies that
 // CommitWorkerChanges refuses to auto-commit workers whose status is
-// Conflict or Resolving, returning ErrWorkerOwnedByResumeMerge so the Phase B
-// caller can distinguish "out of scope" from a genuine commit failure and
-// avoid recording a spurious commit_failed signal (regression of the 2026-04
-// audit: `resolving → committed` invalid transition).
+// Conflict or Resolving, returning ErrWorkerOwnedByResumeMerge so the
+// Phase B caller can distinguish "out of scope" from a genuine commit
+// failure and avoid recording a spurious commit_failed signal. The
+// `resolving -> committed` transition is invalid by design.
 func TestCommitWorkerChanges_WorkerOwnedByResumeMerge(t *testing.T) {
 	t.Parallel()
 	for _, status := range []model.WorktreeStatus{

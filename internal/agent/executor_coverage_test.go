@@ -270,14 +270,11 @@ func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 	}
 }
 
-// TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady pins the 2026-04-28
-// (round 2) follow-up to the Stop hook posix_spawn '/bin/sh' ENOENT
-// regression. The first fix added a stale-cwd probe to ensureWorkingDir,
-// but that only fires at the next dispatch — claude-code's Stop hook can
-// run between turns, while the worktree dir is being removed. Phase B
-// now invokes RespawnPaneToProjectRoot before each `git worktree
-// remove`, so the pane lands in the project root (a guaranteed-stable
-// directory) before the cleanup's rm hits its old cwd.
+// TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady asserts that Phase
+// B's pre-cleanup respawn lands the pane in the project root (a
+// guaranteed-stable directory) before `git worktree remove` deletes the
+// old cwd, avoiding claude-code's Stop hook posix_spawn '/bin/sh' ENOENT
+// when it runs between turns.
 //
 // The pane is respawned, the @cwd label is reset (so the next
 // ensureWorkingDir call is forced into a fresh respawn for the new
@@ -314,9 +311,9 @@ func TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady(t *testing.T) {
 	if !strings.Contains(buf.String(), "respawn_to_project_root") {
 		t.Errorf("expected respawn_to_project_root info log, got: %s", buf.String())
 	}
-	// 2026-04-28 retest2: respawn must mark the pane as "evicted" so
-	// status.go does not flip the worker to "dead" while it sits in
-	// shell waiting for the next dispatch.
+	// Respawn must mark the pane as "evicted" so status.go does not flip
+	// the worker to "dead" while it sits in shell waiting for the next
+	// dispatch.
 	if got := mock.userVars["agent_state"]; got != "evicted" {
 		t.Errorf("agent_state = %q, want \"evicted\"", got)
 	}
@@ -344,16 +341,13 @@ func TestRespawnPaneToProjectRoot_PaneNotFoundIsNoOp(t *testing.T) {
 	}
 }
 
-// TestEnsureWorkingDir_StaleCwdForcesRespawn pins the 2026-04-28 fix for the
-// "Stop hook posix_spawn ENOENT '/bin/sh'" warning seen in the E2E run.
-// The Phase B publish/cleanup pipeline removes a worktree directory shortly
-// after a Worker reports completion, which leaves the pane's tracked @cwd
-// pointing at a deleted path. When claude-code's Stop hook then tries to
-// spawn /bin/sh from that pane, node.js reports the chdir failure as an
-// ENOENT on the binary itself. ensureWorkingDir now stat's the tracked cwd
-// even when the requested path matches, and forces a respawn when the
+// TestEnsureWorkingDir_StaleCwdForcesRespawn asserts the stale-cwd guard:
+// when the Phase B publish/cleanup pipeline removes a worktree directory
+// shortly after a Worker reports completion, the pane's tracked @cwd
+// points at a deleted path. ensureWorkingDir stats the tracked cwd even
+// when the requested path matches, and forces a respawn when the
 // directory is missing so the pane lands somewhere real before the next
-// dispatch.
+// dispatch (avoids "Stop hook posix_spawn ENOENT '/bin/sh'").
 func TestEnsureWorkingDir_StaleCwdForcesRespawn(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
@@ -483,17 +477,12 @@ func TestClearAndConfirm_SuccessOnFirstAttempt(t *testing.T) {
 	}
 }
 
-// TestClearAndConfirm_SendsClearExactlyOncePerAttempt is the regression
-// guard for the 2026-04-27 doubled-/clear bug. clearAndConfirm used to
-// follow SendCommand("/clear") with a second SendKeys("Enter") to handle a
-// completion-prompt UX that older Claude Code releases displayed for slash
-// commands. Claude Code 2.x executes /clear immediately on the first Enter
-// and treats the trailing Enter as "re-run last command", so the worker
-// pane logged TWO /clear executions on every task transition. The fix
-// removes the second Enter unconditionally; this test pins that contract by
-// asserting that SendCommand("/clear") is the only call recorded against
-// the mock when the post-clear poller confirms processing on the first
-// attempt — no SendKeys with bare "Enter" should appear.
+// TestClearAndConfirm_SendsClearExactlyOncePerAttempt asserts that
+// clearAndConfirm does not follow SendCommand("/clear") with a bare Enter
+// — Claude Code 2.x would treat the trailing Enter as "re-run last
+// command" and execute /clear twice. SendCommand("/clear") must be the
+// only call recorded against the mock when the post-clear poller
+// confirms processing on the first attempt.
 func TestClearAndConfirm_SendsClearExactlyOncePerAttempt(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
@@ -525,14 +514,11 @@ func TestClearAndConfirm_SendsClearExactlyOncePerAttempt(t *testing.T) {
 }
 
 // TestClearAndConfirm_LogsExactlyOneSendInvocationOnSuccess pins the
-// observability contract added during the 2026-04-27 doubled-/clear pane
-// investigation. The pane transcript shows "/clear" twice per task
-// transition; to distinguish a true double-send from a Claude Code
-// rendering quirk, clearAndConfirm emits a `clear_send_invocation` INFO
-// log immediately before each underlying SendCommand("/clear"). Operators
-// grep this token in agent_executor.log: one entry per visible "/clear" in
-// the pane → real bug, one entry per task transition (with two visible
-// "/clear" lines) → cosmetic. This test guards both directions:
+// observability contract: clearAndConfirm emits exactly one
+// `clear_send_invocation` INFO log per SendCommand("/clear") so operators
+// can distinguish a true double-send from a Claude Code rendering quirk
+// (the pane transcript shows "/clear" twice per task transition even
+// when the daemon only sent it once).
 //
 //  1. Exactly one `clear_send_invocation` line per attempt on the success
 //     path (no off-by-one or accidental loop multiplier),

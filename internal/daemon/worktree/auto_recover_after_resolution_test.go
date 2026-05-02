@@ -313,16 +313,14 @@ func TestAutoRecoverAfterResolution_Quarantined_NoOp(t *testing.T) {
 	}
 }
 
-// TestAutoRecoverAfterResolution_Merge_DeferredWhenResolutionInFlight pins
-// the new (2026-04-28) AutoRecoverResumeMergeDeferred outcome. When the
-// resolving worker has not yet committed the resolution edits to its
-// worktree, ResumeMerge takes the resume_merge_deferred_resolution_in_flight
+// TestAutoRecoverAfterResolution_Merge_DeferredWhenResolutionInFlight
+// pins the AutoRecoverResumeMergeDeferred outcome: when the resolving
+// worker has not yet committed the resolution edits to its worktree,
+// ResumeMerge takes the resume_merge_deferred_resolution_in_flight
 // branch and returns nil without flipping the worker out of Resolving.
-// AutoRecoverAfterResolution must surface that as
-// AutoRecoverResumeMergeDeferred — not the historical AutoRecoverResumeMerge —
-// so result_write_handler can log "auto_recover_after_resolution_deferred"
-// instead of the misleading "_completed action=resume_merge" line that the
-// E2E run reported as 紛らわしい.
+// AutoRecoverAfterResolution must surface that distinct outcome so
+// result_write_handler can log "auto_recover_after_resolution_deferred"
+// rather than the misleading "_completed action=resume_merge".
 func TestAutoRecoverAfterResolution_Merge_DeferredWhenResolutionInFlight(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)

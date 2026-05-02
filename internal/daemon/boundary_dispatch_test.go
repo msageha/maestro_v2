@@ -201,12 +201,11 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 	}
 }
 
-// TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends pins the
-// 2026-04-30 e2e correction: a command past max_in_progress_min must NOT
-// be released when worker queues still hold a non-terminal task for that
-// command. The previous behaviour released the lease and re-dispatched
-// the same command as a new epoch, which the user observed as duplicate
-// processing of an in-flight 30+ minute audit/repair pass.
+// TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends asserts
+// that a command past max_in_progress_min must NOT be released when worker
+// queues still hold a non-terminal task for that command. Releasing the
+// lease in that state would re-dispatch the same command as a new epoch,
+// causing duplicate processing of work that is still in flight.
 func TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
@@ -281,13 +280,11 @@ func TestCommandLeaseAutoExtend_PastMaxTimeoutWithActiveWorkerExtends(t *testing
 	}
 }
 
-// TestCommandLeaseAutoExtend_PastMaxTimeoutWithAwaitingFillExtends pins the
-// 2026-04-30 e2e correction: a command past max_in_progress_min must NOT
-// be released when one of its phases is in awaiting_fill (or filling) —
-// the Planner is mid-work on the fill and a re-dispatch would destroy
-// the in-flight dry-run / submit. The previous behaviour released the
-// lease and re-dispatched the same command as a new epoch, breaking the
-// Planner's awaiting_fill response.
+// TestCommandLeaseAutoExtend_PastMaxTimeoutWithAwaitingFillExtends asserts
+// that a command past max_in_progress_min must NOT be released when one
+// of its phases is in awaiting_fill (or filling) — the Planner is mid-
+// work on the fill and a re-dispatch would destroy the in-flight dry-
+// run / submit.
 func TestCommandLeaseAutoExtend_PastMaxTimeoutWithAwaitingFillExtends(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)

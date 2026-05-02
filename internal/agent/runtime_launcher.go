@@ -50,15 +50,13 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 		Command: "claude",
 	}
 	// codex (interactive REPL). `--dangerously-bypass-approvals-and-sandbox`
-	// is required for two reasons that came out of the 2026-04 audit:
+	// is required for two reasons:
 	//
-	//  1. The previous `--sandbox workspace-write` mode blocked Unix-socket
-	//     `connect(2)` to the daemon (.maestro/daemon.sock or its
-	//     /tmp/maestro-uds-<uid>/ fallback), so workers could edit files
-	//     but could never call `maestro result write` — the daemon never
-	//     received task completion and the command stalled forever. Per
-	//     codex's own docs, the sandbox blocks IPC to anything outside the
-	//     workspace allowlist.
+	//  1. `--sandbox workspace-write` blocks Unix-socket `connect(2)` to
+	//     the daemon (.maestro/daemon.sock or its /tmp/maestro-uds-<uid>/
+	//     fallback), so workers could edit files but never call
+	//     `maestro result write` — the sandbox blocks IPC to anything
+	//     outside the workspace allowlist.
 	//
 	//  2. The first-run "Do you trust the contents of this directory?"
 	//     trust prompt is gated by sandbox/approval mode and would
@@ -113,10 +111,9 @@ func (rl *RuntimeLauncher) GetCommand(runtime string, opts RuntimeLaunchOptions)
 //
 // Codex: --model selects the model. The system prompt — when supplied —
 // becomes codex's positional [PROMPT], which the runtime treats as the
-// first user turn. Codex 0.125.0 has no --system-prompt / --instructions
-// equivalent, so dropping the prompt entirely (as the previous revision
-// did) silently lost role guidance for codex workers. The positional-
-// prompt fallback is the documented seed for interactive sessions.
+// first user turn. Codex has no --system-prompt / --instructions
+// equivalent; the positional-prompt fallback is the documented seed for
+// interactive sessions.
 //
 // Gemini: --model selects the model. The system prompt — when supplied —
 // is passed via -i / --prompt-interactive, which seeds the interactive

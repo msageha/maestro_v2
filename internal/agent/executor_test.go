@@ -39,12 +39,11 @@ func TestContentHash(t *testing.T) {
 func TestApplyDefaults(t *testing.T) {
 	t.Parallel()
 
-	// F-059: each row pins one (input cfg) → (expected post-applyDefaults
-	// cfg) mapping for the 8 watcher knobs we care about. The two scenarios
-	// the original 16-if expansion exercised are kept as separate rows
-	// ("zero" → defaults applied, "non-zero" → values preserved verbatim);
-	// the field-by-field assertion is then a single deep equal so adding a
-	// new field requires updating expectations once instead of twice.
+	// Each row pins one (input cfg) → (expected post-applyDefaults cfg)
+	// mapping for the watcher knobs. Two scenarios are exercised:
+	// "zero" → defaults applied, "non-zero" → values preserved verbatim.
+	// Field-by-field assertion uses a single deep equal so adding a new
+	// field requires updating expectations once.
 	tests := []struct {
 		name     string
 		input    model.WatcherConfig
@@ -248,7 +247,7 @@ func TestExecMode_Constants(t *testing.T) {
 	}
 }
 
-// --- Fix #3: Stage 1 shell command detection ---
+// --- Stage 1 shell command detection ---
 
 func TestShellCommands(t *testing.T) {
 	t.Parallel()
@@ -269,7 +268,7 @@ func TestShellCommands(t *testing.T) {
 	}
 }
 
-// --- Fix #5: Role name validation ---
+// --- Role name validation ---
 
 func TestValidRoleName(t *testing.T) {
 	t.Parallel()
@@ -288,7 +287,7 @@ func TestValidRoleName(t *testing.T) {
 	}
 }
 
-// --- Fix #2: Orchestrator Ctrl-C protection ---
+// --- Orchestrator Ctrl-C protection ---
 
 func TestOrchestratorInterruptRejected(t *testing.T) {
 	t.Parallel()

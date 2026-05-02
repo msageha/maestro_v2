@@ -1,11 +1,10 @@
 package daemon
 
-// Phase C learning helpers extracted from result_handler.go (F-042 step 4
-// physical file split). These functions are tightly coupled to ResultHandler
-// because they read PhaseCManager / banditModelSelector / config off the
-// handler, but they form a coherent "feed completed task results into the
-// learning components" responsibility that is easier to evolve in isolation
-// when adding new C-x signals.
+// Phase C learning helpers. These functions are tightly coupled to
+// ResultHandler because they read PhaseCManager / banditModelSelector /
+// config off the handler, but they form a coherent "feed completed task
+// results into the learning components" responsibility that is easier
+// to evolve in isolation when adding new C-x signals.
 
 import (
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
@@ -37,9 +36,9 @@ func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID 
 	}
 	m := rh.getPhaseC()
 
-	// F-042 step 2: each C-xxx component runs independently. Splitting them
-	// keeps recordTaskResultLearning a high-level orchestrator that is easy
-	// to extend (e.g. adding C-6 / C-7) without re-flowing this function.
+	// Each C-xxx component runs independently. Splitting them keeps
+	// recordTaskResultLearning a high-level orchestrator that is easy to
+	// extend (e.g. adding C-6 / C-7) without re-flowing this function.
 	rh.recordFingerprintCapture(r, workerID, m)
 	rh.recordBanditReward(r, workerID)
 	rh.recordSearchTreeOutcome(r, m)
@@ -48,8 +47,7 @@ func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID 
 
 // recordFingerprintCapture is the C-5 path of recordTaskResultLearning. It
 // computes a stable error fingerprint from the failure summary and stores
-// it in the FingerprintDB so future failures can be deduplicated. F-042
-// step 2 helper.
+// it in the FingerprintDB so future failures can be deduplicated.
 func (rh *ResultHandler) recordFingerprintCapture(r *model.TaskResult, workerID string, m *PhaseCManager) {
 	if m == nil || m.FingerprintDB == nil {
 		return
@@ -72,8 +70,7 @@ func (rh *ResultHandler) recordFingerprintCapture(r *model.TaskResult, workerID 
 
 // recordBanditReward is the C-2 path of recordTaskResultLearning. Reward
 // policy: Completed=1.0, Failed/DeadLetter=0.0, anything else ignored.
-// Mirrors REQUIREMENTS §5-7 — see internal/daemon/model_selector.go. F-042
-// step 2 helper.
+// Mirrors REQUIREMENTS §5-7 — see internal/daemon/model_selector.go.
 func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string) {
 	sel := rh.getModelSelector()
 	if sel == nil {
@@ -94,7 +91,7 @@ func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string
 // recordSearchTreeOutcome is the C-4 path of recordTaskResultLearning. It
 // backpropagates the task outcome into the search tree / Thompson sampler.
 // nil-safe on the manager and its components. Status mapping matches
-// recordBanditReward. F-042 step 2 helper.
+// recordBanditReward.
 func (rh *ResultHandler) recordSearchTreeOutcome(r *model.TaskResult, m *PhaseCManager) {
 	switch r.Status {
 	case model.StatusCompleted:
@@ -114,8 +111,6 @@ func (rh *ResultHandler) recordSearchTreeOutcome(r *model.TaskResult, m *PhaseCM
 //     plan (observability only — the existing retry path in plan/retry.go
 //     performs the actual retries; this log lets operators see which
 //     mutation strategies the evolution engine would pick).
-//
-// F-042 step 2 helper.
 func (rh *ResultHandler) recordEvolutionSignal(r *model.TaskResult, m *PhaseCManager) {
 	switch r.Status {
 	case model.StatusCompleted:

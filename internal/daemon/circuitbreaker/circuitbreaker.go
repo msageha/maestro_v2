@@ -113,16 +113,10 @@ func (cb *Handler) UpdateCounterOnResult(
 		return false, ""
 
 	case model.StatusFailed:
-		// Lineage-aware count (2026-05-02): when a task has a
-		// retry_lineage ancestor that is already failed, this is a
-		// continued failure within the same lineage chain and should
-		// NOT increment the counter again. Otherwise a single stuck
-		// task that failed N times across automatic retries trips the
-		// breaker even though only one underlying problem exists. The
-		// user reproduced this with run_on_integration retries running
-		// against a stale worker worktree: the same root cause got
-		// counted three times and tripped the breaker on a command
-		// whose actual fix had succeeded.
+		// Lineage-aware count: when a task has a retry_lineage ancestor that
+		// is already in a non-success terminal state, treat this as the same
+		// root-cause failure and skip the counter increment to avoid tripping
+		// the breaker on a single stuck lineage retried multiple times.
 		if isLineageAlreadyFailed(taskID, state) {
 			cb.Log(core.LogLevelInfo,
 				"circuit_breaker_lineage_failure_skipped command=%s task=%s "+
@@ -147,28 +141,15 @@ func (cb *Handler) UpdateCounterOnResult(
 }
 
 // isLineageAlreadyFailed reports whether any predecessor in the retry
-// lineage of taskID is already at a non-success terminal state in
-// TaskStates. Used by the failure-counter path to avoid double-counting
-// the same root-cause failure across automatic retries. Walks at most
-// len(RetryLineage) ancestors with a visited map so corrupted state
-// cannot loop.
+// lineage of taskID is already at a non-success terminal state
+// (StatusFailed or StatusCancelled) in TaskStates. Used by the
+// failure-counter path to avoid double-counting the same root-cause
+// failure across automatic retries. Walks at most len(RetryLineage)
+// ancestors with a visited map so corrupted state cannot loop.
 //
-// Both StatusFailed AND StatusCancelled qualify as "already-counted"
-// predecessor states because the cascade-recovery / verify-repair
-// pipelines can leave the original task at either:
-//
-//   - StatusFailed when result_write_phase_b sees the original is
-//     already terminal (its `if !model.IsTerminal(existing)` guard
-//     skips the cancelled-on-supersede write), OR
-//   - StatusCancelled when the original was non-terminal at supersede
-//     time (the line 110 mutation in result_write_phase_b.go fires).
-//
-// The pre-fix code only matched StatusFailed, so verify-repair retries
-// whose original got marked Cancelled instead of Failed slipped past
-// the guard and the counter incremented on every retry — exactly the
-// 2026-05-01 user reproduction (task_1777611518 → task_1777611533 →
-// task_1777611621 tripped the breaker on the third failure even though
-// all three were the same root-cause repair lineage).
+// Both StatusFailed and StatusCancelled qualify because cascade-recovery
+// / verify-repair pipelines can leave the predecessor at either status
+// depending on whether it was already terminal at supersede time.
 func isLineageAlreadyFailed(taskID string, state *model.CommandState) bool {
 	if state == nil || len(state.RetryLineage) == 0 {
 		return false

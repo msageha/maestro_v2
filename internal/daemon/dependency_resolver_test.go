@@ -553,9 +553,9 @@ func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
 	if transitions[0].NewStatus != model.PhaseStatusCancelled {
 		t.Errorf("expected cancelled, got %s", transitions[0].NewStatus)
 	}
-	// 2026-04-29 follow-up: the resolver must record the upstream dep
-	// in CancelledReason via the canonical helper so a later cascade
-	// recovery can find it without parsing free-form text.
+	// The resolver must record the upstream dep in CancelledReason via
+	// the canonical helper so a later cascade recovery can find it
+	// without parsing free-form text.
 	if transitions[0].CancelledReason == "" {
 		t.Errorf("expected CancelledReason to carry the cascade marker, got empty")
 	}
@@ -564,12 +564,12 @@ func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
 	}
 }
 
-// TestCheckPhaseTransitions_RecoversCascadeCancelledPhase pins the
-// 2026-04-29 e2e regression fix: when an upstream failed phase is
-// reopened (e.g. via add-retry-task → reopenPhase: failed→active), the
-// downstream phase that was previously cascade-cancelled must be
-// auto-recovered to pending so plan progression resumes. Without this
-// recovery, the planner is stuck waiting for a phase that the state
+// TestCheckPhaseTransitions_RecoversCascadeCancelledPhase asserts that
+// when an upstream failed phase is reopened (e.g. via add-retry-task →
+// reopenPhase: failed→active), the downstream phase that was previously
+// cascade-cancelled is auto-recovered to pending so plan progression
+// resumes. Without this recovery, the planner would stay stuck waiting
+// for a phase that the state
 // machine has frozen as terminal even though its blocker is back in
 // flight.
 func TestCheckPhaseTransitions_RecoversCascadeCancelledPhase(t *testing.T) {

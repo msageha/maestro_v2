@@ -221,14 +221,13 @@ func TestLaunchAlternativeRuntimeRejectsOrchestratorAndPlanner(t *testing.T) {
 }
 
 // TestPrepareCodexHomeForCurrentWorker_WritesTrustEntries pins the
-// CODEX_HOME-based trust workaround. Earlier `-c projects.<path>.trust_level
-// =trusted` overrides were inconsistently honoured by codex 0.125.0's CLI
-// parser when the path contained `/`, so worker panes still landed on the
-// first-run "Do you trust the contents of this directory?" modal and
-// silently consumed the dispatcher's paste+Enter (the 2026-04 audit
-// regression). The fix is to stage a per-worker CODEX_HOME containing a
-// real config.toml that lists the trust entry — codex's TOML loader
-// honours this path consistently.
+// CODEX_HOME-based trust workaround. The `-c projects.<path>.trust_level
+// =trusted` override is parsed inconsistently when the path contains `/`,
+// so worker panes can land on the first-run "Do you trust the contents of
+// this directory?" modal and silently consume the dispatcher's paste+Enter.
+// Staging a per-worker CODEX_HOME with a real config.toml that lists the
+// trust entry is the workaround — codex's TOML loader honours this
+// consistently.
 func TestPrepareCodexHomeForCurrentWorker_WritesTrustEntries(t *testing.T) {
 	// Build a fake user CODEX_HOME with one auxiliary file and a config
 	// that should survive into the per-worker copy.

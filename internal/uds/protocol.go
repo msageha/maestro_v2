@@ -212,10 +212,10 @@ type Response struct {
 
 // errorDetail contains a machine-readable error code and a human-readable message.
 //
-// Details (F-019): an optional structured payload that lets the daemon
-// surface fencing context (e.g. current_epoch, current_status) without the
-// CLI having to parse it back out of Message. Older daemons leave this nil
-// and existing CLI consumers ignore it, so the addition is backwards
+// Details: an optional structured payload that lets the daemon surface
+// fencing context (e.g. current_epoch, current_status) without the CLI
+// having to parse it back out of Message. Older daemons leave this nil and
+// existing CLI consumers ignore it, so the addition is backwards
 // compatible.
 type errorDetail struct {
 	Code    string          `json:"code"`
@@ -224,7 +224,7 @@ type errorDetail struct {
 }
 
 // FencingDetails is the canonical schema for the `details` payload of
-// fencing-related error responses (F-019). Embedding this lets CLI consumers
+// fencing-related error responses. Embedding this lets CLI consumers
 // branch on machine-readable fields instead of grepping the message string.
 //
 // Field semantics:
@@ -328,7 +328,7 @@ func ErrorResponse(code, message string) *Response {
 //
 // Use this for fencing-related rejects (heartbeat / result_write epoch or
 // status mismatch, max_runtime_exceeded) so the CLI / Worker can branch on
-// machine-readable fields without grepping Message. F-019.
+// machine-readable fields without grepping Message.
 func ErrorResponseWithDetails(code, message string, details any) *Response {
 	if details == nil {
 		return ErrorResponse(code, message)
@@ -349,7 +349,7 @@ func ErrorResponseWithDetails(code, message string, details any) *Response {
 
 // ErrorDetails returns the marshalled details payload of an error response,
 // or nil if no details were attached. Helper for CLI / test consumers that
-// want to read the F-019 structured payload without exporting errorDetail.
+// want to read the structured payload without exporting errorDetail.
 func (r *Response) ErrorDetails() json.RawMessage {
 	if r == nil || r.Error == nil {
 		return nil

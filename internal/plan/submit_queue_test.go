@@ -62,13 +62,13 @@ func TestValidateTasksInput_RejectsNilDefinitionOfAbort(t *testing.T) {
 	}
 }
 
-// --- Bug F: run_on_main / run_on_integration propagation ---
+// --- run_on_main / run_on_integration propagation ---
 
 // TestWriteQueueEntries_PropagatesRunOnMain verifies that `run_on_main: true`
 // on a TaskInput is reflected in the resulting queue task. Without this, a
 // Planner-submitted verification task under `plan submit --phase verification`
 // silently runs in the worker's worktree instead of main, producing false
-// FAIL when the verification targets the merged/published state (Bug F).
+// FAIL when the verification targets the merged/published state.
 func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
 	maestroDir := testutil.SetupDirWithQueues(t, 1)
 	lm := lock.NewMutexMap()
@@ -108,7 +108,7 @@ func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
 		t.Fatalf("tasks len=%d, want 1", len(tq.Tasks))
 	}
 	if !tq.Tasks[0].RunOnMain {
-		t.Errorf("Task.RunOnMain = false; Bug F regression: plan submit must propagate RunOnMain from TaskInput")
+		t.Errorf("Task.RunOnMain = false; plan submit must propagate RunOnMain from TaskInput")
 	}
 	if got := tq.Tasks[0].DefinitionOfDone; len(got) != 2 || got[0] != "all command-scoped verify commands pass" {
 		t.Errorf("Task.DefinitionOfDone = %#v; plan submit must preserve explicit done conditions", got)
@@ -161,7 +161,7 @@ func TestWriteQueueEntries_PropagatesRunOnIntegration(t *testing.T) {
 		t.Fatalf("parse queue: %v", err)
 	}
 	if !tq.Tasks[0].RunOnIntegration {
-		t.Errorf("Task.RunOnIntegration = false; Bug F regression")
+		t.Errorf("Task.RunOnIntegration = false")
 	}
 	if tq.Tasks[0].RunOnMain {
 		t.Errorf("Task.RunOnMain should be false when only RunOnIntegration is set")

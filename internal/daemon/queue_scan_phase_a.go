@@ -206,24 +206,20 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 
 // stepRetryCommitFailedWorkers — auto-recover commit_failed_workers entries.
 //
-// Background (2026-05-01 user reproduction): a worker's auto-commit failed
-// (e.g. transient git lock, ENOSPC during a snapshot, etc.), the daemon
-// recorded the worker in CommitFailedWorkers, the publish gate then blocked
-// indefinitely with `worktree_publish_blocked_commit_failed`. The intended
-// recovery — re-running CommitWorkerChanges on the next merge phase — never
-// fired because handleWorkerCommit only runs during merge orchestration,
-// and once a phase has merged the daemon never revisits the per-worker
-// commit. The flag therefore became a permanent publish block: the dashboard
-// kept showing "publish blocked" long after the repair task that produced
-// the missing commit had completed.
+// When a worker's auto-commit fails (transient git lock, ENOSPC during a
+// snapshot, etc.) the daemon records the worker in CommitFailedWorkers and
+// the publish gate blocks. handleWorkerCommit only runs during merge
+// orchestration and once a phase has merged the daemon never revisits the
+// per-worker commit, so without a dedicated retry path the flag would
+// become a permanent publish block.
 //
-// This step closes the gap: every scan, for every command that still has
-// CommitFailedWorkers, retry the worker commit through the same idempotent
-// CommitWorkerChanges entry point. A successful retry clears the flag via
-// RemoveCommitFailedWorker and unblocks publish on the next pass. A
-// continuing failure simply leaves the flag in place (publish stays
-// blocked, log emits at debug level so the operator-visible signal is the
-// existing publish-block warning rather than a new flood of failures).
+// Every scan, for every command that still has CommitFailedWorkers, retry
+// the worker commit through the same idempotent CommitWorkerChanges entry
+// point. A successful retry clears the flag via RemoveCommitFailedWorker
+// and unblocks publish on the next pass. A continuing failure simply
+// leaves the flag in place (publish stays blocked, log emits at debug
+// level so the operator-visible signal is the existing publish-block
+// warning rather than a new flood of failures).
 //
 // Phase A is normally state-YAML-only, but commit retry is idempotent and
 // fast — the alternative (a dedicated Phase B step) would not gain any
@@ -270,17 +266,16 @@ func (qh *QueueHandler) stepRetryCommitFailedWorkers(s *scanState) {
 	}
 }
 
-// stepCascadeRevivalSignal — Bug-D'-prime detector / signal emitter.
+// stepCascadeRevivalSignal — cascade-revival detector / signal emitter.
 //
-// The 2026-05-01 e2e regression captured a case where a verify_failed task A
-// was successfully repaired (repair task R completed, A's effective status
-// became Completed), but the downstream task C — which had been
-// cascade-cancelled with reason "blocked_dependency_terminal:A" when A
-// originally failed — stayed at StatusCancelled forever. cascadeRecover
-// only fires inside AddRetryTask, which is the Planner-driven retry path;
-// daemon-side verify-repair injects the repair task without going through
-// AddRetryTask, so cascade-recovery never runs and the dependency chain
-// remains broken even though the lineage is effectively healthy.
+// When a verify_failed task A is successfully repaired (repair task R
+// completed, A's effective status becomes Completed), a downstream task C
+// that had been cascade-cancelled with reason
+// "blocked_dependency_terminal:A" stays at StatusCancelled forever.
+// cascadeRecover only fires inside AddRetryTask (the Planner-driven retry
+// path); daemon-side verify-repair injects the repair task without going
+// through AddRetryTask, so cascade-recovery never runs and the dependency
+// chain remains broken even though the lineage is effectively healthy.
 //
 // This step doesn't yet reopen the cancelled task automatically (that
 // would require either a worker queue mutation or a fresh inject path

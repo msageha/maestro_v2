@@ -1289,18 +1289,13 @@ func TestR2ResultState_MultipleTasks(t *testing.T) {
 	}
 }
 
-// TestR2ResultState_VerifyPending_NotOverwritten guards against the race
-// surfaced by the 2026-04-28 default-config E2E run. After a worker writes
-// its result file, result_write_handler transitions the task state to
-// verify_pending (terminal-like in §2.1 sense — the verify pipeline owns
-// it next). R2 used to read the worker's already-terminal result and
-// "fix" verify_pending → completed, racing the async verify runner whose
-// applyVerifyOutcome then logged "verify_outcome_skipped task no longer at
-// verify_pending" — silently dropping the verification result.
-//
-// The fix is to make R2 skip verify_pending entirely; R9_VerifyStall
-// remains the dedicated reconciler for genuinely stalled verify_pending
-// entries.
+// TestR2ResultState_VerifyPending_NotOverwritten guards against a race:
+// after a worker writes its result file, result_write_handler transitions
+// the task state to verify_pending (terminal-like — the verify pipeline
+// owns it next). R2 must skip verify_pending entirely so it does not
+// "fix" verify_pending -> completed and race the async verify runner.
+// R9_VerifyStall is the dedicated reconciler for genuinely stalled
+// verify_pending entries.
 func TestR2ResultState_VerifyPending_NotOverwritten(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
@@ -1388,16 +1383,12 @@ func TestR2ResultState_RepairPending_NotOverwritten(t *testing.T) {
 	}
 }
 
-// TestR2ResultState_PausedForReplan_NotOverwritten guards against the
-// regression captured in the 2026-04-27 daemon.log run: with the original
-// guard limited to verify_pending / repair_pending, a paused_for_replan task
-// could still be flipped back to completed/failed by the worker's old
-// terminal result file before the Planner consumed the replan request.
-// Lines 20177–20178 of that log show paused_for_replan -> completed in
-// adjacent entries, which silently erased the §S2-2 Circuit-Breaker handoff.
-//
-// paused_for_replan is the post-repair slot that the Planner owns; R2 must
-// leave it alone the same way it leaves verify_pending and repair_pending.
+// TestR2ResultState_PausedForReplan_NotOverwritten guards against
+// flipping a paused_for_replan task back to completed/failed via the
+// worker's old terminal result file before the Planner consumes the
+// replan request. paused_for_replan is the post-repair slot that the
+// Planner owns; R2 must leave it alone the same way it leaves
+// verify_pending and repair_pending.
 func TestR2ResultState_PausedForReplan_NotOverwritten(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)

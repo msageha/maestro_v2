@@ -1,7 +1,3 @@
-// Coverage gaps for the plan package are tracked in
-// docs/maestro-review/FINAL_REPORT.md (F-056). The list previously inlined
-// here grew stale (state_reader_test landed, etc.) so we delegate the
-// living roadmap to the review report rather than duplicating it in source.
 package plan
 
 import (
@@ -736,9 +732,6 @@ func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
 // does not invoke migration steps. When currentSchemaVersion is bumped above
 // 1, the second branch exercises a real migration of a schema_version=1
 // payload up to the new current version.
-//
-// Renamed from TestLoadState_MigratorIntegration_OlderVersion to better reflect
-// what the test actually exercises today (F-052).
 func TestLoadState_NoMigrationAtCurrentSchemaVersion(t *testing.T) {
 	sm := newTestStateManager(t)
 

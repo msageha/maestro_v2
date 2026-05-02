@@ -159,9 +159,9 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	}
 
 	// Validate lease: task must be in_progress with matching epoch.
-	// F-019: attach a structured FencingDetails payload so CLI consumers
-	// (and the Worker shell wrapper through it) can branch on machine-
-	// readable fields instead of grepping the message string.
+	// Attach a structured FencingDetails payload so CLI consumers (and
+	// the Worker shell wrapper through it) can branch on machine-readable
+	// fields instead of grepping the message string.
 	if reason := leaseInvalidReason(task.Status, task.LeaseEpoch, p.Epoch); reason != "" {
 		switch reason {
 		case "status":
@@ -214,8 +214,8 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	if elapsed >= time.Duration(maxMin)*time.Minute {
 		h.log(LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
 			p.TaskID, elapsed, maxMin)
-		// F-019: attach machine-readable fencing details. current_status
-		// reflects the queue's view (still in_progress at this point — the
+		// Attach machine-readable fencing details. current_status reflects
+		// the queue's view (still in_progress at this point — the
 		// max_runtime guard fires before any state mutation).
 		return uds.ErrorResponseWithDetails(uds.ErrCodeMaxRuntimeExceeded,
 			fmt.Sprintf("task %s exceeded max runtime of %d minutes", p.TaskID, maxMin),
@@ -236,9 +236,9 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	}
 
 	// Record this write with the self-write tracker before writing so the
-	// fsnotify event bridge ignores the resulting WRITE/CREATE event. Without
-	// this, the daemon's own heartbeat-driven queue update is mistaken for an
-	// external edit and triggers a redundant scan (F-018).
+	// fsnotify event bridge ignores the resulting WRITE/CREATE event.
+	// Without this, the daemon's own heartbeat-driven queue update is
+	// mistaken for an external edit and triggers a redundant scan.
 	if h.selfWrites != nil {
 		h.selfWrites.Record(queuePath, &queue)
 	}

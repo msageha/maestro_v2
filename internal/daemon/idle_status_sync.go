@@ -21,18 +21,14 @@ import (
 // status` and `status --json` show a misleading "idle" worker while the
 // queue contains an active task.
 //
-// Configured-worker enumeration (2026-04-29 e2e regression): the prior
-// implementation iterated only the queue files that actually existed in
-// s.tasks. Workers whose queue files were absent (e.g. a worker that has
-// never been dispatched to in this daemon lifetime, or whose queue file
-// was cleared by an earlier cleanup) were never visited, so a stale
-// `@status=busy` left over from a previous session stuck around forever
-// and `maestro status --json` reported the worker as busy with no work
-// in flight. We now derive the canonical worker set from
-// qh.config.Agents.Workers.Count and reset every configured worker
-// without queue presence to idle. The non-existent queue file is treated
-// as "queue is empty" because, for status semantics, the absence of work
-// is exactly that.
+// Configured-worker enumeration: the canonical worker set is derived from
+// qh.config.Agents.Workers.Count (workerN); every configured worker
+// without queue presence is reset to idle. Iterating only the queue
+// files actually present in s.tasks would miss workers whose queue file
+// was never created or was cleared by cleanup, leaving a stale
+// `@status=busy` from a previous session forever. The non-existent
+// queue file is treated as "queue is empty" because, for status
+// semantics, the absence of work is exactly that.
 //
 // The step runs at the end of Phase A and uses tmux.SetUserVar directly.
 // Each SetUserVar call takes ~5ms, so the overhead for 4 agents is negligible.

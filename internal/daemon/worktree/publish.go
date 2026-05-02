@@ -1,12 +1,11 @@
 package worktree
 
-// Publish-to-base pipeline extracted from merge_publish.go (F-040 step 3
-// physical file split). PublishToBase is the only public entry point; the
-// rest are step helpers that exist as named functions so the publish
-// orchestration in PublishToBase reads top-down.
+// Publish-to-base pipeline. PublishToBase is the only public entry point;
+// the rest are named helper functions so the publish orchestration in
+// PublishToBase reads top-down.
 //
 // Failure-tracking helpers (recordPublishFailure / recordPublishTerminalFailure)
-// and merge-side counterparts stay in merge_publish.go because they are shared
+// and merge-side counterparts live in merge_publish.go because they are shared
 // with the worker→integration merge pipeline.
 
 import (
@@ -193,7 +192,7 @@ func (wm *Manager) performPublishMerge(
 // already-checked-out temp branch and returns the resulting merge commit
 // SHA. On a publish-merge conflict it transitions integration into the
 // publish_failed bookkeeping path before returning the wrapped error so the
-// caller can fail fast. F-040 step 2 helper.
+// caller can fail fast.
 func (wm *Manager) mergeIntegrationIntoPublishTemp(
 	state *model.WorktreeCommandState,
 	commandID, integrationPath, baseBranch, publishMessage, now string,
@@ -232,7 +231,7 @@ func (wm *Manager) mergeIntegrationIntoPublishTemp(
 // the projectRoot dirty-check (when baseBranch is also checked out there),
 // and then performs the CAS `update-ref` that promotes mergeSHA onto
 // baseBranch. Returns whether baseBranch is currently checked out in
-// projectRoot, plus any error. F-040 step 2 helper.
+// projectRoot, plus any error.
 //
 // Critical invariants preserved verbatim from the inline implementation:
 //   - The dirty check runs BEFORE update-ref so a dirty projectRoot is

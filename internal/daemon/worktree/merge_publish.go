@@ -131,8 +131,7 @@ func (wm *Manager) recordPublishTerminalFailure(state *model.WorktreeCommandStat
 // Forward-merge primitives (forwardMergeBaseToIntegration,
 // recordForwardMergeConflict, integrationHasMergeHead, reuseInFlightForwardMerge,
 // stageResolvedForwardMergeFiles, bytesContainConflictMarkers,
-// samePublishConflictFiles) live in merge_forward.go after the F-040 step 3
-// physical file split.
+// samePublishConflictFiles) live in merge_forward.go.
 
 // mergeWorkerOutcome captures the result of merging a single worker branch.
 type mergeWorkerOutcome struct {
@@ -612,8 +611,7 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 // non-nil error is reserved for recovery-failure cases that the outer caller
 // must aggregate.
 //
-// F-040 step 1: extracted from SyncFromIntegration so the outer loop stays
-// flat. Logging keys (`sync_*`) are preserved verbatim for log-watcher
+// Logging keys (`sync_*`) are preserved verbatim for log-watcher
 // compatibility.
 func (wm *Manager) syncWorkerFromIntegration(
 	state *model.WorktreeCommandState,
@@ -657,7 +655,7 @@ func (wm *Manager) syncWorkerFromIntegration(
 
 // shouldSyncWorker returns false for workers that must not be synced back
 // to active. Logging is performed in-place so the caller does not need to
-// reproduce the diagnostic vocabulary. F-040 step 1 helper.
+// reproduce the diagnostic vocabulary.
 func (wm *Manager) shouldSyncWorker(ws *model.WorktreeState, commandID, workerID string) bool {
 	if ws.Status == model.WorktreeStatusConflict {
 		wm.Log(core.LogLevelWarn, "sync_skip_conflict command=%s worker=%s status=%s",
@@ -686,7 +684,7 @@ func (wm *Manager) shouldSyncWorker(ws *model.WorktreeState, commandID, workerID
 // handleSyncMergeError classifies a failed `git merge integration` and
 // drives the recovery / state transition. Returns a non-nil error only when
 // the abort-then-recover fallback fails (the outer caller aggregates these
-// into the SyncFromIntegration return). F-040 step 1 helper.
+// into the SyncFromIntegration return).
 func (wm *Manager) handleSyncMergeError(
 	ws *model.WorktreeState,
 	mergeErr error,
@@ -744,7 +742,7 @@ func (wm *Manager) handleSyncMergeError(
 // Publish-to-base pipeline (PublishToBase, createTempPublishBranch,
 // deleteTempBranch, performPublishMerge, mergeIntegrationIntoPublishTemp,
 // fastForwardBaseBranchRef, syncProjectRootAfterPublish, finalizePublishState)
-// lives in publish.go after the F-040 step 3 physical file split.
+// lives in publish.go.
 
 const mergePublishMaxLen = 72
 

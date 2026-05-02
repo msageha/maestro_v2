@@ -366,8 +366,7 @@ func processResultPhase3UpdateResult[T any, PT interface {
 
 // Notification dead-letter helpers (sweepExhaustedNotifications,
 // applyDeadLetterTransitions, archiveAndInvokeDeadLetterCallbacks,
-// archiveNotifyDeadLetter) live in result_dead_letter.go after the F-042
-// step 4 physical file split.
+// archiveNotifyDeadLetter) live in result_dead_letter.go.
 
 // processResultFile is the generic notification processing loop shared by
 // processWorkerResultFile and processCommandResultFile.
@@ -642,8 +641,7 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 
 // Phase C learning helpers (recordTaskResultLearning,
 // recordFingerprintCapture, recordBanditReward, recordSearchTreeOutcome,
-// recordEvolutionSignal, workerModelName) live in result_learning.go after
-// the F-042 step 4 physical file split.
+// recordEvolutionSignal, workerModelName) live in result_learning.go.
 
 // Notification delivery and orchestrator-queue write helpers
 // (notifyPlannerOfWorkerResultWithRetry, notifyPlannerOfWorkerResult,
@@ -652,7 +650,7 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 // notificationTypeForStatus, indexNotificationBySourceResult,
 // supersedeOrSkipNotification, appendNewNotification,
 // WriteNotificationToOrchestratorQueue, emitResultDeadLetterNotification)
-// live in result_notification.go after the F-042 step 4 physical file split.
+// live in result_notification.go.
 
 // --- File I/O helpers ---
 

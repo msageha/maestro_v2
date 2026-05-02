@@ -1,7 +1,6 @@
 package worktree
 
-// AutoRecover dispatch + state-driven action selection extracted from
-// recover.go (F-041 step 4 physical file split). This file owns the
+// AutoRecover dispatch + state-driven action selection. This file owns the
 // idempotent, scan/event-driven recovery layer that decides whether to call
 // ResumeMerge or RetryPublish based on the current integration status, plus
 // the small pure helpers (selectAutoRecoverAction / publishBackoffElapsed)
@@ -37,10 +36,9 @@ const (
 	// resume_merge_deferred_resolution_in_flight path: the reporter worker
 	// is still in Resolving with no committed edits yet, so the merge will
 	// be re-attempted from a future result_write once the dispatched
-	// __conflict_resolution task lands its commit. Operators reading the
-	// 2026-04-28 E2E logs misread "completed action=resume_merge" as
-	// "publish has run" — this distinct outcome is what lets the caller
-	// log "deferred" instead.
+	// __conflict_resolution task lands its commit. This distinct outcome
+	// lets the caller log "deferred" rather than "completed", which would
+	// be misread as a successful publish.
 	AutoRecoverResumeMergeDeferred AutoRecoverAction = "resume_merge_deferred"
 	// AutoRecoverRetryPublish indicates that AutoRecover dispatched to
 	// RetryPublish for a publish_failed state whose NextPublishRetryAt
@@ -159,8 +157,7 @@ func (wm *Manager) AutoRecoverAfterResolution(
 // tryPublishConflictResolutionRecovery dispatches the publish-side path of
 // AutoRecoverAfterResolution. Returns handled=true when the input matches the
 // publish_conflict completion triple and the caller MUST stop here. Returns
-// handled=false when the merge-side path should be tried next. F-041 step 3
-// helper.
+// handled=false when the merge-side path should be tried next.
 //
 // The publish_conflict completion triple — (taskRunOnIntegration=true,
 // integration status=publish_failed, non-empty PublishConflictFiles) — is
@@ -194,8 +191,7 @@ func (wm *Manager) tryPublishConflictResolutionRecovery(
 // AutoRecoverAfterResolution. The reporter worker MUST currently be in
 // WorktreeStatusResolving (R7 contract: dispatched merge_conflict
 // resolution tasks flip worker status conflict → resolving before sending).
-// Returns AutoRecoverNone with nil error for any non-recoverable shape,
-// matching the original semantics. F-041 step 3 helper.
+// Returns AutoRecoverNone with nil error for any non-recoverable shape.
 func (wm *Manager) tryMergeConflictResolutionRecovery(
 	ctx context.Context,
 	state *model.WorktreeCommandState,
@@ -238,7 +234,7 @@ func (wm *Manager) tryMergeConflictResolutionRecovery(
 }
 
 // workerIsResolving reports whether the named worker is currently in
-// WorktreeStatusResolving inside state. F-041 step 3 helper.
+// WorktreeStatusResolving inside state.
 func workerIsResolving(state *model.WorktreeCommandState, workerID string) bool {
 	for i := range state.Workers {
 		ws := &state.Workers[i]

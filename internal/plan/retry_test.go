@@ -139,11 +139,10 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 			wantOptional: []string{"t4", "t5_retry"},
 		},
 		{
-			// 2026-05-02: replaceInRequiredOrOptional now treats a missing
-			// task ID as a benign no-op (cascade recovery may walk a task
-			// that has already been replaced through another path). The
-			// caller does not get an error; the membership slots are left
-			// untouched.
+			// replaceInRequiredOrOptional treats a missing task ID as a
+			// benign no-op (cascade recovery may walk a task that has
+			// already been replaced through another path). The membership
+			// slots are left untouched and no error is returned.
 			name:         "not found is a no-op",
 			requiredIDs:  []string{"t1"},
 			optionalIDs:  []string{"t2"},
@@ -1579,10 +1578,8 @@ func TestGetLatestDescendant_NormalResolution(t *testing.T) {
 
 func TestLogSuppressor_Allow(t *testing.T) {
 	t.Parallel()
-	// F-060: drive window expiry through a fake clock instead of time.Sleep.
-	// The previous version slept 150ms for window=100ms which made the test
-	// load-sensitive on slow CI runners. The fake clock keeps the assertions
-	// the same but eliminates wall-clock cost.
+	// Drive window expiry through a fake clock so the test is not
+	// load-sensitive on slow CI runners.
 	now := time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC)
 	s := newLogSuppressorWithClock(100*time.Millisecond, 2, func() time.Time { return now })
 

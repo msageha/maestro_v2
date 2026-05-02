@@ -631,15 +631,13 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 	}
 }
 
-// TestRegisterRetryTaskInState_AllowsRetryEvenAtMaxTasks pins the
-// 2026-04-30 e2e regression fix: retries / repairs MUST proceed even
-// when a phase is already at its declared PhaseConstraints.MaxTasks.
-// The previous behaviour rejected with ErrPhaseMaxTasksExceeded, which
-// turned recovery (auto-repair, plan add-retry-task) into a structural
-// failure mode for tightly-budgeted phases. retry depth is bounded by
-// Retry.TaskExecution.MaxRetries and per-task DefinitionOfAbort
-// .MaxRepairCount, so the budget guard here was redundant guardrail at
-// the cost of unrecoverable failure flows.
+// TestRegisterRetryTaskInState_AllowsRetryEvenAtMaxTasks asserts that
+// retries / repairs proceed even when a phase is already at its
+// declared PhaseConstraints.MaxTasks. Rejecting with
+// ErrPhaseMaxTasksExceeded would turn recovery (auto-repair, plan
+// add-retry-task) into a structural failure mode for tightly-budgeted
+// phases. retry depth is already bounded by Retry.TaskExecution
+// .MaxRetries and per-task DefinitionOfAbort.MaxRepairCount.
 func TestRegisterRetryTaskInState_AllowsRetryEvenAtMaxTasks(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
@@ -791,15 +789,12 @@ func TestRegisterRetryTaskInState_AllowsRetryWhenWithinPhaseBudget(t *testing.T)
 	}
 }
 
-// TestRegisterRetryTaskInState_AllowsRetryWhenSupersededTasksFillBudget pins
-// the 2026-04-30 e2e contract: cancelled-and-superseded predecessors (those
-// recorded in RetryLineage as the predecessor of a later retry) must NOT
-// count against PhaseConstraints.MaxTasks. Before this fix, a max_tasks=2
-// phase rejected the second auto-repair after a single failure because the
-// counter saw [original (cancelled-superseded), 1st repair (cancelled-
-// superseded), 2nd repair (about to be added)] = 3 > 2 = max_tasks. The
-// active-only count restores parity with the operator's mental model:
-// max_tasks bounds *concurrent live attempts*, not lineage history.
+// TestRegisterRetryTaskInState_AllowsRetryWhenSupersededTasksFillBudget
+// asserts that cancelled-and-superseded predecessors (those recorded in
+// RetryLineage as the predecessor of a later retry) do NOT count against
+// PhaseConstraints.MaxTasks. The active-only count matches the
+// operator's mental model: max_tasks bounds *concurrent live attempts*,
+// not lineage history.
 func TestRegisterRetryTaskInState_AllowsRetryWhenSupersededTasksFillBudget(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()

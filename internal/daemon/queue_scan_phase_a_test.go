@@ -714,12 +714,10 @@ func TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires(t *testing.T) {
 	if got := len(s.work.worktreeCleanups); got != 1 {
 		t.Fatalf("expected 1 orphan cleanup item, got %d", got)
 	}
-	// 2026-05-01: integration_status=created on a terminal command is now
-	// classified as a no-op terminal so the cleanup happens immediately
-	// regardless of the stall threshold (a finished command that produced
-	// no commits has nothing to gain from waiting). The pre-fix reason
-	// "orphan_terminal" still applies to the failed/conflict/partial_merge
-	// cases.
+	// integration_status=created on a terminal command is classified as
+	// a no-op terminal so the cleanup happens immediately regardless of
+	// the stall threshold. The reason "orphan_terminal" still applies to
+	// the failed/conflict/partial_merge cases.
 	if s.work.worktreeCleanups[0].Reason != "no_op_terminal" {
 		t.Errorf("reason = %q, want no_op_terminal", s.work.worktreeCleanups[0].Reason)
 	}
@@ -966,13 +964,11 @@ func TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill(t *testing.T) {
 }
 
 // TestStepWorktreeFastTrackCleanup_SkipsPendingPhaseAwaitingDependency
-// pins the 2026-04-29 review pin: a deferred phase that declares
-// `depends_on_phases` starts at `pending` and stays there until the
-// dependency resolver observes every upstream phase as terminal. Prior
-// behaviour swept all non-terminal/non-awaiting_fill phases into the
-// stuck set, which force-failed legitimate downstream phases the moment
-// the command's UpdatedAt aged past the threshold — even though the
-// phase was correctly waiting for its upstream.
+// asserts that a deferred phase declaring `depends_on_phases` (starting
+// at `pending`) is not force-failed while its declared dependency is
+// still active. Sweeping all non-terminal/non-awaiting_fill phases into
+// the stuck set would force-fail legitimate downstream phases the
+// moment the command's UpdatedAt aged past the threshold.
 //
 // The scenario: parallel_conflict completed, report_integration is at
 // awaiting_fill (Planner pending), integration_verification (pending,
@@ -1093,15 +1089,14 @@ func TestStepWorktreeFastTrackCleanup_FlagsPendingWithTerminalDeps(t *testing.T)
 	}
 }
 
-// TestStepWorktreeFastTrackCleanup_SkipsPausedForReplan pins the
-// 2026-04-29 review fix: when a task has hit max-retries on verify and
-// transitioned to paused_for_replan in state, the queue side may still
-// show the task at a terminal worker-reported status (completed). Prior
-// behaviour saw "all queue terminal" and fired fast-track cleanup,
-// deleting the worker worktree while the Planner was still composing
-// add-retry-task — when the retry finally landed, dispatch could not
-// resolve the worktree path. Cleanup must observe the state side and
-// skip while any task is non-terminal there.
+// TestStepWorktreeFastTrackCleanup_SkipsPausedForReplan asserts that
+// fast-track cleanup observes the state side: when a task has hit
+// max-retries on verify and transitioned to paused_for_replan, the
+// queue side may still show terminal worker-reported status (completed).
+// Cleanup must skip while any task is non-terminal in state, otherwise
+// the worker worktree would be deleted while the Planner is still
+// composing add-retry-task and the retry dispatch could not resolve
+// the worktree path.
 func TestStepWorktreeFastTrackCleanup_SkipsPausedForReplan(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -1202,24 +1197,15 @@ func TestStepWorktreeFastTrackCleanup_SkipsRepairPending(t *testing.T) {
 	}
 }
 
-// TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds pins the
-// 2026-04-29 e2e regression: a retry/repair task landed in
-// state.TaskStates as `planned` but never made it into any worker queue
-// (queue write silently lost or rollback failed without RetryEnqueueFailed
-// bookkeeping). All queue tasks were terminal so the queue gate let the
-// scan through, but the state-side gate then bailed indefinitely because
-// the phantom TaskStates entry remained non-terminal — Phase 1 was stuck
-// forever even after the actual work completed. Once the cleanup window
-// elapses, the phantom must be terminated so phase progression can
-// resume.
+// TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds asserts
+// that once the cleanup window has elapsed, a phantom TaskStates entry
+// (state has the task at non-terminal but no worker queue lists it) is
+// terminated so phase progression can resume.
 //
-// Note (2026-04-30 follow-up): the original implementation force-failed
-// every phantom regardless of source status, which silently looped on the
-// `planned -> failed` validTaskStateTransitions reject. The fix routes
-// non-running phantoms to `cancelled` (the only legal terminal hop from
-// `planned` per model.validTaskStateTransitions) — phantoms by definition
-// did not actually execute, so cancellation is also semantically correct.
-// in_progress / running phantoms still go to `failed`.
+// Non-running phantoms route to `cancelled` (the only legal terminal
+// hop from `planned` per model.validTaskStateTransitions) — phantoms by
+// definition did not actually execute. in_progress / running phantoms
+// still go to `failed`.
 func TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -1353,15 +1339,12 @@ func TestStepWorktreeFastTrackCleanup_DoesNotClearPhantomBeforeThreshold(t *test
 	}
 }
 
-// TestStepWorktreeFastTrackCleanup_HonoursRecentTaskActivity pins the
-// 2026-04-29 e2e regression where a phase ran for 16 minutes through
-// retry + verify, every task's UpdatedAt was within seconds of `now`,
-// yet the fast-track threshold force-failed the active phase because
-// cmd.UpdatedAt was stuck at the original dispatch timestamp.
-//
-// The fix: use max(cmd.UpdatedAt, latest task UpdatedAt for this command)
-// as the elapsed reference, so recent task progress correctly suppresses
-// the cleanup gate.
+// TestStepWorktreeFastTrackCleanup_HonoursRecentTaskActivity asserts that
+// the fast-track elapsed reference is max(cmd.UpdatedAt, latest task
+// UpdatedAt for this command). cmd.UpdatedAt is not refreshed by every
+// internal transition, so recent task progress must suppress the
+// cleanup gate even when cmd.UpdatedAt is stuck at the original dispatch
+// timestamp.
 func TestStepWorktreeFastTrackCleanup_HonoursRecentTaskActivity(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)

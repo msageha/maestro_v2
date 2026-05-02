@@ -47,14 +47,12 @@ type GCStats struct {
 //     of the path (= no other process has unlinked + recreated the file
 //     between open() and now).
 //
-// F-037: this helper exists so daemon startup can prune `.maestro/locks/`
-// without cooperation from concurrent processes. **Callers MUST run it
-// exactly once at startup, before any other lock acquisition begins.**
-// Concurrent GC introduces an inode-split race (codex consultation 2026-04-26):
-// after `LOCK_EX|LOCK_NB` succeeds and the file is unlinked, a process that
-// had `open()`ed the path before the unlink can still flock the old inode
-// while a new caller creates a fresh inode at the same path — splitting the
-// mutex.
+// MAINTENANCE INVARIANT: callers MUST run this exactly once at startup,
+// before any other lock acquisition begins. Concurrent GC introduces an
+// inode-split race: after `LOCK_EX|LOCK_NB` succeeds and the file is
+// unlinked, a process that had `open()`ed the path before the unlink can
+// still flock the old inode while a new caller creates a fresh inode at
+// the same path — splitting the mutex.
 //
 // All failures are returned as zero entries in GCStats and surfaced to
 // the caller via the logf hook (logf may be nil to silence).
