@@ -69,17 +69,23 @@ func TestIsPermanentDialError(t *testing.T) {
 }
 
 func TestDialWithRetry_PermanentErrorFailsImmediately(t *testing.T) {
-	// Dial a regular file (not a socket) — produces ENOTSOCK, a permanent error.
+	// Dial a path whose parent is a regular file (not a directory) —
+	// connect(2) returns ENOTDIR on both Linux and macOS, which our
+	// permanent-error classifier treats as non-retryable. Earlier this
+	// test dialled a regular file directly, which yields ENOTSOCK on
+	// macOS (permanent) but ECONNREFUSED on Linux (transient), so the
+	// assertion was platform-dependent and broke CI on Linux.
 	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 
-	filePath := filepath.Join(dir, "not-a-socket")
-	if err := os.WriteFile(filePath, []byte("regular file"), 0600); err != nil {
+	parentFile := filepath.Join(dir, "not-a-directory")
+	if err := os.WriteFile(parentFile, []byte("regular file"), 0600); err != nil {
 		t.Fatalf("create file: %v", err)
 	}
+	filePath := filepath.Join(parentFile, "child")
 
 	client := NewClient(filePath)
 	client.SetTimeout(2 * time.Second)

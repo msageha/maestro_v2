@@ -242,40 +242,41 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
     # restricted shell. The TMPDIR exemption further down adds belt-and-
     # braces coverage for non-standard tmp roots.
     #
-    # The TMPDIR / /var/folders exemption is suppressed when worker_cwd
-    # itself is rooted under TMPDIR — that is the test-fixture
+    # Each scratch exemption is suppressed *per-area* when worker_cwd is
+    # rooted under that same scratch area — that is the test-fixture
     # configuration, where a synthetic .maestro/worktrees/... lives inside
     # TempDir(). Without this carve-out, every test would silently fall
     # into the scratch exemption and stop exercising the boundary rule.
+    # On Linux CI t.TempDir() returns /tmp/...; on macOS it returns
+    # /var/folders/.../T/... — the carve-out must therefore cover both.
     _wt_allowed=0
     case "$_wt_check" in
       /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*)
-        _wt_allowed=1
+        case "$worker_cwd" in
+          /tmp/*|/private/tmp/*|/var/tmp/*|/private/var/tmp/*) ;;
+          *) _wt_allowed=1 ;;
+        esac
+        ;;
+      /var/folders/*|/private/var/folders/*)
+        case "$worker_cwd" in
+          /var/folders/*|/private/var/folders/*) ;;
+          *) _wt_allowed=1 ;;
+        esac
         ;;
     esac
     if [ "$_wt_allowed" = "0" ]; then
-      _cwd_under_scratch=0
       _tmpdir="${TMPDIR:-}"
-      _tmpdir_resolved=""
       if [ -n "$_tmpdir" ]; then
         # Resolve TMPDIR symlinks to handle macOS /var -> /private/var.
         _tmpdir_resolved="$(cd "$_tmpdir" 2>/dev/null && pwd -P 2>/dev/null || echo "$_tmpdir")"
-        case "$worker_cwd" in
-          "$_tmpdir"/*|"$_tmpdir_resolved"/*) _cwd_under_scratch=1 ;;
-        esac
-      fi
-      case "$worker_cwd" in
-        /var/folders/*|/private/var/folders/*) _cwd_under_scratch=1 ;;
-      esac
-      if [ "$_cwd_under_scratch" = "0" ]; then
         case "$_wt_check" in
-          /var/folders/*|/private/var/folders/*) _wt_allowed=1 ;;
+          "$_tmpdir"/*|"$_tmpdir_resolved"/*)
+            case "$worker_cwd" in
+              "$_tmpdir"/*|"$_tmpdir_resolved"/*) ;;
+              *) _wt_allowed=1 ;;
+            esac
+            ;;
         esac
-        if [ "$_wt_allowed" = "0" ] && [ -n "$_tmpdir" ]; then
-          case "$_wt_check" in
-            "$_tmpdir"/*|"$_tmpdir_resolved"/*) _wt_allowed=1 ;;
-          esac
-        fi
       fi
     fi
     if [ "$_wt_allowed" = "0" ]; then
