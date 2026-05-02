@@ -353,7 +353,8 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 		if !maxTimeout {
 			switch resolvePaneVerdict() {
 			case paneactivity.VerdictActive:
-				if err := qh.leaseManager.ExtendTaskLease(task); err == nil {
+				err := qh.leaseManager.ExtendTaskLease(task)
+				if err == nil {
 					qh.log(LogLevelInfo,
 						"lease_extend_pane_active type=task id=%s worker=%s epoch=%d elapsed=%s max=%dm "+
 							"(busy-check skipped; pane shows cross-scan activity)",
@@ -377,14 +378,14 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 					}
 					*dirty = true
 					continue
-				} else {
-					qh.log(LogLevelWarn,
-						"lease_extend_pane_active_failed type=task id=%s worker=%s error=%v "+
-							"(falling back to busy-check path)",
-						task.ID, agentID, err)
 				}
+				qh.log(LogLevelWarn,
+					"lease_extend_pane_active_failed type=task id=%s worker=%s error=%v "+
+						"(falling back to busy-check path)",
+					task.ID, agentID, err)
 			case paneactivity.VerdictUncertain:
-				if err := qh.leaseManager.ExtendTaskLease(task); err == nil {
+				err := qh.leaseManager.ExtendTaskLease(task)
+				if err == nil {
 					qh.log(LogLevelInfo,
 						"lease_extend_pane_uncertain type=task id=%s worker=%s epoch=%d elapsed=%s max=%dm "+
 							"(no baseline yet; grace-extending one cycle so next scan can judge)",
@@ -392,12 +393,11 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 					qh.scanExecutor.scanCounters.LeaseExtensions++
 					*dirty = true
 					continue
-				} else {
-					qh.log(LogLevelWarn,
-						"lease_extend_pane_uncertain_failed type=task id=%s worker=%s error=%v "+
-							"(falling back to busy-check path)",
-						task.ID, agentID, err)
 				}
+				qh.log(LogLevelWarn,
+					"lease_extend_pane_uncertain_failed type=task id=%s worker=%s error=%v "+
+						"(falling back to busy-check path)",
+					task.ID, agentID, err)
 			case paneactivity.VerdictIdle:
 				qh.log(LogLevelDebug,
 					"pane_idle_busy_check type=task id=%s worker=%s epoch=%d elapsed=%s "+
@@ -452,15 +452,6 @@ func (qh *QueueHandler) observePaneVerdictForAgent(agentID string) paneactivity.
 		minPrevAge = time.Second
 	}
 	return qh.paneActivity.ObserveVerdict(agentID, content, minPrevAge, qh.clock.Now().UTC())
-}
-
-// observePaneActivityForAgent is the legacy boolean wrapper around
-// observePaneVerdictForAgent kept so existing tests and callers that
-// only need the binary "alive vs. unknown" judgment continue to compile.
-// Production lease-expiry handling MUST use observePaneVerdictForAgent
-// directly so that VerdictUncertain is distinguished from VerdictIdle.
-func (qh *QueueHandler) observePaneActivityForAgent(agentID string) bool {
-	return qh.observePaneVerdictForAgent(agentID) == paneactivity.VerdictActive
 }
 
 // preemptiveCommandRenewal renews command leases approaching expiry to prevent

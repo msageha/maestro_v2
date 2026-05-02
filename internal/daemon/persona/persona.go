@@ -10,8 +10,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/msageha/maestro_v2/internal/envelope"
 	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/envelope"
 )
 
 // Metadata holds the parsed YAML frontmatter of a persona file.

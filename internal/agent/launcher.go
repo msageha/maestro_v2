@@ -1176,7 +1176,7 @@ func prependToPath(env []string, dir string) []string {
 
 func setEnv(env []string, name, value string) []string {
 	prefix := name + "="
-	result := make([]string, len(env))
+	result := make([]string, len(env), len(env)+1)
 	copy(result, env)
 	for i, e := range result {
 		if strings.HasPrefix(e, prefix) {

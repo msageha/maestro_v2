@@ -607,10 +607,7 @@ func applyRetryStateChanges(
 	}
 
 	// Replace in required/optional task IDs
-	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
-		restoreStateOrLog(state, origStateBytes, "replace_required_optional")
-		return nil, nil, fmt.Errorf("replace in required/optional: %w", err)
-	}
+	replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID)
 
 	// Record retry lineage
 	state.RetryLineage[newTaskID] = opts.RetryOf

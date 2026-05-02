@@ -170,7 +170,7 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 				continue
 			}
 		}
-		ready = append(ready, prepared{c.taskID, c.age})
+		ready = append(ready, prepared(c))
 	}
 	if len(ready) == 0 {
 		return nil

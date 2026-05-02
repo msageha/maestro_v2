@@ -421,32 +421,6 @@ func phaseContainsTask(phase *model.Phase, taskID string) bool {
 	return false
 }
 
-// phaseActiveTaskCount returns the number of phase tasks that have not been
-// superseded by a later retry. The "live" task budget for max_tasks excludes
-// predecessors that RetryLineage reports as the predecessor of some other
-// retry — those entries are lineage markers (their TaskStates are typically
-// cancelled with a superseded_by_* reason) and counting them against the
-// budget makes max_tasks=2 phases lock out the second auto-repair after a
-// single failure. Tasks not in any RetryLineage value are counted normally,
-// so the active count grows by one per genuine attempt and the budget still
-// bounds concurrent / serial occupancy.
-func phaseActiveTaskCount(state *model.CommandState, phase *model.Phase) int {
-	superseded := make(map[string]bool, len(state.RetryLineage))
-	for _, predID := range state.RetryLineage {
-		if predID != "" {
-			superseded[predID] = true
-		}
-	}
-	count := 0
-	for _, tid := range phase.TaskIDs {
-		if superseded[tid] {
-			continue
-		}
-		count++
-	}
-	return count
-}
-
 // AddRetryTaskToQueue acquires the queue lock for workerID and adds the retry task.
 // It is safe to call without holding any queue lock.
 func (h *TaskRetryHandler) AddRetryTaskToQueue(task *model.Task, workerID string) error {

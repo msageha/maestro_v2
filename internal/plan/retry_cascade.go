@@ -27,7 +27,7 @@ func findPhaseForTask(state *model.CommandState, taskID string) (*model.Phase, i
 	return nil, -1
 }
 
-func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string) error {
+func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string) {
 	found := false
 	for i, id := range state.RequiredTaskIDs {
 		if id == oldID {
@@ -64,9 +64,7 @@ func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string)
 		// resolved through another path.
 		slog.Debug("cascade replace skipped: task already replaced or absent from membership slots",
 			"task_id", oldID, "new_id", newID)
-		return nil
 	}
-	return nil
 }
 
 func rewriteDependencies(state *model.CommandState, oldID, newID string) {
@@ -206,9 +204,7 @@ func cascadeRecoverRecursive(
 // updateTaskStateForCascade applies the state mutations needed when a cancelled
 // task is replaced by a new cascade-recovered task.
 func updateTaskStateForCascade(state *model.CommandState, cancelledTaskID, newTaskID string, newDeps []string) error {
-	if err := replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID); err != nil {
-		return fmt.Errorf("cascade replace in required/optional: %w", err)
-	}
+	replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID)
 	state.RetryLineage[newTaskID] = cancelledTaskID
 	rewriteDependencies(state, cancelledTaskID, newTaskID)
 	// §2.1: cascade-retry tasks enter the lifecycle at `planned`.

@@ -84,13 +84,17 @@ const activeTailLines = 12
 //   - Spinner / progress characters in the Unicode ranges Claude /
 //     Codex / Gemini UIs typically rotate through:
 //
-//       * braille patterns U+2800-U+28FF,
-//       * dingbats / shapes U+2700-U+27BF,
-//       * geometric shapes U+25A0-U+25FF (covers ◆◇◈◉ etc.),
-//       * block elements U+2580-U+259F (covers progress-bar glyphs
-//         ░▒▓█▌▐▀▄ that flip per render),
-//       * a handful of explicit spinner glyphs (✻ ✼ ✽ ✾ ✿ ◐ ◓ ◑ ◒
-//         ⏳ ⏰ ⌛).
+//   - braille patterns U+2800-U+28FF,
+//
+//   - dingbats / shapes U+2700-U+27BF,
+//
+//   - geometric shapes U+25A0-U+25FF (covers ◆◇◈◉ etc.),
+//
+//   - block elements U+2580-U+259F (covers progress-bar glyphs
+//     ░▒▓█▌▐▀▄ that flip per render),
+//
+//   - a handful of explicit spinner glyphs (✻ ✼ ✽ ✾ ✿ ◐ ◓ ◑ ◒
+//     ⏳ ⏰ ⌛).
 //
 //     Without this normalisation a rotating spinner or progress bar
 //     forces a new tail hash every scan and pins the verdict to Active
@@ -459,7 +463,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 
 	tail := tailLines(content)
 	tailHash := t.hashFunc(normalizeForLiveness(tail))
-	verdict := VerdictUnknown
+	var verdict Verdict
 	// uncertainCounted is true when this Uncertain outcome should count
 	// toward the consecutive-uncertain streak. We only count the
 	// no-baseline path: same-scan duplicates (minPrevAge protection)

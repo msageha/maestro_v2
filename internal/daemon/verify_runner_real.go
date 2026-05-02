@@ -92,12 +92,6 @@ func (r *RealVerifyRunner) SetEnsembleVerifier(v *verification.Verifier) {
 	r.ensembleVerifier = v
 }
 
-func (r *RealVerifyRunner) snapshotEnsembleVerifier() *verification.Verifier {
-	r.ensembleVerifierMu.RLock()
-	defer r.ensembleVerifierMu.RUnlock()
-	return r.ensembleVerifier
-}
-
 // Run loads the command-scoped verify snapshot (or the project fallback) and
 // executes each command sequentially under cmd.Dir = workingDir (or r.projectDir
 // when workingDir is empty). The first failure short-circuits the run.

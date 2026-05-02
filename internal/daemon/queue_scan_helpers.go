@@ -771,34 +771,6 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	return publishes, cleanups
 }
 
-// loadCommandPlanStatus reads state/commands/<commandID>.yaml and returns
-// (plan_status, ok). Returns (zero, false) on read/parse error or missing
-// file — callers that need authoritative status should treat false as "do
-// not assume completion".
-func (qh *QueueHandler) loadCommandPlanStatus(commandID string) (model.PlanStatus, bool) {
-	statePath := commandStatePath(qh.maestroDir, commandID)
-	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			qh.log(LogLevelDebug,
-				"plan_status_load_failed command=%s error=%v (treating as unknown)",
-				commandID, err)
-		}
-		return "", false
-	}
-	if len(data) == 0 {
-		return "", false
-	}
-	var cs model.CommandState
-	if err := yamlv3.Unmarshal(data, &cs); err != nil {
-		qh.log(LogLevelDebug,
-			"plan_status_parse_failed command=%s error=%v (treating as unknown)",
-			commandID, err)
-		return "", false
-	}
-	return cs.PlanStatus, true
-}
-
 // loadCommandStateForDerivation reads state/commands/<commandID>.yaml so the
 // caller can run plan.DeriveStatus directly. Distinct from loadCommandPlanStatus,
 // which only reads the persisted plan_status field — that field lags behind
