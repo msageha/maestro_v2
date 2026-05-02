@@ -223,7 +223,16 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
       done
       if [ -d "$_ancestor" ]; then
         _resolved_ancestor="$(cd "$_ancestor" && pwd -P 2>/dev/null || echo "$_ancestor")"
-        _wt_check="$_resolved_ancestor/$_remainder"
+        # Avoid the double-slash that "$_resolved_ancestor/$_remainder"
+        # produces when the walk reached the filesystem root (e.g. on
+        # Linux a /private/var/... probe whose ancestors do not exist
+        # would otherwise yield //private/var/... and miss the
+        # /private/var/folders/* case pattern further down).
+        if [ "$_resolved_ancestor" = "/" ]; then
+          _wt_check="/$_remainder"
+        else
+          _wt_check="$_resolved_ancestor/$_remainder"
+        fi
       fi
     fi
 
