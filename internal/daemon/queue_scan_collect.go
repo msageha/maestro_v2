@@ -354,6 +354,7 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 //   - every applicable dep worker is in lockstep with integration (no
 //     dirt, HEAD matches), or in conflict/resolving (resume_merge owns
 //     recovery)
+//
 // commandOwnersCache may be passed by callers that invoke this function in
 // a loop over many tasks of the same command. When non-nil, the cache is
 // populated lazily with `commandID → (taskID → ownerWorkerID)`, so the

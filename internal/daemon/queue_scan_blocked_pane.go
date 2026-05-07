@@ -313,10 +313,10 @@ func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, comm
 			return fmt.Errorf("generate synthetic terminal-error result id: %w", err)
 		}
 		rf.Results = append(rf.Results, model.TaskResult{
-			ID:        resultID,
-			TaskID:    taskID,
-			CommandID: commandID,
-			Status:    model.StatusFailed,
+			ID:                     resultID,
+			TaskID:                 taskID,
+			CommandID:              commandID,
+			Status:                 model.StatusFailed,
 			Summary:                fmt.Sprintf(terminalErrorSummaryFmt, agentID),
 			PartialChangesPossible: false,
 			RetrySafe:              true,
@@ -360,10 +360,10 @@ func (qh *QueueHandler) writeSyntheticBlockedPaneResult(workerID, taskID, comman
 			return fmt.Errorf("generate synthetic blocked-pane result id: %w", err)
 		}
 		rf.Results = append(rf.Results, model.TaskResult{
-			ID:        resultID,
-			TaskID:    taskID,
-			CommandID: commandID,
-			Status:    model.StatusFailed,
+			ID:                     resultID,
+			TaskID:                 taskID,
+			CommandID:              commandID,
+			Status:                 model.StatusFailed,
 			Summary:                fmt.Sprintf(blockedPaneTimeoutSummaryFmt, agentID, blockedFor.Round(time.Second)),
 			PartialChangesPossible: true,
 			RetrySafe:              false,

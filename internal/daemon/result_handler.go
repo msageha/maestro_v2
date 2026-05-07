@@ -761,7 +761,7 @@ func (rh *ResultHandler) taskTerminalForNotify(entry *model.TaskResult) bool {
 // until applyVerifyOutcome (or the silent-ack supersede path) has stamped the
 // VerifyOutcomeAppliedAt marker on the result entry.
 func (rh *ResultHandler) notifyVerifyPipelineReady(entry *model.TaskResult) bool {
-	if !(entry.RunOnIntegration || entry.RunOnMain) || entry.Status != model.StatusCompleted {
+	if (!entry.RunOnIntegration && !entry.RunOnMain) || entry.Status != model.StatusCompleted {
 		return true
 	}
 	if entry.VerifyOutcomeAppliedAt != nil && *entry.VerifyOutcomeAppliedAt != "" {

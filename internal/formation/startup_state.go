@@ -382,7 +382,7 @@ func archiveRawPlannerQueue(maestroDir string, data []byte) error {
 	}
 	now := time.Now().UTC().Format("20060102T150405Z")
 	archivePath := filepath.Join(archiveDir, "planner_queue_raw-"+now+".yaml")
-	if err := os.WriteFile(archivePath, data, 0o600); err != nil {
+	if err := os.WriteFile(archivePath, data, 0o600); err != nil { //nolint:gosec // archivePath is constructed from a controlled application directory and a UTC timestamp
 		return fmt.Errorf("write raw planner queue archive: %w", err)
 	}
 	slog.Warn("lost_command_archive_raw_only",

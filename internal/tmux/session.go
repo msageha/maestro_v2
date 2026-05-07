@@ -532,7 +532,7 @@ func SessionHealthCheckDetailed() SessionHealthResult {
 	debugLog("SessionHealthCheck DEAD session=%s stderr=%q", name, result.Stderr)
 
 	// Check if tmux server itself is running
-	serverCmd := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"list-sessions"})...)
+	serverCmd := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"list-sessions"})...) //nolint:gosec // "tmux" is a fixed command; arguments are constants
 	serverOut, serverErr := serverCmd.CombinedOutput()
 	if serverErr != nil {
 		debugLog("SessionHealthCheck SERVER_DOWN stderr=%q", strings.TrimSpace(string(serverOut)))
