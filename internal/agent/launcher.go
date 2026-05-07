@@ -58,7 +58,25 @@ var allowedToolsByRole = map[string][]string{
 		"Read(.maestro/state/continuous.yaml)",
 	},
 	"planner": {
-		"Bash(maestro:*)",
+		// Enumerate the specific maestro subcommands the Planner is
+		// expected to run. The previous catch-all `Bash(maestro:*)`
+		// allowed `maestro queue write planner`, which let the Planner
+		// agent enqueue NEW commands for itself when its Stop hook
+		// errored — claude-code restarted the agent with the hook
+		// failure as a "user request" and the agent submitted a fresh
+		// command (Report 2026-05-05 P0-B continuous-iteration
+		// auto-command). Daemon-side queue_write already rejects
+		// caller_role=planner, but reaching that rejection still costs
+		// a roundtrip and pollutes the audit trail; blocking at L1 is
+		// cleaner and gives a clearer "tool not allowed" error.
+		"Bash(maestro plan:*)",
+		"Bash(maestro skill:*)",
+		"Bash(maestro queue read:*)",
+		"Bash(maestro verify:*)",
+		"Bash(maestro status:*)",
+		"Bash(maestro version:*)",
+		"Bash(maestro --version:*)",
+		"Bash(maestro --help:*)",
 		"Read(.maestro/**)",
 		"Read(.maestro/dashboard.md)",
 		"Read(.maestro/config.yaml)",
@@ -630,7 +648,6 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 	args := launchArgsCore(role, agentModel, systemPrompt, basePromptMode)
 	args = appendAllowedTools(args, role)
 	args = appendDisallowedTools(args, role)
-	args = appendNotificationSettings(args, role)
 	return args, nil
 }
 
@@ -686,6 +703,21 @@ func appendDisallowedTools(args []string, role string) []string {
 // workerDisallowedTools lists the tool patterns Claude CLI must hard-block
 // for Workers. The textual prohibitions in worker.md (D006, .maestro/ access)
 // are not enforced by the CLI; this list provides the technical guardrail.
+//
+// Runtime-protected paths (.claude/, .codex/, .gemini/, .maestro/) are
+// blocked at the tool level so that an LLM-emitted plan cannot drive a
+// Worker into editing the very directories that govern agent behaviour.
+// The canonical failure mode (Report 2026-05-05 P0 v5) was: Planner
+// generated a task that touched a runtime-config directory → Worker
+// requested the edit → Claude Code surfaced a confirmation prompt →
+// blocked-pane timeout → command failed. Blocking Edit/Write at the
+// tool level means the agent does not even reach the prompt: the
+// request fails with "Tool not allowed", the worker emits a normal
+// failure result, and the daemon's repair / replan path takes over
+// without any prompt-induced lifecycle stall. This is a daemon-side
+// guardrail rather than a Planner-instructions addition (we keep LLM
+// agents' responsibility minimal — the directory list lives here, not
+// in the prompt).
 var workerDisallowedTools = []string{
 	"Bash(tmux kill-server:*)",
 	"Bash(tmux kill-session:*)",
@@ -708,31 +740,43 @@ var workerDisallowedTools = []string{
 	"Read(.maestro/logs/**)",
 	"Read(.maestro/config.yaml)",
 	"Read(.maestro/dashboard.md)",
-}
-
-// appendNotificationSettings disables Claude Code Notification hooks for
-// internal autonomous agents.
-//
-// Behaviour by role:
-//   - orchestrator: user-facing agent — keep user hooks intact.
-//   - worker:       Notification=[] is merged with the PreToolUse policy hook
-//     into a single --settings flag by HookSettings()
-//     (policy_checker.go); we add nothing here.
-//   - planner / other internal roles: emit a Notification=[] only.
-//
-// Sandbox settings are intentionally NOT injected here. Passing a sandbox
-// section via --settings overrides the user's global sandbox.enabled:false
-// and disables the /sandbox runtime command. The
-// allowAllUnixSockets entry required for the daemon UDS connection
-// (.maestro/daemon.sock) must live in the user's global
-// ~/.claude/settings.json or the project's .claude/settings.json instead.
-func appendNotificationSettings(args []string, role string) []string {
-	switch role {
-	case "orchestrator", "worker":
-		return args
-	default:
-		return append(args, "--settings", `{"hooks":{"Notification":[]}}`)
-	}
+	// Runtime-protected: .claude / .codex / .gemini own the agent's tool
+	// permissions, hooks, and skills. A Worker that edits these can
+	// effectively re-program itself or sibling Workers; the resulting
+	// confirmation prompts also cause blocked-pane timeouts that fail the
+	// command. Block Edit / Write / NotebookEdit / MultiEdit at all depths
+	// (project-root .claude/, sub-package .claude/, etc.).
+	"Edit(**/.claude/**)",
+	"Write(**/.claude/**)",
+	"MultiEdit(**/.claude/**)",
+	"NotebookEdit(**/.claude/**)",
+	"Edit(**/.codex/**)",
+	"Write(**/.codex/**)",
+	"MultiEdit(**/.codex/**)",
+	"NotebookEdit(**/.codex/**)",
+	"Edit(**/.gemini/**)",
+	"Write(**/.gemini/**)",
+	"MultiEdit(**/.gemini/**)",
+	"NotebookEdit(**/.gemini/**)",
+	// .maestro/ is the daemon's own state directory; Workers must never
+	// write into the control-plane subtrees. Each subtree is blocked
+	// individually so that .maestro/worktrees/<worker>/ — the Worker's
+	// own working directory — remains writable. Read is also blocked
+	// above for the same paths.
+	"Edit(**/.maestro/state/**)",
+	"Write(**/.maestro/state/**)",
+	"Edit(**/.maestro/queue/**)",
+	"Write(**/.maestro/queue/**)",
+	"Edit(**/.maestro/results/**)",
+	"Write(**/.maestro/results/**)",
+	"Edit(**/.maestro/locks/**)",
+	"Write(**/.maestro/locks/**)",
+	"Edit(**/.maestro/logs/**)",
+	"Write(**/.maestro/logs/**)",
+	"Edit(**/.maestro/config.yaml)",
+	"Write(**/.maestro/config.yaml)",
+	"Edit(**/.maestro/dashboard.md)",
+	"Write(**/.maestro/dashboard.md)",
 }
 
 func appendWorkspaceReadAllowances(args []string, maestroDir, role string) []string {
@@ -839,6 +883,17 @@ func appendResolvedMaestroBashAllowances(args []string, role, maestroPath string
 	if maestroPath == "" || maestroPath == "maestro" {
 		return args
 	}
+	// MUST mirror the narrow per-subcommand allowlist in
+	// allowedToolsByRole[role]. The Runtime CLI Path instruction tells
+	// agents to invoke `maestro` via the absolute binary path so PATH
+	// hijacking is impossible; the L1 allowlist therefore needs to
+	// recognise both `Bash(maestro <subcmd>:*)` AND
+	// `Bash(<abs>/maestro <subcmd>:*)`. The earlier `Bash(<abs>/maestro:*)`
+	// shorthand for Planner was a regression — broad allow on the
+	// resolved path silently bypassed the narrow allowlist and let the
+	// Planner agent run `<abs>/maestro queue write planner` (the very
+	// path the L1 narrowing was meant to block — Report 2026-05-05 P0-A
+	// regression).
 	var extra []string
 	switch role {
 	case "orchestrator":
@@ -848,7 +903,16 @@ func appendResolvedMaestroBashAllowances(args []string, role, maestroPath string
 			"Bash(" + maestroPath + " plan request-cancel:*)",
 		}
 	case "planner":
-		extra = []string{"Bash(" + maestroPath + ":*)"}
+		extra = []string{
+			"Bash(" + maestroPath + " plan:*)",
+			"Bash(" + maestroPath + " skill:*)",
+			"Bash(" + maestroPath + " queue read:*)",
+			"Bash(" + maestroPath + " verify:*)",
+			"Bash(" + maestroPath + " status:*)",
+			"Bash(" + maestroPath + " version:*)",
+			"Bash(" + maestroPath + " --version:*)",
+			"Bash(" + maestroPath + " --help:*)",
+		}
 	default:
 		return args
 	}
@@ -1059,6 +1123,31 @@ func buildLaunchEnvForAgent(base []string, role, maestroDir string) ([]string, e
 	// pollutes daemon log captures.
 	if !envHasKey(env, "MISE_CACHE_DIR") {
 		env = setEnv(env, "MISE_CACHE_DIR", filepath.Join(canonicalDir, "cache", "mise"))
+	}
+
+	// Pin TMPDIR to a Maestro-managed writable directory. macOS sandboxed
+	// child processes (claude-code, codex) routinely fail `mktemp` against
+	// the inherited /var/folders/.../T TMPDIR with `Operation not
+	// permitted`. The previous version of this code only set TMPDIR when
+	// the launcher saw an empty inherited value, but in practice the
+	// daemon process inherits a populated TMPDIR (either from the user's
+	// shell or from claude-code's own /tmp/claude-* override) and the
+	// override never fired — Reports 1+3 of 2026-05-03 confirmed worker
+	// panes still ran with TMPDIR=/var/folders/... and tripped Operation
+	// not permitted on bare mktemp. Force the override unconditionally
+	// so every child process sees a directory the sandbox already grants;
+	// operators who genuinely need to direct child tmp elsewhere can set
+	// MAESTRO_AGENT_TMPDIR_OVERRIDE=0 to fall back to the inherited value.
+	// Pointing TMPDIR under MAESTRO_DIR is safe because the worker policy
+	// hook already exempts $TMPDIR from WT001 worktree-boundary checks.
+	if os.Getenv("MAESTRO_AGENT_TMPDIR_OVERRIDE") != "0" {
+		tmpDir := filepath.Join(canonicalDir, "cache", "tmp")
+		if mkErr := os.MkdirAll(tmpDir, 0o700); mkErr != nil {
+			slog.Warn("buildLaunchEnvForAgent: TMPDIR override create failed; falling back to inherited tmp",
+				"path", tmpDir, "error", mkErr)
+		} else {
+			env = setEnv(env, "TMPDIR", tmpDir)
+		}
 	}
 	wrapperDir, err := ensureRoleMaestroWrapper(maestroDir, role)
 	if err != nil {
@@ -1287,7 +1376,11 @@ func currentPaneTarget() (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	// paneID is validated above against validTmuxPane (^%[0-9]+$), so it is safe to pass as argument.
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}") //nolint:gosec // paneID validated by regex
+	args := []string{"display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}"}
+	if socket := tmux.GetTmuxSocket(); socket != "" {
+		args = append([]string{"-L", socket}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // paneID validated by regex
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {

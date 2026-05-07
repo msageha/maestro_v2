@@ -5,8 +5,6 @@ import (
 	"io"
 	"os"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -47,17 +45,12 @@ func (a *cliApp) runVerifyWrite(args []string) error {
 	if err != nil {
 		return err
 	}
-	var wrapper struct {
-		Verify model.VerifyConfig `yaml:"verify"`
+	cfg, err := model.ParseVerifyConfigYAML(data)
+	if err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro verify write: %v", err)}
 	}
-	if err := yamlv3.Unmarshal(data, &wrapper); err != nil {
-		return fmt.Errorf("maestro verify write: parse verify config: %w", err)
-	}
-	if wrapper.Verify.IsEmpty() {
+	if cfg.IsEmpty() {
 		return &CLIError{Code: 1, Msg: "maestro verify write: verify config must contain at least one command"}
-	}
-	if err := wrapper.Verify.Validate(); err != nil {
-		return fmt.Errorf("maestro verify write: %w", err)
 	}
 	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("verify_write", map[string]any{

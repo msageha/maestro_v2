@@ -4,12 +4,22 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// paneTailWarnOptedIn reports whether the operator has explicitly opted in
+// to having the post-/clear-failure pane tail surfaced at warn level.
+// Default is false so privacy-sensitive deployments do not see prior
+// worker prompts in the daemon log.
+func paneTailWarnOptedIn() bool {
+	v := os.Getenv("MAESTRO_LOG_PANE_TAIL")
+	return v == "1" || v == "true" || v == "TRUE" || v == "yes"
+}
 
 // messageDeliverer handles message delivery and /clear confirmation for
 // tmux-based agent communication. Isolates the send/clear responsibility
@@ -542,16 +552,27 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 	// per transition would indicate a real double-send.
 	d.log(logLevelInfo, "clear_send_begin pane=%s max_attempts=%d", paneTarget, maxAttempts)
 
+	hashDisabledWarned := false
+
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("clear_and_confirm cancelled before attempt %d: %w", attempt, err)
 		}
 
-		// Capture pre-clear hash
+		// Capture pre-clear hash. A capture failure here is recoverable —
+		// the hash check is optional and the rest of the flow can continue
+		// without it. Per-attempt noise is demoted to debug; we surface a
+		// single warn breadcrumb the first time the hash check is disabled
+		// within this call so the operator can correlate with the eventual
+		// outcome (success or final-failure summary).
 		preClearContent, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
 		preClearHashValid := err == nil
 		if err != nil {
-			d.log(logLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
+			d.log(logLevelDebug, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
+			if !hashDisabledWarned {
+				d.log(logLevelWarn, "clear_confirm pre_capture_disabled pane=%s attempt=%d error=%v (hash check disabled for this clear cycle)", paneTarget, attempt, err)
+				hashDisabledWarned = true
+			}
 		}
 		preClearHash := contentHash(preClearContent)
 
@@ -561,13 +582,18 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		// /clear in Claude Code 2.x.
 		d.log(logLevelInfo, "clear_send_invocation pane=%s attempt=%d/%d", paneTarget, attempt, maxAttempts)
 		if err := d.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
-			d.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
+			// Non-final attempts retry; treat the per-attempt error as
+			// debug. Final attempt drops out of the loop and surfaces the
+			// terminal failure with pane context below.
 			if attempt < maxAttempts {
-				if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
-					return err
+				d.log(logLevelDebug, "clear_confirm send_clear error=%v attempt=%d/%d (retrying)", err, attempt, maxAttempts)
+				if bErr := sleepWithBackoff(ctx, backoffMs, attempt); bErr != nil {
+					return bErr
 				}
 				continue
 			}
+			d.log(logLevelWarn, "clear_confirm send_clear failed pane=%s error=%v attempt=%d/%d (terminal)", paneTarget, err, attempt, maxAttempts)
+			d.logPaneTailForClearFailure(paneTarget, "send_clear_failed")
 			return fmt.Errorf("clear_confirm: %w after %d attempts: %w", ErrClearSendFailed, maxAttempts, err)
 		}
 
@@ -585,16 +611,54 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 			return nil
 		}
 
-		// Not confirmed -- retry with backoff
-		d.log(logLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
+		// Not confirmed — debug per attempt, escalate to warn only when
+		// the next iteration would exceed maxAttempts (final retry just
+		// failed). The terminal log after the loop additionally captures
+		// the pane tail for postmortem.
 		if attempt < maxAttempts {
+			d.log(logLevelDebug, "clear_confirm not_confirmed attempt=%d/%d (retrying)", attempt, maxAttempts)
 			if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
 				return err
 			}
+			continue
 		}
+		d.log(logLevelWarn, "clear_confirm not_confirmed pane=%s attempt=%d/%d (terminal)", paneTarget, attempt, maxAttempts)
 	}
 
+	d.logPaneTailForClearFailure(paneTarget, "not_confirmed")
 	return fmt.Errorf("clear_confirm: %w after %d attempts", ErrClearNotConfirmed, maxAttempts)
+}
+
+// logPaneTailForClearFailure emits the bottom of the pane to aid debugging
+// of /clear failures. The pane tail can contain prior worker prompts,
+// approval-dialog text, or model output — anything visible at the bottom
+// of the runtime UI — so it doubles as potentially sensitive operator
+// data. Default is debug-level so the diagnostic is opt-in for
+// privacy-sensitive deployments; setting MAESTRO_LOG_PANE_TAIL=1
+// promotes it to warn for environments where the daemon log is the
+// primary debugging surface.
+//
+// Best-effort: capture errors are reported at debug because the
+// surrounding terminal log already conveys the underlying clear_confirm
+// failure.
+func (d *messageDeliverer) logPaneTailForClearFailure(paneTarget, phase string) {
+	tail, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+	if err != nil {
+		d.log(logLevelDebug, "clear_confirm pane_tail capture error=%v phase=%s", err, phase)
+		return
+	}
+	// Trim very long captures to keep log lines bounded; the trailing few
+	// hundred bytes are where Claude Code's prompt state and any approval
+	// dialog live.
+	const maxTailBytes = 1024
+	if len(tail) > maxTailBytes {
+		tail = tail[len(tail)-maxTailBytes:]
+	}
+	level := logLevelDebug
+	if paneTailWarnOptedIn() {
+		level = logLevelWarn
+	}
+	d.log(level, "clear_confirm pane_tail pane=%s phase=%s tail=%q", paneTarget, phase, tail)
 }
 
 // log delegates to the package-level logf function which uses time.Now()

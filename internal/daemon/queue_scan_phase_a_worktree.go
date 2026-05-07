@@ -1,12 +1,27 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // stepWorktreePhaseMerges — Step 0.7.1: Collect merge work items for Phase B.
+//
+// Originally gated on cmd.Status == StatusInProgress, which silently dropped
+// the implicit-phase merge whenever plan_complete won the race against the
+// next periodic scan: a single-task command would terminate before
+// collectImplicitWorktreeMerge ever ran, the worker worktree was left at
+// WorktreeStatusActive with dirty output, the publish gate observed
+// integration_status=created and a plan-terminal command, and cleanup
+// destroyed the worktree directory along with the worker's changes (Report 3
+// of 2026-05-03). Terminal commands are now allowed back into the collector
+// when the integration branch has not yet reached a terminal state — i.e.
+// there is still pending merge work to do — so the implicit merge can land
+// before cleanup runs.
 func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 	if qh.worktreeManager == nil || !qh.dependencyResolver.HasStateReader() {
 		return
@@ -14,9 +29,6 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 
 	for i := range s.commands.Data.Commands {
 		cmd := &s.commands.Data.Commands[i]
-		if cmd.Status != model.StatusInProgress {
-			continue
-		}
 		// Skip cancel_requested commands to avoid wasted merge/commit work
 		// during the cancellation window.
 		if qh.cancelHandler != nil && qh.cancelHandler.IsCommandCancelRequested(cmd) {
@@ -24,6 +36,27 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 		}
 		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
 			continue
+		}
+		if cmd.Status != model.StatusInProgress {
+			// Terminal command: only proceed when the integration branch
+			// is in a state the merge collector can still act on. Mirrors
+			// stepWorktreePublish's terminal-command policy and prevents
+			// the cleanup phase from running before pending implicit-phase
+			// merges have a chance to land worker output on integration.
+			cmdState, err := qh.worktreeManager.GetCommandState(cmd.ID)
+			if err != nil || cmdState == nil {
+				continue
+			}
+			switch cmdState.Integration.Status {
+			case model.IntegrationStatusCreated,
+				model.IntegrationStatusMerged,
+				model.IntegrationStatusPartialMerge,
+				model.IntegrationStatusConflict,
+				model.IntegrationStatusFailed:
+				// Fall through — pending worker output may still need to land.
+			default:
+				continue
+			}
 		}
 		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID, s.tasks)
 		s.work.worktreeMerges = append(s.work.worktreeMerges, mergeItems...)
@@ -218,8 +251,87 @@ func (qh *QueueHandler) stepWorktreeOrphanCleanup(s *scanState) {
 			CommandID: cmd.ID,
 			Reason:    reason,
 		})
+		// no_op_terminal bypasses the staleness threshold (line 222-237) so
+		// the orphan cleans up as soon as the command terminates without
+		// integration commits — there is no late-merge race window. Log the
+		// bypass explicitly: previously the line printed `threshold=10m elapsed=1s`
+		// which read as a violated guard, when in fact the guard is intentionally
+		// skipped for the no-op case. Reported 2026-05-04.
+		thresholdField := threshold.String()
+		if isNoOpCreated {
+			thresholdField = "bypass(no_op)"
+		}
 		qh.log(LogLevelInfo,
 			"orphan_worktree_cleanup_triggered command=%s cmd_status=%s integration_status=%s elapsed=%s threshold=%s reason=%s",
-			cmd.ID, cmd.Status, cmdState.Integration.Status, elapsed.Round(time.Second), threshold, reason)
+			cmd.ID, cmd.Status, cmdState.Integration.Status, elapsed.Round(time.Second), thresholdField, reason)
 	}
+}
+
+// stepFinalizeQuarantinedDeferredComplete force-terminates leftover
+// deferred_complete intents on a quarantined integration.
+//
+// Background (Report 2026-05-06 round-3 P0):
+//   - Planner calls `plan complete` → publish not finished → returns
+//     `deferred_publish` and writes `intents/deferred_complete_<cmd>.yaml`.
+//   - Publish then fails repeatedly → R8 transitions integration to
+//     `quarantined`.
+//   - The existing deferredPlanCompleter only fires on
+//     `worktree_published`, so the deferred intent stays around forever
+//     on the quarantine path → orchestrator notification wedges.
+//
+// This step walks `intents/` every scan tick and finalises the
+// deferred_complete entries of commands whose integration is quarantined
+// via deferredPlanCompleter. `Complete()` (specifically
+// checkWorktreePublished) now routes quarantine through
+// worktreePublishTerminalError, so the deferredPlanCompleter takes the
+// fail-terminal → result write → orchestrator notify path normally.
+//
+// Side-effect safety:
+//   - deferredPlanCompleter removes the intent file internally, so this
+//     never double-fires.
+//   - On failure (storage error, etc.) the intent file remains and the
+//     next tick retries.
+//   - No LLM agent involvement; the daemon resolves the wedge on its own.
+func (qh *QueueHandler) stepFinalizeQuarantinedDeferredComplete(s *scanState) {
+	if qh.deferredPlanCompleter == nil || qh.worktreeManager == nil {
+		return
+	}
+	intentsDir := filepath.Join(qh.maestroDir, "intents")
+	entries, err := os.ReadDir(intentsDir)
+	if err != nil {
+		return
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "deferred_complete_") || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		commandID := strings.TrimSuffix(strings.TrimPrefix(name, "deferred_complete_"), ".yaml")
+		if commandID == "" {
+			continue
+		}
+		cmdState, err := qh.worktreeManager.GetCommandState(commandID)
+		if err != nil || cmdState == nil {
+			continue
+		}
+		if cmdState.Integration.Status != model.IntegrationStatusQuarantined {
+			continue
+		}
+		// deferredPlanCompleter calls plan.CompleteDeferredPublish, which
+		// detects the quarantine in Complete() and writes plan_status=failed.
+		// On success the intent file is removed so this never re-fires.
+		completed, err := qh.deferredPlanCompleter(commandID)
+		if err != nil {
+			qh.log(LogLevelWarn,
+				"deferred_complete_quarantine_finalize_failed command=%s error=%v",
+				commandID, err)
+			continue
+		}
+		if completed {
+			qh.log(LogLevelInfo,
+				"deferred_complete_quarantine_finalized command=%s integration_status=%s reason=%s",
+				commandID, cmdState.Integration.Status, cmdState.Integration.QuarantineReason)
+		}
+	}
+	_ = s // s itself is not mutated here; Complete() updates state.
 }

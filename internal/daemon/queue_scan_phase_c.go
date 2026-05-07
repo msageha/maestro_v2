@@ -271,7 +271,14 @@ func (qh *QueueHandler) applyMergeResultSignals(
 			// must wait until the resolution pipeline has re-merged them.
 			cmdState, stateErr := qh.worktreeManager.GetCommandState(mr.Item.CommandID)
 			if stateErr != nil {
-				qh.log(LogLevelWarn, "mark_phase_merged_state_check_failed command=%s phase=%s error=%v",
+				// State file may be absent because cleanup has already
+				// removed it (e.g. publish-on-success path runs before
+				// MarkPhaseMerged in the same scan). That is a benign
+				// no-op for this gate — the merge was either already
+				// recorded or rendered moot by cleanup. Demote to debug
+				// instead of warning the operator.
+				qh.log(LogLevelDebug,
+					"mark_phase_merged_state_check_skipped command=%s phase=%s reason=state_unavailable error=%v",
 					mr.Item.CommandID, mr.Item.PhaseID, stateErr)
 				continue
 			}

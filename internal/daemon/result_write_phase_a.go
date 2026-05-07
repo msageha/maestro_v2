@@ -3,8 +3,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -136,34 +134,25 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 
 	sourceTask := tq.Tasks[taskIdx]
 
-	// run_on_main is the strict read-only contract (post-publish verification
-	// against the merged main branch). The Worker must report empty
-	// files_changed; a non-empty value indicates the LLM mistook
-	// "files I inspected" for "files I modified". Strip and warn instead
-	// of rejecting so the (otherwise successful) read-only check still
-	// progresses; rejection here would stall the publish pipeline on
-	// what is essentially a reporting bug.
-	//
-	// The strip MUST run before validateFilesChangedWithinExpectedPaths
-	// so that run_on_main tasks with narrow expected_paths (the common
-	// case — read-only verify tasks usually declare a tight surface)
-	// don't get rejected on the "files I read but did not modify" data
-	// before the strip can take effect.
-	if sourceTask.RunOnMain && len(params.FilesChanged) > 0 {
-		h.logFn(LogLevelWarn,
-			"files_changed_stripped_for_run_on_main task=%s command=%s reported=%v "+
-				"(run_on_main is read-only by contract; see worker.md §`--files-changed` の正しい意味)",
-			params.TaskID, params.CommandID, params.FilesChanged)
-		params.FilesChanged = nil
-	}
-
-	if err := validateFilesChangedWithinExpectedPaths(params.FilesChanged, sourceTask.ExpectedPaths); err != nil {
-		return nil, &resultWriteError{uds.ErrCodeValidation,
-			fmt.Sprintf("files_changed outside expected_paths for task %s: %v", params.TaskID, err)}
-	}
+	// files_changed is treated as descriptive metadata only — display in
+	// the review coordinator (review_coordinator.go) and hot-file paths
+	// in diagnosis (diagnosis.go). It is NOT a gate, because the worker
+	// self-reports the value and the integration commit already runs
+	// through `git add -A` against the worker worktree (see
+	// commit_policy_removed.md). Re-introducing a self-report-driven
+	// expected_paths gate here was a regression: a worker could simply
+	// re-submit with a narrowed list to bypass it, while the actual diff
+	// — visible in the wave-crossing inline commit — silently merged the
+	// out-of-bounds files. The autonomous LLM Orchestration brief
+	// trusts worker output verbatim; defensive scope-limiting belongs in
+	// the worker's own ~/.claude policy hook, not in the result_write
+	// path. The previous run_on_main strip is similarly retired —
+	// run_on_main is read-only by convention, and a Worker erroneously
+	// reporting files_changed there was an LLM reporting bug, not a
+	// safety incident.
 
 	// 5. Append result entry
-	resultID, err := h.appendResultEntry(&rf, params, resultStatus)
+	resultID, err := h.appendResultEntry(&rf, params, resultStatus, &sourceTask)
 	if err != nil {
 		return nil, err
 	}
@@ -207,40 +196,6 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		abortByMaxRepair:     abortByMaxRepair,
 		taskRunOnIntegration: tq.Tasks[taskIdx].RunOnIntegration,
 	}, nil
-}
-
-func validateFilesChangedWithinExpectedPaths(filesChanged, expectedPaths []string) error {
-	if len(filesChanged) == 0 || len(expectedPaths) == 0 {
-		return nil
-	}
-	var outside []string
-	for _, file := range filesChanged {
-		if !pathAllowedByExpectedPaths(file, expectedPaths) {
-			outside = append(outside, file)
-		}
-	}
-	if len(outside) > 0 {
-		return fmt.Errorf("%s", strings.Join(outside, ", "))
-	}
-	return nil
-}
-
-func pathAllowedByExpectedPaths(file string, expectedPaths []string) bool {
-	file = filepath.ToSlash(filepath.Clean(strings.TrimSpace(file)))
-	for _, exp := range expectedPaths {
-		exp = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp)))
-		if exp == "" {
-			continue
-		}
-		if exp == "." {
-			return true
-		}
-		exp = strings.TrimSuffix(exp, "/")
-		if file == exp || strings.HasPrefix(file, exp+"/") {
-			return true
-		}
-	}
-	return false
 }
 
 // checkResultIdempotency checks whether a result for the given task already
@@ -377,7 +332,7 @@ func (h *ResultWriteAPI) validateStateRegistration(params ResultWriteParams) (*m
 
 // appendResultEntry generates a result ID, appends the new result entry to
 // the result file, and persists it to disk via the FileStore.
-func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
+func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status, sourceTask *model.Task) (string, error) {
 	resultID, err := model.GenerateID(model.IDTypeResult)
 	if err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
@@ -388,7 +343,34 @@ func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params Resu
 		rf.FileType = "result_task"
 	}
 
+	// Snapshot the queue task's verify-pipeline flags onto the result entry
+	// so the notify gate (taskTerminalForNotify) can identify entries that
+	// must wait for the daemon-owned verify pipeline before notifying the
+	// Planner. Reading from the result entry — rather than re-reading the
+	// queue file at gate time — pins the classification to the result and
+	// is unaffected by subsequent retry-lineage cancellations or queue
+	// cleanup.
+	var runOnIntegration, runOnMain bool
+	if sourceTask != nil {
+		runOnIntegration = sourceTask.RunOnIntegration
+		runOnMain = sourceTask.RunOnMain
+	}
+
+	// Non-verify entries are eligible to notify immediately: failure /
+	// cancellation paths skip the verify pipeline by design (the worker
+	// reported a non-completed terminal), and normal worker results are
+	// resolved synchronously by runResultVerification's
+	// verify_skipped_normal_worker_task branch before the result_write
+	// API returns. Stamp VerifyOutcomeAppliedAt so the gate's verify-
+	// pipeline guard does not stall those entries.
 	now := h.clock.Now().UTC().Format(time.RFC3339)
+	var verifyOutcomeAppliedAt *string
+	verifyPipeline := (runOnIntegration || runOnMain) && resultStatus == model.StatusCompleted
+	if !verifyPipeline {
+		appliedAt := now
+		verifyOutcomeAppliedAt = &appliedAt
+	}
+
 	rf.Results = append(rf.Results, model.TaskResult{
 		ID:                     resultID,
 		TaskID:                 params.TaskID,
@@ -399,6 +381,9 @@ func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params Resu
 		PartialChangesPossible: params.PartialChangesPossible,
 		RetrySafe:              params.RetrySafe,
 		CreatedAt:              now,
+		RunOnIntegration:       runOnIntegration,
+		RunOnMain:              runOnMain,
+		VerifyOutcomeAppliedAt: verifyOutcomeAppliedAt,
 	})
 
 	if err := h.fileStore.SaveResultFile(params.Reporter, *rf); err != nil {

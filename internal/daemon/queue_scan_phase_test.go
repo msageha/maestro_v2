@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"bytes"
-	"context"
 	errorspkg "errors"
 	"fmt"
 	"log"
@@ -14,11 +13,9 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	worktreepkg "github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
-	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -321,6 +318,153 @@ func TestCollectWorktreePublish_IntegrationFailedEmitsSynthetic(t *testing.T) {
 	}
 	if count2 != 1 {
 		t.Errorf("synthetic_failure must be idempotent; got %d after second call", count2)
+	}
+}
+
+// TestSyntheticPlannerResult_PartialIntegrationMergeReported pins the
+// post-2026-05-06 P1 v5 fix: when a command failed at the publish gate
+// but worker commits have already rolled onto the integration branch
+// (data-loss avoidance), the synthetic planner result's summary must
+// surface that partial integration so the Orchestrator does not see a
+// generic "failed" with `integration_status=merged` and conclude that
+// the main branch was published.
+func TestSyntheticPlannerResult_PartialIntegrationMergeReported(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusFailed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_x": model.StatusCompleted,
+				"task_y": model.StatusFailed,
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	// Worktree state shows the integration branch was rolled forward
+	// (worker_committed / worker_merged ran), but the publish gate
+	// blocked the main publish because the phase failed.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+
+	if !qh.writeSyntheticFailedPlannerResult("cmd1", "phase_failed_publish_blocked") {
+		t.Fatalf("expected synthetic write to succeed")
+	}
+	data, err := os.ReadFile(filepath.Join(maestroDir, "results", "planner.yaml"))
+	if err != nil {
+		t.Fatalf("read planner.yaml: %v", err)
+	}
+	var rf model.CommandResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("parse planner.yaml: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(rf.Results))
+	}
+	r := rf.Results[0]
+	if !strings.Contains(r.Summary, "integration_state=merged") {
+		t.Errorf("summary should report integration_state=merged, got %q", r.Summary)
+	}
+	if !strings.Contains(r.Summary, "main publish skipped") {
+		t.Errorf("summary should clarify that main publish was skipped, got %q", r.Summary)
+	}
+}
+
+// TestSyntheticPlannerResult_PopulatesTaskStatsFromState pins the
+// post-2026-05-06 P1 v5 fix: synthetic planner results must surface the
+// actual TaskStats and per-task statuses derived from the command state
+// file, instead of an empty `tasks: []` payload that misleads the
+// Orchestrator into thinking no work was performed.
+func TestSyntheticPlannerResult_PopulatesTaskStatsFromState(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Seed state: 3 tasks, mixed outcomes — 2 completed, 1 failed.
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusFailed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_aa": model.StatusCompleted,
+				"task_bb": model.StatusCompleted,
+				"task_cc": model.StatusFailed,
+			},
+			CancelledReasons: map[string]string{
+				"task_cc": "blocked_pane_timeout: worker prompt for .claude/verify.sh edit",
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", "cmd1.yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	wrote := qh.writeSyntheticFailedPlannerResult("cmd1", "phase_failed_publish_blocked")
+	if !wrote {
+		t.Fatalf("expected wrote=true for first synthetic emission")
+	}
+
+	resultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read planner.yaml: %v", err)
+	}
+	var rf model.CommandResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("parse planner.yaml: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(rf.Results))
+	}
+	r := rf.Results[0]
+	if r.CommandID != "cmd1" || r.Status != model.StatusFailed {
+		t.Fatalf("unexpected result header: id=%s status=%s", r.CommandID, r.Status)
+	}
+	// TaskStats must reflect the state file (not zero).
+	if r.TaskStats.Total != 3 || r.TaskStats.Completed != 2 || r.TaskStats.Failed != 1 {
+		t.Errorf("task_stats: got %+v, want total=3 completed=2 failed=1", r.TaskStats)
+	}
+	if len(r.Tasks) != 3 {
+		t.Fatalf("expected 3 tasks in result, got %d", len(r.Tasks))
+	}
+	taskStatuses := map[string]model.Status{}
+	for _, ct := range r.Tasks {
+		taskStatuses[ct.TaskID] = ct.Status
+	}
+	for id, want := range map[string]model.Status{
+		"task_aa": model.StatusCompleted,
+		"task_bb": model.StatusCompleted,
+		"task_cc": model.StatusFailed,
+	} {
+		if got := taskStatuses[id]; got != want {
+			t.Errorf("task %s status: got %s, want %s", id, got, want)
+		}
+	}
+	// Failed task summary must include the cancellation reason from state.
+	for _, ct := range r.Tasks {
+		if ct.TaskID == "task_cc" && ct.Summary == "" {
+			t.Errorf("failed task %s should carry the state-recorded reason in summary, got empty", ct.TaskID)
+		}
+	}
+	// Top-level summary must surface the failed task ID for quick triage.
+	if !strings.Contains(r.Summary, "task_cc") {
+		t.Errorf("summary should mention the failed task id, got %q", r.Summary)
+	}
+	if !strings.Contains(r.Summary, "phase_failed_publish_blocked") {
+		t.Errorf("summary should retain the synthetic reason, got %q", r.Summary)
 	}
 }
 
@@ -1331,26 +1475,20 @@ func TestStepWorktreeStallDetection_NoPhasesFastPath(t *testing.T) {
 }
 
 // --- classifyCommitError unit tests ---
+//
+// With the policy/sensitive-file gates removed from the orchestrator,
+// classifyCommitError no longer differentiates structured failure
+// classes — it surfaces a generic class plus the underlying message.
+// The remaining test pins that behaviour.
 
 func TestClassifyCommitError(t *testing.T) {
 	t.Parallel()
-	wrappedFiltered := fmt.Errorf("commit for worker w in command c: %w", worktreepkg.ErrAllFilesFiltered)
-	policyErr := &worktreepkg.CommitPolicyViolationError{
-		Violations: []worktreepkg.CommitPolicyViolation{
-			{Code: "max_files_exceeded", Message: "too many"},
-		},
-	}
-	policyEmpty := &worktreepkg.CommitPolicyViolationError{}
-
 	cases := []struct {
 		name string
 		err  error
 		want string
 	}{
 		{"nil", nil, ""},
-		{"all_files_filtered", wrappedFiltered, "all_files_filtered"},
-		{"policy_with_code", policyErr, "policy_violation:max_files_exceeded"},
-		{"policy_no_violations", policyEmpty, "policy_violation:unknown"},
 		{"generic", errorspkg.New("boom"), "generic:boom"},
 	}
 	for _, tc := range cases {
@@ -1364,166 +1502,13 @@ func TestClassifyCommitError(t *testing.T) {
 	}
 }
 
-// --- Phase B/C commit failure → signal flow integration tests ---
-
-// TestPhaseBC_CommitFailure_AllFilesFiltered_Flow drives a real worktree
-// manager through periodicScanPhaseB+C with a worker whose only dirty files
-// are sensitive (.env). It verifies the full P1 contract:
-//   - CommitFailures recorded with classified Reason
-//   - MergeToIntegration skipped (no Conflicts/Error)
-//   - SyncFromIntegration not invoked (worker stays Active, not synced)
-//   - Integration status transitioned to Failed
-//   - MarkPhaseMerged NOT recorded
-//   - commit_failed signal emitted with Reason populated
-func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
-	t.Parallel()
-	cases := []struct {
-		name       string
-		mutateCfg  func(cfg *model.WorktreeConfig)
-		writeDirty func(t *testing.T, wtPath string)
-		wantReason string
-	}{
-		{
-			name:      "all_files_filtered",
-			mutateCfg: func(cfg *model.WorktreeConfig) {},
-			writeDirty: func(t *testing.T, wtPath string) {
-				// Use a file that matches sensitiveFilePatterns but is unlikely
-				// to appear in the user's global gitignore (e.g., .env often is).
-				if err := os.WriteFile(filepath.Join(wtPath, "credentials.json"), []byte("S=1\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-				if err := os.WriteFile(filepath.Join(wtPath, "secrets.secret"), []byte("S=1\n"), 0600); err != nil {
-					t.Fatal(err)
-				}
-			},
-			wantReason: "all_files_filtered",
-		},
-		{
-			name: "policy_violation_max_files",
-			mutateCfg: func(cfg *model.WorktreeConfig) {
-				cfg.CommitPolicy = model.CommitPolicyConfig{MaxFiles: ptr.Int(1)}
-			},
-			writeDirty: func(t *testing.T, wtPath string) {
-				for i := 0; i < 4; i++ {
-					if err := os.WriteFile(filepath.Join(wtPath, fmt.Sprintf("f%d.txt", i)), []byte("x"), 0644); err != nil {
-						t.Fatal(err)
-					}
-				}
-			},
-			wantReason: "policy_violation:max_files_exceeded",
-		},
-	}
-
-	for _, tc := range cases {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			projectRoot := initTestGitRepo(t)
-			maestroDir := filepath.Join(projectRoot, ".maestro")
-			for _, sub := range []string{"queue", "results", "logs", "state/commands", "state/worktrees"} {
-				if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			wtCfg := model.WorktreeConfig{
-				Enabled: true, BaseBranch: "main", PathPrefix: ".maestro/worktrees",
-				AutoCommit: true, AutoMerge: true, MergeStrategy: "ort",
-			}
-			tc.mutateCfg(&wtCfg)
-
-			cfg := model.Config{
-				Agents:   model.AgentsConfig{Workers: model.WorkerConfig{Count: 1}},
-				Watcher:  model.WatcherConfig{DispatchLeaseSec: 300},
-				Worktree: wtCfg,
-			}
-			qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelError)
-			wm := NewWorktreeManager(maestroDir, wtCfg, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
-			qh.SetWorktreeManager(wm)
-
-			commandID := "cmd_pf_" + tc.name
-			if err := wm.EnsureWorkerWorktree(commandID, "worker1"); err != nil {
-				t.Fatalf("EnsureWorkerWorktree: %v", err)
-			}
-			wtPath, err := wm.GetWorkerPath(commandID, "worker1")
-			if err != nil {
-				t.Fatalf("GetWorkerPath: %v", err)
-			}
-			tc.writeDirty(t, wtPath)
-
-			// Build minimal phaseAResult with one worktree merge item.
-			pa := phaseAResult{
-				scanStart: time.Now(),
-				work: deferredWork{
-					worktreeMerges: []worktreeMergeItem{{
-						CommandID:      commandID,
-						PhaseID:        "phase1",
-						WorkerIDs:      []string{"worker1"},
-						WorkerPurposes: map[string]string{"worker1": "test"},
-					}},
-				},
-			}
-
-			pb := qh.periodicScanPhaseB(context.Background(), pa)
-			if len(pb.worktreeMerges) != 1 {
-				t.Fatalf("expected 1 worktreeMerge result, got %d", len(pb.worktreeMerges))
-			}
-			mr := pb.worktreeMerges[0]
-			if len(mr.CommitFailures) != 1 {
-				t.Fatalf("expected 1 CommitFailure, got %d", len(mr.CommitFailures))
-			}
-			if mr.CommitFailures[0].Reason != tc.wantReason {
-				t.Errorf("Reason = %q, want %q (err=%v)", mr.CommitFailures[0].Reason, tc.wantReason, mr.CommitFailures[0].Error)
-			}
-			if mr.Error != nil || len(mr.Conflicts) != 0 {
-				t.Errorf("merge should have been skipped: err=%v conflicts=%v", mr.Error, mr.Conflicts)
-			}
-
-			// Integration status is intentionally NOT marked Failed here:
-			// pinning the integration to a terminal status on the first
-			// all-commits-failed observation would make transient errors
-			// (e.g. .git/index.lock contention) unrecoverable. The publish
-			// gate blocks via len(CommitFailedWorkers)>0 alone, and
-			// stepRetryCommitFailedWorkers retries every scan. The
-			// integration status stays at its prior value and the operator-
-			// visible signal of permanent failure is the publish_blocked log
-			// emitting on every scan.
-			state, err := wm.GetCommandState(commandID)
-			if err != nil {
-				t.Fatalf("GetCommandState: %v", err)
-			}
-			if state.Integration.Status == model.IntegrationStatusFailed {
-				t.Errorf("integration status = %q, want non-failed (transient errors must remain recoverable)", state.Integration.Status)
-			}
-
-			// Run phase C and verify commit_failed signal with Reason was emitted,
-			// and MarkPhaseMerged was NOT called for the failing phase.
-			qh.periodicScanPhaseC(pa, pb)
-
-			signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
-			var found *model.PlannerSignal
-			for i := range signalQueue.Signals {
-				s := &signalQueue.Signals[i]
-				if s.Kind == "commit_failed" && s.CommandID == commandID && s.WorkerID == "worker1" {
-					found = s
-					break
-				}
-			}
-			if found == nil {
-				t.Fatalf("commit_failed signal not found in %+v", signalQueue.Signals)
-			}
-			if found.Reason != tc.wantReason {
-				t.Errorf("signal Reason = %q, want %q", found.Reason, tc.wantReason)
-			}
-
-			// MarkPhaseMerged must not have been recorded for phase1.
-			state2, _ := wm.GetCommandState(commandID)
-			if _, merged := state2.MergedPhases["phase1"]; merged {
-				t.Errorf("phase1 should not be marked merged after commit failure")
-			}
-		})
-	}
-}
+// (Removed: TestPhaseBC_CommitFailure_FlowTable.
+// The orchestrator no longer enforces commit policies — sensitive-file lists,
+// max_files, expected_paths and message regex have all moved to the worker
+// environment. There is therefore no path through periodicScanPhaseB that
+// rejects a worker's dirty changes for policy reasons; the equivalent
+// failure modes are exercised by the worktree-package tests for genuine
+// git-level errors.)
 
 // TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields verifies that
 // MVP-1 structured conflict fields (BaseRef/OursRef/TheirsRef/Files) are

@@ -125,6 +125,41 @@ type QueueHandler struct {
 	// for N consecutive ticks" instead of only the per-tick message. This
 	// counter is the primitive an operator-facing meta-circuit reads.
 	consecutiveCascadeBreakScans atomic.Int32
+
+	// phaseMergeDeferStart records the first time isPhaseMergeRecorded
+	// observed a per-phase deferral so we can escalate when the merge gate
+	// is stuck for too long (the orchestration must never wedge on a
+	// transient or silently failed merge — a force-mark unblocks Phase
+	// Completed and lets the Planner proceed). Keyed by
+	// "<commandID>::<phaseID>". Cleared when the phase merge is recorded.
+	phaseMergeDeferStart sync.Map
+
+	// awaitingFillStallNotifiedClock records the last time the watchdog
+	// fired an awaiting_fill_stall signal so subsequent scan cycles can
+	// re-fire after a configurable interval. Keyed by
+	// "<commandID>::<phaseID>". Cleared on phase exit (best-effort —
+	// stale entries simply skip until the phase re-enters awaiting_fill).
+	awaitingFillStallLastFire sync.Map
+
+	// awaitingFillStallFireCount tracks how many times the watchdog has
+	// re-fired an awaiting_fill_stall signal for a given (command, phase)
+	// without progress. After awaitingFillStallEscalateAfter fires the
+	// scanner escalates: marks plan_status=failed and emits an
+	// Orchestrator command_failed notification so a Planner that has
+	// genuinely wedged (input collision, queued messages stuck, claude
+	// loop) does not hold the iteration open indefinitely. Keyed by
+	// "<commandID>::<phaseID>"; reset to 0 on phase exit.
+	awaitingFillStallFireCount sync.Map
+
+	// publishQuarantineLogged tracks (command, reason) pairs already
+	// surfaced as a worktree_publish_quarantined WARN. Quarantined
+	// integration state is durable until an operator unquarantines
+	// manually, so re-WARNing every scan tick is pure noise. Keyed by
+	// "<commandID>::<reason>"; the value is an empty struct used as a
+	// set marker. Cleared implicitly when the daemon restarts (we want
+	// the WARN to fire again after a daemon bounce so an operator
+	// inspecting a fresh log sees the situation).
+	publishQuarantineLogged sync.Map
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -197,9 +232,52 @@ func compileBusyPattern(pattern string) *regexp.Regexp {
 
 // capturePaneJoinedFromTmux is the production paneCapture implementation.
 // Indirected through a function so tests can stub the tmux dependency.
+//
+// Captures both the main screen (with scrollback) and the alternate
+// screen, then returns the concatenation. The scrollback range matters:
+// claude-code's Bash tool renders the approval prompt as ordinary
+// terminal output that scrolls past the visible viewport within a few
+// rows of subsequent output. Reports of 2026-05-04 pinned the resulting
+// blind spot — the daemon's previous capture (visible-only) returned a
+// ~500-byte snippet of just the TUI status bar while the
+// `Do you want to proceed?` / `Bash command (unsandboxed)` lines lived
+// in scrollback. The user manually confirmed `tmux capture-pane -S -120`
+// surfaces the prompt, while plain capture-pane and `-a` both miss it.
+//
+// We pull the last `paneCaptureScrollbackLines` rows of history together
+// with the current visible content. The detector still runs `MatchString`
+// over the concatenation, so any prompt rendered within that window is
+// observable regardless of whether it has scrolled past the viewport.
+//
+// Best-effort: scrollback / alternate failures are silently swallowed;
+// returning whatever portion we managed to capture keeps the detector
+// alive even on tmux misbehaviour.
 func capturePaneJoinedFromTmux(paneTarget string) (string, error) {
-	return tmux.CapturePaneJoined(paneTarget, 0)
+	main, err := tmux.CapturePaneJoined(paneTarget, paneCaptureScrollbackLines)
+	if err != nil {
+		return "", err
+	}
+	alt, _ := tmux.CapturePaneAlternateJoined(paneTarget, paneCaptureScrollbackLines)
+	if alt == "" {
+		return main, nil
+	}
+	if main == "" {
+		return alt, nil
+	}
+	// Concatenate with a newline separator so line-anchored regexes can
+	// match either buffer's content.
+	return alt + "\n" + main, nil
 }
+
+// paneCaptureScrollbackLines is the number of scrollback rows the daemon
+// pulls alongside the visible pane content. 200 rows comfortably covers
+// the typical blocked-prompt window (claude-code emits ~20 rows of
+// chrome around an approval banner) plus a margin for follow-up output
+// that scrolls the prompt past the visible viewport. The trade-off is
+// log bloat when MAESTRO_LOG_PANE_TAIL=1 is set: tail snippets stay
+// truncated to 512 bytes so the scrollback inclusion does not balloon
+// daemon.log size.
+const paneCaptureScrollbackLines = 200
 
 // findPaneTarget routes paneFinder lookups through the QueueHandler so
 // tests can swap the function out without reaching into the tmux

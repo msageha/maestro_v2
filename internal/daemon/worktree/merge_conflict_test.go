@@ -1084,19 +1084,23 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	}
 }
 
-// TestResumeMerge_ContentMismatchDoesNotPromoteToMerged: when worker2 is
-// in Conflict and its resolution edits are only sensitive files (e.g.
-// *.key) that stageNewFiles filters out, commitResolvedWorkerChanges
-// fails (nothing staged -> `git commit` error). The pipeline must
-// (a) keep worker2 in Conflict, and (b) leave integration status in a
-// non-Merged recovery state so publish cannot be triggered against an
-// integration that did not actually absorb the resolution content.
-func TestResumeMerge_ContentMismatchDoesNotPromoteToMerged(t *testing.T) {
+// TestResumeMerge_BlankResolutionDoesNotPromoteToMerged: when worker2 is in
+// Conflict and the "resolution" task did NOT touch the conflicting file,
+// commitResolvedWorkerChanges has nothing staged (no dirty changes at all)
+// so the conflict on SHARED.txt persists and ResumeMerge must not falsely
+// promote the integration to Merged.
+//
+// The previous variant of this test relied on the orchestrator-level
+// sensitive-file filter discarding *.key files. That filter is no longer
+// part of the orchestrator (worker output is captured verbatim), so the
+// content-mismatch scenario must be exercised by leaving the worktree
+// genuinely clean rather than relying on a path-based exclusion.
+func TestResumeMerge_BlankResolutionDoesNotPromoteToMerged(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	commandID := "cmd_resume_bad_content"
+	commandID := "cmd_resume_blank_resolution"
 	workers := []string{"worker1", "worker2"}
 	if err := createForCommand(wm, commandID, workers); err != nil {
 		t.Fatalf("createForCommand: %v", err)
@@ -1146,14 +1150,10 @@ func TestResumeMerge_ContentMismatchDoesNotPromoteToMerged(t *testing.T) {
 		_ = wm.saveState(commandID, st)
 	}()
 
-	// Worker2's "resolution" is only a sensitive file — everything will be
-	// filtered out by stageNewFiles. No touch to SHARED.txt → the conflict
-	// remains unresolved on disk.
-	if err := os.WriteFile(filepath.Join(wt2, "secret.key"), []byte("DUMMY"), 0600); err != nil {
-		t.Fatal(err)
-	}
+	// Worker2's "resolution" task left the worktree completely unchanged —
+	// SHARED.txt remains in conflict-marker state on disk. ResumeMerge must
+	// detect that the underlying conflict is not resolved.
 
-	// ResumeMerge must refuse to promote to Merged.
 	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
@@ -1163,16 +1163,12 @@ func TestResumeMerge_ContentMismatchDoesNotPromoteToMerged(t *testing.T) {
 		t.Fatalf("GetCommandState: %v", err)
 	}
 
-	// Integration must NOT be Merged — Merged would unblock publish and
-	// propagate empty integration content to base.
 	if state.Integration.Status == model.IntegrationStatusMerged {
-		t.Errorf("integration status = merged (BAD: resolution content never reached the branch)")
+		t.Errorf("integration status = merged (BAD: blank resolution must not promote to merged)")
 	}
-
-	// Worker2 must NOT be Integrated — it never actually resolved anything.
 	for _, ws := range state.Workers {
 		if ws.WorkerID == "worker2" && ws.Status == model.WorktreeStatusIntegrated {
-			t.Errorf("worker2 status = integrated (BAD: resolution commit never happened)")
+			t.Errorf("worker2 status = integrated (BAD: blank resolution must not commit)")
 		}
 	}
 }

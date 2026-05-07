@@ -31,17 +31,22 @@ type VerifyRunner interface {
 	Run(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error)
 }
 
-// skipVerifyRunner short-circuits verification with Passed=true. It is
-// reserved for the explicit "verify.enabled: false" rollback path guarded by
-// MAESTRO_ALLOW_VERIFY_SKIP=1. It MUST NOT be used as the production default.
+// skipVerifyRunner short-circuits verification with Passed=true. Wired
+// when `verify.enabled: false` in config.yaml — the supported "no
+// machine-checkable verify step" mode for projects that are not running
+// software-development workflows (research, documentation, note-taking,
+// …). The autonomous LLM Orchestration design treats opt-in to verify as
+// the operator's responsibility (`.maestro/verify.yaml` plus
+// `verify.enabled: true`); the runner therefore must accept the
+// disabled state as a normal configuration, not an emergency gate.
 //
 // Tests that need a deterministic pass result use NewFixedVerifyRunner
 // instead, which carries an explicit "this is a test fixture" intent.
 type skipVerifyRunner struct{}
 
 // NewSkipVerifyRunner returns a VerifyRunner that reports pass without
-// executing any commands. Reserved for the explicit emergency skip path; normal
-// production wiring uses NewRealVerifyRunner.
+// executing any commands. Used when verify.enabled=false; production
+// wiring with verify enabled uses NewRealVerifyRunner.
 func NewSkipVerifyRunner() VerifyRunner {
 	return skipVerifyRunner{}
 }

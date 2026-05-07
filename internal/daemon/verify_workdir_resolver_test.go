@@ -68,33 +68,27 @@ func TestWorktreeVerifyWorkdirResolver_RunOnIntegrationRequiresManager(t *testin
 	}
 }
 
-// TestWorktreeVerifyWorkdirResolver_WorkerPathDelegated は通常タスクが
-// WorktreeManager.GetWorkerPath に委譲され、その path を返すことを検証。
-// 実 manager を使うのは重いので、テスト用 manager fixture を使う。
-func TestWorktreeVerifyWorkdirResolver_WorkerPathDelegated(t *testing.T) {
-	// initTestGitRepo は git init 済みの project root を生成する。
-	// EnsureWorkerWorktree が main branch SHA を rev-parse するため必要。
+// TestWorktreeVerifyWorkdirResolver_WorkerTaskUsesProjectRoot pins the
+// new contract: a normal worker task verify runs at project root, NOT
+// the worker's git-worktree. The earlier "worker_worktree" path
+// failed for any project that uses a package-manager-managed cache
+// (`node_modules/`, `.gradle/`, …) because those caches are gitignored
+// and never appear in a fresh `git worktree` checkout — the package-
+// proxy regression hit `pnpm turbo` with `Command "turbo" not found`
+// (Report 2026-05-05 P0-3). Project root has the dependencies
+// installed; the worker's diff is invisible here on purpose, the
+// worker's own skill-driven self-check is the per-task signal.
+func TestWorktreeVerifyWorkdirResolver_WorkerTaskUsesProjectRoot(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	maestroDir := filepath.Join(projectRoot, ".maestro")
 
-	commandID := "cmd_verify_workdir_test"
-	workerID := "worker1"
-
-	if err := wm.EnsureWorkerWorktree(commandID, workerID); err != nil {
-		t.Fatalf("EnsureWorkerWorktree: %v", err)
-	}
-	want, err := wm.GetWorkerPath(commandID, workerID)
-	if err != nil {
-		t.Fatalf("GetWorkerPath: %v", err)
-	}
-
 	r := newWorktreeVerifyWorkdirResolver(wm, maestroDir)
-	got, err := r.ResolveVerifyWorkdir(&model.Task{ID: "t1", CommandID: commandID}, workerID)
+	got, err := r.ResolveVerifyWorkdir(&model.Task{ID: "t1", CommandID: "cmd_x"}, "worker1")
 	if err != nil {
 		t.Fatalf("ResolveVerifyWorkdir: %v", err)
 	}
-	if got != want {
-		t.Errorf("worker dir = %q, want %q (must match wm.GetWorkerPath so verify sees worker uncommitted changes)", got, want)
+	if got != projectRoot {
+		t.Errorf("normal worker task verify dir = %q, want project root %q", got, projectRoot)
 	}
 }

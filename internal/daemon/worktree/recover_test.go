@@ -305,16 +305,18 @@ func TestResumeMerge_IdempotentWithConflictWorkers(t *testing.T) {
 	}
 }
 
-// TestCommitResolvedWorkerChanges_SkipsSensitiveFiles verifies that
-// commitResolvedWorkerChanges does not stage sensitive files (.env, *.key, etc.)
-// unlike the old git add -A approach.
-func TestCommitResolvedWorkerChanges_SkipsSensitiveFiles(t *testing.T) {
+// TestCommitResolvedWorkerChanges_HonoursGitignore verifies that
+// commitResolvedWorkerChanges defers to .gitignore for filtering: with the
+// orchestrator-level sensitive-file list removed, repo-level .gitignore is
+// the canonical exclusion mechanism (worker output that should never be
+// committed must be matched by an ignore pattern).
+func TestCommitResolvedWorkerChanges_HonoursGitignore(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	defer func() { _ = cleanupAll(wm) }()
 
-	cmdID := "cmd_recover_sensitive"
+	cmdID := "cmd_recover_gitignored"
 	workerID := "worker1"
 	if err := createForCommand(wm, cmdID, []string{workerID}); err != nil {
 		t.Fatalf("createForCommand: %v", err)
@@ -325,19 +327,21 @@ func TestCommitResolvedWorkerChanges_SkipsSensitiveFiles(t *testing.T) {
 		t.Fatalf("getState: %v", err)
 	}
 
-	// Create normal and sensitive files in the worker worktree.
+	if err := os.WriteFile(filepath.Join(ws.Path, ".gitignore"),
+		[]byte("*.key\n*.secret\ncredentials.*\n.env\n.env.*\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	normalFile := filepath.Join(ws.Path, "resolved.go")
 	if err := os.WriteFile(normalFile, []byte("package resolved\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	sensitiveFiles := []string{".env", "server.key", "cert.pem", "credentials.json", "token.secret"}
-	for _, f := range sensitiveFiles {
-		if err := os.WriteFile(filepath.Join(ws.Path, f), []byte("SENSITIVE\n"), 0600); err != nil {
+	ignored := []string{".env", "server.key", "credentials.json", "token.secret"}
+	for _, f := range ignored {
+		if err := os.WriteFile(filepath.Join(ws.Path, f), []byte("ignored\n"), 0600); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// Set worker to conflict status (prerequisite for commitResolvedWorkerChanges).
 	wm.mu.Lock()
 	if err := wm.commitResolvedWorkerChanges(ws, cmdID); err != nil {
 		wm.mu.Unlock()
@@ -345,18 +349,16 @@ func TestCommitResolvedWorkerChanges_SkipsSensitiveFiles(t *testing.T) {
 	}
 	wm.mu.Unlock()
 
-	// Verify: check which files were committed.
 	committed, err := wm.gitOutputInDir(ws.Path, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
 	if err != nil {
 		t.Fatalf("diff-tree: %v", err)
 	}
-
 	if !strings.Contains(committed, "resolved.go") {
 		t.Errorf("resolved.go should be committed, got: %s", committed)
 	}
-	for _, f := range sensitiveFiles {
+	for _, f := range ignored {
 		if strings.Contains(committed, f) {
-			t.Errorf("sensitive file %q should NOT be committed, got: %s", f, committed)
+			t.Errorf("gitignored file %q should NOT be committed, got: %s", f, committed)
 		}
 	}
 }
@@ -587,16 +589,17 @@ func TestMergeResolvedWorker_CheckoutFail_ErrorContainsContext(t *testing.T) {
 	mergeErr := wm.mergeResolvedWorker(context.Background(), integrationPath, ws, commandID)
 	wm.mu.Unlock()
 
-	if mergeErr == nil {
-		t.Fatal("expected error from mergeResolvedWorker, got nil")
+	// Modify/delete conflicts now resolve via the `git rm` fallback: the
+	// worker's branch considers the file deleted, so deletion is the
+	// canonical resolution. Previously this case looped forever on a
+	// pathspec checkout failure; the fallback closes that loop.
+	if mergeErr != nil {
+		t.Fatalf("mergeResolvedWorker must succeed via git rm fallback for modify/delete conflict; got: %v", mergeErr)
 	}
 
-	errMsg := mergeErr.Error()
-	if !strings.Contains(errMsg, "checkout resolved file") {
-		t.Errorf("error should contain 'checkout resolved file', got: %s", errMsg)
-	}
-	if !strings.Contains(errMsg, "conflict.txt") {
-		t.Errorf("error should contain file name 'conflict.txt', got: %s", errMsg)
+	// Verify the file is gone from integration after the merge.
+	if _, err := os.Stat(filepath.Join(integrationPath, "conflict.txt")); !os.IsNotExist(err) {
+		t.Errorf("conflict.txt should be deleted from integration after merge, stat err=%v", err)
 	}
 }
 

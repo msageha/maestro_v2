@@ -22,5 +22,9 @@ func setupTmuxSession(cmd, maestroDir string, cfg model.Config) error {
 		return fmt.Errorf("maestro %s: invalid project name: %w", cmd, err)
 	}
 	tmux.SetSessionName(tmux.BuildMaestroSessionName(cfg.Project.Name, maestroDir))
+	// Use a per-instance tmux socket. Sharing the default socket lets
+	// concurrent maestro instances race on SESSION_LOST and
+	// autoAcceptTrustDialog (Report 2026-05-06 P0).
+	tmux.SetTmuxSocket(tmux.BuildMaestroSocketName(cfg.Project.Name, maestroDir))
 	return nil
 }

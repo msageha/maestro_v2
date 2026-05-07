@@ -37,28 +37,79 @@ func cleanupWithLock(fl *lock.FileLock, pidPath string, socketPaths []string) er
 	return nil
 }
 
-// startDaemon starts the maestro daemon as a background process.
-func startDaemon() error {
+// daemonStartupLogPath returns the path to the daemon-startup capture log
+// inside maestroDir. See startDaemon for why this file exists.
+func daemonStartupLogPath(maestroDir string) string {
+	return filepath.Join(maestroDir, "logs", "daemon_startup.log")
+}
+
+// startDaemon starts the maestro daemon as a background process. Child
+// stdout/stderr are appended to <maestroDir>/logs/daemon_startup.log so
+// early-return errors from runDaemon (load config, create daemon, wire
+// reader, etc.) — which fire before the structured logger is wired —
+// stay observable; without this, `maestro up` could only print the generic
+// "daemon not ready: ping timeout" (Report 2026-05-05). Append mode;
+// rotation is the operator's responsibility.
+func startDaemon(maestroDir string) error {
 	execPath, err := os.Executable()
 	if err != nil {
 		execPath = "maestro" // fallback to PATH lookup
 	}
 	cmd := exec.Command(execPath, "daemon") //nolint:gosec // execPath is the current binary path from os.Executable
-	cmd.Stdout = nil
-	cmd.Stderr = nil
+	logPath := daemonStartupLogPath(maestroDir)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o750); err != nil {
+		return fmt.Errorf("ensure logs dir: %w", err)
+	}
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // logPath is constructed from maestroDir, an internal-controlled path
+	if err != nil {
+		return fmt.Errorf("open daemon startup log %s: %w", logPath, err)
+	}
+	// Mark each `maestro up` invocation with a separator so multiple startups
+	// in the same workspace are easy to walk through. Best-effort write —
+	// failure here would only lose visual padding, not the actual log
+	// content, and the daemon child still inherits a working file handle.
+	_, _ = fmt.Fprintf(logFile, "\n--- daemon spawn at %s (pid will follow) ---\n", time.Now().UTC().Format(time.RFC3339))
+	cmd.Stdout = logFile
+	cmd.Stderr = logFile
 	// Create a new session so the daemon survives terminal closure (no SIGHUP).
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
+		_ = logFile.Close()
 		return fmt.Errorf("start daemon: %w", err)
 	}
+	_, _ = fmt.Fprintf(logFile, "spawned pid=%d\n", cmd.Process.Pid)
 	// Reap the child process in the background. cmd.Wait() returns when the
 	// daemon process exits, so this goroutine is guaranteed to terminate.
+	// The fd stays open until Wait returns so any final stderr flush from
+	// the child still lands in the file.
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			slog.Warn("daemon process exited with error", "error", err)
+		err := cmd.Wait()
+		_ = logFile.Close()
+		if err != nil {
+			slog.Warn("daemon process exited with error",
+				"error", err,
+				"startup_log", logPath,
+				"hint", "tail the startup log for the real cause; see daemonStartupTail() output that maestro up prints on ping timeout")
 		}
 	}()
 	return nil
+}
+
+// daemonStartupTail returns the last `tailBytes` of the daemon startup
+// log so callers (typically `maestro up`'s ping-timeout error path) can
+// print the actual cause of a failed startup instead of the generic
+// "daemon did not respond" message. Returns "" on any read failure —
+// quiet degradation since the log is purely diagnostic.
+func daemonStartupTail(maestroDir string, tailBytes int) string {
+	logPath := daemonStartupLogPath(maestroDir)
+	data, err := os.ReadFile(logPath) //nolint:gosec // logPath is derived from maestroDir; internal-controlled
+	if err != nil {
+		return ""
+	}
+	if tailBytes <= 0 || len(data) <= tailBytes {
+		return strings.TrimSpace(string(data))
+	}
+	return "...\n" + strings.TrimSpace(string(data[len(data)-tailBytes:]))
 }
 
 // stopDaemon stops the daemon via UDS shutdown, then verifies it exited using

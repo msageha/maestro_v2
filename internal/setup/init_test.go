@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -508,15 +509,92 @@ func TestRun_GitTracksGitignoreIdempotent(t *testing.T) {
 	}
 }
 
-func TestRun_RejectsExistingDir(t *testing.T) {
+// TestRun_RepairsExistingDir verifies the partial-repair contract: an
+// existing `.maestro/` does not error; missing template files are filled
+// in while user-customisable files (config.yaml etc.) are left alone.
+func TestRun_RepairsExistingDir(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")
-	os.Mkdir(projectDir, 0755)
-	os.Mkdir(filepath.Join(projectDir, ".maestro"), 0755)
+	if err := os.Mkdir(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(projectDir, ".maestro"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
-	err := Run(projectDir, "")
-	if err == nil {
-		t.Fatal("expected error for existing .maestro/")
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run repair mode failed: %v", err)
+	}
+
+	// Required scaffolding must now exist.
+	for _, p := range []string{
+		filepath.Join(".maestro", "maestro.md"),
+		filepath.Join(".maestro", "config.yaml"),
+		filepath.Join(".maestro", "queue", "planner.yaml"),
+		filepath.Join(".maestro", "instructions", "orchestrator.md"),
+	} {
+		if _, err := os.Stat(filepath.Join(projectDir, p)); err != nil {
+			t.Errorf("repair did not create %s: %v", p, err)
+		}
+	}
+}
+
+// TestRun_RepairPreservesUserManagedFiles pins the split contract:
+//
+//   - User-managed artefacts (config.yaml, queue/, results/, state/) survive
+//     repair so an operator's customisations are not blown away.
+//   - Versioned template artefacts (maestro.md, dashboard.md, instructions/,
+//     skills/, persona/) are always rewritten so a previous-version copy
+//     cannot drift the agent contract — this is the regression class behind
+//     the 2026-05-05 commit_policy stale-instruction report.
+func TestRun_RepairPreservesUserManagedFiles(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	if err := os.Mkdir(projectDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run (initial): %v", err)
+	}
+
+	// Customise a user-managed artefact (config.yaml) and a versioned
+	// template artefact (maestro.md). The repair run should preserve the
+	// former and refresh the latter.
+	cfgPath := filepath.Join(projectDir, ".maestro", "config.yaml")
+	originalCfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	customCfg := append(originalCfg, []byte("\n# user note\n")...)
+	if err := os.WriteFile(cfgPath, customCfg, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	customisedTemplate := []byte("# tampered template\n")
+	mdPath := filepath.Join(projectDir, ".maestro", "maestro.md")
+	if err := os.WriteFile(mdPath, customisedTemplate, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run (repair): %v", err)
+	}
+
+	gotCfg, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotCfg) != string(customCfg) {
+		t.Errorf("repair overwrote user-managed config.yaml")
+	}
+
+	gotMD, err := os.ReadFile(mdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(gotMD) == string(customisedTemplate) {
+		t.Errorf("repair did not refresh versioned template maestro.md (still tampered content)")
 	}
 }
 
@@ -686,6 +764,48 @@ func TestRun_ContinuousMaxIterations(t *testing.T) {
 	}
 	if continuous.MaxIterations <= 0 {
 		t.Errorf("continuous max_iterations should be positive: got %d", continuous.MaxIterations)
+	}
+}
+
+// TestRun_RemovesLegacyClaudeVerifyScript pins post-2026-05-06 round-3 P2:
+// `maestro setup` (including repair) deletes any pre-existing
+// `.claude/verify.sh` left over from older Maestro versions that
+// distributed a Stop-hook template. The script is the source of the
+// "Stop hook error" output that the user sees on every pane turn.
+func TestRun_RemovesLegacyClaudeVerifyScript(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	if err := os.Mkdir(projectDir, 0755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	claudeDir := filepath.Join(projectDir, ".claude")
+	if err := os.Mkdir(claudeDir, 0755); err != nil {
+		t.Fatalf("mkdir .claude: %v", err)
+	}
+	verifyPath := filepath.Join(claudeDir, "verify.sh")
+	if err := os.WriteFile(verifyPath, []byte("#!/bin/bash\nturbo run lint test\n"), 0755); err != nil {
+		t.Fatalf("write verify.sh: %v", err)
+	}
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if _, err := os.Stat(verifyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf(".claude/verify.sh should be removed by setup migration, got stat err=%v", err)
+	}
+}
+
+// TestRun_VerifyScriptRemovalIsBestEffort pins that absence of
+// `.claude/verify.sh` (clean install) is not an error.
+func TestRun_VerifyScriptRemovalIsBestEffort(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	if err := os.Mkdir(projectDir, 0755); err != nil {
+		t.Fatalf("mkdir project: %v", err)
+	}
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run on project without legacy verify.sh: %v", err)
 	}
 }
 

@@ -206,7 +206,34 @@ func (h *Plan) Handle(req *uds.Request) *uds.Response {
 	if isDryRun {
 		h.logInfof("plan_%s_dry_run success", params.Operation)
 	} else {
-		h.logInfof("plan_%s success", params.Operation)
+		// "success" here means the plan API call succeeded — not that
+		// the command itself was completed successfully. For
+		// `plan complete`, the underlying command may have transitioned
+		// to cancelled (auto-cancelled paused_for_replan) or failed
+		// (verify failure), and emitting the same `plan_complete
+		// success` log key in those cases hides the real outcome from
+		// operators scanning daemon.log (Report 2026-05-06 P0 — a
+		// content-filter cancel surfaced as `plan_complete success`).
+		// Status-aware variants keep the audit trail honest.
+		if params.Operation == "complete" && len(result) > 0 {
+			var cr plan.CompleteResult
+			if json.Unmarshal(result, &cr) == nil {
+				switch cr.Status {
+				case string(model.PlanStatusCompleted):
+					h.logInfof("plan_complete completed command=%s", cr.CommandID)
+				case string(model.PlanStatusCancelled):
+					h.logWarnf("plan_complete cancelled command=%s (some required tasks were auto-cancelled — check state.cancelled_reasons for details)", cr.CommandID)
+				case string(model.PlanStatusFailed):
+					h.logWarnf("plan_complete failed command=%s (one or more required tasks landed at a failure terminal — check state.task_states for details)", cr.CommandID)
+				default:
+					h.logInfof("plan_complete delivered command=%s status=%s", cr.CommandID, cr.Status)
+				}
+			} else {
+				h.logInfof("plan_%s success", params.Operation)
+			}
+		} else {
+			h.logInfof("plan_%s success", params.Operation)
+		}
 	}
 	if params.Operation != "rebuild" && !isDryRun {
 		h.publishQueue("plan_" + params.Operation)

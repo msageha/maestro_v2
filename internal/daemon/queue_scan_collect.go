@@ -91,7 +91,9 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 // collectPendingTaskDispatches acquires leases and records dispatch items (no tmux).
 // inFlightPaths contains expected_paths of all currently in-progress tasks across
 // all queues, used to prevent dispatching tasks with overlapping file paths.
-func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, work *deferredWork) bool {
+// allTaskQueues is the full task queue map (used by the RunOnIntegration
+// pre-merge gate to look up dep tasks' owning workers).
+func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, allTaskQueues map[string]*taskQueueEntry, work *deferredWork) bool {
 	// Skip dispatch when tmux session is lost — delivery would fail.
 	if qh.sessionLost != nil && qh.sessionLost.Load() {
 		qh.log(LogLevelDebug, "session_lost_guard: skipping task dispatch for worker=%s", workerID)
@@ -100,6 +102,20 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 
 	dirty := false
 	sorted := qh.dispatcher.SortPendingTasks(tq.Queue.Tasks)
+
+	// Per-call caches that amortise per-task queue walks across the loop.
+	// Both maps are local to this invocation, so no cross-goroutine sync
+	// is required.
+	//   - commandOwnersCache: {commandID -> {taskID -> workerID}}, lazily
+	//     populated by depWorkersAwaitingIntegrationMerge so each command
+	//     walks the queues once instead of per-task.
+	//   - workerPurposesCache: {workerID -> purpose}, lazy single build
+	//     for the entire dispatch loop. The first arg of buildWorkerPurposes
+	//     is unused, so the result is the same regardless of which task
+	//     triggered the build.
+	commandOwnersCache := make(map[string]map[string]string)
+	var workerPurposesCache map[string]string
+	workerPurposesBuilt := false
 
 	for _, idx := range sorted {
 		task := &tq.Queue.Tasks[idx]
@@ -119,11 +135,12 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			}
 		}
 
-		// Fallback: check if this worker is allowed in current mode
-		if qh.fallbackMgr != nil && !qh.fallbackMgr.IsWorkerAllowed(workerID) {
-			qh.log(LogLevelDebug, "fallback_worker_blocked worker=%s task=%s mode=%s", workerID, task.ID, qh.fallbackMgr.Mode())
-			break
-		}
+		// (Removed) Fallback degraded-mode gate: blacklisting workers on
+		// consecutive failures created a deadlock — a blacklisted worker
+		// can never reach `healthy` because its dispatch is suppressed,
+		// so recovery never fires. Autonomous LLM Orchestration must
+		// surface failures via per-task retry / repair / circuit
+		// breakers, never by silencing whole workers.
 
 		// Gating order rationale:
 		// Cheap, deterministic checks (dependency, system-commit readiness,
@@ -141,6 +158,46 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			continue
 		}
 
+		// Cross-worker dependency pre-merge gate. A dep produced by worker B
+		// is only visible to worker A (A != B) after B's commits reach
+		// integration AND A's worktree is refreshed. depWorkersAwaitingIntegrationMerge
+		// returns the unmerged deps; same-worker deps and already-integrated
+		// deps are skipped. Same-phase cross-worker deps cannot wait for the
+		// phase merge (the phase merge requires every required task terminal),
+		// so we proactively merge the dep workers and defer dispatch to a later
+		// scan once the merge result is observable. Restricting this to the
+		// RunOnIntegration scope previously caused silent staleness for regular
+		// cross-worker deps (Report 2026-05-03 issue-2).
+		if qh.worktreeManager != nil && qh.worktreeManager.HasWorktrees(task.CommandID) {
+			// RunOnIntegration / RunOnMain tasks dispatch against the
+			// integration worktree (or main directly), so every dep —
+			// including same-worker ones — must have already landed on
+			// integration. includeSameWorker=true flips the gate to enforce
+			// that. Report 2026-05-04 pinned a leak where integration
+			// verify ran against a stale tree because a same-worker dep had
+			// committed in the worker worktree but not yet merged to
+			// integration.
+			includeSameWorker := task.RunOnIntegration || task.RunOnMain
+			pending := qh.depWorkersAwaitingIntegrationMerge(task, allTaskQueues, workerID, includeSameWorker, commandOwnersCache)
+			if len(pending) > 0 {
+				qh.log(LogLevelInfo,
+					"task_pre_merge_gate task=%s worker=%s run_on_integration=%v run_on_main=%v include_same_worker=%v pending_dep_workers=%v "+
+						"(queuing focused commit+merge before dispatch — cross-worker dep gate)",
+					task.ID, workerID, task.RunOnIntegration, task.RunOnMain, includeSameWorker, pending)
+				if !workerPurposesBuilt {
+					workerPurposesCache = buildWorkerPurposes(task.CommandID, allTaskQueues)
+					workerPurposesBuilt = true
+				}
+				work.runOnIntegrationPreMerges = append(work.runOnIntegrationPreMerges, runOnIntegrationPreMergeItem{
+					CommandID:      task.CommandID,
+					BlockedTaskID:  task.ID,
+					DepWorkerIDs:   pending,
+					WorkerPurposes: workerPurposesCache,
+				})
+				continue
+			}
+		}
+
 		if isSysCommit, ready, sErr := qh.dependencyResolver.IsSystemCommitReady(task.CommandID, task.ID); sErr != nil {
 			qh.log(LogLevelWarn, "system_commit_check_error task=%s error=%v", task.ID, sErr)
 			continue
@@ -150,7 +207,14 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		}
 
 		if err := qh.markTaskReady(task); err != nil {
-			qh.log(LogLevelWarn, "task_ready_state_update_failed task=%s command=%s error=%v",
+			level := LogLevelWarn
+			if isStateTaskNotFoundError(err) {
+				// Already demoted to nil inside advanceTaskLifecycle, but
+				// keep the level guard here in case a future caller
+				// surfaces the same shape via a different path.
+				level = LogLevelDebug
+			}
+			qh.log(level, "task_ready_state_update_failed task=%s command=%s error=%v",
 				task.ID, task.CommandID, err)
 			continue
 		}
@@ -258,6 +322,149 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 	}
 }
 
+// depWorkersAwaitingIntegrationMerge returns the unique set of dep workers
+// whose worktree changes have not yet been merged into integration. Used
+// by the cross-worker / RunOnIntegration / RunOnMain pre-merge gate so
+// the orchestrator can proactively merge them before dispatching a task
+// that reads from the integration tree.
+//
+// includeSameWorker controls the same-worker shortcut:
+//   - false: deps owned by dispatchingWorkerID are skipped, because the
+//     dispatching task runs in its own worker worktree where same-worker
+//     prior commits are already visible without an integration round-trip.
+//   - true: deps owned by dispatchingWorkerID are also probed and queued
+//     when behind integration. The dispatching task runs against the
+//     integration tree (RunOnIntegration / RunOnMain), so even
+//     "same-worker" deps must have landed on integration. Report of
+//     2026-05-04 pinned the silent-staleness regression where worker1's
+//     own dependency repair was committed in the worker worktree but
+//     not merged to integration before worker1's own integration verify
+//     dispatched.
+//
+// The truth source is the live git tree, not the cached worker.Status:
+// Status is set to `integrated` exactly once (after a successful phase
+// merge) and is NOT reverted when the same worker subsequently produces
+// new uncommitted edits in a later phase. A status-only check therefore
+// silently misses the most common stale-integration scenario. We instead
+// ask IsWorkerAheadOrDirty, which inspects `git status --porcelain` and
+// HEAD/merge-base directly.
+//
+// Returns nil when:
+//   - the task has no BlockedBy entries
+//   - every applicable dep worker is in lockstep with integration (no
+//     dirt, HEAD matches), or in conflict/resolving (resume_merge owns
+//     recovery)
+// commandOwnersCache may be passed by callers that invoke this function in
+// a loop over many tasks of the same command. When non-nil, the cache is
+// populated lazily with `commandID → (taskID → ownerWorkerID)`, so the
+// per-command queue-walk in buildAllCommandTaskOwners is amortised across
+// all tasks instead of being repeated per-task. Pass nil to fall back to
+// the simple per-call buildDepTaskWorkerMap path.
+func (qh *QueueHandler) depWorkersAwaitingIntegrationMerge(task *model.Task, allTaskQueues map[string]*taskQueueEntry, dispatchingWorkerID string, includeSameWorker bool, commandOwnersCache map[string]map[string]string) []string {
+	if len(task.BlockedBy) == 0 || qh.worktreeManager == nil {
+		return nil
+	}
+	var depTaskOwners map[string]string
+	if commandOwnersCache != nil {
+		allOwners, hit := commandOwnersCache[task.CommandID]
+		if !hit {
+			allOwners = buildAllCommandTaskOwners(task.CommandID, allTaskQueues)
+			commandOwnersCache[task.CommandID] = allOwners
+		}
+		depTaskOwners = make(map[string]string, len(task.BlockedBy))
+		for _, id := range task.BlockedBy {
+			if w, ok := allOwners[id]; ok {
+				depTaskOwners[id] = w
+			}
+		}
+	} else {
+		depTaskOwners = buildDepTaskWorkerMap(task.CommandID, task.BlockedBy, allTaskQueues)
+	}
+	if len(depTaskOwners) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var pending []string
+	for _, depWorker := range depTaskOwners {
+		if depWorker == "" {
+			continue
+		}
+		if depWorker == dispatchingWorkerID && !includeSameWorker {
+			continue
+		}
+		if _, dup := seen[depWorker]; dup {
+			continue
+		}
+		seen[depWorker] = struct{}{}
+		needsMerge, err := qh.worktreeManager.IsWorkerAheadOrDirty(task.CommandID, depWorker)
+		if err != nil {
+			// IsWorkerAheadOrDirty returns true on probe failure so the
+			// gate fails closed — log but treat as pending.
+			qh.log(LogLevelWarn,
+				"pre_merge_gate_probe_failed task=%s dep_worker=%s error=%v",
+				task.ID, depWorker, err)
+		}
+		if needsMerge {
+			pending = append(pending, depWorker)
+		}
+	}
+	return pending
+}
+
+// buildAllCommandTaskOwners returns {taskID -> ownerWorkerID} for every
+// task with the given commandID across all queue files. Suitable for
+// caching across multiple BlockedBy lookups within the same command —
+// callers in a per-task loop reuse this map instead of re-walking the
+// queues for every task.
+func buildAllCommandTaskOwners(commandID string, taskQueues map[string]*taskQueueEntry) map[string]string {
+	owners := make(map[string]string)
+	for queueFile, tq := range taskQueues {
+		if tq == nil {
+			continue
+		}
+		workerID := workerIDFromPath(queueFile)
+		for i := range tq.Queue.Tasks {
+			t := &tq.Queue.Tasks[i]
+			if t.CommandID != commandID {
+				continue
+			}
+			owners[t.ID] = workerID
+		}
+	}
+	return owners
+}
+
+// buildDepTaskWorkerMap returns a {depTaskID -> ownerWorkerID} map by
+// scanning the queue files for each dep task ID. Tasks live in worker-owned
+// queue files (`queue/worker1.yaml`, etc.); this scan is the canonical way
+// to learn which worker produced a dep task.
+func buildDepTaskWorkerMap(commandID string, depTaskIDs []string, taskQueues map[string]*taskQueueEntry) map[string]string {
+	if len(depTaskIDs) == 0 {
+		return nil
+	}
+	want := make(map[string]struct{}, len(depTaskIDs))
+	for _, id := range depTaskIDs {
+		want[id] = struct{}{}
+	}
+	owners := make(map[string]string, len(depTaskIDs))
+	for queueFile, tq := range taskQueues {
+		if tq == nil {
+			continue
+		}
+		workerID := workerIDFromPath(queueFile)
+		for i := range tq.Queue.Tasks {
+			t := &tq.Queue.Tasks[i]
+			if t.CommandID != commandID {
+				continue
+			}
+			if _, ok := want[t.ID]; ok {
+				owners[t.ID] = workerID
+			}
+		}
+	}
+	return owners
+}
+
 // collectExpiredTaskBusyChecks records busy check items for expired task leases.
 // Malformed entries (lease_expires_at == nil) are released immediately since
 // Phase C fencing would always reject them as stale.
@@ -347,6 +554,32 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 		}
 		if !maxTimeout {
 			switch resolvePaneVerdict() {
+			case paneactivity.VerdictTerminalError:
+				// Pane is showing a runtime terminal error frame
+				// (Claude API 4xx, content filter, invalid_request_error,
+				// …). The LLM cannot self-recover, so extending the lease
+				// is wasted wall-clock — fail immediately and respawn the
+				// worker pane to clear the stale TUI. Without this fast
+				// path the pane stayed "active" for max_in_progress_min
+				// (~30 min) before the same task was re-dispatched onto
+				// the same stale TUI (Report 2026-05-06 P0-2).
+				qh.log(LogLevelWarn,
+					"task_failed_terminal_error id=%s worker=%s epoch=%d elapsed=%s "+
+						"(pane shows runtime terminal error; failing task immediately and respawning pane)",
+					task.ID, agentID, task.LeaseEpoch, elapsedSinceDispatch)
+				if qh.failTaskTerminalError(task, queueFile, agentID) {
+					if recErr := qh.recoverWorkerPaneAfterBlocked(workerIDFromPath(queueFile)); recErr != nil {
+						qh.log(LogLevelWarn,
+							"terminal_error_recovery_respawn_failed worker=%s error=%v "+
+								"(task already failed; next dispatch will still launch via standard pane init)",
+							workerIDFromPath(queueFile), recErr)
+					}
+					*dirty = true
+					continue
+				}
+				// failTaskTerminalError returned false → state machine
+				// drift; fall through to the usual lease-handling path
+				// instead of stalling on this entry.
 			case paneactivity.VerdictActive:
 				err := qh.leaseManager.ExtendTaskLease(task)
 				if err == nil {
@@ -376,6 +609,63 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 				}
 				qh.log(LogLevelWarn,
 					"lease_extend_pane_active_failed type=task id=%s worker=%s error=%v "+
+						"(falling back to busy-check path)",
+					task.ID, agentID, err)
+			case paneactivity.VerdictBlocked:
+				// Pane is alive (rendering an approval/confirmation prompt)
+				// but NOT making forward progress. The interactive prompt
+				// requires operator action; an autonomous LLM Orchestration
+				// pipeline cannot proceed without it. Two-stage handling:
+				//
+				//   1. Within blockedPaneFailAfter the lease is extended so
+				//      the in-flight Bash invocation does not race with a
+				//      new dispatch epoch (would surface as FENCING_REJECT
+				//      once the operator finally approves). MarkProgress is
+				//      NOT called — progress_timeout keeps counting.
+				//   2. Once the consecutive-blocked run exceeds the
+				//      threshold the task is force-failed and Planner is
+				//      told via a synthetic failed result. This is much
+				//      tighter than circuit_breaker.progress_timeout (30 min
+				//      default) so a Worker that hits a runtime confirmation
+				//      prompt on a runtime-protected path edit does not
+				//      deadlock the whole iteration.
+				//
+				// The proper recovery for a blocked prompt is to configure
+				// auto-approval in the operator's ~/.claude / codex /
+				// gemini settings; this timeout is a back-stop, not the
+				// primary mitigation.
+				blockedFor := time.Duration(0)
+				if qh.paneActivity != nil {
+					if since, ok := qh.paneActivity.BlockedSince(agentID); ok {
+						blockedFor = qh.clock.Now().Sub(since)
+					}
+				}
+				if threshold := blockedPaneFailAfter(); threshold > 0 && blockedFor >= threshold {
+					qh.log(LogLevelWarn,
+						"task_failed_blocked_pane_timeout id=%s worker=%s epoch=%d blocked_for=%s threshold=%s "+
+							"(pane wedged on a confirmation prompt past blocked-pane timeout; force-failing task to unblock Planner)",
+						task.ID, agentID, task.LeaseEpoch, blockedFor.Round(time.Second), threshold)
+					if qh.failTaskBlockedPane(task, queueFile, agentID, blockedFor) {
+						*dirty = true
+						continue
+					}
+					// failTaskBlockedPane returned false → invalid transition or
+					// state machine drift. Fall through to lease extension so
+					// the scanner does not get stuck on the entry.
+				}
+				err := qh.leaseManager.ExtendTaskLease(task)
+				if err == nil {
+					qh.log(LogLevelWarn,
+						"lease_extend_pane_blocked type=task id=%s worker=%s epoch=%d elapsed=%s blocked_for=%s threshold=%s "+
+							"(pane wedged on confirmation prompt; lease extended; will force-fail at threshold)",
+						task.ID, agentID, task.LeaseEpoch, elapsedSinceDispatch,
+						blockedFor.Round(time.Second), blockedPaneFailAfter())
+					qh.scanExecutor.scanCounters.LeaseExtensions++
+					*dirty = true
+					continue
+				}
+				qh.log(LogLevelWarn,
+					"lease_extend_pane_blocked_failed type=task id=%s worker=%s error=%v "+
 						"(falling back to busy-check path)",
 					task.ID, agentID, err)
 			case paneactivity.VerdictUncertain:
@@ -530,7 +820,53 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 // intentionally permissive.
 func (qh *QueueHandler) commandHasActivePlannerWork(taskQueues map[string]*taskQueueEntry, commandID string) bool {
 	if commandHasActiveWorkerTask(taskQueues, commandID) {
+		qh.log(LogLevelDebug,
+			"command_lease_max_timeout_extended id=%s reason=worker_task_active",
+			commandID)
 		return true
+	}
+	// Authoritative: as long as state.plan_status is non-terminal, the
+	// Planner has not yet called `plan complete`, so the command is
+	// genuinely "in flight" regardless of whether the worktree state
+	// file still exists. Reported 2026-05-04 as a finalize race: at
+	// 21:06:33 the integration was published and the worktree was
+	// cleaned up, at 21:06:41 (8 seconds later, max=1m) the lease scanner
+	// observed zero workers + zero phases-with-state-file (cleanup wiped
+	// it) → released as max_timeout → 21:06:42 epoch=2 dispatch fired
+	// against a command that was sitting in the seconds before
+	// plan_complete arrived from the Planner. Anchoring on
+	// state.PlanStatus closes the race because Plan complete is the
+	// terminal write Planner makes for the command; if PlanStatus is
+	// still pending/sealed/etc, the Planner is by definition still
+	// owed plan_complete and re-dispatch would be premature.
+	if cs, ok := qh.loadCommandStateForDerivation(commandID); ok && cs != nil {
+		if cs.PlanStatus != "" && !model.IsPlanTerminal(cs.PlanStatus) {
+			qh.log(LogLevelDebug,
+				"command_lease_max_timeout_extended id=%s reason=plan_status_non_terminal plan_status=%s",
+				commandID, cs.PlanStatus)
+			return true
+		}
+	}
+	// Worktree finalization is real activity even after every phase has
+	// reached a terminal Planner status. The state.PlanStatus check above
+	// catches the common case (Planner hasn't called plan_complete yet);
+	// this branch covers the inverse race where state.PlanStatus has
+	// already been flipped to a terminal value but the integration
+	// pipeline (merge → publish → cleanup) is still running its
+	// fire-and-forget tail.
+	if qh.worktreeManager != nil && qh.worktreeManager.HasWorktrees(commandID) {
+		if cmdState, err := qh.worktreeManager.GetCommandState(commandID); err == nil && cmdState != nil {
+			switch cmdState.Integration.Status {
+			case model.IntegrationStatusMerging,
+				model.IntegrationStatusMerged,
+				model.IntegrationStatusPublishing,
+				model.IntegrationStatusPartialMerge:
+				qh.log(LogLevelDebug,
+					"command_lease_max_timeout_extended id=%s reason=integration_finalizing integration_status=%s",
+					commandID, cmdState.Integration.Status)
+				return true
+			}
+		}
 	}
 	if !qh.dependencyResolver.HasStateReader() {
 		return false
@@ -547,6 +883,9 @@ func (qh *QueueHandler) commandHasActivePlannerWork(taskQueues map[string]*taskQ
 	for _, p := range phases {
 		switch p.Status {
 		case model.PhaseStatusPending, model.PhaseStatusAwaitingFill, model.PhaseStatusFilling, model.PhaseStatusActive:
+			qh.log(LogLevelDebug,
+				"command_lease_max_timeout_extended id=%s reason=phase_active phase=%s status=%s",
+				commandID, p.ID, p.Status)
 			return true
 		}
 	}

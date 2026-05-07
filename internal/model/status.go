@@ -329,7 +329,7 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 
 // Worktree status transitions:
 //
-//	created → active (sync), committed (commit without sync), conflict, failed, published (bulk publish), cleanup_done/cleanup_failed (cleanup)
+//	created → active (sync), committed (commit without sync), integrated (no-op merge), conflict, failed, published (bulk publish), cleanup_done/cleanup_failed (cleanup)
 //	active → committed, conflict, failed, published, cleanup_done/cleanup_failed
 //	committed → active (sync back), integrated (merge success), conflict (merge conflict), failed, published, cleanup_done/cleanup_failed
 //	integrated → active (cross-phase sync), published, conflict, failed, cleanup_done/cleanup_failed
@@ -342,6 +342,7 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 	WorktreeStatusCreated: {
 		WorktreeStatusActive:        true,
 		WorktreeStatusCommitted:     true,
+		WorktreeStatusIntegrated:    true, // no-op merge (worker never had any commits)
 		WorktreeStatusConflict:      true,
 		WorktreeStatusFailed:        true,
 		WorktreeStatusPublished:     true,

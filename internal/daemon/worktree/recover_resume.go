@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -555,18 +556,12 @@ func (wm *Manager) commitResolvedWorkerChanges(ws *model.WorktreeState, commandI
 		return nil // nothing to commit
 	}
 
-	// Stage tracked file modifications/deletions (safe: never stages untracked files).
-	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
-		return fmt.Errorf("git add -u in %s: %w", ws.Path, err)
-	}
-	// Unstage any sensitive tracked files that were staged by git add -u.
-	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
-		wm.Log(core.LogLevelWarn, "resolve_unstage_sensitive command=%s worker=%s error=%v",
-			commandID, ws.WorkerID, err)
-	}
-	// Stage untracked files that pass .gitignore and sensitive file filters.
-	if err := wm.stageNewFiles(ws.Path); err != nil {
-		return fmt.Errorf("stage new files in %s: %w", ws.Path, err)
+	// Capture every dirty change — modifications, untracked, deletions —
+	// in a single pass. Sensitive-path filtering belongs to the worker's
+	// environment (~/.claude rules, repo .gitignore), not this gate.
+	// OS-level un-stat-able files trigger the bounded fallback below.
+	if err := wm.gitAddAllWithUnstattableFallback(ws.Path, commandID, ws.WorkerID); err != nil {
+		return fmt.Errorf("git add -A in %s: %w", ws.Path, err)
 	}
 	msg := fmt.Sprintf("[maestro] conflict resolution for %s", ws.WorkerID)
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", msg); err != nil {
@@ -702,20 +697,67 @@ func (wm *Manager) abortAndReturnMergeError(
 
 // checkoutResolvedFilesFromBranch runs `git checkout <branch> -- <file>` for
 // every conflict file so the conflicting hunks are replaced with the
-// worker's resolved version (working tree + index). On the first checkout
-// failure it aborts the merge and returns the joined error.
+// worker's resolved version (working tree + index).
+//
+// Fallback for "pathspec did not match" errors: when the file isn't tracked
+// on the worker's branch the worker effectively considers it deleted (or
+// it never existed there). The previous implementation aborted the merge
+// in that case, which loops forever for build artefacts that one worker
+// generated and another didn't (the same file appears as add/add conflict
+// on the integration side but doesn't exist on either branch's earlier
+// commit). We instead accept the deletion via `git rm` so the merge can
+// proceed; if that also fails (the file is purely untracked in the index)
+// we remove it from the worktree directly. Only the `pathspec did not
+// match` class of errors triggers the fallback — any other checkout
+// failure still aborts.
 func (wm *Manager) checkoutResolvedFilesFromBranch(
 	integrationPath, preMergeHEAD, commandID string,
 	ws *model.WorktreeState,
 	conflictFiles []string,
 ) error {
 	for _, cf := range conflictFiles {
-		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", ws.Branch, "--", cf); checkoutErr != nil {
+		checkoutErr := wm.gitRunInDir(integrationPath, "checkout", ws.Branch, "--", cf)
+		if checkoutErr == nil {
+			continue
+		}
+		if !isPathspecMissingError(checkoutErr) {
 			wm.Log(core.LogLevelWarn, "resolve_checkout_failed command=%s worker=%s file=%s error=%v",
 				commandID, ws.WorkerID, cf, checkoutErr)
 			return wm.abortAndReturnMergeError(integrationPath, preMergeHEAD, commandID, ws.WorkerID,
 				fmt.Errorf("checkout resolved file %s from %s: %w", cf, ws.Branch, checkoutErr))
 		}
+		if rmErr := wm.gitRunInDir(integrationPath, "rm", "-f", "--", cf); rmErr == nil {
+			wm.Log(core.LogLevelInfo,
+				"resolve_checkout_to_rm_fallback command=%s worker=%s file=%s "+
+					"(file absent on worker branch; accepting delete to clear conflict)",
+				commandID, ws.WorkerID, cf)
+			continue
+		}
+		// Last resort: remove from the working tree directly.
+		fsPath := filepath.Join(integrationPath, cf)
+		if removeErr := os.RemoveAll(fsPath); removeErr == nil {
+			wm.Log(core.LogLevelInfo,
+				"resolve_checkout_to_filesystem_remove command=%s worker=%s file=%s",
+				commandID, ws.WorkerID, cf)
+			continue
+		}
+		wm.Log(core.LogLevelWarn, "resolve_checkout_failed_after_fallback command=%s worker=%s file=%s error=%v",
+			commandID, ws.WorkerID, cf, checkoutErr)
+		return wm.abortAndReturnMergeError(integrationPath, preMergeHEAD, commandID, ws.WorkerID,
+			fmt.Errorf("checkout resolved file %s from %s (fallback rm/remove also failed): %w", cf, ws.Branch, checkoutErr))
 	}
 	return nil
+}
+
+// isPathspecMissingError detects the canonical "git checkout / git rm: error:
+// pathspec ... did not match any file(s) known to git" failure mode emitted
+// when the named path is not present in the source ref's tree. We pattern-
+// match the message because git does not expose a stable error code for it.
+func isPathspecMissingError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "did not match any file") ||
+		strings.Contains(msg, "pathspec") && strings.Contains(msg, "did not match")
 }

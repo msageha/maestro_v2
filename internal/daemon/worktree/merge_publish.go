@@ -136,7 +136,8 @@ func (wm *Manager) recordPublishTerminalFailure(state *model.WorktreeCommandStat
 // mergeWorkerOutcome captures the result of merging a single worker branch.
 type mergeWorkerOutcome struct {
 	merged          bool                 // worker was successfully merged
-	skipped         bool                 // worker was skipped (nil, no commits, log error, etc.)
+	skipped         bool                 // worker was skipped (nil, log error, etc.)
+	noCommits       bool                 // worker had no commits ahead of integration (advanced to Integrated regardless)
 	conflictSkipped bool                 // worker was skipped due to conflict/resolving state
 	transientFail   bool                 // transient error, worker was skipped
 	conflict        *model.MergeConflict // non-nil if merge conflict occurred
@@ -176,8 +177,14 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 		return nil, fmt.Errorf("merge to integration refused: %w", err)
 	}
 
-	// Guard: ensure integration worktree is clean before merging.
-	if err := wm.checkIntegrationWorktreeClean(state, commandID, integrationPath); err != nil {
+	// Force-clean the integration worktree before merging. The orchestrator
+	// fully owns this worktree — anything not committed via the merge path
+	// is by definition transient noise (most commonly RunOnIntegration
+	// verify build artefacts: `out/`, `dist/`, `.turbo/`, etc.). Without
+	// this auto-clean, every verify cycle would leave the worktree dirty
+	// and `MergeToIntegration` would mark it Failed → Quarantined after
+	// three retries, stalling final_verification phases indefinitely.
+	if err := wm.prepareIntegrationForMerge(state, commandID, integrationPath); err != nil {
 		return nil, err
 	}
 
@@ -200,6 +207,7 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 	var mergedCount int
 	var skippedCount int
 	var conflictSkippedCount int
+	var noCommitsCount int
 
 	for _, workerID := range sorted {
 		outcome := wm.mergeWorkerBranch(ctx, state, commandID, workerID, integrationPath, workerPurposes, now)
@@ -226,6 +234,15 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 		if outcome.transientFail {
 			skippedCount++
 		}
+		if outcome.noCommits {
+			noCommitsCount++
+		}
+	}
+
+	if noCommitsCount > 0 {
+		wm.Log(core.LogLevelInfo,
+			"merge_no_commits_summary command=%s no_commits=%d total_workers=%d merged=%d",
+			commandID, noCommitsCount, len(sorted), mergedCount)
 	}
 
 	wm.determineMergeOutcome(state, commandID, mergedCount, skippedCount, conflictSkippedCount, len(sorted), conflicts, preMergeStatus, preMergeUpdatedAt, now)
@@ -237,33 +254,84 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 	return conflicts, nil
 }
 
-// checkIntegrationWorktreeClean verifies the integration worktree has no
-// uncommitted changes. A dirty worktree (e.g., from incomplete merge abort)
-// would cause unpredictable merge results. Persists IntegrationStatusFailed
-// to prevent stale "merged" status from triggering publish.
-func (wm *Manager) checkIntegrationWorktreeClean(state *model.WorktreeCommandState, commandID, integrationPath string) error {
+// prepareIntegrationForMerge force-cleans the integration worktree so the
+// merge starts from a deterministic, dirt-free state. The orchestrator
+// owns this worktree; anything outside committed-via-merge content is
+// transient (most commonly RunOnIntegration verify build artefacts).
+//
+// Sequence:
+//  1. `git reset --hard HEAD` — discard staged/tracked modifications.
+//  2. `git clean -fd` — discard untracked files and empty directories
+//     (gitignored content is honoured; anything in `.gitignore` stays).
+//  3. status verification — defensive sanity check that the worktree is
+//     clean. If still dirty (extremely rare: filesystem permission issue
+//     blocking removal), record a merge failure so the publish gate
+//     blocks until an operator intervenes.
+//
+// Invariants:
+//   - operates only inside `.maestro/worktrees/<cmd>/_integration` (the
+//     ensureWithinProjectRoot guard at the caller already verified this)
+//   - never touches the project root
+//   - never modifies the worker worktrees (different paths)
+func (wm *Manager) prepareIntegrationForMerge(state *model.WorktreeCommandState, commandID, integrationPath string) error {
+	// Capture what we would have logged so an operator can correlate any
+	// auto-clean with the prior RunOnIntegration verify.
+	preStatusOut, _ := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	preStatus := strings.TrimSpace(preStatusOut)
+
+	if err := wm.gitRunInDir(integrationPath, "reset", "--hard", "HEAD"); err != nil {
+		now := wm.clock.Now().UTC().Format(time.RFC3339)
+		if tErr := wm.recordMergeFailure(state, "pre_merge_reset_failed", now); tErr != nil {
+			return fmt.Errorf("pre-merge reset --hard HEAD failed: %w (transition error: %s)", err, tErr.Error())
+		}
+		state.UpdatedAt = now
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
+		return fmt.Errorf("pre-merge reset --hard HEAD: %w", err)
+	}
+	if err := wm.gitRunInDir(integrationPath, "clean", "-fd"); err != nil {
+		// Non-fatal: log and proceed to the status check. `clean -fd` can
+		// occasionally fail on permission-restricted untracked entries
+		// the OS refuses to remove; the subsequent status check will
+		// catch that and route through the dirty-worktree failure path.
+		wm.Log(core.LogLevelWarn,
+			"pre_merge_clean_warning command=%s error=%v (proceeding to status check)",
+			commandID, err)
+	}
+
 	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
 	if dirtyErr != nil {
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
 		if tErr := wm.recordMergeFailure(state, "status_check_failed", now); tErr != nil {
-			return fmt.Errorf("check integration worktree status: %w (transition error: %s)", dirtyErr, tErr.Error())
+			return fmt.Errorf("post-clean status check failed: %w (transition error: %s)", dirtyErr, tErr.Error())
 		}
 		state.UpdatedAt = now
 		if saveErr := wm.saveState(commandID, state); saveErr != nil {
 			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
 		}
-		return fmt.Errorf("check integration worktree status: %w", dirtyErr)
+		return fmt.Errorf("post-clean status check: %w", dirtyErr)
 	}
 	if strings.TrimSpace(dirtyOut) != "" {
+		// reset+clean did not yield a clean tree. This is rare and points
+		// at a real filesystem-level issue; record a merge failure so the
+		// publish gate blocks until an operator intervenes.
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if tErr := wm.recordMergeFailure(state, "dirty_worktree", now); tErr != nil {
-			return fmt.Errorf("integration worktree has uncommitted changes (transition error: %s)", tErr.Error())
+		if tErr := wm.recordMergeFailure(state, "dirty_worktree_after_clean", now); tErr != nil {
+			return fmt.Errorf("integration worktree still dirty after auto-clean (transition error: %s)", tErr.Error())
 		}
 		state.UpdatedAt = now
 		if saveErr := wm.saveState(commandID, state); saveErr != nil {
 			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
 		}
-		return fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
+		return fmt.Errorf("integration worktree still dirty after reset --hard + clean -fd: %s",
+			strings.TrimSpace(dirtyOut))
+	}
+	if preStatus != "" {
+		wm.Log(core.LogLevelInfo,
+			"integration_pre_merge_autoclean command=%s pre_status_lines=%d "+
+				"(transient artefacts cleared before merge — typical cause: RunOnIntegration verify build outputs)",
+			commandID, len(strings.Split(preStatus, "\n")))
 	}
 	return nil
 }
@@ -310,7 +378,44 @@ func (wm *Manager) mergeWorkerBranch(
 	}
 	if strings.TrimSpace(logOut) == "" {
 		wm.Log(core.LogLevelDebug, "no_commits_to_merge command=%s worker=%s", commandID, workerID)
-		return mergeWorkerOutcome{}
+		// Advance the worker out of any pre-merge status (Active/Created/
+		// Committed) into Integrated even though we did not run a real merge.
+		// Otherwise a no-change worker stays at Active forever, the publish
+		// gate keeps emitting `worktree_publish_skip_no_commits_deferred ...
+		// reason=status_active` every scan, and orphan cleanup defers
+		// indefinitely waiting for the worker to "finish". Reported
+		// 2026-05-04 as a deferred-publish loop on a single-task command
+		// whose worker output was completely empty.
+		// Capture the pre-transition status BEFORE setWorkerStatus mutates ws.
+		// Without this, the log printed `from=integrated` because the pointer
+		// was already updated by the time `ws.Status` was formatted.
+		fromStatus := ws.Status
+		switch fromStatus {
+		case model.WorktreeStatusActive,
+			model.WorktreeStatusCreated,
+			model.WorktreeStatusCommitted:
+			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
+				wm.Log(core.LogLevelWarn,
+					"merge_no_commits_status_advance_failed command=%s worker=%s from=%s error=%v",
+					commandID, workerID, fromStatus, tErr)
+			} else {
+				wm.Log(core.LogLevelInfo,
+					"merge_no_commits_status_advance command=%s worker=%s from=%s to=integrated",
+					commandID, workerID, fromStatus)
+			}
+		case model.WorktreeStatusIntegrated:
+			// Already integrated by an earlier merge attempt — nothing to do.
+			wm.Log(core.LogLevelDebug,
+				"merge_no_commits_already_integrated command=%s worker=%s",
+				commandID, workerID)
+		default:
+			// Conflict / Resolving / terminal-* land here. They are owned by
+			// other pipelines (resume-merge / cleanup) and must not be touched.
+			wm.Log(core.LogLevelDebug,
+				"merge_no_commits_status_unchanged command=%s worker=%s status=%s reason=non_advanceable",
+				commandID, workerID, fromStatus)
+		}
+		return mergeWorkerOutcome{noCommits: true}
 	}
 
 	// Record per-worker pre-merge HEAD so abort recovery resets only this merge

@@ -3,322 +3,47 @@ package worktree
 import (
 	"context"
 	"errors"
-	"fmt"
-	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-// --- CommitPolicy Tests ---
+// --- CommitWorkerChanges happy-path tests ---
+//
+// Per the autonomous-orchestration policy, CommitWorkerChanges does not
+// enforce max-files / require-gitignore / message-pattern / sensitive-file
+// gates: the orchestrator commits Worker output verbatim. The remaining
+// tests below cover the bare happy path and the resume-merge ownership
+// guard (the only commit-time policy that still applies).
 
-// TestCommitWorkerChanges_MaxFilesExceeded verifies that CommitWorkerChanges
-// rejects commits that exceed the configured max files limit.
-func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
+// TestCommitWorkerChanges_HappyPath verifies that a worker commit with
+// well-formed input succeeds end-to-end.
+func TestCommitWorkerChanges_HappyPath(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = ptr.Int(3) // Set a low limit for testing
 
-	if err := createForCommand(wm, "cmd_maxfiles", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_happy", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
-	wtPath, err := wm.GetWorkerPath("cmd_maxfiles", "worker1")
+	wtPath, err := wm.GetWorkerPath("cmd_happy", "worker1")
 	if err != nil {
 		t.Fatalf("GetWorkerPath failed: %v", err)
 	}
-
-	// Create 5 files (exceeds limit of 3)
-	for i := 0; i < 5; i++ {
-		f := filepath.Join(wtPath, fmt.Sprintf("file%d.go", i))
-		if err := os.WriteFile(f, []byte(fmt.Sprintf("package f%d\n", i)), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	err = wm.CommitWorkerChanges("cmd_maxfiles", "worker1", "add files")
-	if err == nil {
-		t.Fatal("expected error for exceeding max files limit")
-	}
-	if !strings.Contains(err.Error(), "max_files_exceeded") {
-		t.Errorf("error should mention 'max_files_exceeded', got: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_MaxFilesWithinLimit verifies that commits within the
-// file limit succeed.
-func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = ptr.Int(5)
-
-	if err := createForCommand(wm, "cmd_maxfiles_ok", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_maxfiles_ok", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Create 3 files (within limit of 5)
-	for i := 0; i < 3; i++ {
-		f := filepath.Join(wtPath, fmt.Sprintf("ok%d.go", i))
-		if err := os.WriteFile(f, []byte(fmt.Sprintf("package ok%d\n", i)), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := wm.CommitWorkerChanges("cmd_maxfiles_ok", "worker1", "add ok files"); err != nil {
-		t.Fatalf("CommitWorkerChanges should succeed within limit: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_MissingGitignore verifies that CommitWorkerChanges
-// rejects commits when .gitignore is missing and RequireGitignore is true.
-func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.RequireGitignore = true
-
-	if err := createForCommand(wm, "cmd_gitignore", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_gitignore", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Ensure no .gitignore exists
-	os.Remove(filepath.Join(wtPath, ".gitignore"))
-
-	// Create a file to commit
-	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	err = wm.CommitWorkerChanges("cmd_gitignore", "worker1", "add main.go")
-	if err == nil {
-		t.Fatal("expected error for missing .gitignore")
-	}
-	if !strings.Contains(err.Error(), "missing_gitignore") {
-		t.Errorf("error should mention 'missing_gitignore', got: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_GitignorePresent verifies that commits succeed when
-// .gitignore is present.
-func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.RequireGitignore = true
-
-	if err := createForCommand(wm, "cmd_gitignore_ok", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_gitignore_ok", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Create .gitignore
-	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n*.key\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Create a file to commit
-	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := wm.CommitWorkerChanges("cmd_gitignore_ok", "worker1", "add files"); err != nil {
-		t.Fatalf("CommitWorkerChanges should succeed with .gitignore present: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_MessageFormatInvalid verifies that commits with
-// invalid message format are rejected.
-func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MessagePattern = `^.+`
-
-	if err := createForCommand(wm, "cmd_msgfmt", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_msgfmt", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Create .gitignore so that check passes
-	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Empty message does not match pattern "^.+" (requires non-empty)
-	err = wm.CommitWorkerChanges("cmd_msgfmt", "worker1", "")
-	if err == nil {
-		t.Fatal("expected error for invalid commit message format")
-	}
-	if !strings.Contains(err.Error(), "message_format_invalid") {
-		t.Errorf("error should mention 'message_format_invalid', got: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_MessageFormatValid verifies that commits with valid
-// message format succeed.
-func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MessagePattern = `^.+`
-
-	if err := createForCommand(wm, "cmd_msgfmt_ok", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_msgfmt_ok", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Create .gitignore
-	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := wm.CommitWorkerChanges("cmd_msgfmt_ok", "worker1", "add main.go"); err != nil {
-		t.Fatalf("CommitWorkerChanges should succeed with valid message format: %v", err)
-	}
-}
-
-// TestCommitWorkerChanges_RequireGitignoreDisabled verifies that commits succeed
-// without .gitignore when RequireGitignore is explicitly set to false.
-func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	// Explicitly set a non-zero policy with RequireGitignore=false
-	wm.config.CommitPolicy = model.CommitPolicyConfig{
-		MaxFiles:         ptr.Int(30),
-		RequireGitignore: false,
-		MessagePattern:   `^.+`,
-	}
-
-	if err := createForCommand(wm, "cmd_nogitig", []string{"worker1"}); err != nil {
-		t.Fatalf("CreateForCommand failed: %v", err)
-	}
-
-	wtPath, err := wm.GetWorkerPath("cmd_nogitig", "worker1")
-	if err != nil {
-		t.Fatalf("GetWorkerPath failed: %v", err)
-	}
-
-	// Ensure no .gitignore exists
-	os.Remove(filepath.Join(wtPath, ".gitignore"))
 
 	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := wm.CommitWorkerChanges("cmd_nogitig", "worker1", "add main.go"); err != nil {
-		t.Fatalf("CommitWorkerChanges should succeed with RequireGitignore disabled: %v", err)
+	if err := wm.CommitWorkerChanges("cmd_happy", "worker1", "add main.go"); err != nil {
+		t.Fatalf("CommitWorkerChanges should succeed: %v", err)
 	}
-}
-
-// TestCheckCommitPolicy_Unit tests the checkCommitPolicy method directly.
-func TestCheckCommitPolicy_Unit(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-
-	t.Run("all_checks_pass", func(t *testing.T) {
-		t.Parallel()
-		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
-		wm.config.CommitPolicy.MessagePattern = `^.+`
-
-		stagedNul := "file1.go\x00file2.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul, nil)
-		if len(violations) != 0 {
-			t.Errorf("expected no violations, got %d: %v", len(violations), violations)
-		}
-	})
-
-	t.Run("max_files_exceeded", func(t *testing.T) {
-		t.Parallel()
-		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = ptr.Int(2)
-		wm.config.CommitPolicy.MessagePattern = `^.+`
-
-		stagedNul := "a.go\x00b.go\x00c.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul, nil)
-		if len(violations) != 1 || violations[0].Code != "max_files_exceeded" {
-			t.Errorf("expected max_files_exceeded violation, got %v", violations)
-		}
-	})
-
-	t.Run("message_format_invalid", func(t *testing.T) {
-		t.Parallel()
-		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
-		wm.config.CommitPolicy.MessagePattern = `^.+`
-
-		stagedNul := "file.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "", stagedNul, nil)
-		if len(violations) != 1 || violations[0].Code != "message_format_invalid" {
-			t.Errorf("expected message_format_invalid violation, got %v", violations)
-		}
-	})
-
-	t.Run("expected_paths_violation", func(t *testing.T) {
-		t.Parallel()
-		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
-		wm.config.CommitPolicy.MessagePattern = `^.+`
-
-		stagedNul := "internal/ok.go\x00cmd/outside.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "update scoped files", stagedNul, []string{"internal/"})
-		if len(violations) != 1 || violations[0].Code != "expected_paths_violation" {
-			t.Errorf("expected expected_paths_violation, got %v", violations)
-		}
-	})
-
-	t.Run("multiple_violations", func(t *testing.T) {
-		t.Parallel()
-		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = ptr.Int(1)
-		wm.config.CommitPolicy.RequireGitignore = true
-		wm.config.CommitPolicy.MessagePattern = `^.+`
-
-		// Use a temp dir without .gitignore
-		tmpDir := t.TempDir()
-		stagedNul := "a.go\x00b.go\x00"
-		violations := wm.checkCommitPolicy(tmpDir, "", stagedNul, nil)
-		if len(violations) < 3 {
-			t.Errorf("expected at least 3 violations (max_files + missing_gitignore + message_format), got %d: %v", len(violations), violations)
-		}
-	})
 }
 
 // TestSetWorkerStatus validates that status transitions are enforced via setWorkerStatus.
@@ -366,8 +91,14 @@ func TestSetWorkerStatus(t *testing.T) {
 		}
 	})
 
-	t.Run("created_to_integrated_rejected", func(t *testing.T) {
+	t.Run("created_to_integrated_allowed", func(t *testing.T) {
 		t.Parallel()
+		// No-op merge path: a worker that never produced any commits hits
+		// `no_commits_to_merge` in mergeWorkerBranch and must still advance
+		// out of WorktreeStatusActive/Created so the publish gate stops
+		// deferring on an "active" worker that has nothing to merge. This
+		// transition is the cleanest way to express "worker is integrated
+		// even though there was nothing to integrate".
 		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -376,9 +107,11 @@ func TestSetWorkerStatus(t *testing.T) {
 			Status:   model.WorktreeStatusCreated,
 		}
 
-		err := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, "2024-01-01T00:00:00Z")
-		if err == nil {
-			t.Fatal("expected error for created → integrated transition")
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected created → integrated to be allowed, got: %v", err)
+		}
+		if ws.Status != model.WorktreeStatusIntegrated {
+			t.Errorf("status = %q, want %q", ws.Status, model.WorktreeStatusIntegrated)
 		}
 	})
 
@@ -497,44 +230,6 @@ func TestSetIntegrationStatus(t *testing.T) {
 			t.Fatalf("expected valid transition merged → merging (re-merge), got error: %v", err)
 		}
 	})
-}
-
-// TestIsSensitiveFile tests the sensitive file pattern matching.
-func TestIsSensitiveFile(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name      string
-		sensitive bool
-	}{
-		{".env", true},
-		{".env.local", true},
-		{".env.production", true},
-		{"server.key", true},
-		{"cert.pem", true},
-		{"credentials.json", true},
-		{"credentials.yaml", true},
-		{"api.secret", true},
-		{"keystore.p12", true},
-		{"cert.pfx", true},
-		{"main.go", false},
-		{"README.md", false},
-		{"config.yaml", false},
-		{"Makefile", false},
-		{".gitignore", false},
-		{"keys.go", false},     // .go, not .key
-		{"env_test.go", false}, // not .env
-		{"secret_handler.go", false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := isSensitiveFile(tt.name)
-			if got != tt.sensitive {
-				t.Errorf("isSensitiveFile(%q) = %v, want %v", tt.name, got, tt.sensitive)
-			}
-		})
-	}
 }
 
 // TestMergeToIntegration_PartialMergeOnConflict verifies that when a merge conflict
@@ -825,36 +520,6 @@ func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
 	}
 }
 
-// TestCommitWorkerChanges_AllFilesFiltered verifies that when the only dirty
-// files are sensitive (e.g. .env), CommitWorkerChanges returns
-// ErrAllFilesFiltered (wrapped) so callers can detect via errors.Is.
-func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	commandID := "cmd_filtered"
-	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
-		t.Fatalf("createForCommand: %v", err)
-	}
-
-	wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")
-	if err := os.WriteFile(filepath.Join(wtPath, ".env"), []byte("SECRET=1\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(wtPath, "private.key"), []byte("KEY"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	err := wm.CommitWorkerChanges(commandID, "worker1", "should be filtered")
-	if err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-	if !errors.Is(err, ErrAllFilesFiltered) {
-		t.Errorf("expected errors.Is(err, ErrAllFilesFiltered) true, got %v", err)
-	}
-}
-
 // TestCommitWorkerChanges_WorkerOwnedByResumeMerge verifies that
 // CommitWorkerChanges refuses to auto-commit workers whose status is
 // Conflict or Resolving, returning ErrWorkerOwnedByResumeMerge so the
@@ -910,54 +575,6 @@ func TestCommitWorkerChanges_WorkerOwnedByResumeMerge(t *testing.T) {
 				t.Errorf("errors.Is(err, ErrWorkerOwnedByResumeMerge) = false, got %v", err)
 			}
 		})
-	}
-}
-
-// TestCommitWorkerChanges_PolicyViolationMaxFiles verifies that exceeding
-// CommitPolicy.MaxFiles returns *CommitPolicyViolationError detectable via errors.As.
-func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	maestroDir := filepath.Join(projectRoot, ".maestro")
-	if err := os.MkdirAll(maestroDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	cfg := model.WorktreeConfig{
-		Enabled:       true,
-		BaseBranch:    "main",
-		PathPrefix:    ".maestro/worktrees",
-		AutoCommit:    true,
-		AutoMerge:     true,
-		MergeStrategy: "ort",
-		CommitPolicy: model.CommitPolicyConfig{
-			MaxFiles: ptr.Int(2),
-		},
-	}
-	wm := NewManager(maestroDir, cfg, log.New(os.Stderr, "", 0), core.LogLevelError)
-
-	commandID := "cmd_policy"
-	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
-		t.Fatalf("createForCommand: %v", err)
-	}
-
-	wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")
-	for i := 0; i < 5; i++ {
-		name := filepath.Join(wtPath, fmt.Sprintf("file_%d.txt", i))
-		if err := os.WriteFile(name, []byte("x"), 0644); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	err := wm.CommitWorkerChanges(commandID, "worker1", "too many files")
-	if err == nil {
-		t.Fatalf("expected error, got nil")
-	}
-	var policyErr *CommitPolicyViolationError
-	if !errors.As(err, &policyErr) {
-		t.Fatalf("expected errors.As(*CommitPolicyViolationError) to succeed, got %v", err)
-	}
-	if len(policyErr.Violations) == 0 || policyErr.Violations[0].Code != "max_files_exceeded" {
-		t.Errorf("expected max_files_exceeded violation, got %+v", policyErr.Violations)
 	}
 }
 

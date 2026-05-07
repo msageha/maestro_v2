@@ -24,7 +24,6 @@ type Config struct {
 	Skills             SkillsConfig         `yaml:"skills"`
 	AdmissionControl   AdmissionControl     `yaml:"admission_control"`
 	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
-	Fallback           Fallback             `yaml:"fallback"`
 	Review             ReviewConfig         `yaml:"review"`
 
 	// C-1 Evolution
@@ -201,13 +200,6 @@ type WatcherConfig struct {
 	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
 	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
 	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
-	// Deprecated: clearAndConfirm no longer sends a second Enter after
-	// /clear. Claude Code 2.x executes /clear immediately on the first
-	// Enter and treats a trailing Enter as "re-run last command", which
-	// causes /clear to fire twice per task transition. The field is kept
-	// so existing config.yaml files continue to validate; the value is
-	// ignored by clearAndConfirm.
-	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"`
 
 	// Shell readiness timeout for formation startup (default 10s)
 	ShellReadyTimeoutSec int `yaml:"shell_ready_timeout_sec"`
@@ -317,9 +309,12 @@ func NormalizeRetryConfig(cfg *Config) {
 // itself lives in model.VerifyConfig (see internal/model/verify.go); this
 // struct only carries operational parameters that affect daemon behaviour.
 type VerifyDaemonConfig struct {
-	// Enabled toggles the real verification runner. False is an emergency
-	// rollback setting and daemon startup additionally requires
-	// MAESTRO_ALLOW_VERIFY_SKIP=1 to prevent accidental silent pass.
+	// Enabled toggles the real verification runner. False is the supported
+	// "no machine-checkable verify step" mode for projects that are not
+	// running software-development workflows (research, documentation,
+	// note-taking, …); the daemon wires NewSkipVerifyRunner and continues
+	// normally. Operators opt in to verification by writing
+	// `.maestro/verify.yaml` and setting Enabled=true.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// StallThresholdSec is the wall-clock window after a task enters
 	// verify_pending before R9 transitions it to repair_pending. 0 ≤ value;

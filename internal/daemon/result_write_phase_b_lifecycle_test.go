@@ -125,7 +125,7 @@ func TestResultWrite_CompletedVerifyRunsAsyncInBackground(t *testing.T) {
 	commandID := "cmd_0000000018_asyncvr"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	rec := &recordingVerifyRunner{outcome: VerifyOutcome{Passed: true}}
@@ -188,7 +188,7 @@ func TestResultWrite_AsyncVerifyHonorsAdmissionLimit(t *testing.T) {
 	commandID := "cmd_0000000019_admitvr"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	ac := admission.NewController(model.AdmissionControl{MaxConcurrentVerify: 1})
@@ -255,7 +255,7 @@ func TestResultWrite_DuplicateDoesNotDispatchReviewBeforeAsyncVerifyCompletes(t 
 	commandID := "cmd_0000000020_dupreview"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	rec := &recordingVerifyRunner{outcome: VerifyOutcome{Passed: true}}
@@ -306,6 +306,11 @@ func TestResultWrite_DuplicateDoesNotDispatchReviewBeforeAsyncVerifyCompletes(t 
 // completed status is routed through verify_pending before reaching completed,
 // per REQUIREMENTS.md §2.1. Observability comes from a recording VerifyRunner:
 // the runner is invoked iff Phase B parked the task at verify_pending.
+//
+// The test uses RunOnIntegration: true because the post-2026-05-05 redesign
+// short-circuits per-task verify for normal worker tasks; only RunOnIntegration /
+// RunOnMain tasks still drive the VerifyRunner. The §2.1 routing under test
+// (completed → verify_pending → terminal) is identical for both task kinds.
 func TestResultWrite_CompletedGoesViaVerifyPending(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
@@ -313,7 +318,7 @@ func TestResultWrite_CompletedGoesViaVerifyPending(t *testing.T) {
 	commandID := "cmd_0000000010_complete"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	rec := &recordingVerifyRunner{outcome: VerifyOutcome{Passed: true}}
@@ -358,7 +363,7 @@ func TestResultWrite_CompletedVerifyFailsWithoutRetryPausesForReplan(t *testing.
 	commandID := "cmd_0000000011_verifyfa"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	d.api.result.SetVerifyRunner(NewFixedVerifyRunner(
@@ -409,8 +414,11 @@ func TestResultWrite_CompletedVerifyFailsSchedulesRepairTask(t *testing.T) {
 		Status:             model.StatusInProgress,
 		LeaseOwner:         &owner,
 		LeaseEpoch:         1,
-		CreatedAt:          "2026-01-01T00:00:00Z",
-		UpdatedAt:          "2026-01-01T00:00:00Z",
+		// RunOnIntegration drives the per-task VerifyRunner under the
+		// post-2026-05-05 contract (normal worker tasks bypass verify).
+		RunOnIntegration: true,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+		UpdatedAt:        "2026-01-01T00:00:00Z",
 	})
 	setupCommandState(t, d, commandID, []string{taskID})
 
@@ -509,6 +517,9 @@ func TestResultWrite_VerifyRepairMaxRetriesPausesForReplan(t *testing.T) {
 		LeaseOwner:       &owner,
 		LeaseEpoch:       1,
 		ExecutionRetries: 1,
+		// RunOnIntegration: see the corresponding comment in
+		// TestResultWrite_CompletedVerifyFailsSchedulesRepairTask.
+		RunOnIntegration: true,
 		CreatedAt:        "2026-01-01T00:00:00Z",
 		UpdatedAt:        "2026-01-01T00:00:00Z",
 	})
@@ -591,7 +602,7 @@ func TestResultWrite_VerifyRunnerErrorWithoutRetryPausesForReplan(t *testing.T) 
 	commandID := "cmd_0000000012_runerror"
 	workerID := "worker1"
 
-	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1, withRunOnIntegration())
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	d.api.result.SetVerifyRunner(NewFixedVerifyRunner(
@@ -618,11 +629,16 @@ func TestResultWrite_VerifyRunnerErrorWithoutRetryPausesForReplan(t *testing.T) 
 	}
 }
 
-// TestResultWrite_FailedRetryableGoesViaRepairPending verifies that a
-// retryable failure is routed through repair_pending and a retry task is
-// scheduled. The final state of the original task is repair_pending; the
-// retry task is registered as pending.
-func TestResultWrite_FailedRetryableGoesViaRepairPending(t *testing.T) {
+// TestResultWrite_FailedRetryableGoesDirectlyToSupersededCancelled
+// pins the post-2026-05-06 Bug #1 fix: a retryable failure with a retry
+// already enqueued must mark the original task terminal-cancelled
+// (superseded_by_retry) immediately, NOT route through repair_pending.
+// The previous behaviour parked the original at repair_pending awaiting
+// applyVerifyOutcome / R9_VerifyStall, both of which are no-ops when
+// verify.enabled=false — the task wedged forever and R2 kept skipping
+// it as "repair pipeline owns this slot", blocking the publish gate
+// for the whole iteration.
+func TestResultWrite_FailedRetryableGoesDirectlyToSupersededCancelled(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
 	d.config.Retry.TaskExecution = model.TaskRetryConfig{
@@ -667,9 +683,13 @@ func TestResultWrite_FailedRetryableGoesViaRepairPending(t *testing.T) {
 	}
 
 	st := readCommandStateForLifecycle(t, d, commandID)
-	if got := st.TaskStates[origTaskID]; got != model.StatusRepairPending {
-		t.Errorf("original task state = %q, want %q (failure with retry routes to repair_pending)",
-			got, model.StatusRepairPending)
+	if got := st.TaskStates[origTaskID]; got != model.StatusCancelled {
+		t.Errorf("original task state = %q, want %q (failure with retry routes directly to cancelled-superseded; verify-independent terminal)",
+			got, model.StatusCancelled)
+	}
+	if reason, ok := st.CancelledReasons[origTaskID]; !ok ||
+		!strings.HasPrefix(reason, "superseded_by_retry") {
+		t.Errorf("original task cancelled_reason = %q, want prefix %q", reason, "superseded_by_retry")
 	}
 
 	// A retry task is registered at §2.1 `planned` (worker queue picks it up

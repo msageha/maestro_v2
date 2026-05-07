@@ -74,7 +74,20 @@ func TestAllowedToolsByRole(t *testing.T) {
 		wantOK    bool
 	}{
 		{"orchestrator", []string{"Bash(maestro queue write planner --type command:*)", "Bash(maestro skill list:*)", "Bash(maestro plan request-cancel:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/planner.yaml)", "Read(.maestro/config.yaml)", "Read(.maestro/state/continuous.yaml)"}, true},
-		{"planner", []string{"Bash(maestro:*)", "Read(.maestro/**)", "Read(.maestro/dashboard.md)", "Read(.maestro/config.yaml)", "Read(.maestro/results/*)"}, true},
+		{"planner", []string{
+			"Bash(maestro plan:*)",
+			"Bash(maestro skill:*)",
+			"Bash(maestro queue read:*)",
+			"Bash(maestro verify:*)",
+			"Bash(maestro status:*)",
+			"Bash(maestro version:*)",
+			"Bash(maestro --version:*)",
+			"Bash(maestro --help:*)",
+			"Read(.maestro/**)",
+			"Read(.maestro/dashboard.md)",
+			"Read(.maestro/config.yaml)",
+			"Read(.maestro/results/*)",
+		}, true},
 		{"worker", nil, false},
 	}
 
@@ -125,10 +138,27 @@ func TestAllowedToolsByRole_PlannerCannotUseBashFreely(t *testing.T) {
 	joined := strings.Join(tools, ",")
 
 	if strings.Contains(joined, ",Bash,") || joined == "Bash" || strings.HasPrefix(joined, "Bash,") {
-		t.Error("planner must use Bash(maestro:*), not bare Bash")
+		t.Error("planner must use narrow Bash(maestro <subcommand>:*) patterns, not bare Bash")
 	}
-	if !strings.Contains(joined, "Bash(maestro:*)") {
-		t.Error("planner must have Bash(maestro:*)")
+	// The 2026-05-05 P0-B regression let the Planner agent enqueue new
+	// commands for itself via `maestro queue write planner` after a Stop
+	// hook failure. Block it at L1 so the daemon never even sees the
+	// request.
+	if strings.Contains(joined, "Bash(maestro:*)") {
+		t.Error("planner must not have broad Bash(maestro:*) — it permits queue write")
+	}
+	if strings.Contains(joined, "Bash(maestro queue write:*)") {
+		t.Error("planner must not be able to invoke maestro queue write")
+	}
+	for _, required := range []string{
+		"Bash(maestro plan:*)",
+		"Bash(maestro skill:*)",
+		"Bash(maestro queue read:*)",
+		"Bash(maestro verify:*)",
+	} {
+		if !strings.Contains(joined, required) {
+			t.Errorf("planner must have %s", required)
+		}
 	}
 }
 
@@ -443,9 +473,20 @@ func TestBuildLaunchArgs_PlannerAllowsNormalCommands(t *testing.T) {
 	}
 	joined := strings.Join(args, " ")
 
-	// Planner must still have Bash(maestro:*) in allowedTools
-	if !strings.Contains(joined, "Bash(maestro:*)") {
-		t.Error("planner should still have Bash(maestro:*) in allowedTools")
+	// Planner has narrow Bash(maestro <subcommand>:*) patterns covering
+	// the legitimate planner operations (post-2026-05-05 P0-B tightening
+	// — broad Bash(maestro:*) was retired because it let the Planner
+	// agent enqueue NEW commands for itself via `maestro queue write
+	// planner` after a Stop hook failure).
+	for _, allowed := range []string{
+		"Bash(maestro plan:*)",
+		"Bash(maestro skill:*)",
+		"Bash(maestro queue read:*)",
+		"Bash(maestro verify:*)",
+	} {
+		if !strings.Contains(joined, allowed) {
+			t.Errorf("planner allowedTools should contain %q", allowed)
+		}
 	}
 
 	// Normal planner commands (submit, complete) should NOT appear in disallowedTools
@@ -453,7 +494,15 @@ func TestBuildLaunchArgs_PlannerAllowsNormalCommands(t *testing.T) {
 		"Bash(maestro plan submit:*)",
 		"Bash(maestro plan complete:*)",
 	} {
-		if strings.Contains(joined, safe) {
+		// disallowedTools is the part of joined args after "--disallowedTools";
+		// a substring match against the full args may incorrectly catch the
+		// allowedTools pattern, so we match the deny-only flag explicitly.
+		denyIdx := strings.Index(joined, "--disallowedTools")
+		if denyIdx < 0 {
+			break
+		}
+		denyJoined := joined[denyIdx:]
+		if strings.Contains(denyJoined, safe) {
 			t.Errorf("planner disallowedTools should NOT contain %q", safe)
 		}
 	}
@@ -605,9 +654,30 @@ func TestAppendResolvedMaestroBashAllowances_Planner(t *testing.T) {
 	args = appendResolvedMaestroBashAllowances(args, "planner", "/tmp/current/maestro")
 
 	allowedTools := launchArgValue(t, args, "--allowedTools")
-	want := "Bash(/tmp/current/maestro:*)"
-	if !strings.Contains(allowedTools, want) {
-		t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+
+	// Planner's absolute-path allowance MUST mirror the bare-`maestro`
+	// narrow allowlist, NOT a single broad `Bash(<abs>:*)`. The earlier
+	// shorthand silently let the Planner agent run `<abs>/maestro queue
+	// write planner` and bypass the L1 narrowing (Report 2026-05-05 P0-A
+	// regression).
+	for _, want := range []string{
+		"Bash(/tmp/current/maestro plan:*)",
+		"Bash(/tmp/current/maestro skill:*)",
+		"Bash(/tmp/current/maestro queue read:*)",
+		"Bash(/tmp/current/maestro verify:*)",
+		"Bash(/tmp/current/maestro status:*)",
+	} {
+		if !strings.Contains(allowedTools, want) {
+			t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+		}
+	}
+	for _, forbidden := range []string{
+		"Bash(/tmp/current/maestro:*)",
+		"Bash(/tmp/current/maestro queue write:*)",
+	} {
+		if strings.Contains(allowedTools, forbidden) {
+			t.Fatalf("allowedTools must not contain broad %q: %s", forbidden, allowedTools)
+		}
 	}
 }
 
@@ -691,41 +761,123 @@ func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {
 	if strings.Contains(joined, "Read(.maestro/worktrees/**") {
 		t.Error("worker should NOT have Read(.maestro/worktrees/**) in disallowedTools")
 	}
-	// Should NOT use a blanket .maestro/** block
-	if strings.Contains(joined, "Read(.maestro/**)") {
-		t.Error("worker should NOT use blanket Read(.maestro/**) block")
+	// Should NOT use a blanket .maestro/** block (Read or Edit / Write).
+	// Workers operate inside .maestro/worktrees/<worker>/, so a blanket
+	// .maestro/** Edit / Write block would lock them out of their own
+	// working directory.
+	for _, blanket := range []string{
+		"Read(.maestro/**)",
+		"Edit(**/.maestro/**)",
+		"Write(**/.maestro/**)",
+		"MultiEdit(**/.maestro/**)",
+	} {
+		if strings.Contains(joined, blanket) {
+			t.Errorf("worker should NOT have blanket %q in disallowedTools", blanket)
+		}
 	}
 }
 
-func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
-	tests := []struct {
-		role                string
-		wantNotificationOff bool
-	}{
-		{"orchestrator", false},
-		{"planner", true},
-		// Worker: Notification is disabled via merged --settings in Launch(),
-		// NOT in buildLaunchArgs. So buildLaunchArgs output won't have it.
-		{"worker", false},
+// TestBuildLaunchArgs_WorkerAllowsRuntimeConfigRead pins the
+// asymmetric guardrail: Workers must be able to *read* runtime config
+// files (.claude/settings.json etc.) — those legitimately encode tool
+// policies and project hooks the worker may need to consult — while
+// *writing* them remains blocked. Specifically, no `Read(.claude/...)`
+// pattern may appear in --disallowedTools, even though
+// `Edit(.claude/**)` / `Write(.claude/**)` do (Report 2026-05-06
+// issue 5 — confirmed Read is not blocked, but the unit test surface
+// did not yet pin the invariant).
+func TestBuildLaunchArgs_WorkerAllowsRuntimeConfigRead(t *testing.T) {
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
 	}
+	joined := strings.Join(args, " ")
 
-	for _, tt := range tests {
-		t.Run(tt.role, func(t *testing.T) {
-			args, err := buildLaunchArgs(tt.role, "sonnet", "system-prompt", "")
+	// disallowedTools section only — confirm none of the read patterns
+	// are present.
+	denyIdx := strings.Index(joined, "--disallowedTools")
+	if denyIdx == -1 {
+		t.Fatalf("worker should have --disallowedTools, args: %v", args)
+	}
+	denySection := joined[denyIdx:]
+
+	for _, forbidden := range []string{
+		"Read(**/.claude/**)",
+		"Read(.claude/**)",
+		"Read(**/.codex/**)",
+		"Read(.codex/**)",
+		"Read(**/.gemini/**)",
+		"Read(.gemini/**)",
+	} {
+		if strings.Contains(denySection, forbidden) {
+			t.Errorf("worker disallowedTools must NOT contain %q (Read-side block); got: %s", forbidden, denySection)
+		}
+	}
+}
+
+// TestBuildLaunchArgs_WorkerBlocksRuntimeProtectedPaths pins the post-2026-05-06
+// guardrail: Workers must not be able to Edit / Write runtime-protected
+// directories (.claude / .codex / .gemini), nor the daemon's own control-plane
+// subtrees (.maestro/state, .maestro/queue, …). These would otherwise trigger
+// confirmation prompts that escalate to blocked-pane timeouts (Report
+// 2026-05-05 P0 v5).
+func TestBuildLaunchArgs_WorkerBlocksRuntimeProtectedPaths(t *testing.T) {
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	for _, pattern := range []string{
+		// Agent runtime self-modification surface.
+		"Edit(**/.claude/**)",
+		"Write(**/.claude/**)",
+		"Edit(**/.codex/**)",
+		"Write(**/.codex/**)",
+		"Edit(**/.gemini/**)",
+		"Write(**/.gemini/**)",
+		// Maestro control-plane subtrees (writes only — reads are blocked
+		// elsewhere; the Worker's own .maestro/worktrees/<id>/ is left
+		// writable so this list is path-specific).
+		"Edit(**/.maestro/state/**)",
+		"Write(**/.maestro/queue/**)",
+		"Write(**/.maestro/results/**)",
+		"Edit(**/.maestro/config.yaml)",
+		"Edit(**/.maestro/dashboard.md)",
+	} {
+		if !strings.Contains(joined, pattern) {
+			t.Errorf("worker disallowedTools should contain %q, args: %v", pattern, args)
+		}
+	}
+}
+
+// TestBuildLaunchArgs_NoStopOrNotificationHookOverrides pins the
+// post-2026-05-06 P1 #1 invariant: buildLaunchArgs MUST NOT inject
+// `Stop:[]` or `Notification:[]` into Claude Code's `--settings`. The
+// previous Maestro-side suppression attempt was ineffective in
+// production (Claude Code merges --settings hooks rather than
+// replacing them, so empty arrays were no-ops) and inflated the
+// audit footprint of the launcher with code that did not actually
+// suppress anything. Hook suppression is now an operator-side
+// `~/.claude/settings.json` responsibility.
+func TestBuildLaunchArgs_NoStopOrNotificationHookOverrides(t *testing.T) {
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		t.Run(role, func(t *testing.T) {
+			args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
 			if err != nil {
-				t.Fatalf("buildLaunchArgs(%s): %v", tt.role, err)
+				t.Fatalf("buildLaunchArgs(%s): %v", role, err)
 			}
 			joined := strings.Join(args, " ")
 
-			hasNotificationOff := strings.Contains(joined, `"Notification":[]`)
-			if hasNotificationOff != tt.wantNotificationOff {
-				t.Errorf("role=%s: Notification disabled = %v, want %v\nargs: %v",
-					tt.role, hasNotificationOff, tt.wantNotificationOff, args)
-			}
-
-			// Must never use disableAllHooks (would kill PreToolUse/PostToolUse)
-			if strings.Contains(joined, "disableAllHooks") {
-				t.Errorf("role=%s: must not use disableAllHooks", tt.role)
+			for _, forbidden := range []string{
+				`"Notification":[]`,
+				`"Stop":[]`,
+				"disableAllHooks",
+			} {
+				if strings.Contains(joined, forbidden) {
+					t.Errorf("role=%s: --settings must NOT contain %q (hook suppression is a ~/.claude responsibility); args: %v",
+						role, forbidden, args)
+				}
 			}
 		})
 	}

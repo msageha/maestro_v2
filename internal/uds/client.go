@@ -163,6 +163,18 @@ func (c *Client) sendContext(ctx context.Context, req *Request) (*Response, erro
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
+		// Server may have written a synchronous response (backpressure /
+		// shutdown rejection) and closed the socket before our write
+		// reached its read loop. Unix-domain sockets are half-closeable,
+		// so the kernel-buffered response is still readable even after
+		// our write returned EPIPE / ECONNRESET. Try to drain it before
+		// surfacing the write error — turning a flaky `broken pipe` into
+		// the structured ErrCodeBackpressure / ErrCodeShutdown response
+		// the server intended to deliver.
+		var resp Response
+		if rfErr := readFrame(conn, &resp); rfErr == nil {
+			return &resp, nil
+		}
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 

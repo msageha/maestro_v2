@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -526,9 +527,17 @@ func TestCollectWorktreePhaseMerges_SuppressesCommitFailedWorkerUntilRecoveryCom
 	}
 }
 
-// TestCollectWorktreePhaseMerges_FailedPhaseNotMerged verifies that a failed
-// phase is never collected for merging even if its status is not "completed".
-func TestCollectWorktreePhaseMerges_FailedPhaseNotMerged(t *testing.T) {
+// TestCollectWorktreePhaseMerges_FailedPhaseStillMergedWhenAllTerminal pins
+// the policy that a phase whose status ended in PhaseStatusFailed is STILL
+// collected for merging, as long as every task has reached a terminal
+// effective status. The earlier "failed phase = no merge" gate produced a
+// hard deadlock (Report 2026-05-04): a phase with 6 completed tasks +
+// 2 failed left worker worktrees at WorktreeStatusActive forever; the
+// publish/cleanup gate then deferred indefinitely on uncommitted worker
+// output and the daemon required operator intervention. Forward progress
+// requires the merge to happen so workers advance to Committed/Integrated;
+// publish-to-main is independently blocked when plan_status is failed.
+func TestCollectWorktreePhaseMerges_FailedPhaseStillMergedWhenAllTerminal(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
@@ -540,22 +549,65 @@ func TestCollectWorktreePhaseMerges_FailedPhaseNotMerged(t *testing.T) {
 			ID:              "p1",
 			Name:            "phase1",
 			Status:          model.PhaseStatusFailed,
-			RequiredTaskIDs: []string{"t1"},
+			RequiredTaskIDs: []string{"t1", "t2"},
+			TaskIDs:         []string{"t1", "t2"},
 		},
 	})
-	// A task can be "completed" in the state even if the phase is failed
-	// (e.g. phase was marked failed for a different reason); make sure the
-	// task-completion shortcut does not make the merge eligible.
+	// One completed task + one failed task. Both terminal → phase is
+	// eligible for merge collection. The merge itself is per-worker;
+	// the worker(s) holding the completed task's output are committed
+	// and merged so cleanup can proceed.
 	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	reader.setTaskState("cmd1", "t2", model.StatusFailed)
 	qh.SetStateReader(reader)
 
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+		"worker2": {{ID: "t2", CommandID: "cmd1", Status: model.StatusFailed}},
+	})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 merge item for failed-but-terminal phase, got %d: %+v", len(items), items)
+	}
+	if items[0].PhaseID != "p1" {
+		t.Errorf("PhaseID = %q, want %q", items[0].PhaseID, "p1")
+	}
+}
+
+// TestCollectWorktreePhaseMerges_FailedPhasePartialTasksNotMerged: a phase
+// whose status is failed but whose tasks are still in flight (not all
+// terminal) must NOT be collected. The merge gate still requires task
+// terminality so a half-complete phase does not get force-merged while
+// a successor task may still produce output.
+func TestCollectWorktreePhaseMerges_FailedPhasePartialTasksNotMerged(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusFailed,
+			RequiredTaskIDs: []string{"t1", "t2"},
+			TaskIDs:         []string{"t1", "t2"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	reader.setTaskState("cmd1", "t2", model.StatusInProgress) // not yet terminal
+	qh.SetStateReader(reader)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+		"worker2": {{ID: "t2", CommandID: "cmd1", Status: model.StatusInProgress}},
 	})
 
 	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
 	if len(items) != 0 {
-		t.Errorf("expected 0 merge items for failed phase, got %d: %+v", len(items), items)
+		t.Errorf("expected 0 merge items for partial-terminal phase, got %d: %+v", len(items), items)
 	}
 }
 
@@ -769,6 +821,194 @@ func TestStepAwaitingFillWatchdog_SkipsBeforeThreshold(t *testing.T) {
 	qh.stepAwaitingFillWatchdog(&s)
 	if got := len(s.signals.Data.Signals); got != 0 {
 		t.Errorf("expected no signal before threshold, got %d", got)
+	}
+}
+
+// TestStepAwaitingFillWatchdog_SuppressesFireWhenPlannerActive pins the
+// post-2026-05-06 P2 fix: when the Planner pane shows cross-scan
+// activity (spinner verb, hash delta), the watchdog must skip the fire
+// so a Planner that ran `plan submit --dry-run` and is composing the
+// real submit a few seconds later is NOT flagged as a stall (Report
+// 2026-05-06 P2 — false WARN noise).
+func TestStepAwaitingFillWatchdog_SuppressesFireWhenPlannerActive(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	notifyMin := 5
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &notifyMin
+
+	// Spoof a Planner pane that visibly oscillates content (cross-scan
+	// hash delta) so paneactivity returns VerdictActive on the second
+	// observation.
+	qh.paneFinder = func(string) (string, error) { return "session:0.0", nil }
+	frame := 0
+	qh.paneCapture = func(string) (string, error) {
+		frame++
+		return fmt.Sprintf("Cogitating for %ds (frame %d)", frame*10, frame), nil
+	}
+	// Prime the tracker with a baseline frame ~2 minutes ago so the next
+	// observation crosses minPrevAge and the cross-scan delta is treated
+	// as Active.
+	qh.paneActivity.RecordObservation("planner", "Cogitating for 0s (frame 0)",
+		qh.clock.Now().Add(-2*time.Minute).UTC())
+
+	now := qh.clock.Now()
+	enteredAt := now.Add(-10 * time.Minute).UTC().Format(time.RFC3339) // past 5-min threshold
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{ID: "cmd1", Status: model.StatusInProgress}},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+	if got := len(s.signals.Data.Signals); got != 0 {
+		t.Errorf("expected no fire when Planner pane is VerdictActive, got %d signals", got)
+	}
+}
+
+// TestStepAwaitingFillWatchdog_DoesNotEscalateOnLegitimateThinking pins
+// post-2026-05-06 round-2 P1: when the Planner pane keeps reporting
+// VerdictActive (Opus xhigh-effort thinking) and elapsed is within the
+// 25-min active backstop budget, the watchdog must NOT force-escalate.
+// Tested at elapsed=18min — the false-fire window from the workspace
+// benchmark report.
+func TestStepAwaitingFillWatchdog_DoesNotEscalateOnLegitimateThinking(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	notifyMin := 5
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &notifyMin
+
+	qh.paneFinder = func(string) (string, error) { return "session:0.0", nil }
+	frame := 0
+	qh.paneCapture = func(string) (string, error) {
+		frame++
+		return fmt.Sprintf("Cogitating for %ds (frame %d)", frame*10, frame), nil
+	}
+	qh.paneActivity.RecordObservation("planner", "Cogitating for 0s (frame 0)",
+		qh.clock.Now().Add(-2*time.Minute).UTC())
+
+	now := qh.clock.Now()
+	enteredAt := now.Add(-18 * time.Minute).UTC().Format(time.RFC3339)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{ID: "cmd1", Status: model.StatusInProgress}},
+			},
+		},
+		signals:       fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex:   buildSignalIndex(nil),
+		notifications: fileState[model.NotificationQueue]{Data: model.NotificationQueue{}},
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+
+	for _, n := range s.notifications.Data.Notifications {
+		if n.Type == model.NotificationTypeCommandFailed && n.CommandID == "cmd1" {
+			t.Errorf("legitimate 18min thinking with VerdictActive should NOT escalate; got command_failed notification: %+v", n)
+		}
+	}
+}
+
+// TestStepAwaitingFillWatchdog_PlannerActiveBackstopEscalates pins the
+// wall-clock backstop: even when the Planner pane keeps reporting
+// VerdictActive (spinner alive but LLM wedged), the watchdog must
+// escalate once elapsed exceeds awaitingFillStallActiveBackstop so a
+// "wedged-but-spinning" Planner cannot hold the command in awaiting_fill
+// indefinitely (Report 2026-05-06 P-2 from review). Backstop is
+// decoupled from awaitingFillStallEscalateAfter * threshold so legitimate
+// 15-20min Opus xhigh-effort thinking does not false-fire while the
+// VerdictActive backstop still bounds genuinely wedged spinners
+// (Report 2026-05-06 round-2 P1).
+func TestStepAwaitingFillWatchdog_PlannerActiveBackstopEscalates(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+	notifyMin := 5
+	qh.config.Maestro.AwaitingFillStallNotifyMinutes = &notifyMin
+
+	qh.paneFinder = func(string) (string, error) { return "session:0.0", nil }
+	frame := 0
+	qh.paneCapture = func(string) (string, error) {
+		frame++
+		return fmt.Sprintf("Cogitating for %ds (frame %d)", frame*10, frame), nil
+	}
+	qh.paneActivity.RecordObservation("planner", "Cogitating for 0s (frame 0)",
+		qh.clock.Now().Add(-2*time.Minute).UTC())
+
+	now := qh.clock.Now()
+	// elapsed = 30 min — past the 5×5=25 min backstop budget.
+	enteredAt := now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:                "p_fixes",
+			Name:              "fixes",
+			Status:            model.PhaseStatusAwaitingFill,
+			AwaitingFillSince: &enteredAt,
+		},
+	})
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{ID: "cmd1", Status: model.StatusInProgress}},
+			},
+		},
+		signals:       fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex:   buildSignalIndex(nil),
+		notifications: fileState[model.NotificationQueue]{Data: model.NotificationQueue{}},
+	}
+
+	qh.stepAwaitingFillWatchdog(&s)
+
+	// Backstop escalation calls escalateAwaitingFillStall, which appends
+	// a command_failed notification. The signal queue may or may not be
+	// touched depending on whether the escalation also writes a stall
+	// signal first; the canonical assertion is that a command_failed
+	// notification is queued.
+	gotEscalation := false
+	for _, n := range s.notifications.Data.Notifications {
+		if n.Type == model.NotificationTypeCommandFailed && n.CommandID == "cmd1" {
+			gotEscalation = true
+		}
+	}
+	if !gotEscalation {
+		t.Errorf("expected command_failed notification from backstop escalation, got notifications=%+v signals=%+v",
+			s.notifications.Data.Notifications, s.signals.Data.Signals)
 	}
 }
 

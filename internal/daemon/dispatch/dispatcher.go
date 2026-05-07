@@ -170,15 +170,26 @@ func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityI
 	}
 	result := exec.Execute(req)
 	if result.Error != nil {
-		// ErrSubmitConfirmUncertain is a false-negative-prone signal: the
-		// paste already landed and the downstream agent will start
-		// processing, but the post-paste probe failed to see a Claude UI
-		// marker within its budget. Demote to WARN so the signal is
-		// visible but does not page; the dispatch_uncertain_assume_running
-		// path in queue_scan_apply.go is the canonical operator-facing
-		// breadcrumb for this case.
+		// Severity policy:
+		//   - ErrSubmitConfirmUncertain → INFO. The paste already landed and
+		//     the downstream agent will start processing; the post-paste
+		//     probe just failed to see a Claude UI marker within its budget.
+		//     The queue path emits dispatch_uncertain_assume_running as the
+		//     canonical operator breadcrumb. Reported 2026-05-04 as alarm
+		//     fatigue: every successful task whose probe was over-cautious
+		//     surfaced a WARN+`error=submit confirmation uncertain`.
+		//   - Retryable failures → WARN. The inline retry loop will try
+		//     again, so an ERROR misrepresents this as a final failure.
+		//     Reported 2026-05-04: `clear_confirm: /clear not confirmed
+		//     ... retryable=true` printed at ERROR, but the next attempt
+		//     succeeded — alarm noise without a real outage.
+		//   - Non-retryable failures → ERROR. These actually stop the
+		//     pipeline and need operator attention.
 		level := core.LogLevelError
-		if errors.Is(result.Error, agent.ErrSubmitConfirmUncertain) {
+		switch {
+		case errors.Is(result.Error, agent.ErrSubmitConfirmUncertain):
+			level = core.LogLevelInfo
+		case result.Retryable:
 			level = core.LogLevelWarn
 		}
 		disp.dl.Logf(level, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
@@ -243,7 +254,11 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 		// have already succeeded (e.g. SetStatus error after delivery), so a
 		// retry would re-deliver the envelope and trigger duplicate plan submit.
 		if !retryable {
-			disp.dl.Logf(core.LogLevelWarn, "command_dispatch_non_retryable id=%s attempt=%d error=%v",
+			level := core.LogLevelWarn
+			if errors.Is(err, agent.ErrSubmitConfirmUncertain) {
+				level = core.LogLevelInfo
+			}
+			disp.dl.Logf(level, "command_dispatch_non_retryable id=%s attempt=%d error=%v",
 				cmd.ID, attempt+1, err)
 			return lastErr
 		}
@@ -373,9 +388,16 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 			return nil
 		}
 		lastErr = err
-		// Same non-retryable abort semantics as DispatchCommand.
+		// Same non-retryable abort semantics as DispatchCommand. Demote
+		// ErrSubmitConfirmUncertain to INFO: queue_scan_apply.go converts
+		// it to dispatch_uncertain_assume_running (lease retained, worker
+		// proceeds), so emitting WARN here just doubles the alarm noise.
 		if !retryable {
-			disp.dl.Logf(core.LogLevelWarn, "task_dispatch_non_retryable id=%s worker=%s attempt=%d error=%v",
+			level := core.LogLevelWarn
+			if errors.Is(err, agent.ErrSubmitConfirmUncertain) {
+				level = core.LogLevelInfo
+			}
+			disp.dl.Logf(level, "task_dispatch_non_retryable id=%s worker=%s attempt=%d error=%v",
 				task.ID, workerID, attempt+1, err)
 			return lastErr
 		}

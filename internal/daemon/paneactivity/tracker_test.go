@@ -127,7 +127,15 @@ func TestTracker_TailChangesAreActive(t *testing.T) {
 // normalisation collapses timer noise so a hung process is detected as
 // Idle while real output (filenames, log lines, test names) still flips
 // the verdict to Active.
-func TestTracker_NumericTickerInTailIsIdle(t *testing.T) {
+// TestTracker_NumericTickerWithVerbStaysActive: a pane whose tail
+// contains an activity verb (Running…) plus a ticking timer — the
+// canonical "subprocess is running, agent UI is rendering" shape — must
+// resolve to Active so the lease is preserved while the subprocess
+// completes. Pre-2026-05-05 this branch returned Idle and the lease
+// was destructively released, double-dispatching the still-running
+// task (Report 2026-05-05 P0-1). max_in_progress_min remains the
+// wall-clock back-stop for genuinely hung panes.
+func TestTracker_NumericTickerWithVerbStaysActive(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
 	t1 := t0.Add(60 * time.Second)
@@ -148,33 +156,30 @@ func TestTracker_NumericTickerInTailIsIdle(t *testing.T) {
 		return out
 	}
 
-	if v := tr.ObserveVerdict("worker1", frame(5), time.Minute, t0); v != VerdictUncertain {
-		t.Fatalf("first capture should be Uncertain, got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame(5), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("verb tail must yield Active via default-hint, got %v", v)
 	}
-	if v := tr.ObserveVerdict("worker1", frame(65), time.Minute, t1); v != VerdictIdle {
-		t.Fatalf("ticking timer alone must NOT pin verdict to Active; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame(65), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("ticking timer with verb must remain Active; got %v", v)
 	}
-	if v := tr.ObserveVerdict("worker1", frame(125), time.Minute, t2); v != VerdictIdle {
-		t.Fatalf("repeat ticker must remain VerdictIdle; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame(125), time.Minute, t2); v != VerdictActive {
+		t.Fatalf("repeat ticker with verb must remain Active; got %v", v)
 	}
 }
 
-// TestTracker_SpinnerOnlyChangeIsIdle: spinner glyph rotation
-// (✻ → ⠋ → ⠙ → ...) plus a ticking counter is pure UI animation, not
-// real progress. Both numeric and spinner noise must be collapsed
-// before hashing so the verdict resolves to Idle.
-func TestTracker_SpinnerOnlyChangeIsIdle(t *testing.T) {
+// TestTracker_SpinnerWithVerbStaysActive: spinner glyph rotation plus a
+// ticking counter alongside an activity verb (Running…) is the
+// canonical agent-busy UI shape and must resolve to Active.
+// max_in_progress_min provides the wall-clock back-stop for genuinely
+// hung panes.
+func TestTracker_SpinnerWithVerbStaysActive(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
 	t1 := t0.Add(60 * time.Second)
 	t2 := t1.Add(60 * time.Second)
 
-	// Build a frame with a rotating spinner + ticking counter; nothing
-	// else changes. The bottom of the pane is the agent UI status line
-	// the user reproduced in the e2e regression.
 	frame := func(spinner rune, elapsed int) string {
 		out := ""
-		// Pad scrollback so the relevant tail dominates.
 		for i := 0; i < 30; i++ {
 			out += "scrollback-" + string(rune('a'+i%26)) + "\n"
 		}
@@ -184,85 +189,31 @@ func TestTracker_SpinnerOnlyChangeIsIdle(t *testing.T) {
 		return out
 	}
 
-	if v := tr.ObserveVerdict("worker1", frame('✻', 5), time.Minute, t0); v != VerdictUncertain {
-		t.Fatalf("first capture should be Uncertain, got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame('✻', 5), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("first capture with verb tail must yield Active, got %v", v)
 	}
-	// Spinner advances and timer ticks — pure UI animation, no real
-	// progress. Must NOT be Active.
-	if v := tr.ObserveVerdict("worker1", frame('⠋', 65), time.Minute, t1); v != VerdictIdle {
-		t.Fatalf("spinner+timer-only change must NOT pin verdict to Active; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame('⠋', 65), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("spinner+verb must remain Active; got %v", v)
 	}
-	if v := tr.ObserveVerdict("worker1", frame('⠙', 125), time.Minute, t2); v != VerdictIdle {
-		t.Fatalf("repeated spinner+timer change must remain VerdictIdle; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame('⠙', 125), time.Minute, t2); v != VerdictActive {
+		t.Fatalf("repeated spinner+verb must remain Active; got %v", v)
 	}
 }
 
-// TestTracker_TimerUnitFlipIsIdle: a timer counter rolling from "45s" to
-// "1m 5s" between scans must collapse to the same hash. Pure numeric
-// normalisation would leave the trailing unit letters "s" -> "m 5s"
-// differing; unit-aware normalisation collapses the digit-and-unit pair
-// so a unit roll-over produces a stable hash.
-func TestTracker_TimerUnitFlipIsIdle(t *testing.T) {
-	tr := New(nil)
-	t0 := time.Now().UTC()
-	t1 := t0.Add(60 * time.Second)
-	t2 := t1.Add(60 * time.Second)
-
-	frame := func(timer string) string {
-		out := ""
-		for i := 0; i < 30; i++ {
-			out += "scrollback line\n"
-		}
-		out += "$ sh -c 'sleep 600'\n"
-		out += "  ✻ Running… (" + timer + " · esc to interrupt)\n"
-		return out
-	}
-
-	if v := tr.ObserveVerdict("worker1", frame("45s"), time.Minute, t0); v != VerdictUncertain {
-		t.Fatalf("first capture should be Uncertain, got %v", v)
-	}
-	// Timer rolls "45s" → "1m 5s": digit AND unit changed.
-	if v := tr.ObserveVerdict("worker1", frame("1m 5s"), time.Minute, t1); v != VerdictIdle {
-		t.Fatalf("digit+unit-flip in timer must NOT pin verdict to Active; got %v", v)
-	}
-	if v := tr.ObserveVerdict("worker1", frame("2m 5s"), time.Minute, t2); v != VerdictIdle {
-		t.Fatalf("repeated digit+unit-flip must remain VerdictIdle; got %v", v)
-	}
-}
-
-// TestTracker_TokenCountFlipIsIdle: tokens counter "1234 tokens" → "12.3k
-// tokens" is a unit roll-over that pure numeric normalisation would still
-// leave with a residual hash delta because the inserted "k" is alphabetic.
-func TestTracker_TokenCountFlipIsIdle(t *testing.T) {
-	tr := New(nil)
-	t0 := time.Now().UTC()
-	t1 := t0.Add(60 * time.Second)
-
-	frame := func(tokens string) string {
-		out := ""
-		for i := 0; i < 30; i++ {
-			out += "scrollback line\n"
-		}
-		out += "  ✻ Running… (5s · ↑ " + tokens + " · esc to interrupt)\n"
-		return out
-	}
-
-	if v := tr.ObserveVerdict("worker1", frame("1234 tokens"), time.Minute, t0); v != VerdictUncertain {
-		t.Fatalf("first capture should be Uncertain, got %v", v)
-	}
-	if v := tr.ObserveVerdict("worker1", frame("12.3k tokens"), time.Minute, t1); v != VerdictIdle {
-		t.Fatalf("token unit roll-over must NOT pin verdict to Active; got %v", v)
-	}
-}
-
-// TestTracker_ActivityVerbAnimationIsIdle: a hung worker pane whose
-// Claude Code UI rotates the activity verb between scans ("Thinking…" ->
-// "Pondering…" -> "Crafting…") would otherwise produce a fresh tail hash
-// every observation. The verb churn must be collapsed at the
-// normalisation layer; no busy_pattern alone can distinguish a real
-// agent doing real work (which also matches the verbs) from a stuck
-// one whose only motion is the cosmetic verb spinner.
-func TestTracker_ActivityVerbAnimationIsIdle(t *testing.T) {
+// TestTracker_VerbAnimationKeepsActiveByDefaultHint: a pane whose Claude
+// Code TUI rotates an activity verb ("✻ Running… (45s)") between scans
+// MUST be classified Active even when the hash is identical (the
+// long-running subprocess holds the same animation frame for >60s).
+//
+// The earlier contract returned Idle for "verb animation only" so a
+// genuinely hung pane could be released, but the package-proxy regression
+// (Report 2026-05-05 P0-1) showed the inverse failure mode is much
+// worse: pnpm install holding the same `✶ Verifying…` frame caused
+// Idle → lease release → double-dispatch to the still-running worker.
+// max_in_progress_min remains the wall-clock back-stop for genuinely
+// hung panes, so over-permissive Active here only delays recovery; it
+// never disables it.
+func TestTracker_VerbAnimationKeepsActiveByDefaultHint(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
 	t1 := t0.Add(60 * time.Second)
@@ -278,14 +229,100 @@ func TestTracker_ActivityVerbAnimationIsIdle(t *testing.T) {
 		return out
 	}
 
-	if v := tr.ObserveVerdict("worker1", frame("Thinking", 5), time.Minute, t0); v != VerdictUncertain {
+	if v := tr.ObserveVerdict("worker1", frame("Thinking", 5), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("verb animation tail must yield VerdictActive (default-hint catches the verb), got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("Pondering", 65), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("repeated verb animation must remain VerdictActive; got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("Crafting", 125), time.Minute, t2); v != VerdictActive {
+		t.Fatalf("repeated verb animation must remain VerdictActive; got %v", v)
+	}
+}
+
+// TestTracker_BareTimerWithoutVerbIsIdle pins the symmetric guarantee:
+// when the tail has NO activity verb / spinner glyph and only a numeric
+// timer is ticking, the cross-scan delta still resolves to Idle so a
+// genuinely-hung pane that someone hand-rolled without an animation marker
+// can still be released by the busy-check probe.
+func TestTracker_BareTimerWithoutVerbIsIdle(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+	t2 := t1.Add(60 * time.Second)
+
+	frame := func(timer string) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		// No activity verb, no spinner glyph — just a bare timer that
+		// pure normalisation must collapse to a stable hash.
+		out += "$ sh -c 'sleep 600'\n"
+		out += "elapsed: " + timer + "\n"
+		return out
+	}
+
+	if v := tr.ObserveVerdict("worker1", frame("45s"), time.Minute, t0); v != VerdictUncertain {
 		t.Fatalf("first capture should be Uncertain, got %v", v)
 	}
-	if v := tr.ObserveVerdict("worker1", frame("Pondering", 65), time.Minute, t1); v != VerdictIdle {
-		t.Fatalf("verb animation must NOT pin verdict to Active; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame("1m 5s"), time.Minute, t1); v != VerdictIdle {
+		t.Fatalf("bare timer flip without activity verb must remain VerdictIdle; got %v", v)
 	}
-	if v := tr.ObserveVerdict("worker1", frame("Crafting", 125), time.Minute, t2); v != VerdictIdle {
-		t.Fatalf("repeated verb animation must remain VerdictIdle; got %v", v)
+	if v := tr.ObserveVerdict("worker1", frame("2m 5s"), time.Minute, t2); v != VerdictIdle {
+		t.Fatalf("repeated bare timer flip must remain VerdictIdle; got %v", v)
+	}
+}
+
+// TestTracker_JapaneseVerbAnimationIsActive verifies that the
+// daemon-side default hint catches Japanese verb animations
+// (claude-code Japanese-locale UI: "✶ 検証中…", "⎿ 待機中…"). This is
+// the precise marker the package-proxy regression observed when
+// pnpm install kept the TUI on `✶ 検証中…` for >60s.
+func TestTracker_JapaneseVerbAnimationIsActive(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+
+	frame := func(verb string) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		out += "  ✶ " + verb + "… (45s · esc to interrupt)\n"
+		return out
+	}
+
+	if v := tr.ObserveVerdict("worker1", frame("検証中"), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("Japanese verb 検証中 must trigger active-hint, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("検証中"), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("repeated Japanese verb must remain VerdictActive; got %v", v)
+	}
+}
+
+// TestTracker_ClaudeSubprocessOutputMarkerIsActive: claude-code's `⎿ `
+// prefix on subprocess stderr/stdout lines is unambiguous evidence the
+// agent is rendering live tool output.
+func TestTracker_ClaudeSubprocessOutputMarkerIsActive(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+
+	frame := func(line string) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		out += "  ⎿ " + line + "\n"
+		return out
+	}
+
+	if v := tr.ObserveVerdict("worker1", frame("compiling foo.go"), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("⎿ subprocess marker must trigger active-hint, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("compiling foo.go"), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("repeated ⎿ marker must remain VerdictActive; got %v", v)
 	}
 }
 
@@ -504,43 +541,162 @@ func TestTracker_ObserveVerdict_SameScanDuplicateNotStreaked(t *testing.T) {
 	}
 }
 
-// TestTracker_ObserveVerdict_BlockedPromptForcesIdle: when the captured
-// pane content contains a confirmation-prompt shape (the agent CLI is
-// blocked asking the operator to choose Yes/No), ObserveVerdict
-// overrides to VerdictIdle so the lease can drain and the busy-check
-// release path can pick up. Critical because the busy-pattern match
-// would otherwise pin the verdict to Active forever, leaving the
-// worker stuck on the prompt while the daemon perceives liveness from
-// leftover scrollback.
-func TestTracker_ObserveVerdict_BlockedPromptForcesIdle(t *testing.T) {
+// TestTracker_ObserveVerdict_BlockedPromptReturnsBlocked: when the
+// captured pane content contains a confirmation-prompt shape (the
+// agent CLI is blocked asking the operator to choose Yes/No),
+// ObserveVerdict returns the dedicated VerdictBlocked. Callers treat
+// VerdictBlocked the same as VerdictActive for lease extension (the
+// agent process is alive) but MUST NOT refresh circuit-breaker
+// progress timestamps so progress_timeout can still trip after the
+// configured window. Earlier versions returned VerdictIdle which let
+// the busy-check release the lease, racing with eventual operator
+// approval and surfacing as FENCING_REJECT when the worker's already-
+// in-flight Bash invocation finally fired (Reports 1 & 2 of
+// 2026-05-03); a follow-up VerdictActive variant kept the lease alive
+// but inadvertently refreshed last_progress_at via MarkProgress and
+// defeated the back-stop (Reports of 2026-05-04).
+func TestTracker_ObserveVerdict_BlockedPromptReturnsBlocked(t *testing.T) {
 	tr := New(regexp.MustCompile(`Working|Thinking`))
 	t0 := time.Now().UTC()
 
-	// Real Claude Code blocked-on-confirmation pane snapshot — note the
-	// "Thinking" word in scrollback that would otherwise win the
-	// busy-pattern fast path.
 	content := "✻ Thinking… (some scrollback)\n" +
 		"Do you want to create verify.sh?\n" +
 		"❯ 1. Yes\n" +
 		"  2. Yes, and allow Claude to edit its own settings for this session\n" +
 		"  3. No\n"
 
-	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictIdle {
-		t.Fatalf("blocked confirmation prompt must yield VerdictIdle (force release), got %s", v)
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("blocked confirmation prompt must yield VerdictBlocked, got %s", v)
 	}
 }
 
-// TestTracker_ObserveVerdict_BlockedShellPromptForcesIdle exercises the
-// (y/n) tail variant of the blocked detector so the same recovery path
-// works for shell-style confirmations issued by language-agnostic CLIs
-// (npm, brew, apt, etc.).
-func TestTracker_ObserveVerdict_BlockedShellPromptForcesIdle(t *testing.T) {
+// TestTracker_ObserveVerdict_BlockedPromptInBox: claude-code 2.x wraps
+// the approval prompt in a Unicode box with `│ ` line prefixes. The
+// blocked-prompt regex must match through the box-drawing prefix so the
+// daemon observes the prompt and the blocked-pane timeout can fail the
+// task. Pre-2026-05-05 the strict `^[ \t]*` anchor missed these and the
+// pane sat wedged for 30 minutes until the circuit breaker tripped
+// (Report 2026-05-05 P0-2).
+func TestTracker_ObserveVerdict_BlockedPromptInBox(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	content := "● Bash(pnpm install)\n" +
+		"  ⎿ Running…\n" +
+		"\n" +
+		"╭───────────────────────────────────────────────╮\n" +
+		"│ Bash command                                  │\n" +
+		"│   pnpm install                                │\n" +
+		"│                                               │\n" +
+		"│ Do you want to proceed?                       │\n" +
+		"│ ❯ 1. Yes                                      │\n" +
+		"│   2. Yes, and don't ask again                 │\n" +
+		"│   3. No                                       │\n" +
+		"╰───────────────────────────────────────────────╯\n"
+
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("box-wrapped approval prompt must yield VerdictBlocked, got %s", v)
+	}
+}
+
+// TestTracker_ObserveVerdict_BlockedFileEditPrompt: claude-code 2.x asks
+// "Do you want to make this edit to <file>?" before modifying paths
+// like .claude/verify.sh even with --dangerously-skip-permissions
+// (Report 2026-05-05). Pattern H must catch this.
+func TestTracker_ObserveVerdict_BlockedFileEditPrompt(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	content := "Edit operation requested.\n" +
+		"\n" +
+		"│ Do you want to make this edit to verify.sh?   │\n" +
+		"│ ❯ 1. Yes                                      │\n" +
+		"│   2. No                                       │\n"
+
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("file-edit confirmation must yield VerdictBlocked, got %s", v)
+	}
+}
+
+// TestTracker_ObserveVerdict_BlockedShellPromptReturnsBlocked exercises
+// the (y/n) tail variant — same dedicated VerdictBlocked output for
+// shell-style confirmations issued by language-agnostic CLIs (npm,
+// brew, apt, etc.).
+func TestTracker_ObserveVerdict_BlockedShellPromptReturnsBlocked(t *testing.T) {
 	tr := New(nil)
 	t0 := time.Now().UTC()
 
 	content := "Some output\n...\nProceed? (Y/n)"
-	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictIdle {
-		t.Fatalf("shell (Y/n) prompt must yield VerdictIdle, got %s", v)
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("shell (Y/n) prompt must yield VerdictBlocked, got %s", v)
+	}
+}
+
+// TestTracker_BlockedSince_StampedOnFirstBlockedAndStable verifies that
+// BlockedSince is recorded on the FIRST blocked observation and preserved
+// across consecutive blocked outcomes so callers can compute total wedged
+// time. The queue scanner relies on this to enforce a tight blocked-pane
+// timeout that fails the in-flight task before circuit_breaker
+// progress_timeout (30 min default) would.
+func TestTracker_BlockedSince_StampedOnFirstBlockedAndStable(t *testing.T) {
+	tr := New(nil)
+	if _, ok := tr.BlockedSince("worker1"); ok {
+		t.Fatalf("BlockedSince must be unset before any observation")
+	}
+
+	t0 := time.Now().UTC()
+	content := "Do you want to proceed?\n❯ 1. Yes\n  2. No"
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("first blocked observation must yield VerdictBlocked, got %s", v)
+	}
+	first, ok := tr.BlockedSince("worker1")
+	if !ok || !first.Equal(t0) {
+		t.Fatalf("BlockedSince must be stamped to t0 on first blocked, got ok=%v ts=%v", ok, first)
+	}
+
+	// Consecutive blocked observation MUST NOT slide the timestamp forward —
+	// callers compute (now - blockedSince) as the wedged duration.
+	t1 := t0.Add(2 * time.Minute)
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t1); v != VerdictBlocked {
+		t.Fatalf("second blocked observation must yield VerdictBlocked, got %s", v)
+	}
+	second, ok := tr.BlockedSince("worker1")
+	if !ok || !second.Equal(t0) {
+		t.Fatalf("BlockedSince must remain at t0 across consecutive blocked, got ok=%v ts=%v", ok, second)
+	}
+}
+
+// TestTracker_BlockedSince_ClearedOnNonBlocked verifies that any
+// non-blocked verdict (Active / Idle / Uncertain) clears the
+// blocked-since timestamp so a subsequent block starts a fresh run.
+func TestTracker_BlockedSince_ClearedOnNonBlocked(t *testing.T) {
+	tr := New(regexp.MustCompile(`Thinking`))
+	t0 := time.Now().UTC()
+	blockedContent := "Do you want to proceed?\n❯ 1. Yes"
+	if v := tr.ObserveVerdict("worker1", blockedContent, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("first observation must yield VerdictBlocked, got %s", v)
+	}
+	if _, ok := tr.BlockedSince("worker1"); !ok {
+		t.Fatalf("BlockedSince must be set after a blocked observation")
+	}
+
+	// Active verdict (busy_pattern match) must clear blocked-since.
+	t1 := t0.Add(time.Minute)
+	if v := tr.ObserveVerdict("worker1", "✻ Thinking…", time.Minute, t1); v != VerdictActive {
+		t.Fatalf("active observation must yield VerdictActive, got %s", v)
+	}
+	if _, ok := tr.BlockedSince("worker1"); ok {
+		t.Fatalf("BlockedSince must be cleared after a non-blocked observation")
+	}
+
+	// New blocked run must stamp a fresh timestamp.
+	t2 := t1.Add(time.Minute)
+	if v := tr.ObserveVerdict("worker1", blockedContent, time.Minute, t2); v != VerdictBlocked {
+		t.Fatalf("third observation must yield VerdictBlocked, got %s", v)
+	}
+	since, ok := tr.BlockedSince("worker1")
+	if !ok || !since.Equal(t2) {
+		t.Fatalf("BlockedSince must be stamped to t2 on the new blocked run, got ok=%v ts=%v", ok, since)
 	}
 }
 
@@ -579,5 +735,258 @@ func TestTracker_ObserveVerdict_ActiveResetsUncertainStreak(t *testing.T) {
 	t2 := t1.Add(time.Second)
 	if v := tr.ObserveVerdict("worker1", "second", time.Minute, t2); v != VerdictUncertain {
 		t.Fatalf("Uncertain after streak reset must yield Uncertain (grace), got %s", v)
+	}
+}
+
+// TestTracker_HintLogThrottle pins the post-2026-05-06 throttle on
+// `pane_blocked_prompt_hint_unmatched`: a hint log for the same
+// (agent, hint-class) is suppressed within blockedHintLogWindow, but a
+// new hint class re-emits immediately. Pre-2026-05-06 this throttle
+// keyed on the tail hash and let spinner / counter noise slip through
+// (Report 2026-05-06 P1-3, P2-3). Direct unit test against
+// shouldEmitHintLog so the assertion does not depend on slog output
+// capture.
+func TestTracker_HintLogThrottle(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	// First emission for an agent always passes.
+	if !tr.shouldEmitHintLog("worker1", "❯", t0) {
+		t.Fatalf("first hint log for agent must emit")
+	}
+	// Same hint class within the window is suppressed (even though
+	// real tail bytes would have shifted because of timer / spinner
+	// noise — keying on hint-class makes the throttle robust).
+	if tr.shouldEmitHintLog("worker1", "❯", t0.Add(blockedHintLogWindow/2)) {
+		t.Fatalf("duplicate hint log within window must be suppressed")
+	}
+	// Same hint class after the window passes.
+	if !tr.shouldEmitHintLog("worker1", "❯", t0.Add(blockedHintLogWindow+time.Second)) {
+		t.Fatalf("hint log after window must re-emit")
+	}
+	// Different hint class emits immediately, regardless of window.
+	if !tr.shouldEmitHintLog("worker1", "do you want", t0.Add(blockedHintLogWindow+2*time.Second)) {
+		t.Fatalf("changed hint class must re-emit immediately")
+	}
+	// Different agent has its own throttle bucket.
+	if !tr.shouldEmitHintLog("worker2", "❯", t0) {
+		t.Fatalf("different agent must have an independent throttle bucket")
+	}
+}
+
+// TestTracker_HintLogThrottle_StableAcrossSpinnerNoise pins the
+// behaviour the previous tail-hash throttle missed: when the pane is
+// stuck on a confirmation prompt, surrounding spinner / counter
+// rotation should NOT defeat the throttle. classifyBlockedHint folds
+// spinner-driven cross-scan delta into a stable hint class.
+func TestTracker_HintLogThrottle_StableAcrossSpinnerNoise(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	frames := []string{
+		"❯ 1. Yes\n  2. No\n✻ Cogitating for 1m 38s",
+		"❯ 1. Yes\n  2. No\n✻ Cogitating for 1m 39s",
+		"❯ 1. Yes\n  2. No\n✻ Cogitating for 1m 40s",
+		"❯ 1. Yes\n  2. No\n◆ Pondering for 1m 41s",
+	}
+	emitted := 0
+	for i, f := range frames {
+		if hintClass := classifyBlockedHint(f); hintClass != "" {
+			if tr.shouldEmitHintLog("worker1", hintClass, t0.Add(time.Duration(i)*5*time.Second)) {
+				emitted++
+			}
+		}
+	}
+	if emitted != 1 {
+		t.Errorf("expected exactly 1 emission across spinner/counter noise, got %d", emitted)
+	}
+}
+
+// TestTracker_TerminalErrorDetectedFromPaneContent pins the post-2026-05-06
+// P0-2 fix: when the agent runtime emits a non-recoverable error frame
+// (Claude API 4xx, content filter, invalid_request_error), ObserveVerdict
+// must return VerdictTerminalError so the queue scanner can fail the
+// task immediately instead of extending the lease for max_in_progress_min.
+func TestTracker_TerminalErrorDetectedFromPaneContent(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "claude content filter",
+			content: `> Working on task...
+API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Output blocked by content filtering policy"}}`,
+		},
+		{
+			name:    "anthropic invalid_request_error",
+			content: `Claude returned: invalid_request_error: max_tokens exceeded`,
+		},
+		{
+			name:    "permission_error",
+			content: `API Error: 403 permission_error organization disabled`,
+		},
+		{
+			name:    "authentication_error",
+			content: `authentication_error: revoked api key`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr2 := New(nil)
+			if v := tr2.ObserveVerdict("worker1", tc.content, time.Minute, t0); v != VerdictTerminalError {
+				t.Fatalf("%s: expected VerdictTerminalError, got %s", tc.name, v)
+			}
+		})
+	}
+	_ = tr
+}
+
+// TestTracker_TerminalErrorBeatsActiveHint pins precedence: even when the
+// pane content also contains spinner / activity verbs (a stale verb in
+// scrollback alongside the terminal error frame), terminal-error detection
+// MUST win. Without this precedence the lease would keep extending under
+// VerdictActive while the runtime is permanently broken.
+func TestTracker_TerminalErrorBeatsActiveHint(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	content := `Cogitating for 1m 38s
+API Error: 400 Output blocked by content filtering policy
+> _`
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictTerminalError {
+		t.Fatalf("terminal error must win over active hint; got %s", v)
+	}
+}
+
+// TestTracker_BlockedDetector_BareProceedPrompt pins post-2026-05-06
+// P2 #3: a pane wedged on a "Proceed? (y/n)" / "Proceed? [Y/n]" line
+// (the leading "Do you want to ..." has scrolled off the captured
+// region) must be classified as VerdictBlocked so the blocked-pane
+// timeout fires. Y/N suffix is required to avoid false-positive on
+// natural language scrollback (commit messages, man pages, docstrings).
+func TestTracker_BlockedDetector_BareProceedPrompt(t *testing.T) {
+	t0 := time.Now().UTC()
+
+	cases := []string{
+		"some output\nProceed? (y/n)",
+		"...trailing context line\nProceed? [Y/n]",
+		"banner above\nProceed? Y",
+	}
+	for _, content := range cases {
+		tr := New(nil)
+		if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+			t.Errorf("Proceed? prompt with Y/N suffix should be VerdictBlocked, got %s for content=%q", v, content)
+		}
+	}
+}
+
+// TestTracker_BlockedDetector_BashUnsandboxedBanner pins post-2026-05-06
+// P2 #3: Claude Code's `Bash command (unsandboxed) ... Do you want to
+// proceed?` confirmation must be classified as VerdictBlocked. This
+// surfaces when the operator has `bypass permissions on` for normal
+// Bash but the runtime still asks for a per-command sandbox bypass.
+func TestTracker_BlockedDetector_BashUnsandboxedBanner(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	content := "Bash command (unsandboxed)\n  Do you want to proceed?\n  ❯ 1. Yes\n    2. No"
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("Bash (unsandboxed) approval banner should be VerdictBlocked, got %s", v)
+	}
+}
+
+// TestTracker_BlockedDetector_NarrowPatternsAvoidFalsePositive pins
+// post-2026-05-06 round-3 report: the narrow Pattern I (Proceed? + Y/N
+// suffix) and Pattern J (Bash command (unsandboxed)) are tail-only so
+// scrollback occurrences of bare "Proceed?" or "(unsandboxed) mode" in
+// natural-language text (commit messages, man pages, docstrings) MUST
+// NOT trigger VerdictBlocked. The wedged-pane timeout would otherwise
+// fail healthy worker tasks just because a doc-style worker quoted
+// such words in its output.
+func TestTracker_BlockedDetector_NarrowPatternsAvoidFalsePositive(t *testing.T) {
+	t0 := time.Now().UTC()
+
+	notBlocked := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "scrollback_bare_proceed_in_commit_message",
+			content: "commit abc123\n    feat: refactor\n    Proceed? after lint review.\n--- end of log ---\n  ✶ Working on next task",
+		},
+		{
+			name:    "scrollback_proceed_in_man_page_quote",
+			content: "  -y, --yes      Skip 'Proceed?' confirmation\n      Reads CONFIG\n\n  ✶ Reading file...",
+		},
+		{
+			name:    "scrollback_test_name_with_proceed",
+			content: "TestProceed?Cleanup PASSED\nTestNext PASSED\n\n  ✶ Running next suite",
+		},
+		{
+			name:    "scrollback_unsandboxed_in_doc",
+			content: "Note: when running (unsandboxed) mode, X happens\nSee README for details.\n\n  ✶ Checking dependencies",
+		},
+	}
+	for _, tc := range notBlocked {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := New(nil)
+			if v := tr.ObserveVerdict("worker1", tc.content, time.Minute, t0); v == VerdictBlocked {
+				t.Errorf("%s should NOT match VerdictBlocked, got %s", tc.name, v)
+			}
+		})
+	}
+}
+
+// TestTracker_ContextBudgetExhausted_FastFail pins post-2026-05-06 P1
+// NEW: when the agent TUI shows >=97% context usage in the tail, the
+// pane verdict must be VerdictTerminalError so the queue scanner
+// fails the in-flight task immediately and respawns the pane,
+// avoiding the 30-min wedge observed in workspace benchmark.
+func TestTracker_ContextBudgetExhausted_FastFail(t *testing.T) {
+	t0 := time.Now().UTC()
+
+	exhausted := []struct {
+		name string
+		tail string
+	}{
+		{name: "97_percent_used", tail: "  ✶ Working...\n  [###############---] 97% used"},
+		{name: "99_percent_used", tail: "  Doing things\n  99% used"},
+		{name: "100_percent_used", tail: "  Last turn\n  100% used"},
+		{name: "98_pct_with_space", tail: "  status: 98 % used"},
+	}
+	for _, tc := range exhausted {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := New(nil)
+			if v := tr.ObserveVerdict("worker1", tc.tail, time.Minute, t0); v != VerdictTerminalError {
+				t.Errorf("%s should be VerdictTerminalError, got %s", tc.name, v)
+			}
+		})
+	}
+}
+
+// TestTracker_ContextBudgetExhausted_BelowThreshold pins that context
+// usage below 97% does NOT trigger the fast-fail path, so legitimate
+// large-output tasks (research / docs) are not aborted prematurely.
+func TestTracker_ContextBudgetExhausted_BelowThreshold(t *testing.T) {
+	t0 := time.Now().UTC()
+
+	safe := []struct {
+		name    string
+		content string
+	}{
+		{name: "85_percent_used", content: "  ✶ Working...\n  85% used"},
+		{name: "96_percent_used", content: "  ✶ Compiling\n  96% used"},
+		{name: "scrollback_97_in_benchmark", content: "Benchmark: 97% coverage achieved\n--- end of report ---\n  ✶ Running next test"},
+		{name: "scrollback_100_pct_in_doc", content: "100% of cases pass.\n  ✶ Reading file"},
+	}
+	for _, tc := range safe {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := New(nil)
+			if v := tr.ObserveVerdict("worker1", tc.content, time.Minute, t0); v == VerdictTerminalError {
+				t.Errorf("%s should NOT trigger VerdictTerminalError, got %s (content=%q)", tc.name, v, tc.content)
+			}
+		})
 	}
 }

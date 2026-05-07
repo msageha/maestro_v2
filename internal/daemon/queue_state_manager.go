@@ -71,11 +71,30 @@ type signalDeliveryItem struct {
 
 // worktreeMergeItem captures a phase-boundary worktree merge for Phase B execution.
 type worktreeMergeItem struct {
-	CommandID           string
-	PhaseID             string
-	WorkerIDs           []string
-	WorkerPurposes      map[string]string   // workerID -> task purpose (for commit messages)
-	WorkerExpectedPaths map[string][]string // workerID -> allowed changed paths
+	CommandID      string
+	PhaseID        string
+	WorkerIDs      []string
+	WorkerPurposes map[string]string // workerID -> task purpose (for commit messages)
+}
+
+// runOnIntegrationPreMergeItem captures a focused commit+merge of a
+// RunOnIntegration task's dependency workers, fired in Phase B BEFORE
+// dispatch so that integration reflects the dep state by the time the task
+// runs. Without this, same-phase RunOnIntegration tasks read a stale
+// integration tree and fail with "still missing dep changes".
+//
+// The item is built in Phase A (collectRunOnIntegrationPreMerges) when a
+// RunOnIntegration task becomes ready (deps queue-completed) but its dep
+// workers haven't been integrated yet. Phase B's stepRunOnIntegrationPreMerge
+// commits each dep worker (if dirty) and merges to integration. The
+// dispatch of the RunOnIntegration task itself is intentionally deferred
+// to the next scan so the merge result is observable and IsTaskBlocked can
+// recheck the gate.
+type runOnIntegrationPreMergeItem struct {
+	CommandID      string
+	BlockedTaskID  string   // the RunOnIntegration task awaiting this merge (for logging)
+	DepWorkerIDs   []string // unique dep worker IDs to commit + merge
+	WorkerPurposes map[string]string
 }
 
 // commitFailure records a worker whose CommitWorkerChanges failed.
@@ -122,16 +141,17 @@ type worktreeCleanupResult struct {
 
 // deferredWork collects all slow I/O operations for Phase B execution.
 type deferredWork struct {
-	dispatches          []dispatchItem
-	interrupts          []interruptItem
-	cancelMarks         []cancelMarkItem
-	busyChecks          []busyCheckItem
-	signals             []signalDeliveryItem
-	clears              []string // agent IDs to /clear
-	worktreeMerges      []worktreeMergeItem
-	worktreePublishes   []worktreePublishItem
-	worktreeCleanups    []worktreeCleanupItem
-	cancelledCommandIDs map[string]struct{} // in-memory set of cancel-requested commands for Phase B dispatch guard
+	dispatches                []dispatchItem
+	interrupts                []interruptItem
+	cancelMarks               []cancelMarkItem
+	busyChecks                []busyCheckItem
+	signals                   []signalDeliveryItem
+	clears                    []string // agent IDs to /clear
+	worktreeMerges            []worktreeMergeItem
+	runOnIntegrationPreMerges []runOnIntegrationPreMergeItem
+	worktreePublishes         []worktreePublishItem
+	worktreeCleanups          []worktreeCleanupItem
+	cancelledCommandIDs       map[string]struct{} // in-memory set of cancel-requested commands for Phase B dispatch guard
 }
 
 // dispatchResult captures the outcome of a Phase B dispatch.

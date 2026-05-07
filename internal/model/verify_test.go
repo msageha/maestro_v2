@@ -164,42 +164,61 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			config:  VerifyConfig{},
 			wantErr: false,
 		},
+		// Shell metacharacters are now allowed — verify commands run
+		// under `bash -c`. Operator security policy lives in the
+		// `~/.claude` policy hook, not in this validator.
 		{
-			name:    "semicolon rejected",
-			config:  VerifyConfig{Build: []string{"go build; rm -rf /"}},
-			wantErr: true,
-			errMsg:  "unsupported character \";\"",
+			name:    "semicolon allowed",
+			config:  VerifyConfig{Build: []string{"go build; echo done"}},
+			wantErr: false,
 		},
 		{
-			name:    "double ampersand rejected",
-			config:  VerifyConfig{Lint: []string{"true && rm -rf /"}},
-			wantErr: true,
-			errMsg:  "unsupported character \"&&\"",
+			name:    "double ampersand allowed",
+			config:  VerifyConfig{Lint: []string{"true && echo ok"}},
+			wantErr: false,
 		},
 		{
-			name:    "double pipe rejected",
-			config:  VerifyConfig{Test: []string{"false || rm -rf /"}},
-			wantErr: true,
-			errMsg:  "unsupported character \"||\"",
+			name:    "double pipe allowed",
+			config:  VerifyConfig{Test: []string{"false || echo fallback"}},
+			wantErr: false,
 		},
 		{
-			name:    "backtick rejected",
+			name:    "backtick allowed",
 			config:  VerifyConfig{Build: []string{"echo `whoami`"}},
-			wantErr: true,
-			errMsg:  "unsupported character \"`\"",
+			wantErr: false,
 		},
 		{
-			name:    "dollar paren rejected",
+			name:    "dollar paren allowed",
 			config:  VerifyConfig{Build: []string{"echo $(whoami)"}},
-			wantErr: true,
-			errMsg:  "unsupported character \"$(\"",
+			wantErr: false,
 		},
 		{
-			name:    "dollar brace rejected",
+			name:    "dollar brace allowed",
 			config:  VerifyConfig{Build: []string{"echo ${HOME}"}},
-			wantErr: true,
-			errMsg:  "unsupported character \"${\"",
+			wantErr: false,
 		},
+		{
+			name:    "pipe allowed",
+			config:  VerifyConfig{Build: []string{"cmd1 | cmd2"}},
+			wantErr: false,
+		},
+		{
+			name:    "less-than allowed",
+			config:  VerifyConfig{Build: []string{"cmd < input.txt"}},
+			wantErr: false,
+		},
+		{
+			name:    "greater-than allowed",
+			config:  VerifyConfig{Build: []string{"cmd > output.txt"}},
+			wantErr: false,
+		},
+		{
+			name:    "shell c allowed",
+			config:  VerifyConfig{Build: []string{`bash -lc "sleep 1; echo done"`}},
+			wantErr: false,
+		},
+		// Empty / multi-line commands are still rejected — they break
+		// the YAML document or single-line invariant.
 		{
 			name:    "empty command rejected",
 			config:  VerifyConfig{Build: []string{""}},
@@ -213,24 +232,6 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			errMsg:  "empty command",
 		},
 		{
-			name:    "pipe rejected",
-			config:  VerifyConfig{Build: []string{"cmd1 | cmd2"}},
-			wantErr: true,
-			errMsg:  `unsupported character "|"`,
-		},
-		{
-			name:    "less-than rejected",
-			config:  VerifyConfig{Build: []string{"cmd < input.txt"}},
-			wantErr: true,
-			errMsg:  `unsupported character "<"`,
-		},
-		{
-			name:    "greater-than rejected",
-			config:  VerifyConfig{Build: []string{"cmd > output.txt"}},
-			wantErr: true,
-			errMsg:  `unsupported character ">"`,
-		},
-		{
 			name:    "newline rejected",
 			config:  VerifyConfig{Build: []string{"cmd1\ncmd2"}},
 			wantErr: true,
@@ -241,18 +242,6 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			config:  VerifyConfig{Build: []string{"cmd1\rcmd2"}},
 			wantErr: true,
 			errMsg:  "unsupported character",
-		},
-		{
-			name:    "unterminated quote rejected",
-			config:  VerifyConfig{Build: []string{`printf "unterminated`}},
-			wantErr: true,
-			errMsg:  "unterminated quote",
-		},
-		{
-			name:    "shell c rejected",
-			config:  VerifyConfig{Build: []string{`sh -c "go test ./..."`}},
-			wantErr: true,
-			errMsg:  "shell -c is not supported",
 		},
 	}
 	for _, tt := range tests {
@@ -270,10 +259,20 @@ func TestVerifyConfig_Validate(t *testing.T) {
 
 func TestParseVerifyCommand(t *testing.T) {
 	t.Parallel()
-	got, err := ParseVerifyCommand(`CGO_ENABLED=0 go test -run "Test With Space" ./...`)
+	// Verify commands now run under `bash -c` so the LLM-authored
+	// snapshot can use natural shell syntax. ParseVerifyCommand wraps
+	// the command verbatim instead of splitting it into env / argv.
+	cmd := `CGO_ENABLED=0 go test -run "Test With Space" ./...`
+	got, err := ParseVerifyCommand(cmd)
 	require.NoError(t, err)
-	assert.Equal(t, []string{"CGO_ENABLED=0"}, got.Env)
-	assert.Equal(t, []string{"go", "test", "-run", "Test With Space", "./..."}, got.Args)
+	assert.Equal(t, []string{"bash", "-c", cmd}, got.Args)
+	assert.Empty(t, got.Env)
+}
+
+func TestParseVerifyCommand_RejectsEmpty(t *testing.T) {
+	t.Parallel()
+	_, err := ParseVerifyCommand("   ")
+	require.Error(t, err)
 }
 
 func TestLoadSaveVerifyConfig_RoundTrip(t *testing.T) {
@@ -300,37 +299,81 @@ func TestLoadVerifyConfig_FileNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "load verify config")
 }
 
-func TestLoadVerifyConfig_RejectsUnsupportedChars(t *testing.T) {
+func TestLoadVerifyConfig_AcceptsShellMetacharacters(t *testing.T) {
+	// verify commands run under `bash -c`, so shell metacharacters are
+	// allowed. Operator security policy lives in `~/.claude` policy
+	// hooks rather than in this validator (Report 2026-05-06 issue-3 —
+	// the previous metacharacter rejection forced the Planner into a
+	// retry loop with no recovery path).
 	dir := t.TempDir()
 	path := filepath.Join(dir, "verify.yaml")
 
-	// verify.yaml whose build command contains a shell syntax character (&&)
-	// must be rejected at load time. Otherwise, downstream consumers might
-	// pass the string to a shell and execute the second arm.
 	content := `verify:
   build:
-    - go build ./... && rm -rf /
+    - go build ./... && echo done
+  test:
+    - go test ./... | tee /tmp/out
+  lint:
+    - bash -lc "sleep 1; echo lint"
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+
+	cfg, err := LoadVerifyConfig(path)
+	require.NoError(t, err)
+	assert.Len(t, cfg.AllCommands(), 3)
+}
+
+func TestParseVerifyConfigYAML_RejectsUnknownCategoryEvenWhenMixed(t *testing.T) {
+	t.Parallel()
+	// Mixed valid + unknown category. Previously the CLI / UDS write
+	// paths used a non-strict decode and silently dropped slow_lint —
+	// the surviving config was non-empty so the call succeeded and
+	// the operator only learned of the typo at runtime (Report
+	// 2026-05-06 P0-1 / P1-1). ParseVerifyConfigYAML must reject
+	// strict-decode failures even when other categories are populated.
+	body := []byte(`verify:
+  build:
+    - bash -lc "echo valid"
+  slow_lint:
+    - bash -lc "echo slow"
+`)
+	_, err := ParseVerifyConfigYAML(body)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "allowed categories")
+}
+
+func TestParseVerifyConfigYAML_AllowsValidConfig(t *testing.T) {
+	t.Parallel()
+	body := []byte(`verify:
+  build:
+    - bash -lc "echo valid"
+  test:
+    - bash -lc "echo first && echo second"
+`)
+	cfg, err := ParseVerifyConfigYAML(body)
+	require.NoError(t, err)
+	assert.Len(t, cfg.AllCommands(), 2)
+}
+
+func TestLoadVerifyConfig_RejectsUnknownCategory(t *testing.T) {
+	// Strict YAML decode rejects unknown verify categories with a
+	// helpful error rather than silently dropping them. Previously a
+	// snapshot like `verify: { slow_lint: [...] }` produced "verify
+	// config must contain at least one command" — the Planner could
+	// not tell whether the category name or the command body was
+	// wrong, and stalled retrying (Report 2026-05-06 issue-3).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.yaml")
+
+	content := `verify:
+  slow_lint:
+    - go vet ./...
 `
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
 
 	_, err := LoadVerifyConfig(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported character")
-}
-
-func TestLoadOrDefaultVerifyConfig_RejectsUnsupportedChars(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "verify.yaml")
-
-	content := `verify:
-  test:
-    - go test ./... | tee /tmp/out
-`
-	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
-
-	_, err := LoadOrDefaultVerifyConfig(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported character")
+	assert.Contains(t, err.Error(), "allowed categories")
 }
 
 func TestLoadVerifyConfig_InvalidYAML(t *testing.T) {

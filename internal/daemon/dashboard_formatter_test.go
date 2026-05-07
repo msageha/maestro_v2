@@ -98,23 +98,31 @@ func TestDashboardFormatter_FormatDashboard(t *testing.T) {
 	assert.Contains(t, output, "## Recent Activity")
 }
 
-func TestDashboardFormatter_VerifySkipVisible(t *testing.T) {
+// TestDashboardFormatter_VerifyDisabledVisible pins that the dashboard
+// reflects `verify.enabled: false` directly from config.yaml — the
+// previous indirection via `state/verify_status.yaml` was tied to the
+// retired MAESTRO_ALLOW_VERIFY_SKIP emergency env gate.
+func TestDashboardFormatter_VerifyDisabledVisible(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "state"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "state", "verify_status.yaml"), []byte(`
-schema_version: 1
-file_type: verify_status
-mode: skipped
-reason: verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "config.yaml"), []byte(`
+project:
+  name: dashboard-test
+maestro:
+  version: "2.0.0"
+agents:
+  workers:
+    count: 1
+verify:
+  enabled: false
 `), 0o644))
 	fixTestDirPerms(t, tmpDir)
 
 	output, err := NewDashboardFormatter(tmpDir).FormatDashboard()
 	require.NoError(t, err)
-	assert.Contains(t, output, "| Verify    | skipped (verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1) |")
+	assert.Contains(t, output, "| Verify    | disabled (verify.enabled=false in config.yaml) |")
 }
 
 func TestDashboardFormatter_ParseLogFile(t *testing.T) {

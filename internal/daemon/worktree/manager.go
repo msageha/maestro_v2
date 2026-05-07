@@ -147,7 +147,22 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 			_ = wm.gitRun("branch", "-D", integrationBranch)
 			return fmt.Errorf("create integration worktree parent dir: %w", err)
 		}
-		if err := wm.gitRun("worktree", "add", integrationPath, integrationBranch); err != nil {
+		// gitWorktreeAddWithUnstattableFallback handles both:
+		//   (a) the unstattable-file fallback (sandbox / SIP denying
+		//       stat on a tracked file like .env.example), retrying
+		//       with --no-checkout + skip-worktree marks; and
+		//   (b) the partial-directory cleanup so a follow-up retry
+		//       does not hit "fatal: '<path>' already exists".
+		// Both pathologies were observed in 2026-05-06 P0-A/B reports.
+		if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
+			[]string{"worktree", "add", integrationPath, integrationBranch}); err != nil {
+			// Final cleanup pass in case the fallback also failed.
+			if rmErr := os.RemoveAll(integrationPath); rmErr != nil {
+				wm.Log(core.LogLevelWarn,
+					"integration_worktree_partial_cleanup_failed command=%s path=%s error=%v",
+					commandID, integrationPath, rmErr)
+			}
+			_ = wm.gitRun("worktree", "prune", "-v")
 			_ = wm.gitRun("branch", "-D", integrationBranch)
 			return fmt.Errorf("create integration worktree: %w", err)
 		}
@@ -279,7 +294,16 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 		return fmt.Errorf("create worktree parent dir: %w", err)
 	}
 
-	if err := wm.gitRun("worktree", "add", "-b", workerBranch, wtPath, baseSHA); err != nil {
+	if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
+		[]string{"worktree", "add", "-b", workerBranch, wtPath, baseSHA}); err != nil {
+		// Final cleanup pass in case the fallback also failed.
+		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
+			wm.Log(core.LogLevelWarn,
+				"worker_worktree_partial_cleanup_failed command=%s worker=%s path=%s error=%v",
+				commandID, workerID, wtPath, rmErr)
+		}
+		_ = wm.gitRun("worktree", "prune", "-v")
+		_ = wm.gitRun("branch", "-D", workerBranch)
 		return fmt.Errorf("create worktree for %s: %w", workerID, err)
 	}
 
@@ -324,12 +348,21 @@ func (wm *Manager) GetWorkerPath(commandID, workerID string) (string, error) {
 // downstream consumers (advisory review) cannot be flooded by a runaway worker.
 const MaxComputedDiffBytes = 256 * 1024
 
+// largeCommitObservationThreshold is the staged-file count at which
+// CommitWorkerChanges emits a loud "large commit" warning. Purely
+// observational — the orchestrator never blocks the commit on file count
+// (that would be language-specific gating which we removed deliberately).
+// 100 is a reasonable threshold: a typical worker task touches <20 files;
+// a sweep of 100+ usually means a build artefact directory slipped into
+// the staging set because .gitignore is missing an entry.
+const largeCommitObservationThreshold = 100
+
 // ComputeWorkerDiff returns a unified diff representing the worker's effective
 // contribution for review purposes: the working tree of the worker's worktree
-// against its merge-base with the integration branch. This captures both
-// committed and uncommitted changes attributable to this worker, while
-// excluding any commits that other workers have already merged into
-// integration since this worker branched off.
+// against its merge-base with the integration branch. Captures committed,
+// uncommitted-tracked AND untracked changes — review must see everything the
+// worker produced, including new files, otherwise tools like codex review
+// false-positive on "missing" content that just hasn't been committed yet.
 //
 // Returns ("", nil) when the command has no worktree state (worktree mode
 // disabled or state file absent) or no integration branch yet — these cases
@@ -353,11 +386,16 @@ func (wm *Manager) ComputeWorkerDiff(commandID, workerID string) (string, error)
 	}
 	ws := wm.findWorker(state, workerID)
 	if ws == nil {
-		return "", fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+		// Worker has no worktree entry — typical for RunOnIntegration /
+		// RunOnMain tasks (they execute on the integration worktree or
+		// project root, never spawning a per-worker tree). Returning
+		// ("", nil) lets the review coordinator fall back to the
+		// summary payload, which is the correct outcome for such tasks
+		// (their diff lives on the shared branch already and is not
+		// attributable to a single worker).
+		return "", nil
 	}
 	if _, err := os.Stat(ws.Path); err != nil {
-		// Worktree directory missing — likely already cleaned up.
-		// Treat as "no diff available" rather than failing the caller.
 		if os.IsNotExist(err) {
 			return "", nil
 		}
@@ -373,6 +411,40 @@ func (wm *Manager) ComputeWorkerDiff(commandID, workerID string) (string, error)
 		return "", fmt.Errorf("empty merge-base for worker %s in command %s", workerID, commandID)
 	}
 
+	// Untracked files are not visible to `git diff <base>`. Add them to the
+	// index intent so the diff reports them as additions, then reset the
+	// intent afterwards so we never mutate the worker's actual index state.
+	untrackedRaw, err := wm.gitOutputInDir(ws.Path, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return "", fmt.Errorf("list untracked files for diff: %w", err)
+	}
+	var untracked []string
+	for _, name := range strings.Split(untrackedRaw, "\x00") {
+		if name != "" {
+			untracked = append(untracked, name)
+		}
+	}
+	if len(untracked) > 0 {
+		addArgs := append([]string{"add", "--intent-to-add", "--"}, untracked...)
+		if addErr := wm.gitRunInDir(ws.Path, addArgs...); addErr != nil {
+			// Non-fatal: fall back to base diff without untracked content.
+			wm.Log(core.LogLevelWarn,
+				"compute_worker_diff_intent_to_add_failed command=%s worker=%s error=%v",
+				commandID, workerID, addErr)
+		} else {
+			// Restore the worker's index after the diff so we never mutate
+			// its actual staging state.
+			defer func() {
+				resetArgs := append([]string{"reset", "--"}, untracked...)
+				if rErr := wm.gitRunInDir(ws.Path, resetArgs...); rErr != nil {
+					wm.Log(core.LogLevelDebug,
+						"compute_worker_diff_intent_to_add_reset_failed command=%s worker=%s error=%v",
+						commandID, workerID, rErr)
+				}
+			}()
+		}
+	}
+
 	diff, err := wm.gitOutputInDir(ws.Path, "diff", mergeBase)
 	if err != nil {
 		return "", fmt.Errorf("git diff: %w", err)
@@ -383,15 +455,18 @@ func (wm *Manager) ComputeWorkerDiff(commandID, workerID string) (string, error)
 	return diff, nil
 }
 
-// CommitWorkerChanges commits all changes in a worker's worktree.
-// Idempotent: if there are no changes to commit, returns nil.
+// CommitWorkerChanges commits every change a worker produced in its worktree
+// — modifications, deletions, AND untracked files. Idempotent: returns nil
+// when nothing is dirty.
+//
+// Autonomous LLM Orchestration policy: we deliberately do NOT gate on path
+// scopes, commit-message regex, sensitive-file lists or .gitignore presence.
+// The orchestrator's job is to capture worker output verbatim so phase
+// boundary commits never silently leak modifications. Per-environment safety
+// (e.g. "never stage credentials") is the worker's responsibility, configured
+// once globally (~/.claude rules, repo .gitignore) rather than re-implemented
+// here as a noisy gate that blocks legitimate work.
 func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) error {
-	return wm.CommitWorkerChangesWithExpectedPaths(commandID, workerID, message, nil)
-}
-
-// CommitWorkerChangesWithExpectedPaths commits all changes in a worker's
-// worktree after checking the staged file set against the task's expected paths.
-func (wm *Manager) CommitWorkerChangesWithExpectedPaths(commandID, workerID, message string, expectedPaths []string) error {
 	if err := validateIDs(commandID, workerID); err != nil {
 		return err
 	}
@@ -409,20 +484,14 @@ func (wm *Manager) CommitWorkerChangesWithExpectedPaths(commandID, workerID, mes
 	}
 
 	// Defense in depth: refuse to auto-commit workers owned by the resume-merge
-	// pipeline. These are committed via commitResolvedWorkerChanges, which
-	// bypasses the `resolving → committed` transition (the latter is not in the
-	// valid state machine). Without this guard, a Phase B scan that reaches this
-	// function for a conflict/resolving worker would fail the transition check
-	// below, record a commit_failed signal, and block publishing. The Phase A
-	// collector (eligibleWorkerIDsForAutoCommit) already filters these out; this
-	// guard catches stale WorkerIDs lists and direct callers.
+	// pipeline. Those are committed via commitResolvedWorkerChanges, which
+	// bypasses the `resolving → committed` transition.
 	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
 		wm.Log(core.LogLevelDebug, "skip_auto_commit_resume_merge_owned command=%s worker=%s status=%s",
 			commandID, workerID, ws.Status)
 		return fmt.Errorf("worker %s in command %s (status=%s): %w", workerID, commandID, ws.Status, ErrWorkerOwnedByResumeMerge)
 	}
 
-	// Check if there are changes to commit
 	statusOut, err := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 	if err != nil {
 		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, err)
@@ -432,59 +501,58 @@ func (wm *Manager) CommitWorkerChangesWithExpectedPaths(commandID, workerID, mes
 		return nil
 	}
 
-	// Stage tracked file modifications/deletions (safe: never stages untracked files)
-	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
-		return fmt.Errorf("git add -u (worker=%s, command=%s): %w", workerID, commandID, err)
+	// `git add -A` captures modifications, deletions and untracked entries
+	// in a single pass. Repository-level .gitignore is honoured.
+	//
+	// OS-level un-stat-able files (typically macOS sandbox or POSIX
+	// permission denials, e.g. ~/.claude rules denying `/**/.env*` reads
+	// when a worker creates `.env.example`) cause `git add -A` to fail
+	// with "fatal: unable to stat '...': Operation not permitted". The
+	// content is genuinely unreachable to git — no commit can include
+	// it — so the orchestrator's only autonomous path forward is to
+	// exclude the offending paths from the index and proceed with what
+	// remains. We isolate the names from the error output, append them
+	// to .git/info/exclude (worktree-local; never touches the repo's
+	// committed .gitignore), and retry. Bounded retries prevent runaway
+	// loops on truly unrecoverable file-system errors.
+	if err := wm.gitAddAllWithUnstattableFallback(ws.Path, commandID, workerID); err != nil {
+		return fmt.Errorf("git add -A (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
-	// Unstage any sensitive tracked files that were staged by git add -u
-	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
-		wm.Log(core.LogLevelWarn, "unstage_sensitive_files_error command=%s worker=%s error=%v", commandID, workerID, err)
-	}
-
-	// Stage untracked files that pass .gitignore and safety filters
-	if err := wm.stageNewFiles(ws.Path); err != nil {
-		return fmt.Errorf("stage new files (worker=%s, command=%s): %w", workerID, commandID, err)
-	}
-
-	// Re-check if there is anything staged after filtering
 	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return fmt.Errorf("git diff --cached (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
-		// Worktree had dirty files but all were filtered — this is not a clean success.
-		wm.Log(core.LogLevelWarn, "all_files_filtered command=%s worker=%s", commandID, workerID)
-		return fmt.Errorf("commit for worker %s in command %s: %w", workerID, commandID, ErrAllFilesFiltered)
+		// status reported dirty bits but `add -A` produced no staged change:
+		// the only remaining content is gitignored. Treat as a clean no-op so
+		// the phase merge proceeds; nothing the orchestrator should track.
+		wm.Log(core.LogLevelDebug,
+			"commit_skip_only_ignored command=%s worker=%s status_lines=%d",
+			commandID, workerID, len(strings.Split(strings.TrimSpace(statusOut), "\n")))
+		return nil
 	}
 
-	// Pre-check: verify transition to Committed is valid before committing.
-	// This prevents git commit from succeeding with no way to rollback if the
-	// state transition is invalid.
+	stagedCount := strings.Count(strings.TrimRight(stagedOut, "\x00"), "\x00") + 1
+	if stagedCount >= largeCommitObservationThreshold {
+		// Loud observability hook for "git add -A is sweeping in build
+		// artefacts" situations. Log only — autonomous LLM Orchestration
+		// must not silently strip files based on language-specific
+		// heuristics; the right place to fix it is the repo's .gitignore
+		// or the worker's environment. This log makes the situation
+		// findable in retrospective debugging.
+		wm.Log(core.LogLevelWarn,
+			"large_commit_observed command=%s worker=%s staged_count=%d "+
+				"(consider repo-level .gitignore or worker-side scratch-file cleanup)",
+			commandID, workerID, stagedCount)
+	}
+
 	if err := model.ValidateWorktreeTransition(ws.Status, model.WorktreeStatusCommitted); err != nil {
-		// Reset staged changes so the worktree is left in a clean index state.
 		if resetErr := wm.gitRunInDir(ws.Path, "reset", "HEAD"); resetErr != nil {
 			wm.Log(core.LogLevelWarn, "git_reset_after_transition_check command=%s worker=%s error=%v",
 				commandID, workerID, resetErr)
 		}
 		return fmt.Errorf("worker %s: cannot commit (invalid transition from %s to committed): %w", workerID, ws.Status, err)
-	}
-
-	// Commit policy checks
-	if violations := wm.checkCommitPolicy(ws.Path, message, stagedOut, expectedPaths); len(violations) > 0 {
-		for _, v := range violations {
-			wm.Log(core.LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
-				commandID, workerID, v.Code, v.Message)
-		}
-		// Reset staged changes so the worktree is left in a clean index state.
-		// Note: dirty files remain in the worktree after reset.
-		if resetErr := wm.gitRunInDir(ws.Path, "reset", "HEAD"); resetErr != nil {
-			wm.Log(core.LogLevelWarn, "git_reset_after_policy_violation command=%s worker=%s error=%v",
-				commandID, workerID, resetErr)
-		}
-		wm.Log(core.LogLevelWarn, "dirty_files_remain_after_policy_reset command=%s worker=%s",
-			commandID, workerID)
-		return &CommitPolicyViolationError{Violations: violations}
 	}
 
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {
@@ -513,6 +581,98 @@ func (wm *Manager) GetCommandState(commandID string) (*model.WorktreeCommandStat
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 	return wm.loadState(commandID)
+}
+
+// IsWorkerAheadOrDirty reports whether a worker has content not yet present
+// in the integration branch — either uncommitted dirt in the worktree or
+// committed-but-unmerged commits ahead of integration HEAD. Used by the
+// RunOnIntegration / RunOnMain pre-merge gate to decide whether the dep
+// worker still needs to be merged.
+//
+// A pure status check (`worker.Status == integrated`) is insufficient
+// because phase merges flip the status to `integrated` once, and the same
+// worker re-used in a later phase can produce uncommitted edits without
+// the status reverting. Inspecting the working tree + HEAD/merge-base
+// directly is the source of truth.
+//
+// Returns:
+//   - (true, nil) when the worker has dirt or commits not in integration
+//   - (false, nil) when the worker is in lockstep with integration
+//   - (false, nil) for Conflict/Resolving (resume_merge owns)
+//   - (true, err) when a git probe fails — caller should treat as "needs
+//     merge" because falling through the gate would dispatch a task
+//     against a possibly-stale tree.
+func (wm *Manager) IsWorkerAheadOrDirty(commandID, workerID string) (bool, error) {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return false, err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return true, fmt.Errorf("load state: %w", err)
+	}
+	ws := wm.findWorker(state, workerID)
+	if ws == nil {
+		// Worker not in state — nothing to merge.
+		return false, nil
+	}
+	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+		// resume_merge pipeline owns this worker
+		return false, nil
+	}
+	if ws.Path == "" {
+		return false, nil
+	}
+	if _, statErr := os.Stat(ws.Path); statErr != nil {
+		// Worktree directory missing (cleanup_done or never created):
+		// nothing dirty / nothing to merge.
+		if os.IsNotExist(statErr) {
+			return false, nil
+		}
+		return true, fmt.Errorf("stat worker worktree: %w", statErr)
+	}
+
+	statusOut, err := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
+	if err != nil {
+		return true, fmt.Errorf("git status worker=%s: %w", workerID, err)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		return true, nil
+	}
+
+	if state.Integration.Branch == "" {
+		// No integration branch yet (very early state): nothing to merge.
+		return false, nil
+	}
+	workerHEAD, err := wm.gitOutputInDir(ws.Path, "rev-parse", "HEAD")
+	if err != nil {
+		return true, fmt.Errorf("rev-parse worker HEAD worker=%s: %w", workerID, err)
+	}
+	integHEAD, err := wm.gitOutputInDir(ws.Path, "rev-parse", state.Integration.Branch)
+	if err != nil {
+		return true, fmt.Errorf("rev-parse integration HEAD worker=%s: %w", workerID, err)
+	}
+	wHead := strings.TrimSpace(workerHEAD)
+	iHead := strings.TrimSpace(integHEAD)
+	if wHead == iHead {
+		return false, nil
+	}
+	mb, err := wm.gitOutputInDir(ws.Path, "merge-base", wHead, iHead)
+	if err != nil {
+		return true, fmt.Errorf("merge-base worker=%s: %w", workerID, err)
+	}
+	mergeBase := strings.TrimSpace(mb)
+	// Worker is ahead when its tip's merge-base with integration is
+	// integration HEAD itself (worker has commits past integration).
+	if mergeBase == iHead && wHead != iHead {
+		return true, nil
+	}
+	// Diverged or strictly behind: not ahead. The diverged case is rare
+	// and is handled by RefreshWorkerWorktreeToIntegrationHead's
+	// auto-reset path; we don't redundantly trigger a merge here.
+	return false, nil
 }
 
 // GetIntegrationStatus returns the lifecycle status of the integration
@@ -894,54 +1054,30 @@ func (wm *Manager) findWorker(state *model.WorktreeCommandState, workerID string
 	return nil
 }
 
-// commitWorkerInlineForRefresh stages tracked file modifications and creates a
-// minimal commit so RefreshWorkerWorktreeToIntegrationHead can fast-forward.
+// commitWorkerInlineForRefresh stages every dirty change (tracked,
+// untracked, deletions) and creates a minimal commit so
+// RefreshWorkerWorktreeToIntegrationHead can fast-forward.
 //
-// This is the wave-crossing inline auto-commit: same phase, two tasks, the
-// canonical phase-boundary CommitWorkerChanges has not yet fired but the
-// dispatcher needs a clean worktree to refresh against integration. The
-// function deliberately stays narrow:
+// Wave-crossing context: same phase, two consecutive tasks on the same
+// worker, the canonical phase-boundary commit has not yet fired but the
+// dispatcher needs a clean worktree to refresh against integration. We
+// commit here the same way the phase-boundary path does — no scope gate,
+// no sensitive-file filter — because once the worker has produced files,
+// the orchestrator's job is to capture them. Dropping any of them would
+// reappear as "dirty residue" the next time the worker is reused and
+// stall the merge.
 //
-//   - status / lifecycle: untouched. Worker stays at whatever lifecycle
-//     status it had (typically `active`). The phase-boundary commit (which
-//     does the `active → committed` transition) still runs as before.
-//   - untracked files: NOT staged. The phase-boundary commit owns
-//     untracked-file admission via stageNewFiles + expected_paths +
-//     sensitive-file filters; replicating those mid-phase would either
-//     bypass them or duplicate the policy machinery. If untracked files
-//     remain after `git add -u`, the caller aborts the refresh.
-//   - sensitive files: tracked sensitive files briefly staged by `git add -u`
-//     are unstaged via the same helper as the canonical commit, so we
-//     never inline-commit credentials.
-//   - commit policy: not enforced here. The wave-crossing commit might
-//     legitimately span multiple tasks' expected_paths, which the
-//     phase-boundary policy treats as a single union. Re-applying it at
-//     wave granularity would false-fail the union shape.
-//
-// Caller MUST hold wm.mu (this is invoked from RefreshWorkerWorktreeToIntegrationHead
-// which acquires it).
+// Caller MUST hold wm.mu (invoked from RefreshWorkerWorktreeToIntegrationHead).
 func (wm *Manager) commitWorkerInlineForRefresh(ws *model.WorktreeState, commandID, workerID string) error {
-	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
-		return fmt.Errorf("git add -u: %w", err)
-	}
-	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
-		// Non-fatal: sensitive files are also filtered at phase-boundary commit.
-		// Log so an operator can see what happened, but proceed — we have
-		// already executed `add -u`, so reverting cleanly is awkward and
-		// leaving the file unstaged is what unstageSensitiveFiles attempts.
-		wm.Log(core.LogLevelWarn,
-			"inline_commit_unstage_sensitive_warning command=%s worker=%s error=%v",
-			commandID, workerID, err)
+	if err := wm.gitAddAllWithUnstattableFallback(ws.Path, commandID, workerID); err != nil {
+		return fmt.Errorf("git add -A: %w", err)
 	}
 	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
 		return fmt.Errorf("git diff --cached: %w", err)
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
-		// Nothing tracked to commit — the dirty bits were untracked or
-		// filtered. Caller's post-check sees the still-dirty worktree and
-		// aborts; that is the right outcome because we cannot safely admit
-		// untracked files mid-phase.
+		// Only ignored content was dirty; nothing to commit.
 		return nil
 	}
 	message := fmt.Sprintf("[maestro] wave-crossing auto-commit: worker=%s command=%s", workerID, commandID)
@@ -952,30 +1088,6 @@ func (wm *Manager) commitWorkerInlineForRefresh(ws *model.WorktreeState, command
 		"worker_inline_committed_for_refresh command=%s worker=%s",
 		commandID, workerID)
 	return nil
-}
-
-// onlyUntrackedDirty reports whether every non-empty line in `git status
-// --porcelain` output represents an untracked file ("??" marker). Used by
-// RefreshWorkerWorktreeToIntegrationHead to distinguish the benign
-// case (read-only task residue) from a tracked-modification leak after
-// inline auto-commit. The porcelain v1 grammar uses two-character XY
-// codes (X=staged, Y=unstaged); "??" is the dedicated marker for
-// untracked entries (`man git-status` → "Short Format" → Untracked).
-func onlyUntrackedDirty(porcelain string) bool {
-	hasAny := false
-	for _, line := range strings.Split(porcelain, "\n") {
-		trimmed := strings.TrimRight(line, "\r")
-		if trimmed == "" {
-			continue
-		}
-		hasAny = true
-		// Each porcelain entry is "XY <path>" where XY is the two-char
-		// status. Untracked entries are exactly "?? <path>".
-		if !strings.HasPrefix(trimmed, "?? ") {
-			return false
-		}
-	}
-	return hasAny
 }
 
 // AutoCommit returns whether auto-commit is enabled in the worktree config.
@@ -1055,22 +1167,12 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 		return nil
 	}
 
-	// Refuse to touch a dirty worktree — uncommitted edits whose provenance we
-	// cannot reconstruct must never be silently merged with integration.
-	//
 	// Wave-crossing inline auto-commit: when a worker has just finished
 	// task A in the same phase as task B about to be dispatched, Phase B's
-	// canonical auto-commit has not yet fired (it runs at phase boundary,
-	// not wave boundary). The result is a dirty worktree at task B
-	// dispatch time; without this fast-path commit, refresh aborts and
-	// the task eventually dead-letters. The inline commit deliberately
-	// avoids the heavy CommitWorkerChanges path (status transition,
-	// expected_paths gate, commit-policy scanning) — those run again at
-	// phase boundary, and applying them mid-phase would either reject
-	// legitimate intermediate state or prematurely flip the worker to
-	// `committed`. Untracked files are intentionally NOT staged here
-	// because expected_paths / sensitive-file filters cannot be evaluated
-	// cheaply mid-phase; they defer to the phase-boundary auto-commit.
+	// canonical phase-boundary commit has not yet fired. The inline commit
+	// captures the worker's full output (including untracked files) in a
+	// single `git add -A`, so the worktree is clean before task B runs and
+	// no dirty residue can carry into the next phase.
 	statusOut, statusErr := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 	if statusErr != nil {
 		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, statusErr)
@@ -1084,24 +1186,14 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 			return fmt.Errorf("git status post-inline-commit (worker=%s, command=%s): %w", workerID, commandID, statusErr)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			// Untracked-only soft-skip: inline auto-commit deliberately
-			// does not stage untracked files (replicating the
-			// sensitive-file gate and expected_paths filter mid-phase is
-			// unsafe). When the remaining dirty bits are exclusively
-			// untracked entries, log loud and skip the fast-forward for
-			// this cycle so the task does not dead-letter on what may be
-			// legitimate task artefacts that the expected_paths gate will
-			// commit at phase-boundary time. The phase-boundary commit
-			// still applies the full sensitive-file / expected_paths
-			// gates before merge.
-			if onlyUntrackedDirty(statusOut) {
-				wm.Log(core.LogLevelWarn,
-					"worker_worktree_refresh_soft_skipped_untracked_only command=%s worker=%s status=%q "+
-						"(untracked files remain after inline commit; integration fast-forward deferred — phase-boundary commit will gate them)",
-					commandID, workerID, strings.TrimSpace(statusOut))
-				return nil
-			}
-			return fmt.Errorf("worker %s worktree still dirty after inline auto-commit (mixed tracked + untracked); refresh aborted", workerID)
+			// `add -A` should consume every dirty entry except .gitignore
+			// matches. If anything remains it must be ignored content;
+			// log it for observability but proceed — refusing to refresh
+			// here would stall the dispatch chain on benign residue that
+			// will never go away on its own.
+			wm.Log(core.LogLevelDebug,
+				"worker_worktree_refresh_residual_ignored_dirty command=%s worker=%s status=%q",
+				commandID, workerID, strings.TrimSpace(statusOut))
 		}
 	}
 

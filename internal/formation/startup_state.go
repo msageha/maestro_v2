@@ -17,6 +17,15 @@ import (
 )
 
 // resetFormation clears all transient state, preserving quarantine for forensics.
+//
+// Before clearing the queue, in-progress commands are archived under
+// `quarantine/lost_commands/` so that an operator-initiated `maestro up
+// -f` (force reset) does not silently drop work the previous session was
+// still executing. Without this, a force-reset issued while a command
+// was in flight (e.g. the previous session crashed and the operator is
+// restarting) erased the operator's instruction along with the runtime
+// state, leaving them with no record of what was lost (Report
+// 2026-05-06 Bug #2).
 func resetFormation(maestroDir string) error {
 	// Stop existing daemon — must succeed before we tear down tmux
 	if err := stopDaemon(maestroDir); err != nil {
@@ -27,6 +36,14 @@ func resetFormation(maestroDir string) error {
 	slog.Debug("resetFormation: killing existing tmux session")
 	if err := tmux.KillSession(); err != nil {
 		slog.Warn("KillSession failed during resetFormation", "error", err)
+	}
+
+	// Archive must run before clearYAMLFiles below, otherwise the
+	// in-flight commands are gone before they can be quarantined.
+	if err := archiveInProgressCommandsBeforeReset(maestroDir); err != nil {
+		// Non-fatal: a hard error here would turn `maestro up -f` into a
+		// dead end. Log for audit and continue with the reset.
+		slog.Warn("archive_in_progress_commands_failed", "error", err)
 	}
 
 	// Clear queue/ YAML files
@@ -275,6 +292,102 @@ func clearYAMLFiles(dir string) error {
 			}
 		}
 	}
+	return nil
+}
+
+// archiveInProgressCommandsBeforeReset copies any planner.yaml commands
+// whose Status is in_progress (or any non-terminal CommandStatus) into
+// quarantine/lost_commands/<command-id>-<timestamp>.yaml so a
+// force-reset does not silently destroy the operator's outstanding
+// instruction. The archive is best-effort: read errors are logged and
+// the function returns the first error to the caller, which treats it
+// as non-fatal so the reset path still completes.
+func archiveInProgressCommandsBeforeReset(maestroDir string) error {
+	plannerQueuePath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	data, err := os.ReadFile(plannerQueuePath) //nolint:gosec // path is the canonical Maestro planner queue file
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read planner queue: %w", err)
+	}
+	var queue model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &queue); err != nil {
+		// Cannot reason about the queue shape; archive the raw bytes as
+		// a last-resort blob so the operator can still recover the
+		// payload manually.
+		return archiveRawPlannerQueue(maestroDir, data)
+	}
+
+	var inFlight []model.Command
+	for _, c := range queue.Commands {
+		// Treat anything that is not a terminal CommandStatus as
+		// "in flight" — captures in_progress, pending, paused, etc.
+		// `model.IsTerminal(<TaskStatus>)` is the closest helper but
+		// CommandStatus uses its own values; check explicitly.
+		switch c.Status {
+		case model.StatusCompleted, model.StatusFailed,
+			model.StatusCancelled, model.StatusDeadLetter, model.StatusAborted:
+			continue
+		}
+		inFlight = append(inFlight, c)
+	}
+	if len(inFlight) == 0 {
+		return nil
+	}
+
+	archiveDir := filepath.Join(maestroDir, "quarantine", "lost_commands")
+	if err := os.MkdirAll(archiveDir, 0o750); err != nil {
+		return fmt.Errorf("mkdir lost_commands archive: %w", err)
+	}
+	now := time.Now().UTC().Format("20060102T150405Z")
+	for _, c := range inFlight {
+		archiveName := fmt.Sprintf("%s-%s.yaml", c.ID, now)
+		archivePath := filepath.Join(archiveDir, archiveName)
+		payload := struct {
+			SchemaVersion int                `yaml:"schema_version"`
+			FileType      string             `yaml:"file_type"`
+			ArchivedAt    string             `yaml:"archived_at"`
+			ArchivedBy    string             `yaml:"archived_by"`
+			Reason        string             `yaml:"reason"`
+			Command       model.Command      `yaml:"command"`
+			SourceQueue   model.CommandQueue `yaml:"source_queue,omitempty"`
+		}{
+			SchemaVersion: 1,
+			FileType:      "lost_command_archive",
+			ArchivedAt:    time.Now().UTC().Format(time.RFC3339),
+			ArchivedBy:    "formation_up_force_reset",
+			Reason:        "operator issued `maestro up -f` while this command was still non-terminal; archived so the instruction is not silently lost",
+			Command:       c,
+		}
+		if err := yamlutil.AtomicWrite(archivePath, &payload); err != nil {
+			return fmt.Errorf("archive lost command %s: %w", c.ID, err)
+		}
+		slog.Warn("lost_command_archived",
+			"command_id", c.ID,
+			"status", c.Status,
+			"archive_path", archivePath,
+			"hint", "force-reset would have erased this command; the operator can re-issue it from the archived payload")
+	}
+	return nil
+}
+
+// archiveRawPlannerQueue is the last-resort fallback when planner.yaml
+// is unparseable: copy the raw bytes verbatim so the operator can still
+// inspect what was lost.
+func archiveRawPlannerQueue(maestroDir string, data []byte) error {
+	archiveDir := filepath.Join(maestroDir, "quarantine", "lost_commands")
+	if err := os.MkdirAll(archiveDir, 0o750); err != nil {
+		return fmt.Errorf("mkdir lost_commands archive: %w", err)
+	}
+	now := time.Now().UTC().Format("20060102T150405Z")
+	archivePath := filepath.Join(archiveDir, "planner_queue_raw-"+now+".yaml")
+	if err := os.WriteFile(archivePath, data, 0o600); err != nil {
+		return fmt.Errorf("write raw planner queue archive: %w", err)
+	}
+	slog.Warn("lost_command_archive_raw_only",
+		"archive_path", archivePath,
+		"hint", "planner.yaml was unparseable; raw bytes preserved for manual recovery")
 	return nil
 }
 

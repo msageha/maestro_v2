@@ -3,6 +3,7 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -18,6 +19,12 @@ func (qh *QueueHandler) advanceTaskLifecycle(task *model.Task, targets ...model.
 	for _, target := range targets {
 		current, err := sm.GetTaskState(task.CommandID, task.ID)
 		if err != nil {
+			if errors.Is(err, model.ErrTaskNotFound) || errors.Is(err, model.ErrStateNotFound) {
+				// State entry vanished between our caller's check and now
+				// (concurrent reconcile / cleanup). Treat as benign — the
+				// queue scan will re-evaluate next tick.
+				return nil
+			}
 			return fmt.Errorf("load task state for %s/%s: %w", task.CommandID, task.ID, err)
 		}
 		if current == target {
@@ -28,11 +35,42 @@ func (qh *QueueHandler) advanceTaskLifecycle(task *model.Task, targets ...model.
 				task.CommandID, task.ID, current, target)
 		}
 		if err := sm.UpdateTaskState(task.CommandID, task.ID, target, ""); err != nil {
+			if isStateTaskNotFoundError(err) {
+				// The task disappeared from state between GetTaskState
+				// and UpdateTaskState (concurrent prune / planner-side
+				// cleanup). The queue file still references it but state
+				// has moved on; emitting a WARN every scan would just
+				// spam an already-handled situation. Log once at DEBUG
+				// and let the next reconcile tick clean the queue side.
+				qh.log(LogLevelDebug,
+					"task_state_ghost_advance command=%s task=%s from=%s to=%s "+
+						"(state entry removed concurrently; queue side will be reconciled)",
+					task.CommandID, task.ID, current, target)
+				return nil
+			}
 			return fmt.Errorf("advance task %s/%s %s -> %s: %w",
 				task.CommandID, task.ID, current, target, err)
 		}
 	}
 	return nil
+}
+
+// isStateTaskNotFoundError reports whether a state-write error indicates
+// the task entry is missing from the command state file. Used to demote
+// the resulting WARN to DEBUG so a benign queue/state desync (concurrent
+// retry registration, ghost retry task left over from a prior daemon run,
+// etc.) does not spam the log every scan tick. Pattern-matches the wrapped
+// error message because the underlying state writer surfaces a sentinel
+// only as wrapped text.
+func isStateTaskNotFoundError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, model.ErrTaskNotFound) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "task ") && strings.Contains(msg, " not found")
 }
 
 func (qh *QueueHandler) markTaskReady(task *model.Task) error {

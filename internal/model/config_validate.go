@@ -114,7 +114,6 @@ func (c Config) validateWatcher(errs *[]error) {
 	validateNonNegInt(errs, "watcher.clear_confirm_poll_ms", c.Watcher.ClearConfirmPollMs)
 	validateNonNegInt(errs, "watcher.clear_max_attempts", c.Watcher.ClearMaxAttempts)
 	validateNonNegInt(errs, "watcher.clear_retry_backoff_ms", c.Watcher.ClearRetryBackoffMs)
-	validateNonNegInt(errs, "watcher.clear_second_enter_delay_ms", c.Watcher.ClearSecondEnterDelayMs)
 }
 
 func (c Config) validateQueue(errs *[]error) {
@@ -225,17 +224,11 @@ func (c Config) validateAdmissionControl(errs *[]error) {
 	}
 }
 
-func (c Config) validateFallback(errs *[]error) {
-	if c.Fallback.ConsecutiveFailureThreshold < 0 {
-		*errs = append(*errs, fmt.Errorf("fallback.consecutive_failure_threshold: must be >= 0"))
-	}
-	if c.Fallback.RecoveryCheckIntervalSec < 0 {
-		*errs = append(*errs, fmt.Errorf("fallback.recovery_check_interval_sec: must be >= 0"))
-	}
-	if c.Fallback.MinHealthyDurationSec < 0 {
-		*errs = append(*errs, fmt.Errorf("fallback.min_healthy_duration_sec: must be >= 0"))
-	}
-}
+// validateFallback is retained as a no-op for compatibility with the
+// validateAll wiring; the Fallback field has been removed from Config
+// (degraded-mode worker blacklisting was retired) so there is nothing to
+// validate. Callers may still invoke this without error.
+func (c Config) validateFallback(_ *[]error) {}
 
 func (c Config) validateReview(errs *[]error) {
 	if c.Review.MinBloomLevel != nil && *c.Review.MinBloomLevel < 0 {
@@ -274,9 +267,6 @@ func (c Config) validateWorktree(errs *[]error) {
 	}
 	if c.Worktree.GitTimeoutSec != nil && *c.Worktree.GitTimeoutSec <= 0 {
 		*errs = append(*errs, fmt.Errorf("worktree.git_timeout_sec: must be > 0"))
-	}
-	if c.Worktree.CommitPolicy.MaxFiles != nil && *c.Worktree.CommitPolicy.MaxFiles < 0 {
-		*errs = append(*errs, fmt.Errorf("worktree.commit_policy.max_files: must be >= 0"))
 	}
 	if c.Worktree.GC.Enabled {
 		if c.Worktree.GC.TTLHours != nil && *c.Worktree.GC.TTLHours <= 0 {

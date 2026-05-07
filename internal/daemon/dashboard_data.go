@@ -125,31 +125,28 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 	return data, nil
 }
 
-type verifyStatusSnapshot struct {
-	Mode   string `yaml:"mode"`
-	Reason string `yaml:"reason"`
-}
+// Dashboard verify status strings rendered by readVerifyStatus.
+const (
+	verifyStatusEnabled  = "enabled"
+	verifyStatusUnknown  = "unknown"
+	verifyStatusDisabled = "disabled (verify.enabled=false in config.yaml)"
+)
 
+// readVerifyStatus reflects the configured verify runner state directly
+// from config.yaml. The earlier indirection via `state/verify_status.yaml`
+// existed to surface a deprecated emergency env opt-out (`MAESTRO_ALLOW_VERIFY_SKIP`);
+// that gate is gone, and `verify.enabled` is now the single source of
+// truth. Returns one of verifyStatus{Enabled,Unknown,Disabled} — only
+// states that can be explained from config alone.
 func (f *DashboardFormatter) readVerifyStatus() string {
-	path := filepath.Join(f.maestroDir, "state", "verify_status.yaml")
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from the controlled maestro state directory
+	cfg, err := model.LoadConfig(f.maestroDir)
 	if err != nil {
-		return "enabled"
+		return verifyStatusUnknown
 	}
-	var snap verifyStatusSnapshot
-	if err := yaml.Unmarshal(data, &snap); err != nil {
-		return "unknown"
+	if cfg.Verify.EffectiveEnabled() {
+		return verifyStatusEnabled
 	}
-	if snap.Mode == "skipped" {
-		if snap.Reason != "" {
-			return "skipped (" + snap.Reason + ")"
-		}
-		return "skipped"
-	}
-	if snap.Mode == "" {
-		return "unknown"
-	}
-	return snap.Mode
+	return verifyStatusDisabled
 }
 
 // parseLogFile reads and parses the JSONL log file.

@@ -51,6 +51,23 @@ type TaskResult struct {
 	NotifiableBase         `yaml:",inline"`
 	CreatedAt              string                 `yaml:"created_at"`
 	QualityGateEvaluation  *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`
+	// RunOnIntegration / RunOnMain mirror the queue task flags at result-write
+	// time so the result_handler's notify gate can identify entries that must
+	// wait for the daemon-owned verify pipeline before notifying the Planner.
+	// Recording them on the result entry — rather than re-reading the queue
+	// file at gate time — pins the verify-pipeline classification to the
+	// result regardless of subsequent queue cleanup or retry lineage flips.
+	RunOnIntegration bool `yaml:"run_on_integration,omitempty"`
+	RunOnMain        bool `yaml:"run_on_main,omitempty"`
+	// VerifyOutcomeAppliedAt is the RFC3339 timestamp recorded by Phase B
+	// (or applyVerifyOutcome) when the daemon-owned verify pipeline has
+	// reached a final outcome for this result. The notify gate refuses to
+	// fire notify_planner_success for verify-pipeline-eligible entries
+	// (RunOnIntegration / RunOnMain) until this marker is set, so a race
+	// window in state-file writes can no longer slip an early notify
+	// through (Report 2026-05-05 P0-A REGRESSION). Empty for non-verify
+	// entries — those are gated solely by state[taskID]==terminal.
+	VerifyOutcomeAppliedAt *string `yaml:"verify_outcome_applied_at,omitempty"`
 }
 
 // CommandResultFile はコマンド結果ファイルの YAML 構造を表す。

@@ -24,7 +24,10 @@ package paneactivity
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
+	"os"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -196,10 +199,49 @@ type Tracker struct {
 	mu              sync.RWMutex
 	snapshots       map[string]Snapshot
 	uncertainStreak map[string]int
-	busyRegex       *regexp.Regexp
-	blockedRegex    *regexp.Regexp
-	hashFunc        func(string) string
+	// blockedSince records, per agent, the wall-clock timestamp of the FIRST
+	// scan in the current consecutive run of VerdictBlocked observations.
+	// Cleared whenever the agent is observed in any non-blocked state. The
+	// queue scanner consults this to enforce a short blocked-prompt timeout
+	// (orders of magnitude tighter than circuit_breaker.progress_timeout):
+	// if a pane has been wedged on a confirmation prompt for longer than
+	// the threshold, the in-flight task is failed so Planner / Orchestrator
+	// can route around it instead of waiting 30 min for the back-stop.
+	blockedSince map[string]time.Time
+	// hintLogState throttles the per-agent
+	// `pane_blocked_prompt_hint_unmatched` DEBUG log. The hint regex is
+	// deliberately broad (anything that looks like a prompt marker —
+	// `❯`, `Yes/No`, `Do you want`, `Proceed?`, etc.) and ordinary Claude
+	// pane output routinely contains those markers without being a
+	// genuine block. Logging unconditionally on every scan tick produced
+	// hundreds of identical lines per minute (Report 2026-05-06 issue-4).
+	// We log at most once per agent per (tail-hash, blockedHintLogWindow)
+	// window so the signal stays usable for hang triage.
+	hintLogState map[string]hintLogEntry
+	busyRegex    *regexp.Regexp
+	blockedRegex *regexp.Regexp
+	hashFunc     func(string) string
 }
+
+// hintLogEntry records the most recent `pane_blocked_prompt_hint_unmatched`
+// emission for one agent. Used to suppress duplicate DEBUG noise.
+type hintLogEntry struct {
+	at        time.Time
+	hintClass string
+}
+
+// blockedHintLogWindow is the per-(agent, hint-class) throttle window
+// for repeating the `pane_blocked_prompt_hint_unmatched` DEBUG line.
+// Genuine wedges are caught by the strict `pane_blocked_prompt_detected`
+// path, which is independent of this throttle, so this DEBUG hint only
+// needs to surface "scrollback contains a marker the strict detector
+// missed" once per investigation window. 30s was too tight — 30 min
+// runs produced 11–16 emissions per worker (Report 2026-05-06 P1) —
+// because the scrollback marker stays visible across many scan ticks
+// and only the first emission is informative. 5 minutes keeps a
+// genuine wedge surfacing fresh evidence within an investigation
+// session while dropping the steady-state noise.
+const blockedHintLogWindow = 5 * time.Minute
 
 // defaultBlockedRegex is compiled once at package init. It matches the
 // classic interactive-prompt shapes that block forward progress in an
@@ -214,17 +256,194 @@ type Tracker struct {
 // language-specific keyword so the same detector works whether the
 // underlying agent is Claude/Codex/Gemini or even a research/doc
 // pipeline that calls into a CLI tool.
+//
+// Pattern A is intentionally loose around the digit-and-dot core:
+// claude-code historically renders the choice line as `❯ 1. Yes` but
+// formatting drift (`❯1. Yes`, `❯ 1.Yes`, leading non-tab whitespace
+// from a wrapped continuation marker, etc.) was observed in field
+// reports. The `[ \t]*` slots accept the variation; the trailing
+// non-whitespace requirement still keeps "❯ 1. " alone (a half-rendered
+// frame) from triggering. Pattern D (broad Bash/tool approval banners)
+// covers the case where the runtime renders an "approval required"
+// dialog with a literal `Do you want` line — Reports of 2026-05-04
+// pinned a real reproduction where the structured arrow-cursor line
+// did not appear in the daemon's pane capture but the textual
+// "Do you want to ..." line did.
+// boxOrSpace matches optional leading whitespace plus optional
+// box-drawing characters (U+2500-U+257F) at the start of a line.
+// Claude Code 2.x renders approval prompts wrapped in a Unicode box —
+// "│ Do you want to proceed?" — so any pattern that anchored on bare
+// `^[ \t]*` missed the prompt entirely (Reports of 2026-05-05).
+const boxOrSpace = `[ \t\x{2500}-\x{257F}│┃║▌▍▎▏▐▕]*`
+
 var defaultBlockedRegex = regexp.MustCompile(
 	`(?m)` +
-		// Pattern A: arrow cursor on a numbered line.
-		`(^[ \t]*❯[ \t]*\d+\.[ \t]+\S)` +
+		// Pattern A: arrow cursor on a numbered line. Allow box-drawing
+		// prefix so a `│ ❯ 1. Yes` line inside a Claude Code approval
+		// box still matches.
+		`(^` + boxOrSpace + `❯[ \t]*\d+\.[ \t]*\S)` +
 		// Pattern B: a (y/n) / [Y/n] / [yes/no] tail still showing on the
 		// last visible line of the pane.
 		`|((\(|\[)[Yy](es)?/[Nn](o)?(\)|\])\??\s*$)` +
 		// Pattern C: arrow cursor on a non-numbered line followed by an
-		// option keyword (Yes/No/Cancel) — covers menus that drop the
-		// numbering.
-		`|(^[ \t]*❯[ \t]+(Yes|No|Cancel|Allow|Deny)\b)`)
+		// option keyword (Yes/No/Cancel/Allow/Deny) — covers menus that drop
+		// the numbering. Box-drawing prefix allowed (see Pattern A).
+		`|(^` + boxOrSpace + `❯[ \t]+(Yes|No|Cancel|Allow|Deny)\b)` +
+		// Pattern D: textual approval banner used by claude-code's Bash
+		// tool. NEITHER end is anchored:
+		//   - daemon's tmux capture may include trailing render artifacts
+		//     on the same row;
+		//   - claude-code 2.x wraps the prompt in a Unicode box so the
+		//     leading char is `│ ` not whitespace.
+		// Just look for the literal phrase anywhere on a line.
+		`|(Do you want to )` +
+		// Pattern E: literal "Bash command" approval banner that
+		// claude-code emits before the choice menu. Same loose anchoring
+		// as Pattern D.
+		`|(Bash command\b)` +
+		// Pattern F: Claude Code "1. Yes" / "2. No" choice list line.
+		// Captured even without the cursor character present — useful
+		// when the cursor line scrolled past the visible region but
+		// the choice list itself is still in the captured frame.
+		`|(^` + boxOrSpace + `\d+\.[ \t]+(Yes|No|Cancel|Allow|Deny)\b)` +
+		// Pattern G: Codex / Gemini / generic CLI approval banners
+		// that use phrasing like "Approve this command?",
+		// "Allow this action?", "Confirm:". Box-drawing prefix allowed.
+		`|(^` + boxOrSpace + `(Approve|Allow|Confirm)\b.*\?)` +
+		// Pattern H: file-edit confirmation banner from claude-code 2.x.
+		// The runtime asks "Do you want to make this edit to <file>?"
+		// before modifying runtime-protected paths even with
+		// --dangerously-skip-permissions.
+		`|(make this edit to )`)
+
+// defaultBlockedTailRegex matches narrow prompt markers that are evaluated
+// against the pane tail (~5 lines) only, never the full capture. Short
+// fragments like `Proceed?` or `unsandboxed)` can appear inside worker output
+// (man pages, commit messages, docstrings, quotations); restricting them to
+// the tail removes the scrollback false-positive while still catching the
+// real prompt, which always lives on the bottom row (Report 2026-05-06 issue-3).
+// defaultBlockedRegex's patterns A-H stay full-capture because Unicode boxes
+// and mid-scroll prompts can land outside the tail; I/J belong here.
+var defaultBlockedTailRegex = regexp.MustCompile(
+	`(?m)` +
+		// Pattern I (tail-only): bare "Proceed?" prompt with Y/N suffix.
+		// Requiring the suffix avoids matching natural prose like "Should
+		// we proceed?" or commit messages.
+		`(Proceed\?\s*[(\[]?[YyNn])` +
+		// Pattern J (tail-only): `Bash command (unsandboxed)` banner. The
+		// "Bash command " prefix is required so prose containing
+		// "(unsandboxed)" alone does not match.
+		`|(Bash command \(unsandboxed\))`)
+
+// blockedHintRegex matches surface symptoms of an interactive prompt
+// even when the strict patterns above did not fire. Used purely for a
+// debug log so operators can see WHY a pane was not detected as blocked.
+var blockedHintRegex = regexp.MustCompile(`(?m)❯|\bYes\b/\bNo\b|Proceed\?|Do you want|approval required|Confirm\?`)
+
+// terminalErrorRegex matches non-recoverable error frames produced by
+// the agent runtime (Claude API, Codex, Gemini). Detecting these in the
+// pane lets the queue scanner fail the in-flight task immediately
+// instead of waiting for max_in_progress_min (~30 min) — the LLM cannot
+// self-recover from a content-policy rejection or a 4xx error frame, so
+// extending the lease is wasted wall-clock and ends in the same task
+// being re-dispatched onto the still-stale TUI (Report 2026-05-06 P0-2).
+//
+// The list is intentionally narrow: only error shapes that are
+// definitively terminal at the runtime level. Transient network errors
+// (ECONNRESET, 502, 503) are NOT matched here because the runtime
+// usually retries them internally; matching them would convert a
+// transient hiccup into a hard task failure.
+var terminalErrorRegex = regexp.MustCompile(
+	`(?i)` +
+		// Claude API HTTP error envelope. The runtime renders this as a
+		// boxed "API Error: <code> <body>" frame on the TUI when the
+		// request fails irrecoverably (content filter, invalid request,
+		// model-not-found, organization disabled, etc.).
+		`API Error: 4\d\d\b` +
+		// Anthropic / OpenAI structured error type for malformed or
+		// policy-violating requests. Surfaces directly in some runtime
+		// error envelopes when streaming JSON is rendered to the pane.
+		`|invalid_request_error\b` +
+		// Anthropic content-filter rejection. The pane shows the policy
+		// reason verbatim; this is the canonical terminal-error string
+		// from Report 2026-05-06 P0-2.
+		`|Output blocked by content filtering policy` +
+		// Anthropic permission_error: organization or API key restricted
+		// from the requested action. Always terminal.
+		`|permission_error\b` +
+		// authentication_error: stale or revoked credentials. Operator
+		// must rotate the key — definitively terminal.
+		`|authentication_error\b`)
+
+// contextBudgetExhaustedRegex detects the Claude Code TUI context-usage
+// indicator (`97% used`, `99% used`, `100% used`). At >=97% the next turn
+// gets truncated / auto-cleared by the runtime and the in-flight task
+// silently disappears (Report 2026-05-06 P1 NEW: 97% → 63% reset →
+// dispatch_task_failed). Detection short-circuits the 30 min
+// max_in_progress_min back-stop with a VerdictTerminalError-equivalent
+// fast-fail (task drop + pane respawn → retry on a different worker / fresh
+// epoch). The 97% threshold is deliberately conservative: research / heavy
+// output tasks legitimately reach the low 90s, while measured runs show
+// reset begins at 97%. Evaluated against the tail only — the indicator
+// always renders on the bottom row, and full-capture matching would pick
+// up older indicator lines from scrollback.
+var contextBudgetExhaustedRegex = regexp.MustCompile(
+	`\b(9[7-9]|100)\s*%\s+used\b`,
+)
+
+// defaultActiveHintRegex marks a pane Active when the tail shows an LLM
+// agent's activity / spinner UI, even if the cross-scan content hash is
+// identical (e.g. a long-running `pnpm install` keeps the same "✶ Checking…"
+// line for >60s; the hash-delta heuristic would otherwise mis-classify Idle
+// and race in a fresh dispatch — Report 2026-05-05 P0-1). Kept as a
+// daemon-side default (not a config knob) so operators picking up a new
+// binary inherit new runtime verbs (claude-code adds them every release)
+// without editing config.yaml. Deliberately broad: false-positive Active is
+// bounded by max_in_progress_min, while false-negative Idle on a busy agent
+// destructively releases the lease.
+var defaultActiveHintRegex = regexp.MustCompile(
+	`(?i)` +
+		// English activity verbs Claude Code / Codex / Gemini / generic
+		// LLM CLIs use as spinner labels. Trailing word characters
+		// permit "-ing", "ed", or other tense suffixes; the trailing
+		// ellipsis / dots are common but optional so the verb alone
+		// (no animation char) is still caught when the spinner glyph
+		// scrolled out of the captured tail.
+		`\b(?:Thinking|Working|Running|Processing|Analyzing|Generating|` +
+		`Streaming|Loading|Crafting|Compiling|Building|Researching|` +
+		`Reviewing|Pondering|Devising|Frobnicating|Synthesizing|` +
+		`Simmering|Computing|Considering|Cogitating|Reasoning|` +
+		`Hypothesizing|Brainstorming|Planning|Drafting|Reading|Writing|` +
+		`Searching|Exploring|Investigating|Evaluating|Reflecting|` +
+		`Strategizing|Cooking|Brewing|Cooked|Brewed|Cogitated|` +
+		`Determining|Determining|Waiting|Fetching|Downloading|` +
+		`Uploading|Installing|Resolving|Linking|Unpacking|Indexing|` +
+		`Updating|Caching|Verifying|Validating|Testing|Checking)\w*` +
+		// Optional trailing ellipsis / dots. Not required because some
+		// runtimes show the verb without animation chars when the
+		// surrounding spinner glyph scrolled away.
+		`[.…]*` +
+		// Japanese activity verbs (`〜中` = "in progress"). Same
+		// rationale: each LLM Japanese-locale UI variant uses these
+		// markers. Trailing pipe MUST stay on the same physical alternation
+		// boundary — a stray `|` between alternations (e.g. `…調査中|` then
+		// `|⎿\s` on the next concatenated string) collapses into `||` and
+		// the empty alternative matches every input. Keep one continuous
+		// alternation by removing trailing `|` from each chunk except the
+		// last so the splice point is always non-empty.
+		`|検証中|分析中|生成中|処理中|確認中|実行中|読込中|読み込み中|書込中|書き込み中` +
+		`|計画中|思考中|編集中|作成中|更新中|削除中|展開中|構築中|準備中|送信中` +
+		`|受信中|待機中|解析中|計算中|整理中|圧縮中|解凍中|検索中|調査中` +
+		// Claude Code 2.x subprocess output marker — a curved arrow
+		// preceding stderr/stdout lines from the underlying tool. Its
+		// presence on the tail is unambiguous evidence the agent is
+		// rendering live tool output, regardless of whether the line
+		// content has actually changed since the previous scan.
+		`|⎿\s` +
+		// Common LLM agent spinner / status glyphs (subset of
+		// livenessNoiseRegexp's normalisation set). Their presence in
+		// the tail signals an active animation.
+		`|[✻✼✽✾✿⏳⏰⌛◐◑◒◓◴◵◶◷⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏]`)
 
 // MaxUncertainStreak is the maximum number of consecutive VerdictUncertain
 // outcomes per agent before the next Uncertain is downgraded to
@@ -243,10 +462,51 @@ func New(busyRegex *regexp.Regexp) *Tracker {
 	return &Tracker{
 		snapshots:       make(map[string]Snapshot),
 		uncertainStreak: make(map[string]int),
+		blockedSince:    make(map[string]time.Time),
+		hintLogState:    make(map[string]hintLogEntry),
 		busyRegex:       busyRegex,
 		blockedRegex:    defaultBlockedRegex,
 		hashFunc:        defaultHash,
 	}
+}
+
+// shouldEmitHintLog reports whether the
+// `pane_blocked_prompt_hint_unmatched` DEBUG line should be emitted
+// for agentID right now. The throttle key is (agentID, hint-class)
+// — the broad classification of *which* prompt marker (`❯`, `Yes/No`,
+// `Do you want`, `Proceed?`, `approval required`, `Confirm?`) is
+// present — rather than the tail hash. Pre-2026-05-06 we keyed on
+// tail-hash but the spinner / Cogitated counter / sub-second timer
+// produced just enough cross-scan delta that the throttle slipped
+// every few seconds (Report 2026-05-06 P1-3, P2-3 — 25 emissions per
+// E2E run despite "30 s throttle"). Hint-class doesn't shift on
+// noise so the first emission for a class is recorded and the next
+// 30 s of the same class is suppressed; a *new* hint marker appearing
+// immediately re-emits so a genuine wedge surfaces fresh evidence.
+func (t *Tracker) shouldEmitHintLog(agentID, hintClass string, now time.Time) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	prev, ok := t.hintLogState[agentID]
+	if ok && prev.hintClass == hintClass && now.Sub(prev.at) < blockedHintLogWindow {
+		return false
+	}
+	t.hintLogState[agentID] = hintLogEntry{at: now, hintClass: hintClass}
+	return true
+}
+
+// classifyBlockedHint returns a short stable token identifying which
+// prompt-shape marker matched in content. Used as the throttle key for
+// `pane_blocked_prompt_hint_unmatched`. The marker is taken from
+// blockedHintRegex's first match — if the regex evolves, this token
+// list grows automatically.
+func classifyBlockedHint(content string) string {
+	m := blockedHintRegex.FindString(content)
+	if m == "" {
+		return ""
+	}
+	// Lowercase for stability against case variation. The hint patterns
+	// are ASCII / known glyphs so ToLower is safe and cheap.
+	return strings.ToLower(m)
 }
 
 // SetBlockedPattern replaces the regex used to detect blocked
@@ -387,6 +647,33 @@ const (
 	// enough information yet. Recommended response: extend the lease
 	// once so the next scan has a baseline to compare against.
 	VerdictUncertain
+
+	// VerdictBlocked — the captured content matched the blocked-prompt
+	// detector (interactive confirmation / approval prompt). The
+	// underlying agent process is alive (it's the one rendering the
+	// prompt) but is NOT making forward progress. Callers should treat
+	// the lease the same as VerdictActive (extend, do not release) so
+	// the in-flight Bash invocation does not race with a new dispatch
+	// epoch — but they MUST NOT refresh circuit-breaker progress
+	// timestamps, otherwise progress_timeout never fires while the
+	// pane is wedged on a prompt that the operator never approves.
+	// Reports of 2026-05-04 confirmed pane-active extension was
+	// continuously refreshing last_progress_at and defeating the
+	// progress_timeout back-stop.
+	VerdictBlocked
+
+	// VerdictTerminalError — the captured content matched a non-recoverable
+	// error displayed by the agent runtime (Claude API HTTP 4xx error,
+	// content-filtering rejection, invalid_request_error, …). The agent
+	// process is alive but the in-flight task cannot make progress: the
+	// runtime has produced a hard error frame that the LLM cannot self-
+	// recover from. Callers MUST fail the task immediately rather than
+	// extending the lease — the alternative (Report 2026-05-06 P0-2) is a
+	// 30-minute stuck pane that ultimately re-dispatches the same task to
+	// the same stale TUI. The blocked-pane timeout (3 min) is too long for
+	// this case because the error content will not change without
+	// operator intervention.
+	VerdictTerminalError
 )
 
 // String returns a stable token suitable for log lines.
@@ -398,6 +685,10 @@ func (v Verdict) String() string {
 		return "idle"
 	case VerdictUncertain:
 		return "uncertain"
+	case VerdictBlocked:
+		return "blocked"
+	case VerdictTerminalError:
+		return "terminal_error"
 	default:
 		return "unknown"
 	}
@@ -421,29 +712,173 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	streak := t.uncertainStreak[agentID]
 	t.mu.RUnlock()
 
-	// Blocked-prompt fast path: if the pane shows an interactive
-	// confirmation prompt (e.g. Claude Code's "❯ 1. Yes" tool-call
-	// confirmation), the agent is not making progress regardless of how
-	// lively the surrounding scrollback looks. Force VerdictIdle so the
-	// caller falls through to the busy-check / release path; the lease
-	// expires, the task is force-released, and the recovery routines
-	// (paused_for_replan / R10 dead-letter) can take it from there
-	// without an operator manually clearing the prompt.
+	// Terminal-error fast path: if the pane content shows a runtime
+	// error frame the LLM cannot recover from (Claude API 4xx,
+	// content-policy rejection, invalid_request_error, …), the in-flight
+	// task is dead in the water — no amount of lease extension will get
+	// the worker unstuck because the runtime has already given up on
+	// this turn. Surface this verdict so the caller can fail the task
+	// immediately instead of waiting on max_in_progress_min (Report
+	// 2026-05-06 P0-2: a content-filter rejection kept the pane "active"
+	// for 30 min, then the same task was re-dispatched onto the still-
+	// stale TUI). Runs BEFORE the blocked-prompt detector because a
+	// terminal error frame can sit alongside scrollback that contains a
+	// stale `❯` from an earlier prompt; classifying as terminal-error is
+	// strictly more actionable than blocked.
+	if terminalErrorRegex.MatchString(content) {
+		t.mu.Lock()
+		delete(t.uncertainStreak, agentID)
+		// Keep BlockedSince untouched — this verdict has its own
+		// recovery path in the queue scanner, independent of the
+		// blocked-pane timeout machinery.
+		t.mu.Unlock()
+		attrs := []any{
+			"agent_id", agentID,
+			"hint", "agent runtime emitted a terminal error frame (Claude API 4xx / content filter / invalid_request_error). The scanner will fail the in-flight task immediately and respawn the pane to clear the stale TUI — no operator action needed unless the error indicates configuration drift (revoked API key, etc.).",
+		}
+		if paneTailWarnOptedIn() {
+			attrs = append(attrs, "tail", trimForLog(tailLines(content), 512))
+		}
+		slog.Warn("pane_terminal_error_detected", attrs...)
+		_ = t.RecordObservation(agentID, content, now)
+		return VerdictTerminalError
+	}
+
+	// Context-budget-exhausted fast path: agent TUI shows >=97% context
+	// usage. The next turn is at high risk of being silently truncated /
+	// auto-cleared by the runtime, leaving the daemon's in-flight task
+	// wedged. Treat as TerminalError so the queue scanner fails the task
+	// immediately and respawns the pane (clears the stale TUI; the next
+	// dispatch starts on a fresh epoch). Avoids the 30-min wedge observed
+	// in Report 2026-05-06 P1 NEW.
 	//
-	// This must run BEFORE the busy-pattern fast path because a
-	// scrollback line containing "Working" or "Thinking" can otherwise
-	// pin the verdict to Active while the new bottom-of-pane prompt
-	// blocks forward progress.
-	if blockedRe != nil && blockedRe.MatchString(content) {
+	// Tail-only match: the % indicator lives in the TUI status line at
+	// the bottom. Matching against full capture would risk hits on
+	// scrollback containing benchmark numbers like "97% coverage".
+	tailForBudget := tailLines(content)
+	if contextBudgetExhaustedRegex.MatchString(tailForBudget) {
 		t.mu.Lock()
 		delete(t.uncertainStreak, agentID)
 		t.mu.Unlock()
+		attrs := []any{
+			"agent_id", agentID,
+			"hint", "agent TUI shows >=97% context usage. The in-flight task is at high risk of being silently truncated by the runtime; failing it now and respawning the pane is preferable to a 30-min wedge. The same task will be retried on a fresh agent epoch.",
+		}
+		if paneTailWarnOptedIn() {
+			attrs = append(attrs, "tail", trimForLog(tailForBudget, 256))
+		}
+		slog.Warn("pane_context_budget_exhausted", attrs...)
 		_ = t.RecordObservation(agentID, content, now)
-		return VerdictIdle
+		return VerdictTerminalError
+	}
+
+	// Blocked-prompt fast path: if the pane shows an interactive
+	// confirmation prompt (e.g. Claude Code's "❯ 1. Yes" tool-call
+	// confirmation), the worker process is alive and waiting on operator
+	// input — it is NOT idle and the lease MUST NOT be released. Earlier
+	// versions of this branch returned VerdictIdle which kicked the
+	// caller into the busy-check / release path; the operator (or
+	// auto-approval) eventually clearing the prompt then ran the
+	// already-in-flight Bash invocation against a stale lease epoch and
+	// surfaced as `FENCING_REJECT` (Reports 1 & 2 of 2026-05-03,
+	// `maestro result write` from a worker pane). Since the agent is
+	// still bound to the prompt, treat the verdict as Active so the
+	// caller proactively extends the lease. The hard upper bound on
+	// "blocked indefinitely" stays on the circuit breaker
+	// (progress_timeout, default 30 min) and on max_in_progress_min,
+	// neither of which depend on this verdict — so the failure mode of
+	// a never-approved prompt is bounded recovery, not deadlock.
+	//
+	// This must run BEFORE the busy-pattern fast path because a
+	// scrollback line containing "Working" or "Thinking" can otherwise
+	// override the meaningful "blocked" state.
+	// Two-stage detection:
+	//   - blockedRe matches against the full capture (~200 line
+	//     scrollback) so Unicode boxes and prompts mid-scroll still get
+	//     caught.
+	//   - defaultBlockedTailRegex matches against the tail (~5 lines)
+	//     only, holding narrow patterns that would otherwise false-positive
+	//     against scrollback noise.
+	tailForBlocked := tailLines(content)
+	blockedMatched := blockedRe != nil && blockedRe.MatchString(content)
+	if !blockedMatched {
+		blockedMatched = defaultBlockedTailRegex.MatchString(tailForBlocked)
+	}
+	if blockedMatched {
+		t.mu.Lock()
+		delete(t.uncertainStreak, agentID)
+		// Stamp the start of the blocked run on the FIRST blocked
+		// observation; preserve the existing timestamp on consecutive
+		// blocked observations so callers can compute total wedged time.
+		blockedSince, hadBlocked := t.blockedSince[agentID]
+		if !hadBlocked {
+			t.blockedSince[agentID] = now
+			blockedSince = now
+		}
+		t.mu.Unlock()
+		// Surface the detection so operators see why a pane was kept
+		// active despite no forward progress. The queue scanner enforces
+		// a short blocked-prompt timeout (consulted via BlockedSince) and
+		// will fail the in-flight task if the wedge persists beyond it,
+		// so the failure mode is bounded. Tail snippet is opt-in via
+		// MAESTRO_LOG_PANE_TAIL because pane content can be sensitive.
+		attrs := []any{
+			"agent_id", agentID,
+			"blocked_for_sec", int64(now.Sub(blockedSince).Seconds()),
+			"hint", "pane is sitting on a confirmation/approval prompt. The scanner will fail the in-flight task once the blocked-prompt timeout elapses. Configure auto-approval / trusted command allowlists in your runtime settings (~/.claude / codex / gemini) so the prompt does not appear at all.",
+		}
+		if paneTailWarnOptedIn() {
+			attrs = append(attrs, "tail", trimForLog(tailForBlocked, 512))
+		}
+		slog.Warn("pane_blocked_prompt_detected", attrs...)
+		_ = t.RecordObservation(agentID, content, now)
+		return VerdictBlocked
+	}
+	// Not blocked → clear any pending blocked-since stamp so the next
+	// blocked observation starts fresh. Cheap when nothing was set.
+	t.mu.Lock()
+	delete(t.blockedSince, agentID)
+	t.mu.Unlock()
+	// Diagnostic when a strict-match miss leaves obvious prompt symptoms
+	// in the captured content. Reports of 2026-05-04 found a real
+	// reproduction where the user observed the prompt in the pane but
+	// no `pane_blocked_prompt_detected` ever fired; without a debug
+	// log there is no way to tell whether the regex missed, the
+	// capture missed, or something else swallowed the verdict. This
+	// emits at debug level so it does not affect production noise but
+	// is available when operators are inspecting hangs.
+	if hintClass := classifyBlockedHint(content); hintClass != "" {
+		tail := tailLines(content)
+		if t.shouldEmitHintLog(agentID, hintClass, now) {
+			// Include capture size so operators can tell whether a missing
+			// match is "regex did not cover this phrasing" vs "capture
+			// returned a tiny snippet from a different pane". Pane content
+			// snippet is opt-in via MAESTRO_LOG_PANE_TAIL because it can
+			// contain command text or model output that is sensitive.
+			attrs := []any{
+				"agent_id", agentID,
+				"hint_class", hintClass,
+				"content_bytes", len(content),
+				"tail_bytes", len(tail),
+				"hint", "pane content contains prompt-like markers (❯ / Yes/No / Do you want / Proceed?) but the strict detector did not match. If this is a genuine block, broaden defaultBlockedRegex; if capture size is small, the wrong pane may have been captured; if not, ignore.",
+			}
+			if paneTailWarnOptedIn() {
+				attrs = append(attrs, "tail", trimForLog(tail, 512), "head", trimForLogHead(content, 512))
+			}
+			slog.Debug("pane_blocked_prompt_hint_unmatched", attrs...)
+		}
 	}
 
 	tail := tailLines(content)
 	tailHash := t.hashFunc(normalizeForLiveness(tail))
+	// activeHintMatched is true when the raw tail contains an
+	// always-on activity marker (defaultActiveHintRegex). The operator's
+	// busy_pattern is honoured first if set, but the daemon-side default
+	// catches markers an operator config probably never lists (Japanese
+	// verbs, Claude Code 2.x verbs, ⎿ subprocess output prefix, etc.).
+	// This is a daemon-managed default by design — see the comment on
+	// defaultActiveHintRegex for the rationale.
+	activeHintMatched := defaultActiveHintRegex.MatchString(tail)
 	var verdict Verdict
 	// uncertainCounted is true when this Uncertain outcome should count
 	// toward the consecutive-uncertain streak. We only count the
@@ -453,6 +888,17 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	uncertainCounted := false
 	switch {
 	case re != nil && re.MatchString(tail):
+		verdict = VerdictActive
+	case activeHintMatched:
+		// Daemon-side activity hint matched — tail shows an LLM agent
+		// spinner / activity verb. The agent's UI is alive even if the
+		// hash happens to be identical to the previous scan (long
+		// subprocess holding the same animation frame). Without this
+		// branch the hash-equal default would mis-classify as Idle and
+		// the lease would be released on top of a still-running task —
+		// the package-proxy P0-1 regression. max_in_progress_min remains
+		// the wall-clock back-stop, so over-permissive Active here only
+		// delays the eventual hard cap, never erases it.
 		verdict = VerdictActive
 	case !hasPrev:
 		verdict = VerdictUncertain
@@ -504,6 +950,21 @@ func (t *Tracker) ForgetAgent(agentID string) {
 	defer t.mu.Unlock()
 	delete(t.snapshots, agentID)
 	delete(t.uncertainStreak, agentID)
+	delete(t.blockedSince, agentID)
+}
+
+// BlockedSince reports the wall-clock timestamp of the FIRST observation
+// in the agent's current consecutive run of VerdictBlocked outcomes, or
+// the zero value when the agent is not currently observed as blocked.
+// Cleared on the next non-blocked observation, so callers see only an
+// uninterrupted blocked streak. Used by the queue scanner to enforce a
+// blocked-prompt timeout that is tighter than circuit_breaker progress
+// timeout.
+func (t *Tracker) BlockedSince(agentID string) (time.Time, bool) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	ts, ok := t.blockedSince[agentID]
+	return ts, ok
 }
 
 // LastSnapshot returns the most recently recorded snapshot for agentID.
@@ -519,4 +980,34 @@ func (t *Tracker) LastSnapshot(agentID string) (Snapshot, bool) {
 func defaultHash(s string) string {
 	sum := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(sum[:])
+}
+
+// paneTailWarnOptedIn reports whether the operator has opted in to having
+// pane-tail snippets included in pane_blocked_prompt_detected log lines.
+// Default is off so privacy-sensitive deployments do not see operator
+// command text or model output in daemon logs.
+func paneTailWarnOptedIn() bool {
+	v := strings.TrimSpace(os.Getenv("MAESTRO_LOG_PANE_TAIL"))
+	return v == "1" || v == "true" || v == "TRUE" || v == "yes"
+}
+
+// trimForLog returns s truncated to at most maxBytes, taking the trailing
+// segment because the bottom of a pane capture is where the active
+// confirmation prompt lives.
+func trimForLog(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[len(s)-maxBytes:]
+}
+
+// trimForLogHead returns s truncated to at most maxBytes from the
+// beginning of the string. Used by the blocked-hint diagnostic so
+// operators can see whether the prompt is rendered above the captured
+// tail when the strict regex misses.
+func trimForLogHead(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	return s[:maxBytes]
 }

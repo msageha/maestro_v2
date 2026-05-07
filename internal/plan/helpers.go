@@ -62,17 +62,33 @@ func readModifyWriteResultFile(maestroDir string, modifyFn func(rf *model.Comman
 // readModifyWriteCommandQueue performs the common read-modify-write pattern on the planner queue file.
 // It reads the existing queue file, calls modifyFn to apply changes, and atomically writes the result.
 // If modifyFn returns false, the write is skipped (no-op).
+//
+// A missing planner.yaml is treated as an empty queue rather than a hard
+// error. The file is created lazily on first write — a fresh setup, a
+// formation that has not yet dispatched a planner command, or a manual
+// cleanup can all leave it absent. Earlier versions surfaced this case as
+// `INTERNAL_ERROR: open .../queue/planner.yaml: no such file or directory`,
+// which sometimes wedged plan_complete after side-effects had already
+// landed (Report 2026-05-04 issue-2). Treating absence as empty keeps the
+// flow idempotent and allows the caller's modifyFn to populate the queue
+// from scratch.
 func readModifyWriteCommandQueue(maestroDir string, modifyFn func(cq *model.CommandQueue) (writeNeeded bool)) error {
 	path := filepath.Join(maestroDir, "queue", "planner.yaml")
 
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	if err != nil {
-		return fmt.Errorf("read planner queue: %w", err)
-	}
-
 	var cq model.CommandQueue
-	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return fmt.Errorf("parse planner queue: %w", err)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	switch {
+	case err == nil:
+		if err := yamlv3.Unmarshal(data, &cq); err != nil {
+			return fmt.Errorf("parse planner queue: %w", err)
+		}
+	case errors.Is(err, os.ErrNotExist):
+		// Empty queue — modifyFn may populate it. Initialise schema
+		// metadata so the first write produces a well-formed file.
+		cq.SchemaVersion = 1
+		cq.FileType = "queue_command"
+	default:
+		return fmt.Errorf("read planner queue: %w", err)
 	}
 
 	if !modifyFn(&cq) {

@@ -57,9 +57,9 @@ func TestApplyDefaults(t *testing.T) {
 				BusyCheckMaxRetries:    30,
 				IdleStableSec:          5,
 				CooldownAfterClear:     3,
-				ClearConfirmTimeoutSec: 5,
+				ClearConfirmTimeoutSec: 8,
 				ClearConfirmPollMs:     250,
-				ClearMaxAttempts:       3,
+				ClearMaxAttempts:       7,
 				ClearRetryBackoffMs:    500,
 			},
 		},
@@ -1138,27 +1138,6 @@ func TestDefaultExecutorConfig_Values(t *testing.T) {
 }
 
 // --- applyDefaults additional tests ---
-
-func TestApplyDefaults_ClearSecondEnterDelayMs(t *testing.T) {
-	t.Parallel()
-	// Zero value gets default
-	cfg := applyDefaults(model.WatcherConfig{})
-	if cfg.ClearSecondEnterDelayMs != 500 {
-		t.Errorf("ClearSecondEnterDelayMs: got %d, want 500", cfg.ClearSecondEnterDelayMs)
-	}
-
-	// Negative value gets default
-	cfg = applyDefaults(model.WatcherConfig{ClearSecondEnterDelayMs: -1})
-	if cfg.ClearSecondEnterDelayMs != 500 {
-		t.Errorf("ClearSecondEnterDelayMs: got %d, want 500 for negative input", cfg.ClearSecondEnterDelayMs)
-	}
-
-	// Explicit positive value is preserved
-	cfg = applyDefaults(model.WatcherConfig{ClearSecondEnterDelayMs: 1000})
-	if cfg.ClearSecondEnterDelayMs != 1000 {
-		t.Errorf("ClearSecondEnterDelayMs: got %d, want 1000", cfg.ClearSecondEnterDelayMs)
-	}
-}
 
 func TestApplyDefaults_WaitReadyFields(t *testing.T) {
 	t.Parallel()

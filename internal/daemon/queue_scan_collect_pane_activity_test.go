@@ -3,6 +3,8 @@ package daemon
 import (
 	"io"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"testing"
 	"time"
@@ -10,6 +12,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/lease"
 	"github.com/msageha/maestro_v2/internal/daemon/paneactivity"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -259,6 +262,131 @@ func TestCollectExpiredTaskBusyChecks_FallsBackToBusyCheckWhenPaneIdle(t *testin
 	}
 	if items[0].EntryID != "task_1" {
 		t.Errorf("busy-check EntryID = %q, want task_1", items[0].EntryID)
+	}
+}
+
+// TestStepBlockedPaneTimeout_FailsTaskAtScanTickGranularity pins that
+// the new scan-tick blocked-pane fail path (Report 2026-05-05 P0-B)
+// fires within one scan after the threshold elapses, instead of waiting
+// for lease expiry. blockedSince is seeded directly via Tracker
+// observation so the test does not depend on lease expiry timing.
+func TestStepBlockedPaneTimeout_FailsTaskAtScanTickGranularity(t *testing.T) {
+	t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "60")
+	tracker := paneactivity.New(nil)
+	clock := &fixedClock{now: time.Unix(1_700_000_000, 0).UTC()}
+	qh := newQueueHandlerForPaneActivityTest(t, tracker, clock)
+	// failTaskBlockedPane writes a synthetic failed result via
+	// updateYAMLFile under "result:<worker>" lockMap, so we need a real
+	// directory + lock map to keep the path under test exercising the
+	// production lock ordering rather than skipping it.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "results"), 0o750); err != nil {
+		t.Fatalf("mkdir results: %v", err)
+	}
+	qh.maestroDir = dir
+	qh.lockMap = lock.NewMutexMap()
+	// Capture returns a Claude Code box-wrapped approval prompt every
+	// time the scanner asks; this drives ObserveVerdict → VerdictBlocked.
+	qh.paneCapture = func(string) (string, error) {
+		return "│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No\n", nil
+	}
+	qh.paneFinder = func(string) (string, error) { return "session:0.1", nil }
+	// Stage a prior blocked observation 90s ago — past the 60s threshold.
+	tracker.RecordObservation("worker1", "│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No\n",
+		clock.now.Add(-90*time.Second).UTC())
+	// Force blockedSince to that earlier timestamp by calling
+	// ObserveVerdict at the historical time.
+	_ = tracker.ObserveVerdict("worker1",
+		"│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No\n",
+		time.Minute, clock.now.Add(-90*time.Second).UTC())
+
+	owner := "daemon:1"
+	expiredAt := clock.now.Add(time.Hour).Format(time.RFC3339) // lease NOT expired
+	tq := &taskQueueEntry{
+		Queue: model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks: []model.Task{{
+				ID:             "task_blocked",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &expiredAt,
+				LeaseEpoch:     1,
+				UpdatedAt:      clock.now.Add(-2 * time.Minute).Format(time.RFC3339),
+				CommandID:      "cmd_blocked",
+			}},
+		},
+	}
+	s := &scanState{
+		tasks:     map[string]*taskQueueEntry{"/tmp/worker1.yaml": tq},
+		taskDirty: map[string]bool{},
+	}
+
+	qh.stepBlockedPaneTimeout(s)
+
+	if got := tq.Queue.Tasks[0].Status; got != model.StatusFailed {
+		t.Fatalf("task status = %s, want failed (scan-tick timeout did not fire)", got)
+	}
+	if !s.taskDirty["/tmp/worker1.yaml"] {
+		t.Errorf("taskDirty was not flagged after fail")
+	}
+}
+
+// TestStepBlockedPaneTimeout_FailsImmediatelyOnTerminalError pins the
+// post-2026-05-06 P0 fix: a worker pane showing a runtime terminal-error
+// frame (Claude API 4xx, content filter, …) must be failed at scan-tick
+// granularity, NOT at lease expiry. Previously the fast-fail logic was
+// only wired to the lease-expiry path, so a terminal-error frame on a
+// task whose lease was still valid sat there for max_in_progress_min.
+func TestStepBlockedPaneTimeout_FailsImmediatelyOnTerminalError(t *testing.T) {
+	tracker := paneactivity.New(nil)
+	clock := &fixedClock{now: time.Unix(1_700_000_000, 0).UTC()}
+	qh := newQueueHandlerForPaneActivityTest(t, tracker, clock)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "results"), 0o750); err != nil {
+		t.Fatalf("mkdir results: %v", err)
+	}
+	qh.maestroDir = dir
+	qh.lockMap = lock.NewMutexMap()
+	// Capture returns a Claude API content-filter terminal-error frame.
+	// blockedHintRegex / activeHintRegex would otherwise classify this
+	// pane as blocked / active; terminalErrorRegex must take precedence.
+	terminalErrorContent := `Cogitating for 12s
+API Error: 400 Output blocked by content filtering policy`
+	qh.paneCapture = func(string) (string, error) {
+		return terminalErrorContent, nil
+	}
+	qh.paneFinder = func(string) (string, error) { return "session:0.1", nil }
+
+	owner := "daemon:1"
+	leaseFuture := clock.now.Add(time.Hour).Format(time.RFC3339) // lease NOT expired
+	tq := &taskQueueEntry{
+		Queue: model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks: []model.Task{{
+				ID:             "task_terminal",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &leaseFuture,
+				LeaseEpoch:     1,
+				UpdatedAt:      clock.now.Add(-2 * time.Minute).Format(time.RFC3339),
+				CommandID:      "cmd_terminal",
+			}},
+		},
+	}
+	s := &scanState{
+		tasks:     map[string]*taskQueueEntry{"/tmp/worker1.yaml": tq},
+		taskDirty: map[string]bool{},
+	}
+
+	qh.stepBlockedPaneTimeout(s)
+
+	if got := tq.Queue.Tasks[0].Status; got != model.StatusFailed {
+		t.Fatalf("task status = %s, want failed (terminal error fast-fail did not fire at scan-tick)", got)
+	}
+	if !s.taskDirty["/tmp/worker1.yaml"] {
+		t.Errorf("taskDirty was not flagged after terminal-error fail")
 	}
 }
 

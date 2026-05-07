@@ -154,8 +154,26 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		if err != nil {
 			continue
 		}
+		// Quarantined integrations are normally operator territory, but
+		// the auto-recoverable class (dirty_worktree from RunOnIntegration
+		// verify pollution) must not stall fast-track cleanup. The phase
+		// escalation path in isPhaseMergeRecorded already attempts
+		// recovery; if that hasn't unblocked the command after
+		// `threshold * 3`, we proceed with cleanup here so the operator
+		// is not left with a perpetually-leaked worktree.
 		if cmdState.Integration.Status == model.IntegrationStatusQuarantined {
-			continue
+			escalateAfter := threshold * 3
+			if elapsed < escalateAfter {
+				qh.log(LogLevelDebug,
+					"fast_track_cleanup_quarantine_grace command=%s elapsed=%s grace_remaining=%s reason=%q",
+					cmd.ID, elapsed.Round(time.Second), (escalateAfter - elapsed).Round(time.Second),
+					cmdState.Integration.QuarantineReason)
+				continue
+			}
+			qh.log(LogLevelWarn,
+				"fast_track_cleanup_quarantine_force command=%s elapsed=%s reason=%q "+
+					"(quarantine persisted past grace window; proceeding with cleanup)",
+				cmd.ID, elapsed.Round(time.Second), cmdState.Integration.QuarantineReason)
 		}
 
 		// Before nuking phases and the integration branch, ask the
@@ -163,21 +181,28 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		// plan would derive Completed AND the integration branch has
 		// actually been merged (the publish gate is one step away from
 		// advancing it), the "stuck" phase is just waiting for the
-		// resolver to flip it — fast_track_cleanup must NOT preempt
-		// that with MarkIntegrationFailed because the publish path then
-		// has no way out (would deadlock with derived_status=completed
-		// and integration_status=failed).
+		// resolver to flip it — preempting it with MarkIntegrationFailed
+		// would deadlock the publish path.
 		//
-		// Restricted to Integration.Status==Merged so that the original
-		// stall-relief use case (integration still Created because a
-		// phase never advanced to merge-ready) keeps working — those
-		// commands genuinely need fast_track_cleanup to break out.
+		// Escalation: if this skip persists beyond `escalateAfter` we stop
+		// deferring to the publish gate (something downstream is itself
+		// stuck) and force the regular fast-track path so the operator-
+		// visible cleanup runs and the worktree can be reclaimed. The
+		// grace multiplier intentionally keeps a wide buffer so a slow
+		// publish pipeline does not race the escalation.
 		if cmdState.Integration.Status == model.IntegrationStatusMerged && qh.derivePlanCompleted(cmd.ID) {
-			qh.log(LogLevelInfo,
-				"fast_track_cleanup_skipped_plan_completed command=%s elapsed=%s "+
-					"(DeriveStatus reports plan complete and integration merged; deferring to publish gate)",
-				cmd.ID, elapsed.Round(time.Second))
-			continue
+			escalateAfter := threshold * 3
+			if elapsed < escalateAfter {
+				qh.log(LogLevelInfo,
+					"fast_track_cleanup_skipped_plan_completed command=%s elapsed=%s grace_remaining=%s "+
+						"(DeriveStatus reports plan complete and integration merged; deferring to publish gate)",
+					cmd.ID, elapsed.Round(time.Second), (escalateAfter - elapsed).Round(time.Second))
+				continue
+			}
+			qh.log(LogLevelWarn,
+				"fast_track_cleanup_escalated_plan_completed command=%s elapsed=%s threshold=%s escalate_after=%s "+
+					"(publish gate has not advanced past plan_completed within grace window; forcing cleanup)",
+				cmd.ID, elapsed.Round(time.Second), threshold, escalateAfter)
 		}
 
 		applied := qh.stepForceFailStuckPhases(cmd.ID, stuck, elapsed)

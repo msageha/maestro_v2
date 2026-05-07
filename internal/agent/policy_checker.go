@@ -60,15 +60,28 @@ func renderBashPolicyScript(projectRoot string) string {
 	return strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
 }
 
-// hookSettingsJSON is the settings JSON structure for hook overrides.
-// All hook types are optional; omitted keys are left unmodified by Claude Code.
+// hookSettingsJSON is the settings JSON structure used for hook
+// overrides. Only PreToolUse is emitted by Maestro: it is the
+// destructive-action policy gate that the daemon authors and binds to
+// every Worker, so it has to be expressed as a `--settings` payload.
+//
+// Notification / Stop are explicitly NOT touched here. Earlier
+// versions tried to suppress them with empty arrays so per-turn
+// verifier scripts (`~/.claude/settings.json` Stop hooks invoking a
+// project-local lint runner) would not run inside Maestro panes, but
+// Claude Code's `--settings` flag merges with the user layer rather
+// than replacing it — empty arrays did not override the operator's
+// hooks (Report 2026-05-06 Q-1 confirmed this in production). Rather
+// than ship ineffective code, we leave hook suppression as a
+// `~/.claude` responsibility: operators who don't want their Stop
+// hook running in Maestro panes scope it themselves at the user /
+// project settings layer.
 type hookSettingsJSON struct {
 	Hooks hookSettingsHooks `json:"hooks"`
 }
 
 type hookSettingsHooks struct {
-	Notification *[]any             `json:"Notification,omitempty"`
-	PreToolUse   []hookMatcherGroup `json:"PreToolUse,omitempty"`
+	PreToolUse []hookMatcherGroup `json:"PreToolUse,omitempty"`
 }
 
 type hookMatcherGroup struct {
@@ -83,16 +96,16 @@ type hookEntry struct {
 }
 
 // HookSettings returns the --settings JSON string that configures the
-// PreToolUse hook for Workers, with Notification hooks disabled.
-// This produces a single merged JSON so that only one --settings flag is needed.
+// PreToolUse policy hook for Workers. Notification / Stop suppression
+// has been removed: see the hookSettingsJSON comment above for
+// rationale. This produces a single --settings flag so that the
+// existing argv plumbing stays simple.
 //
 // Sandbox settings are intentionally omitted: passing sandbox config via
 // --settings overrides the user's global sandbox.enabled:false and prevents
 // the /sandbox command from working. See launcher.go buildLaunchArgs for details.
 func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
-	emptyNotification := []any{}
 	settings := hookSettingsJSON{}
-	settings.Hooks.Notification = &emptyNotification
 	settings.Hooks.PreToolUse = []hookMatcherGroup{
 		{
 			Matcher: "Bash|Write|Edit",

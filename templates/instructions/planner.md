@@ -27,6 +27,7 @@
 | F002 | プロジェクトのコードを読む | 調査タスクを Worker に委譲 |
 | F003 | Orchestrator やユーザーに直接報告する | `maestro plan complete` で完了報告 |
 | F004 | ビルド・テスト等のツール実行 | テスト実行タスクを Worker に委譲 |
+| F005 | ランタイム設定領域 (`.claude/`、`~/.claude/`、`.codex/`、`.gemini/`) を編集対象にするタスクを生成する | これらはオペレーターのグローバル設定であり Maestro の作業範囲外。`expected_paths` / `content` でも対象に含めない |
 
 ### 読み取り可能な `.maestro/` ファイル
 
@@ -92,9 +93,12 @@ VERIFY
 ```
 
 - 少なくとも 1 つの検証コマンドを含める。空の `verify: {}` は daemon が拒否する
-- コマンドには `&&`, `;`, `|`, リダイレクト等の shell メタ文字を含めない。複数手順が必要なら category に複数行で列挙する
-- 言語固有の検証が不明な場合でも、daemon は fallback として `git diff --check` を使う。ただし Planner は可能な限り対象リポジトリに合った build/test/typecheck を明示する
-- **Node 系の重要な落とし穴**: `tsc --noEmit` / `eslint .` / `vitest` などのバイナリは `node_modules/.bin/` 配下にしか存在せず `$PATH` から外れている。daemon の verify runner は `$PATH` のみ参照するため、これらをそのまま書くと `executable file not found in $PATH` で必ず失敗する。**`npx --no-install <cmd>`** を前置するか、`npm run <script>` 形式 (例: `npm run build`, `npm run typecheck`) で `package.json` 内のスクリプト経由で叩くこと。`--no-install` は誤って公開レジストリに fetch しに行くのを防ぐガード。
+- 各コマンドは `bash -c` 経由で実行されるため、`&&`, `;`, `||`, `|`, リダイレクト, `$(...)`, env 代入 (`KEY=val cmd`) などの **通常の shell 構文をそのまま書いてよい**。スクリプトに切り出す必要はない。複数手順を 1 つの category に並べたい場合も `cmd1 && cmd2` で連結できる
+- 唯一の制約は「YAML スカラ 1 行に収まること」(改行 / キャリッジリターンは reject される)
+- カテゴリは `build`, `lint`, `test`, `typecheck`, `security`, `performance` の 6 つ。これ以外のキー (例: `slow_lint`, `integration_test`) を書くと **strict YAML decode で reject** され "allowed categories: ..." エラーが返るので、誤記したらカテゴリ名を訂正して再投入する
+- 言語固有の検証が不明な場合でも、daemon は fallback として `git diff --check` を使う。Planner は可能な限り対象リポジトリに合った build/test/typecheck を明示する
+- **Node 系の落とし穴**: `tsc --noEmit` / `eslint .` / `vitest` などは `node_modules/.bin/` 配下にしかない。`bash -c` 経由でも `$PATH` には乗らないので、`npx --no-install <cmd>` を前置するか、`npm run <script>` 形式 (例: `npm run build`, `npm run typecheck`) で叩く。`--no-install` は誤って公開レジストリに fetch しに行くのを防ぐガード
+- **shell negation (`!`) は使わない**: `! rg ...` のような bash の論理否定は、JSON / YAML 経由で daemon に渡る過程で `\!` にエスケープされやすく、`bash -c` で `\!: command not found` (exit 127) を踏む。同じ意味は **`if rg <pattern> <paths>; then exit 1; fi`** や **`rg -q <pattern> <paths> && exit 1 || exit 0`** で書き、negation を if/&&/|| パターンに展開する。secret スキャン例: `if rg -n 'AKIA|password\s*=' lib test; then exit 1; fi`
 
 **重要 — ユーザ指示の検証要求は省略禁止**: Orchestrator 経由でユーザから受け取ったコマンドメッセージに「`go vet ./...` を通すこと」「`gosec` でセキュリティチェック」「`pytest -q` が PASS すること」といった具体的な検証コマンドが書かれている場合、それらは **すべて** `verify.yaml` の該当 category（build / lint / test / typecheck / security / performance）に列挙する。Planner が「冗長」「Worker タスク内で実行すれば十分」と判断して `verify.yaml` から外してはならない。
 
@@ -117,25 +121,24 @@ VERIFY
 
 判断に迷う場合（例: `go vet` を build に入れるか lint に入れるか）は **lint** に寄せる。Daemon は category 順を保たないが、ユーザ指示と紐付くカテゴリに置けば後追いで対応関係を確認できる。
 
-**重要 — verify config の scope**: ここで指定した検証は **各 worker タスク完了直後にその worker の単独 worktree で実行される**（per-task verify、merge 前）。したがって `verify.yaml` には **「単一 worker の貢献だけで合否が決まる検証」** のみを書くこと。
+**重要 — verify config の scope**: 通常 worker タスクの完了直後に daemon が verify.yaml を実行することは **ない** (Report 2026-05-05 P0-A redesign)。Worker 自身が task 内で skill driven な self-verification を行い、daemon は **`run_on_integration: true` / `run_on_main: true` のタスクでのみ verify.yaml を実行**する。
 
-- ✅ よい例: ビルドが通ること、worker が触ったパッケージのユニットテスト、lint
-- ❌ 悪い例: `go test ./...` のような **全 worker の成果物が統合された後でないと合格しない** リポジトリ全体テスト
+設計理由:
+- Worker worktree は `node_modules/`, `.gradle/`, `vendor/`, `target/` 等 gitignored な package-manager cache を持たないため、ここで言語ツールを走らせると必ず "command not found" になる (言語非依存性が壊れる)
+- project_root には deps が install 済みだが worker の uncommitted diff が見えない (broken syntax を見逃す)
+- Worker self-verify (skill: webapp-testing 等) は worker 自身の作業環境で diff を見ながら検証できる
+- Pre-publish の機械的 verify は **Planner が最終 phase に `run_on_integration: true` の dedicated task を配置する** ことで実現する。daemon は integration worktree (全 worker 成果統合済み) でこの task を実行し、verify.yaml を走らせる
 
-複数 worker が連携して成立する機能（例: worker1 が `cyan` を、worker2 が `magenta` を追加し、最終期待値が `cyan+magenta`）の **統合テストは per-task verify に入れない**。これを per-task verify に入れると、各 worker の単独 worktree で fail し、本来期待する merge_conflict / 統合パスに進めず、全 worker が `repair_pending` に落ちる。
+`verify.yaml` には repository-wide な build / lint / test / typecheck / security / performance を書く:
 
-**重要 — phase 跨ぎの中間不整合状態**: 複数 phase に分けて段階的に成果を積む設計（例: Phase 1 で profile.go を追加、Phase 2 で report.go を更新して profile を参照）でも **per-task verify は各 phase の最終 task で実行される** (`HeavyVerifyOwners` の予約挙動 — 詳細は `internal/daemon/result_write_handler.go:reserveOrDeferHeavyVerify` 参照)。Phase 1 完了時点で Phase 2 の更新がまだ存在しない状態で `go test ./...` が走ると、`report_test.go` の期待が満たされず fail → repair x2 → max retries → `paused_for_replan` に落ちる典型パターンを 2026-04-29 e2e で再現済み。
+- ✅ よい例: `go build ./...`, `go test ./...`, `flutter analyze`, `pnpm test`, `cargo check --all`
+- どこで走るか: `run_on_integration: true` の task が dispatch されたときに integration worktree (deps install 済みの operator 提供環境) で
 
-このリスクを避ける設計指針:
+operator (= `~/.maestro/` 運用者) は integration worktree に必要な deps を事前 install しておく責務を持つ (例: `pnpm install` をプロジェクトの `pre-up` で走らせる、Docker volume として共有する等)。これにより daemon 側は言語非依存で verify.yaml を実行できる。
 
-- ❌ **Phase 1 の verify.yaml に `go test ./...` を入れない**。Phase 1 で profile.go を追加するなら、verify は `go build ./...` と `go test ./internal/profile/...`（追加分の局所テスト）に限定する
-- ✅ **repository-wide test は最終 phase に集約する**。最終 phase で関連変更がすべて統合された後に `go test ./...` を走らせれば、中間不整合に false-fail しない
-- ✅ **段階構築の依存テストは後段 phase の Worker タスクで導入する**。Phase 1 で test ファイル自体を追加せず、Phase 2 で実装と test を一緒に追加する設計のほうが verify 通過しやすい
-- ⚠️ どうしても全 phase 共通の verify.yaml に統合テストを置きたい場合は、`--run-on-integration` の専用 task として最終 phase（または別 phase: deferred）に隔離する。`verify.yaml` の `test` カテゴリには置かない
+> **過去の注意**: 旧仕様では verify.yaml が「各 worker タスク完了直後に worker worktree で実行」されていたため per-task verify scope と integration verify scope の使い分けが必要だったが、新仕様では Planner はこの区別を意識する必要が無く、単に「pre-publish に走らせたい検証コマンド」を書けばよい。`HeavyVerifyOwners` / `reserveOrDeferHeavyVerify` のような中間不整合対策は不要 (一括で final task に集約)。
 
-選択した設計を `purpose` または `summary` に明示すること（例: 「Phase 1 verify は build と internal/profile/... のみ。Phase 2 で report と全体 test を追加」）。Worker と Planner 間で前提が揃わないと、後段の repair ループに巻き込まれる。
-
-**統合テストを行いたい場合**: phase 構成で **integration phase** を最後に追加し、`--run-on-integration` タスクとして発注する。このタスクは Daemon が integration worktree（全 worker の merge 後の状態）で実行するため、リポジトリ全体テストや E2E が成立する。
+**統合テストを行いたい場合 (推奨設計)**: phase 構成で **integration phase** を最後に追加し、`run_on_integration: true` タスクとして発注する。このタスクは Daemon が integration worktree (全 worker の merge 後の状態) で verify.yaml を実行するため、リポジトリ全体テストや E2E が成立する。
 
 ```
 # 例: 各 worker の per-task verify は build + 局所 test まで
@@ -627,7 +630,19 @@ maestro skill list --role worker
 | スコープ | 表現手段 | 説明 |
 |---------|---------|------|
 | 同一フェーズ内のタスク間 | `blocked_by` | YAML 内の `name` で参照。同一フェーズ内の先行タスクを指定 |
-| フェーズ間 | `depends_on_phases` | deferred フェーズの定義で依存先フェーズ名を指定 |
+| フェーズ間 | `depends_on_phases` | **deferred フェーズの定義でのみ** 依存先フェーズ名を指定 |
+
+**スキーマ検証で頻出する間違い** (Report 2026-05-05 で実機でも発生):
+
+- ❌ `concrete` フェーズに `depends_on_phases` を付ける
+  → エラー: `phases[N].depends_on_phases: concrete phases must have empty depends_on_phases`
+  → 正: 後段フェーズを依存させるなら、後段を `type: deferred` にする (concrete は即時実行のため依存できない)
+- ❌ `definition_of_abort.max_repair_count: 0`
+  → エラー: `must be between 1 and 100, got 0`
+  → 正: 推奨値 `3` を入れる (`0` は「リトライ無し」ではなく「未指定 ≒ 不正値」として扱われる)
+- ❌ `expected_paths: []` (空)
+  → エラー: 1 件以上必須
+  → 正: タスクが書き込む可能性があるパスを 1 件以上、リポジトリ全体に触れる場合は `["."]`
 
 Wave は明示的に宣言するものではなく、`blocked_by` の有無によって暗黙的に形成される。依存のないタスクが Wave 1（即時実行可能）、Wave 1 に `blocked_by` で依存するタスクが Wave 2、以降同様に連鎖する。
 
@@ -1199,6 +1214,8 @@ already finalised it. Use this only to trigger post-publish verification
 
 **重要**: この通知は「plan complete を呼べ」という指示ではない。`plan complete` は全タスク完了時点で Planner が一度だけ呼ぶ。publish が未完了であれば `deferred_publish` が返り、Daemon が publish 成功後に自動で確定する。二重に `plan complete` を呼ぶ必要はなく、呼んだ場合は redundant な idempotent 呼び出しとなる。
 
+**Continuous mode の next iteration は Planner の責務ではない**: `--continuous` モードであっても、次のコマンド (iteration N+1) を投入するのは Orchestrator の役割。Planner は `publish_completed` 通知を「次の iteration を設計せよ」と解釈してはならない。Daemon は publish 成功後にイテレーションカウンタを進めるだけで、次のコマンドを自動投入しない。Planner pane は通知受信後にターン終了すること。
+
 **通常の対応**: **何もしない**。通知は informational であり、追加タスクの投入は原則不要。
 
 **`--run-on-main` verification タスクの投入基準（デフォルトは投入しない）**:
@@ -1297,7 +1314,7 @@ tasks:
 | `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`）。省略時はペルソナ注入なし（汎用 Worker として動作）。実装系は `implementer` を明示推奨。詳細は §「ペルソナ活用ガイド」参照 |
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
 | `run_on_main` | 任意 | `true` の場合、タスクを worker worktree ではなく main 作業ディレクトリで実行。**publish / 統合ブランチ → main マージ後の main 上での検証タスク専用**（詳細は下記「verification タスクと run_on_main」参照）。`run_on_integration` と排他 |
-| `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**publish_conflict の解決タスク専用**。`run_on_main` と排他 |
+| `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**用途**: ① 統合済み成果物を全 worker 横断で検証する read-only な final-verify タスク (post-2026-05-05 P0-A: per-task daemon verify は normal worker task で skip され、verify.yaml は run_on_integration task でのみ走る)。② publish_conflict の解決タスク (write-side; integration worktree 上で競合ファイルを編集)。`run_on_main` と排他 |
 | `worker_id` | 任意 | 特定 worker（例: `worker3`）にタスクを固定する。省略時は bloom_level / load balancer による自動割当。`plan submit` / `plan submit --phase` の YAML と `plan add-task --worker-id` のいずれでも有効（同じ pinning 経路に流れる）。conflict 解決タスクや、特定 worker の worktree を検証対象とする場合に使用する。設定済みの workers にない ID を指定すると VALIDATION_ERROR で拒否される |
 
 #### verification タスクと `run_on_main`

@@ -16,7 +16,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -196,18 +195,15 @@ func (d *Daemon) initComponents() {
 		d.config.AdmissionControl.EffectiveMaxConcurrentVerify(),
 		d.config.AdmissionControl.EffectiveMaxConcurrentRepair())
 
-	// Fallback manager: only when enabled
-	if d.config.Fallback.EffectiveEnabled() {
-		d.fallbackMgr = fallback.NewManager(fallback.Config{
-			Enabled:                     true,
-			ConsecutiveFailureThreshold: d.config.Fallback.EffectiveConsecutiveFailureThreshold(),
-			RecoveryCheckIntervalSec:    d.config.Fallback.EffectiveRecoveryCheckIntervalSec(),
-			MinHealthyDurationSec:       d.config.Fallback.EffectiveMinHealthyDurationSec(),
-		})
-		d.handler.SetFallbackManager(d.fallbackMgr)
-		d.log(LogLevelInfo, "fallback_manager enabled threshold=%d",
-			d.config.Fallback.EffectiveConsecutiveFailureThreshold())
-	}
+	// Fallback manager (degraded-mode worker blacklisting) is intentionally
+	// not started: blacklisting a worker on consecutive failures creates a
+	// deadlock — the same worker can never reach `healthy` because its
+	// dispatch is suppressed (Report 1 from 2026-05-03 e2e: 17+ min stall
+	// in degraded mode with zero recovery). Autonomous LLM Orchestration
+	// recovers via per-task retry, repair tasks, and circuit breakers; it
+	// must not silence whole workers. The Fallback config struct is kept
+	// for YAML backward compat but no longer takes effect.
+	d.log(LogLevelDebug, "fallback_manager_not_started reason=degraded_mode_disabled_by_design")
 
 	if d.config.CircuitBreaker.Enabled {
 		d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
@@ -348,7 +344,17 @@ func (d *Daemon) startRuntime() error {
 			if resp := apipolicy.RequireCallerRole(req, "shutdown", uds.RoleCLI); resp != nil {
 				return resp
 			}
-			d.log(LogLevelInfo, "shutdown requested via UDS")
+			// Surface the calling context so an unexpected shutdown can be
+			// traced to its origin. Earlier the log line was just
+			// "shutdown requested via UDS" with no attribution; an
+			// operator who saw their daemon stop seconds after `maestro
+			// up -d` had no way to tell whether a stale CLI process,
+			// another daemon-start race, or a runaway script issued the
+			// shutdown (Report 2026-05-06 P2 issue-4).
+			d.log(LogLevelInfo,
+				"shutdown requested via UDS caller_role=%q protocol_version=%d params_bytes=%d "+
+					"(daemon will now drain and exit; investigate this caller if the shutdown was unexpected)",
+				req.CallerRole, req.ProtocolVersion, len(req.Params))
 			go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
 			return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
 		},

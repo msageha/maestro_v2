@@ -84,6 +84,30 @@ func (e *worktreeNotPublishedError) FormatStderr() string {
 	return fmt.Sprintf("error: %s\n", e.Error())
 }
 
+// worktreePublishTerminalError indicates that the worktree publish step
+// reached a non-recoverable terminal state (e.g. integration_status =
+// quarantined). Distinguished from worktreeNotPublishedError so Complete()
+// can promote the command to a `failed` terminal status and dispatch a
+// command_failed orchestrator notification, instead of writing a deferred
+// intent that would never resolve. publish quarantine is non-retryable
+// (R8 reconciler enforces failure_count >= threshold) so waiting on it
+// would wedge plan_complete forever (Report 2026-05-06 round-3 P0).
+type worktreePublishTerminalError struct {
+	IntegrationStatus string
+	Reason            string
+}
+
+func (e *worktreePublishTerminalError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("worktree publish terminally failed: integration_status=%s reason=%s — operator intervention required", e.IntegrationStatus, e.Reason)
+	}
+	return fmt.Sprintf("worktree publish terminally failed: integration_status=%s — operator intervention required", e.IntegrationStatus)
+}
+
+func (e *worktreePublishTerminalError) FormatStderr() string {
+	return fmt.Sprintf("error: %s\n", e.Error())
+}
+
 // ActionRequiredError indicates that the plan cannot complete because
 // a specific agent action is required first. Provides structured guidance
 // that LLM agents can parse to determine their next action.

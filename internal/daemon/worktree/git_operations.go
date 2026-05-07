@@ -312,100 +312,6 @@ func parseWorktreeListPorcelain(output string) []string {
 	return paths
 }
 
-// sensitiveFilePatterns lists file name patterns that should never be staged
-// automatically, even if they are not covered by .gitignore.
-var sensitiveFilePatterns = []string{
-	".env",
-	".env.*",
-	"*.key",
-	"*.pem",
-	"*.secret",
-	"*.p12",
-	"*.pfx",
-	"credentials.*",
-}
-
-// isSensitiveFile returns true if the filename matches a sensitive pattern
-// that should not be staged automatically.
-func isSensitiveFile(name string) bool {
-	base := filepath.Base(name)
-	for _, pattern := range sensitiveFilePatterns {
-		if matched, _ := filepath.Match(pattern, base); matched {
-			return true
-		}
-	}
-	return false
-}
-
-// stageNewFiles stages untracked files that pass both .gitignore and the
-// sensitive-file safety filter. Files matching sensitive patterns are logged
-// but not staged. Uses NUL-separated output for safe filename handling.
-func (wm *Manager) stageNewFiles(dir string) error {
-	// List untracked files respecting .gitignore (NUL-separated for safety)
-	output, err := wm.gitOutputInDir(dir, "ls-files", "--others", "--exclude-standard", "-z")
-	if err != nil {
-		return fmt.Errorf("list untracked files: %w", err)
-	}
-
-	names := strings.Split(output, "\x00")
-	toStage := make([]string, 0, len(names))
-	for _, name := range names {
-		if name == "" {
-			continue
-		}
-		if isSensitiveFile(name) {
-			wm.Log(core.LogLevelWarn, "skip_sensitive_file path=%s dir=%s", name, dir)
-			continue
-		}
-		toStage = append(toStage, name)
-	}
-
-	if len(toStage) == 0 {
-		return nil
-	}
-
-	args := append([]string{"add", "--"}, toStage...)
-	if err := wm.gitRunInDir(dir, args...); err != nil {
-		return fmt.Errorf("git add new files: %w", err)
-	}
-	return nil
-}
-
-// unstageSensitiveFiles checks the staged file list and unstages any files
-// matching sensitive patterns. This prevents accidentally committing sensitive
-// tracked files that were staged by git add -u.
-func (wm *Manager) unstageSensitiveFiles(dir string) error {
-	output, err := wm.gitOutputInDir(dir, "diff", "--cached", "--name-only", "-z")
-	if err != nil {
-		return fmt.Errorf("list staged files: %w", err)
-	}
-
-	var toUnstage []string
-	for _, name := range strings.Split(output, "\x00") {
-		if name == "" {
-			continue
-		}
-		if isSensitiveFile(name) {
-			wm.Log(core.LogLevelWarn, "unstage_sensitive_tracked_file path=%s dir=%s", name, dir)
-			toUnstage = append(toUnstage, name)
-		}
-	}
-
-	if len(toUnstage) == 0 {
-		return nil
-	}
-
-	args := append([]string{"reset", "HEAD", "--"}, toUnstage...)
-	if err := wm.gitRunInDir(dir, args...); err != nil {
-		return fmt.Errorf("unstage sensitive files: %w", err)
-	}
-	return nil
-}
-
-// ErrAllFilesFiltered is returned when all dirty files were filtered out by
-// sensitive-file rules, leaving nothing to commit while the worktree is still dirty.
-var ErrAllFilesFiltered = errors.New("all changed files were filtered by sensitive-file rules; nothing to commit")
-
 // ErrWorkerOwnedByResumeMerge is returned when CommitWorkerChanges is called
 // on a worker whose state is owned by the resume-merge pipeline (Conflict or
 // Resolving). Those workers must only be committed via
@@ -415,127 +321,400 @@ var ErrAllFilesFiltered = errors.New("all changed files were filtered by sensiti
 // commit_failed signal.
 var ErrWorkerOwnedByResumeMerge = errors.New("worker is owned by resume-merge pipeline; skipping auto-commit")
 
-// CommitPolicyViolationError wraps one or more commit policy violations as a
-// structured error so callers can use errors.Is / errors.As.
-type CommitPolicyViolationError struct {
-	Violations []CommitPolicyViolation
-}
+// gitAddAllAttemptLimit caps how many times gitAddAllWithUnstattableFallback
+// will append paths to .git/info/exclude and retry. Each retry handles one
+// or more files surfaced by the previous attempt's "unable to stat" error;
+// runaway loops are impossible because each attempt either makes progress
+// (adds at least one new exclude entry) or returns the underlying error.
+const gitAddAllAttemptLimit = 5
 
-func (e *CommitPolicyViolationError) Error() string {
-	if len(e.Violations) == 0 {
-		return "commit policy violation"
-	}
-	msgs := make([]string, len(e.Violations))
-	for i, v := range e.Violations {
-		msgs[i] = fmt.Sprintf("[%s] %s", v.Code, v.Message)
-	}
-	return fmt.Sprintf("commit policy violation: %s", strings.Join(msgs, "; "))
-}
+// unstattablePathRe extracts the path from a `git add -A` "unable to stat"
+// error. The git error format is stable: `fatal: unable to stat '<path>':
+// Operation not permitted` (or "Permission denied" on POSIX systems).
+// We capture the single-quoted path. Falls back gracefully when the
+// regex doesn't match — in that case the caller surfaces the original
+// error rather than silently swallowing it.
+var unstattablePathRe = regexp.MustCompile(`unable to stat '([^']+)'`)
 
-// CommitPolicyViolation represents a single commit policy check failure.
-type CommitPolicyViolation struct {
-	Code    string   // machine-readable code (e.g. "max_files_exceeded")
-	Message string   // human-readable description
-	Files   []string // affected files (if applicable)
-}
-
-// checkCommitPolicy validates the staged changes and commit message against the
-// configured CommitPolicy and the task-scoped expected paths. Returns an empty
-// slice if all checks pass. stagedNul is the NUL-separated output from
-// `git diff --cached --name-only -z`.
-func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string, expectedPaths []string) []CommitPolicyViolation {
-	policy := wm.config.CommitPolicy
-	var violations []CommitPolicyViolation
-
-	// Parse staged file list
-	var stagedFiles []string
-	for _, name := range strings.Split(stagedNul, "\x00") {
-		if name != "" {
-			stagedFiles = append(stagedFiles, name)
+// gitAddAllWithUnstattableFallback runs `git add -A` and, when git rejects
+// it with "unable to stat ...: Operation not permitted" / "Permission
+// denied", appends the offending paths to the worktree's
+// .git/info/exclude (worktree-local; never touches the repo's tracked
+// .gitignore) and retries. This pattern is triggered by sandboxed
+// environments (macOS Claude Code rules denying `/**/.env*` reads, etc.)
+// where the file genuinely cannot be added to the index — git can't
+// possibly stat it, so excluding it is the only autonomous path forward.
+//
+// Bounded: gives up after gitAddAllAttemptLimit attempts so a truly
+// unrecoverable file-system error (volume offline, etc.) returns the
+// original error instead of looping forever. Returns nil on success.
+func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID string) error {
+	excludedAlready := make(map[string]struct{})
+	var lastErr error
+	for attempt := 1; attempt <= gitAddAllAttemptLimit; attempt++ {
+		err := wm.gitRunInDir(dir, "add", "-A")
+		if err == nil {
+			return nil
 		}
-	}
-
-	// Check 1: Maximum files per commit (MaxFiles=0 means unlimited)
-	maxFiles := policy.EffectiveMaxFiles()
-	if maxFiles > 0 && len(stagedFiles) > maxFiles {
-		violations = append(violations, CommitPolicyViolation{
-			Code:    "max_files_exceeded",
-			Message: fmt.Sprintf("staged file count %d exceeds limit %d", len(stagedFiles), maxFiles),
-			Files:   stagedFiles,
-		})
-	}
-
-	// Check 2: .gitignore existence
-	if policy.RequireGitignore {
-		gitignorePath := filepath.Join(worktreePath, ".gitignore")
-		if _, err := os.Stat(gitignorePath); err != nil {
-			if os.IsNotExist(err) {
-				violations = append(violations, CommitPolicyViolation{
-					Code:    "missing_gitignore",
-					Message: ".gitignore file not found in worktree root",
-				})
-			} else {
-				violations = append(violations, CommitPolicyViolation{
-					Code:    "gitignore_check_error",
-					Message: fmt.Sprintf("failed to check .gitignore: %v", err),
-				})
+		lastErr = err
+		if !isUnstattableError(err) {
+			return err
+		}
+		paths := extractUnstattablePaths(err.Error())
+		if len(paths) == 0 {
+			return err
+		}
+		fresh := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if _, dup := excludedAlready[p]; dup {
+				continue
 			}
+			excludedAlready[p] = struct{}{}
+			fresh = append(fresh, p)
 		}
+		if len(fresh) == 0 {
+			// Every offender already in exclude — git is still tripping
+			// on something we cannot identify. Surface the error.
+			return err
+		}
+		if appendErr := appendToGitInfoExclude(dir, fresh); appendErr != nil {
+			wm.Log(core.LogLevelWarn,
+				"git_add_unstattable_exclude_failed command=%s worker=%s paths=%v error=%v",
+				commandID, workerID, fresh, appendErr)
+			return err
+		}
+		wm.Log(core.LogLevelWarn,
+			"git_add_unstattable_excluded command=%s worker=%s paths=%v attempt=%d "+
+				"(file unreadable to git — typical cause: ~/.claude rules or OS sandbox denying access; "+
+				"appended to worktree-local .git/info/exclude and retrying)",
+			commandID, workerID, fresh, attempt)
 	}
-
-	// Check 3: expected_paths containment
-	if len(expectedPaths) > 0 {
-		var outside []string
-		for _, file := range stagedFiles {
-			if !pathAllowedByExpectedPaths(file, expectedPaths) {
-				outside = append(outside, file)
-			}
-		}
-		if len(outside) > 0 {
-			violations = append(violations, CommitPolicyViolation{
-				Code:    "expected_paths_violation",
-				Message: fmt.Sprintf("staged files outside expected_paths: %s", strings.Join(outside, ", ")),
-				Files:   outside,
-			})
-		}
-	}
-
-	// Check 4: Commit message format
-	pattern := policy.MessagePattern
-	if pattern != "" {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			violations = append(violations, CommitPolicyViolation{
-				Code:    "invalid_message_pattern",
-				Message: fmt.Sprintf("commit message pattern %q is invalid: %v", pattern, err),
-			})
-		} else if !re.MatchString(message) {
-			violations = append(violations, CommitPolicyViolation{
-				Code:    "message_format_invalid",
-				Message: fmt.Sprintf("commit message does not match required pattern %q", pattern),
-			})
-		}
-	}
-
-	return violations
+	return fmt.Errorf("git add -A: exceeded %d unstattable-fallback attempts: %w",
+		gitAddAllAttemptLimit, lastErr)
 }
 
-func pathAllowedByExpectedPaths(file string, expectedPaths []string) bool {
-	file = filepath.ToSlash(filepath.Clean(file))
-	for _, exp := range expectedPaths {
-		exp = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp)))
-		if exp == "" {
+// isUnstattableError reports whether the error text matches the canonical
+// git "unable to stat ...: Operation not permitted / Permission denied"
+// failure mode. We pattern-match the message because git does not expose
+// a stable error code for it.
+//
+// Two phrasings are recognised:
+//   - `git add -A`: "unable to stat '<path>': Operation not permitted"
+//   - `git worktree add` checkout: "error: unable to stat just-written file
+//     <path>: Operation not permitted"
+//
+// Both ultimately mean "the kernel refuses to expose this file's metadata to
+// the daemon process" (typically a sandbox / SIP / quarantine rule denying
+// access to a tracked file like `.env.example`). The recovery is the same
+// in both cases: skip the file and continue.
+func isUnstattableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "unable to stat") &&
+		!strings.Contains(msg, "just-written file") {
+		return false
+	}
+	return strings.Contains(msg, "Operation not permitted") ||
+		strings.Contains(msg, "Permission denied")
+}
+
+// worktreeJustWrittenPathRe extracts the offending file path from
+// `git worktree add` checkout failures. Format:
+//
+//	error: unable to stat just-written file <path>: Operation not permitted
+//
+// Note the path is NOT quoted (unlike `git add -A`), so a separate regex is
+// needed to capture it.
+var worktreeJustWrittenPathRe = regexp.MustCompile(`unable to stat just-written file ([^:]+):`)
+
+// extractUnstattablePathsForWorktreeAdd returns every offending path from
+// `git worktree add` checkout errors. Used by the worktree-add fallback to
+// pre-populate `.git/info/sparse-checkout` so the second attempt does not
+// try to materialise the same files.
+func extractUnstattablePathsForWorktreeAdd(msg string) []string {
+	out := make([]string, 0)
+	seen := make(map[string]struct{})
+	add := func(p string) {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return
+		}
+		if _, dup := seen[p]; dup {
+			return
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	for _, m := range worktreeJustWrittenPathRe.FindAllStringSubmatch(msg, -1) {
+		if len(m) >= 2 {
+			add(m[1])
+		}
+	}
+	for _, m := range unstattablePathRe.FindAllStringSubmatch(msg, -1) {
+		if len(m) >= 2 {
+			add(m[1])
+		}
+	}
+	return out
+}
+
+// extractUnstattablePaths returns every path quoted in `unable to stat
+// '<path>'` segments of the error message. Multiple paths can appear when
+// git emitted them in a single batch.
+func extractUnstattablePaths(msg string) []string {
+	matches := unstattablePathRe.FindAllStringSubmatch(msg, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, m := range matches {
+		if len(m) < 2 {
 			continue
 		}
-		if exp == "." {
-			return true
+		p := strings.TrimSpace(m[1])
+		if p == "" {
+			continue
 		}
-		exp = strings.TrimSuffix(exp, "/")
-		if file == exp || strings.HasPrefix(file, exp+"/") {
-			return true
+		if _, dup := seen[p]; dup {
+			continue
+		}
+		seen[p] = struct{}{}
+		out = append(out, p)
+	}
+	return out
+}
+
+// gitWorktreeAddWithUnstattableFallback runs `git worktree add` and, when
+// the checkout step fails because git cannot stat one or more files
+// (sandbox / SIP / quarantine denying access to a tracked file like
+// `.env.example`), retries with `--no-checkout` and then materialises the
+// remaining files via `git checkout-index`, marking the offending paths
+// `--skip-worktree` so subsequent reads do not trip the same error.
+//
+// The args follow the same shape as `git worktree add`'s positional
+// arguments (e.g. `["worktree", "add", path, branch]` or `["worktree",
+// "add", "-b", branch, path, baseSHA]`); we extract `path` from the
+// argv structure to know where the worktree lives so the post-add
+// recovery can run inside it.
+//
+// Behaviour:
+//   - First attempt: run the command verbatim. Success → return nil.
+//   - Failure with isUnstattableError: clean up partial directory,
+//     extract offending paths from the error message, retry with
+//     `--no-checkout` so the worktree exists at all. Then mark each
+//     offending path with `update-index --skip-worktree` and run
+//     `git checkout-index -a -f` for the remainder. Final
+//     `appendToGitInfoExclude` keeps the path out of future `git add`.
+//   - Any other failure: caller's normal error path.
+//
+// Returns the path argument so the caller can apply branch / state
+// rollback if even the `--no-checkout` retry fails.
+func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addArgs []string) error {
+	worktreePath := worktreePathFromArgs(addArgs)
+
+	addErr := wm.gitRun(addArgs...)
+	if addErr == nil {
+		return nil
+	}
+	if !isUnstattableError(addErr) {
+		return addErr
+	}
+
+	// Sandbox / SIP / quarantine denied stat on a tracked file during
+	// checkout. Same root cause as `git add -A` unstattable: the kernel
+	// refuses to expose the file to the daemon process. Skip-worktree
+	// the offending paths and re-run with --no-checkout, then materialise
+	// the rest. This keeps a Maestro session alive on repos that ship
+	// `.env.example` or other deny-pattern tracked files.
+	//
+	// Pre-cleanup: `git worktree add` left a half-created directory
+	// behind, so the --no-checkout retry would otherwise hit "fatal:
+	// '<path>' already exists".
+	if rmErr := os.RemoveAll(worktreePath); rmErr != nil {
+		wm.Log(core.LogLevelWarn,
+			"worktree_add_partial_cleanup_failed command=%s path=%s error=%v "+
+				"(--no-checkout retry may still hit `path already exists`)",
+			commandID, worktreePath, rmErr)
+	}
+	_ = wm.gitRun("worktree", "prune", "-v")
+
+	denied := extractUnstattablePathsForWorktreeAdd(addErr.Error())
+	wm.Log(core.LogLevelWarn,
+		"worktree_add_unstattable_fallback command=%s path=%s denied_paths=%v "+
+			"(retrying with --no-checkout; deny-pattern tracked files will be skip-worktree-marked)",
+		commandID, worktreePath, denied)
+
+	// Inject --no-checkout at the right position. addArgs always starts
+	// with ["worktree", "add", ...]; we insert --no-checkout right after
+	// "add". The remainder is preserved verbatim so existing flags like
+	// `-b <branch>` keep their semantics.
+	noCheckoutArgs := make([]string, 0, len(addArgs)+1)
+	for i, a := range addArgs {
+		noCheckoutArgs = append(noCheckoutArgs, a)
+		if i == 1 && a == "add" {
+			noCheckoutArgs = append(noCheckoutArgs, "--no-checkout")
 		}
 	}
-	return false
+	if err := wm.gitRun(noCheckoutArgs...); err != nil {
+		// Even --no-checkout failed — the failure is not just about
+		// stat-able files. Surface the original error so the caller
+		// sees the real reason and applies whatever rollback is needed.
+		return fmt.Errorf("worktree add --no-checkout fallback also failed: %w (original: %s)", err, addErr.Error())
+	}
+
+	// Mark each denied path skip-worktree so the next checkout-index
+	// pass does not try to materialise it; also write to .git/info/exclude
+	// so subsequent `git add -A` (run by the worker / commit pipeline)
+	// does not re-trip on the same path.
+	for _, p := range denied {
+		if uErr := wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p); uErr != nil {
+			wm.Log(core.LogLevelDebug,
+				"worktree_add_skip_worktree_failed command=%s path=%s error=%v "+
+					"(may not be tracked yet — checkout-index will surface real issues if any)",
+				commandID, p, uErr)
+		}
+	}
+	if appendErr := appendToGitInfoExclude(worktreePath, denied); appendErr != nil {
+		wm.Log(core.LogLevelDebug,
+			"worktree_add_exclude_append_failed command=%s error=%v",
+			commandID, appendErr)
+	}
+
+	// Materialise the remaining tracked files. checkout-index honors
+	// skip-worktree, so denied paths are bypassed cleanly. -a is "all
+	// tracked", -f overwrites any leftover content from the partial
+	// first attempt.
+	if coErr := wm.gitRunInDir(worktreePath, "checkout-index", "-a", "-f"); coErr != nil {
+		// If checkout-index also surfaced unstattable paths, append
+		// them and retry once. Otherwise let the caller see it.
+		if isUnstattableError(coErr) {
+			extra := extractUnstattablePaths(coErr.Error())
+			for _, p := range extra {
+				_ = wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p)
+			}
+			_ = appendToGitInfoExclude(worktreePath, extra)
+			if retryErr := wm.gitRunInDir(worktreePath, "checkout-index", "-a", "-f"); retryErr != nil {
+				wm.Log(core.LogLevelWarn,
+					"worktree_add_checkout_index_retry_failed command=%s path=%s error=%v "+
+						"(worktree exists but some tracked files are not materialised; worker should still be able to operate on remaining files)",
+					commandID, worktreePath, retryErr)
+			}
+		} else {
+			wm.Log(core.LogLevelWarn,
+				"worktree_add_checkout_index_failed command=%s path=%s error=%v "+
+					"(worktree exists but content materialisation failed; investigate manually)",
+				commandID, worktreePath, coErr)
+		}
+	}
+
+	wm.Log(core.LogLevelInfo,
+		"worktree_add_unstattable_recovered command=%s path=%s skipped_paths=%v "+
+			"(worktree usable; deny-pattern files left out of working copy and excluded from future `git add`)",
+		commandID, worktreePath, denied)
+	return nil
+}
+
+// worktreePathFromArgs returns the worktree path from a `git worktree
+// add` argv slice. Recognises the two shapes the daemon emits:
+//   - ["worktree", "add", <path>, <branch>]                    integration
+//   - ["worktree", "add", "-b", <branch>, <path>, <baseSHA>]   worker
+//
+// Other shapes (e.g. `--no-checkout` already present) are handled by the
+// fallback's argv-rewriting logic.
+func worktreePathFromArgs(args []string) string {
+	if len(args) < 3 || args[0] != "worktree" || args[1] != "add" {
+		return ""
+	}
+	// Skip flags after "add"; the first non-flag argument is the path.
+	i := 2
+	for i < len(args) {
+		a := args[i]
+		// "-b <branch>" pair: skip the flag and its value.
+		if a == "-b" || a == "-B" {
+			i += 2
+			continue
+		}
+		// Other flags starting with "-" without a known value: skip alone.
+		if strings.HasPrefix(a, "-") {
+			i++
+			continue
+		}
+		return a
+	}
+	return ""
+}
+
+// appendToGitInfoExclude writes one line per path to `<dir>/.git/info/exclude`,
+// creating the file if missing. Worktree-local — never touches the repo's
+// committed .gitignore. The exclude file is gitignore-syntax; a leading `/`
+// anchors to the worktree root, which is what we want for the literal paths
+// git reported.
+func appendToGitInfoExclude(worktreePath string, paths []string) error {
+	if len(paths) == 0 {
+		return nil
+	}
+	excludePath, err := resolveGitInfoExcludePath(worktreePath)
+	if err != nil {
+		return fmt.Errorf("resolve .git/info/exclude: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o750); err != nil {
+		return fmt.Errorf("mkdir .git/info: %w", err)
+	}
+	// #nosec G304 -- excludePath is derived from a Maestro-managed worktree
+	// path (resolveGitInfoExcludePath follows the .git pointer of a worktree
+	// the daemon itself created); not user-controlled at the call site.
+	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open .git/info/exclude: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	for _, p := range paths {
+		// Anchor with leading '/' so the pattern matches the exact path
+		// from worktree root, not any directory of that name.
+		line := "/" + strings.TrimPrefix(p, "/") + "\n"
+		if _, werr := f.WriteString(line); werr != nil {
+			return fmt.Errorf("write .git/info/exclude: %w", werr)
+		}
+	}
+	return nil
+}
+
+// resolveGitInfoExcludePath returns the absolute path to the worktree's
+// `.git/info/exclude`. For a linked worktree (which our worker worktrees
+// are), `.git` is a file containing `gitdir: <abs path to commondir/...>`;
+// we follow it to find the real info directory.
+func resolveGitInfoExcludePath(worktreePath string) (string, error) {
+	gitMarker := filepath.Join(worktreePath, ".git")
+	info, err := os.Stat(gitMarker)
+	if err != nil {
+		return "", fmt.Errorf("stat .git: %w", err)
+	}
+	if info.IsDir() {
+		return filepath.Join(gitMarker, "info", "exclude"), nil
+	}
+	// .git is a file (linked worktree). Read its `gitdir:` pointer.
+	// #nosec G304 -- gitMarker is `<worktreePath>/.git`, where worktreePath
+	// is provided by the daemon (Maestro-managed worktree); not user input.
+	data, err := os.ReadFile(gitMarker)
+	if err != nil {
+		return "", fmt.Errorf("read .git pointer: %w", err)
+	}
+	const prefix = "gitdir: "
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) {
+			continue
+		}
+		gitDir := strings.TrimSpace(strings.TrimPrefix(line, prefix))
+		if !filepath.IsAbs(gitDir) {
+			gitDir = filepath.Join(worktreePath, gitDir)
+		}
+		return filepath.Join(gitDir, "info", "exclude"), nil
+	}
+	return "", fmt.Errorf(".git pointer file did not contain `gitdir:` line")
 }
 
 // hasUnmergedFiles checks if a directory has unmerged index entries (indicating a true merge conflict).

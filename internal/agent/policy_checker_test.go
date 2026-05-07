@@ -179,19 +179,31 @@ func TestBuildLaunchArgs_WorkerNoSettingsInBuildLaunchArgs(t *testing.T) {
 	}
 }
 
-func TestHookSettings_WorkerMergedSettings(t *testing.T) {
-	// HookSettings should produce a single JSON containing both Notification:[] and PreToolUse.
+func TestHookSettings_WorkerOnlyPreToolUse(t *testing.T) {
+	// Post-2026-05-06 P1 #1: HookSettings must emit ONLY PreToolUse.
+	// Notification / Stop suppression has been removed because Claude
+	// Code merges `--settings` hooks rather than replacing them, so
+	// empty arrays were ineffective. Hook suppression is now a
+	// ~/.claude responsibility.
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
 	settings, err := pc.HookSettings("/tmp/test-hook.sh")
 	if err != nil {
 		t.Fatalf("HookSettings error: %v", err)
 	}
-	if !strings.Contains(settings, `"Notification":[]`) {
-		t.Error("merged settings should contain Notification:[]")
-	}
 	if !strings.Contains(settings, `"PreToolUse"`) {
-		t.Error("merged settings should contain PreToolUse")
+		t.Error("merged settings should contain PreToolUse (PolicyChecker's destructive-action gate)")
+	}
+	for _, forbidden := range []string{
+		`"Notification":[]`,
+		`"Notification"`,
+		`"Stop":[]`,
+		`"Stop"`,
+	} {
+		if strings.Contains(settings, forbidden) {
+			t.Errorf("merged settings must NOT contain %q (suppression moved to ~/.claude responsibility); got: %s",
+				forbidden, settings)
+		}
 	}
 }
 

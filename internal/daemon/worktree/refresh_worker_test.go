@@ -126,14 +126,20 @@ func TestRefreshWorker_FastForwardsBehindWorker(t *testing.T) {
 	_ = state // silence unused warning (state is loaded for sanity but not asserted)
 }
 
-// TestRefreshWorker_SoftSkipsUntrackedOnlyDirty: when the dirty state
-// is exclusively untracked entries (no tracked modifications), refresh
-// logs a warning and returns nil instead of failing. Sensitive-file
-// gates still run at phase boundary, so this only defers the
-// integration fast-forward by one clean cycle. Tracked-modification
-// residue (the wave-crossing case) is still handled by the inline
-// auto-commit path tested separately.
-func TestRefreshWorker_SoftSkipsUntrackedOnlyDirty(t *testing.T) {
+// TestRefreshWorker_CommitsUntrackedOnlyDirty: when the dirty state is
+// exclusively untracked entries, refresh now commits them inline (via
+// `git add -A`) so no dirty residue carries into the next task. The
+// previous "soft-skip" behaviour stalled phases when wave A produced
+// new files and wave B then modified tracked sources — the worker stayed
+// dirty across the wave boundary and the phase-boundary merge silently
+// dropped wave A's untracked files. Capturing them here closes that gap.
+//
+// Integration is NOT advanced before refresh so the worker ends up
+// strictly ahead of integration after the inline commit. That keeps the
+// inline commit on the worker branch (the divergence-recovery path
+// would otherwise reset the worker to integration HEAD when integration
+// is also ahead).
+func TestRefreshWorker_CommitsUntrackedOnlyDirty(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
@@ -142,50 +148,38 @@ func TestRefreshWorker_SoftSkipsUntrackedOnlyDirty(t *testing.T) {
 		t.Fatalf("createForCommand: %v", err)
 	}
 
-	// Make integration ahead so the function would attempt a fast-forward
-	// if the worktree were clean.
-	integPath := wm.integrationWorktreePath(commandID)
-	commitIntegrationFile(t, wm, integPath, "integration ahead", "y.txt", "merged")
-
-	// Introduce dirty state in worker worktree (untracked file only;
-	// tracked README.md is unchanged).
 	workerPath, err := wm.GetWorkerPath(commandID, "worker1")
 	if err != nil {
 		t.Fatalf("GetWorkerPath: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(workerPath, ".tmp-investigation-summary.txt"), []byte("scratch"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(workerPath, "investigation-summary.txt"), []byte("scratch"), 0o644); err != nil {
 		t.Fatalf("write untracked file: %v", err)
 	}
 
 	if err := wm.RefreshWorkerWorktreeToIntegrationHead(commandID, "worker1"); err != nil {
-		t.Fatalf("expected refresh to soft-skip untracked-only dirty (no error), got: %v", err)
+		t.Fatalf("expected refresh to commit untracked dirty inline, got: %v", err)
 	}
-	// The untracked file must remain (no destructive cleanup).
-	if _, err := os.Stat(filepath.Join(workerPath, ".tmp-investigation-summary.txt")); err != nil {
-		t.Errorf("expected untracked file to be retained after soft-skip, got stat error: %v", err)
-	}
-	// Worker HEAD must NOT have advanced to integration HEAD because we
-	// soft-skipped — that is the intentional trade-off (deferred merge,
-	// caught up on the next clean cycle).
 	statusOut, err := wm.gitOutputInDir(workerPath, "status", "--porcelain")
 	if err != nil {
 		t.Fatalf("git status: %v", err)
 	}
-	if !strings.Contains(statusOut, ".tmp-investigation-summary.txt") {
-		t.Errorf("untracked file should still appear in status, got: %q", statusOut)
+	if strings.TrimSpace(statusOut) != "" {
+		t.Errorf("expected clean worktree after inline commit, got: %q", statusOut)
+	}
+	logOut, err := wm.gitOutputInDir(workerPath, "log", "--oneline", "-n", "5")
+	if err != nil {
+		t.Fatalf("git log: %v", err)
+	}
+	if !strings.Contains(logOut, "wave-crossing auto-commit") {
+		t.Errorf("expected wave-crossing auto-commit in log, got:\n%s", logOut)
 	}
 }
 
-// TestRefreshWorker_RejectsMixedTrackedAndUntrackedDirty pins the
-// safety boundary of the soft-skip: when the worktree has BOTH tracked
-// modifications (the inline auto-commit handles those) AND untracked
-// files that the inline commit refuses to admit (sensitive-file gate
-// concern), the post-inline-commit re-check finds tracked changes have
-// been committed but untracked entries linger. That is no longer the
-// "untracked-only" case, so the soft-skip does not apply — the
-// function returns an error rather than silently admitting unknown
-// staged-untracked drift.
-func TestRefreshWorker_RejectsMixedTrackedAndUntrackedDirty(t *testing.T) {
+// TestRefreshWorker_CommitsMixedTrackedAndUntrackedDirty: the wave-crossing
+// inline commit captures tracked modifications AND untracked files in a
+// single `git add -A` so neither side of the dirty residue ends up
+// silently dropped at phase-boundary merge time.
+func TestRefreshWorker_CommitsMixedTrackedAndUntrackedDirty(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
@@ -194,9 +188,6 @@ func TestRefreshWorker_RejectsMixedTrackedAndUntrackedDirty(t *testing.T) {
 		t.Fatalf("createForCommand: %v", err)
 	}
 
-	// Worker has BOTH tracked README.md modification AND untracked tmp.
-	// Simulates a wave that committed real progress but also left
-	// scratch artifacts the inline commit must NOT admit silently.
 	workerPath, err := wm.GetWorkerPath(commandID, "worker1")
 	if err != nil {
 		t.Fatalf("GetWorkerPath: %v", err)
@@ -209,22 +200,31 @@ func TestRefreshWorker_RejectsMixedTrackedAndUntrackedDirty(t *testing.T) {
 		t.Fatalf("write untracked scratch: %v", err)
 	}
 
-	// In this configuration the inline commit succeeds for the tracked
-	// edit and the post-check then sees only untracked residue —
-	// triggering the soft-skip. That is the intended behaviour: the
-	// tracked progress is committed, the untracked residue is left alone,
-	// the fast-forward is deferred to the next cycle. We pin that the
-	// tracked commit happened (log shows wave-crossing entry) AND that
-	// the function returned without error.
 	if err := wm.RefreshWorkerWorktreeToIntegrationHead(commandID, "worker1"); err != nil {
-		t.Fatalf("expected refresh to handle mixed dirty (commit tracked, soft-skip untracked), got: %v", err)
+		t.Fatalf("expected refresh to commit mixed dirty inline, got: %v", err)
+	}
+	statusOut, err := wm.gitOutputInDir(workerPath, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		t.Errorf("expected clean worktree after inline commit, got: %q", statusOut)
 	}
 	logOut, err := wm.gitOutputInDir(workerPath, "log", "--oneline", "-n", "5")
 	if err != nil {
 		t.Fatalf("git log: %v", err)
 	}
 	if !strings.Contains(logOut, "wave-crossing auto-commit") {
-		t.Errorf("expected wave-crossing auto-commit in log (tracked edit), got:\n%s", logOut)
+		t.Errorf("expected wave-crossing auto-commit in log, got:\n%s", logOut)
+	}
+	committed, err := wm.gitOutputInDir(workerPath, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	if err != nil {
+		t.Fatalf("diff-tree: %v", err)
+	}
+	for _, f := range []string{"README.md", "scratch.txt"} {
+		if !strings.Contains(committed, f) {
+			t.Errorf("expected %q to be committed inline, got:\n%s", f, committed)
+		}
 	}
 }
 

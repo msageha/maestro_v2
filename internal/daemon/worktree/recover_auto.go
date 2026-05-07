@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -44,6 +46,15 @@ const (
 	// RetryPublish for a publish_failed state whose NextPublishRetryAt
 	// backoff has elapsed.
 	AutoRecoverRetryPublish AutoRecoverAction = "retry_publish"
+	// AutoRecoverDirtyQuarantine indicates that AutoRecover unquarantined a
+	// transiently-poisoned integration worktree (typical cause:
+	// RunOnIntegration verify scattering build artefacts that the merge
+	// guard then refused to absorb). Recovery cleans the worktree and
+	// drops the integration back to IntegrationStatusFailed so subsequent
+	// scans can re-attempt the merge. Reserved for QuarantineSource=Merge
+	// quarantines whose reason class is auto-recoverable; never applied
+	// to publish-side quarantines or operator-managed states.
+	AutoRecoverDirtyQuarantine AutoRecoverAction = "dirty_quarantine_recovered"
 )
 
 // AutoRecover inspects the worktree integration status for commandID and
@@ -97,6 +108,14 @@ func (wm *Manager) AutoRecover(ctx context.Context, commandID string) (AutoRecov
 			return AutoRecoverRetryPublish, err
 		}
 		return AutoRecoverRetryPublish, nil
+	case AutoRecoverDirtyQuarantine:
+		if err := wm.RecoverDirtyWorktreeQuarantine(commandID); err != nil {
+			if errors.Is(err, ErrAlreadyResolved) {
+				return AutoRecoverNone, nil
+			}
+			return AutoRecoverDirtyQuarantine, err
+		}
+		return AutoRecoverDirtyQuarantine, nil
 	default:
 		return AutoRecoverNone, nil
 	}
@@ -273,12 +292,134 @@ func (wm *Manager) selectAutoRecoverAction(state *model.WorktreeCommandState) Au
 			return AutoRecoverNone
 		}
 		return AutoRecoverRetryPublish
+	case model.IntegrationStatusQuarantined:
+		// Auto-recover narrowly-defined transient quarantines. The original
+		// design pinned every Quarantined as "operator must Unquarantine
+		// explicitly", but the dirty_worktree class is purely transient —
+		// caused by RunOnIntegration verify scattering build artefacts in
+		// the integration worktree, never by user-relevant content. Letting
+		// the orchestrator clean and retry that case unblocks
+		// final_verification phases that would otherwise stall forever.
+		// Other quarantine reasons (publish-side failures, abort recovery
+		// failures, etc.) still require an operator.
+		if isAutoRecoverableQuarantine(state) {
+			return AutoRecoverDirtyQuarantine
+		}
+		return AutoRecoverNone
 	default:
-		// merged, publishing, published, quarantined, created, merging →
-		// never auto-recover. Quarantined in particular requires an explicit
-		// operator Unquarantine call.
+		// merged, publishing, published, created, merging → never
+		// auto-recover here.
 		return AutoRecoverNone
 	}
+}
+
+// autoRecoverableQuarantineReasonPrefixes lists the QuarantineReason text
+// prefixes that the orchestrator considers safely auto-recoverable. Each
+// prefix names a transient pollution path that resetting + cleaning the
+// integration worktree fully addresses. Anything not in this list (e.g.
+// abort_recover_failed, publish-side reasons) is left for an operator.
+var autoRecoverableQuarantineReasonPrefixes = []string{
+	"dirty_worktree",
+	"status_check_failed",
+	"pre_merge_reset_failed",
+	"dirty_worktree_after_clean",
+}
+
+// isAutoRecoverableQuarantine reports whether the integration is in a
+// quarantine class that the orchestrator can safely resolve on its own
+// (clean integration worktree → drop status to Failed → next merge
+// reattempts). Restricted to QuarantineSource=Merge with a known transient
+// reason; publish-side and operator-managed quarantines are excluded.
+func isAutoRecoverableQuarantine(state *model.WorktreeCommandState) bool {
+	if state == nil || state.Integration.Status != model.IntegrationStatusQuarantined {
+		return false
+	}
+	if state.Integration.QuarantineSource != model.QuarantineSourceMerge {
+		return false
+	}
+	reason := state.Integration.QuarantineReason
+	for _, prefix := range autoRecoverableQuarantineReasonPrefixes {
+		if strings.HasPrefix(reason, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RecoverDirtyWorktreeQuarantine clears a transient-pollution quarantine on
+// the integration branch. Recovery sequence:
+//
+//  1. `git reset --hard HEAD` + `git clean -fd` on the integration worktree
+//     so any RunOnIntegration verify build artefacts are removed.
+//  2. Verify the worktree is clean — if not, abort recovery (an operator
+//     must intervene because the artefact is permission-locked).
+//  3. Drop integration status from Quarantined back to Failed, clear
+//     QuarantinedAt/Reason/Source, reset MergeFailureCount so the
+//     standard merge retry loop can proceed.
+//
+// Skips and returns ErrAlreadyResolved when the state is no longer in
+// auto-recoverable quarantine (race with operator unquarantine, etc.).
+//
+// Bypasses ValidateIntegrationTransition deliberately: the static state
+// machine treats Quarantined as terminal because the original design
+// required operator action. Auto-recovering the narrow dirty_worktree
+// class is the orchestrator owning that decision for transient pollution.
+func (wm *Manager) RecoverDirtyWorktreeQuarantine(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if !isAutoRecoverableQuarantine(state) {
+		return ErrAlreadyResolved
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
+		return fmt.Errorf("recover quarantine refused: %w", err)
+	}
+
+	if err := wm.gitRunInDir(integrationPath, "reset", "--hard", "HEAD"); err != nil {
+		return fmt.Errorf("recovery reset --hard HEAD: %w", err)
+	}
+	if err := wm.gitRunInDir(integrationPath, "clean", "-fd"); err != nil {
+		// Non-fatal at this layer: subsequent status check will surface a
+		// real persistent dirty state.
+		wm.Log(core.LogLevelWarn,
+			"quarantine_recovery_clean_warning command=%s error=%v", commandID, err)
+	}
+	statusOut, statusErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	if statusErr != nil {
+		return fmt.Errorf("recovery post-clean status check: %w", statusErr)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		return fmt.Errorf("integration worktree still dirty after recovery clean: %s",
+			strings.TrimSpace(statusOut))
+	}
+
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+	previousReason := state.Integration.QuarantineReason
+	state.Integration.Status = model.IntegrationStatusFailed
+	state.Integration.UpdatedAt = now
+	state.Integration.MergeFailureCount = 0
+	state.Integration.QuarantinedAt = ""
+	state.Integration.QuarantineReason = ""
+	state.Integration.QuarantineSource = ""
+	state.Integration.StallSignaled = false
+	state.UpdatedAt = now
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state after quarantine recovery: %w", err)
+	}
+	wm.Log(core.LogLevelWarn,
+		"integration_quarantine_auto_recovered command=%s prior_reason=%q "+
+			"(orchestrator-side transient pollution cleared; status Quarantined→Failed for retry)",
+		commandID, previousReason)
+	return nil
 }
 
 // publishBackoffElapsed returns true when nextRetryAt is empty (no backoff set)

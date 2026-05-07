@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/tmux"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -46,7 +47,11 @@ func saveServerOptions(maestroDir string) error {
 func getServerOptionValue(name string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "show-options", "-s", "-v", name) //nolint:gosec // name is a fixed tmux option key, not user input
+	args := []string{"show-options", "-s", "-v", name}
+	if socket := tmux.GetTmuxSocket(); socket != "" {
+		args = append([]string{"-L", socket}, args...)
+	}
+	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // name is a fixed tmux option key, not user input
 	out, err := cmd.Output()
 	if err != nil {
 		return "", err

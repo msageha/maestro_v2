@@ -18,21 +18,12 @@ import (
 var errIntegrationNotPublishable = errors.New("integration status not publishable")
 
 // classifyCommitError converts a CommitWorkerChanges error into a structured
-// machine-readable Reason for commit_failed signals. The Reason lets the
-// planner act on the failure category without parsing the error message.
+// machine-readable Reason for commit_failed signals. With the policy gates
+// removed there is no useful sub-category to report, so we surface only a
+// generic class plus the underlying message.
 func classifyCommitError(err error) string {
 	if err == nil {
 		return ""
-	}
-	if errors.Is(err, worktree.ErrAllFilesFiltered) {
-		return "all_files_filtered"
-	}
-	var policyErr *worktree.CommitPolicyViolationError
-	if errors.As(err, &policyErr) {
-		if len(policyErr.Violations) > 0 {
-			return "policy_violation:" + policyErr.Violations[0].Code
-		}
-		return "policy_violation:unknown"
 	}
 	return "generic:" + err.Error()
 }
@@ -43,9 +34,16 @@ func classifyCommitError(err error) string {
 
 // executePhaseBSteps runs all Phase B steps in the prescribed order.
 // This is the single entry point called by ScanPhaseExecutor.periodicScanPhaseB.
+//
+// stepRunOnIntegrationPreMerge runs BEFORE dispatch so that any
+// RunOnIntegration / RunOnMain task whose dep workers were just queued for
+// pre-merge has their integration tree updated within the same scan tick;
+// the next scan re-evaluates the dispatch gate and sees the deps as
+// integrated.
 func (qh *QueueHandler) executePhaseBSteps(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	qh.stepInterruptAgents(ctx, pa)
 	qh.stepProbeBusyAgents(ctx, pa, result)
+	qh.stepRunOnIntegrationPreMerge(ctx, pa)
 	qh.stepDispatchWork(ctx, pa, result)
 	qh.stepDeliverSignals(ctx, pa, result)
 	qh.stepLogPartialFailures(result)
@@ -53,6 +51,72 @@ func (qh *QueueHandler) executePhaseBSteps(ctx context.Context, pa *phaseAResult
 	qh.stepCommitAndMergeWorktrees(ctx, pa, result)
 	additionalCleanups := qh.stepPublishWorktrees(ctx, pa, result)
 	qh.stepCleanupWorktrees(ctx, pa, result, additionalCleanups)
+}
+
+// stepRunOnIntegrationPreMerge commits and merges dep workers that a
+// RunOnIntegration / RunOnMain task is awaiting. The blocked task itself is
+// NOT dispatched in this scan — Phase A's collector has already skipped it
+// — so merges run unopposed by the about-to-read-integration task.
+//
+// Failures are logged but never fatal: a dep worker that legitimately
+// cannot be merged (true conflict, transient git lock) will be retried on
+// the next scan via the same gate. The orchestrator never escalates a
+// pre-merge failure into a hard dispatch failure; the blocked task waits
+// until a successful merge clears the gate.
+func (qh *QueueHandler) stepRunOnIntegrationPreMerge(ctx context.Context, pa *phaseAResult) {
+	if qh.worktreeManager == nil {
+		return
+	}
+	if err := forEachUntilCanceled(ctx, pa.work.runOnIntegrationPreMerges, func(item runOnIntegrationPreMergeItem) {
+		// Commit each dep worker first. A wave-crossing inline commit
+		// would have run already if the worker was about to receive a
+		// new task; here we may be looking at a worker whose last task
+		// completed without a follow-up dispatch (final task of the
+		// phase for that worker), so the commit hasn't happened yet.
+		var committed []string
+		if qh.worktreeManager.AutoCommit() {
+			for _, wid := range item.DepWorkerIDs {
+				msg := workerCommitMessage(item.WorkerPurposes, wid)
+				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, wid, msg); err != nil {
+					if errors.Is(err, worktree.ErrWorkerOwnedByResumeMerge) {
+						qh.log(LogLevelDebug,
+							"pre_merge_commit_skipped_resume_merge command=%s worker=%s",
+							item.CommandID, wid)
+						continue
+					}
+					qh.log(LogLevelWarn,
+						"pre_merge_commit_failed command=%s worker=%s for_task=%s error=%v",
+						item.CommandID, wid, item.BlockedTaskID, err)
+					continue
+				}
+				committed = append(committed, wid)
+			}
+		} else {
+			committed = item.DepWorkerIDs
+		}
+		if len(committed) == 0 {
+			return
+		}
+		conflicts, err := qh.worktreeManager.MergeToIntegration(ctx, item.CommandID, committed, item.WorkerPurposes)
+		if err != nil {
+			qh.log(LogLevelWarn,
+				"pre_merge_merge_failed command=%s workers=%v for_task=%s error=%v",
+				item.CommandID, committed, item.BlockedTaskID, err)
+			return
+		}
+		if len(conflicts) > 0 {
+			qh.log(LogLevelWarn,
+				"pre_merge_conflict command=%s for_task=%s conflict_count=%d (resume_merge will resolve)",
+				item.CommandID, item.BlockedTaskID, len(conflicts))
+			return
+		}
+		qh.log(LogLevelInfo,
+			"pre_merge_complete command=%s workers=%v for_task=%s "+
+				"(integration now contains dep changes; next scan can dispatch)",
+			item.CommandID, committed, item.BlockedTaskID)
+	}); err != nil {
+		qh.log(LogLevelInfo, "phase_b_run_on_integration_pre_merge_canceled error=%v", err)
+	}
 }
 
 // stepInterruptAgents executes interrupt requests before dispatches to avoid
@@ -357,11 +421,23 @@ func (qh *QueueHandler) stepLogPartialFailures(result *phaseBResult) {
 	if len(result.dispatches) == 0 && len(result.signals) == 0 {
 		return
 	}
+	// Exclude ErrSubmitConfirmUncertain dispatches from the "failed" tally:
+	// the upstream paste landed and the queue path keeps the lease via
+	// dispatch_uncertain_assume_running, so the worker proceeds normally.
+	// Counting them as failures was producing a spurious WARN on every
+	// successful task whose pane probe was over-cautious (reported
+	// 2026-05-04: WARN despite worker completing the task).
 	failedDispatches := 0
+	uncertainDispatches := 0
 	for _, dr := range result.dispatches {
-		if !dr.Success {
-			failedDispatches++
+		if dr.Success {
+			continue
 		}
+		if errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain) {
+			uncertainDispatches++
+			continue
+		}
+		failedDispatches++
 	}
 	failedSignals := 0
 	for _, sr := range result.signals {
@@ -372,6 +448,10 @@ func (qh *QueueHandler) stepLogPartialFailures(result *phaseBResult) {
 	if failedDispatches > 0 || failedSignals > 0 {
 		qh.log(LogLevelWarn, "phase_b_partial_failures dispatches_failed=%d/%d signals_failed=%d/%d",
 			failedDispatches, len(result.dispatches), failedSignals, len(result.signals))
+	}
+	if uncertainDispatches > 0 && failedDispatches == 0 && failedSignals == 0 {
+		qh.log(LogLevelInfo, "phase_b_dispatches_uncertain count=%d/%d (lease retained; worker likely received the prompt)",
+			uncertainDispatches, len(result.dispatches))
 	}
 }
 
@@ -396,7 +476,7 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 			var succeeded []string
 			for _, workerID := range item.WorkerIDs {
 				msg := workerCommitMessage(item.WorkerPurposes, workerID)
-				if qh.handleWorkerCommit(item.CommandID, workerID, msg, item.WorkerExpectedPaths[workerID], &mr) {
+				if qh.handleWorkerCommit(item.CommandID, workerID, msg, &mr) {
 					succeeded = append(succeeded, workerID)
 				}
 			}
@@ -562,17 +642,8 @@ func (qh *QueueHandler) respawnWorkerPanesForCleanup(commandID string) error {
 // ErrWorkerOwnedByResumeMerge; this is treated as "skip, not a failure" so the
 // worker is excluded from the merge batch without recording a commit_failed
 // signal or feeding the commit_failed_workers publish gate.
-type expectedPathCommitter interface {
-	CommitWorkerChangesWithExpectedPaths(commandID, workerID, message string, expectedPaths []string) error
-}
-
-func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, expectedPaths []string, mr *worktreeMergeResult) bool {
-	var err error
-	if c, ok := qh.worktreeManager.(expectedPathCommitter); ok {
-		err = c.CommitWorkerChangesWithExpectedPaths(commandID, workerID, msg, expectedPaths)
-	} else {
-		err = qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg)
-	}
+func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, mr *worktreeMergeResult) bool {
+	err := qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg)
 	if err != nil {
 		if errors.Is(err, worktree.ErrWorkerOwnedByResumeMerge) {
 			qh.log(LogLevelDebug, "worktree_auto_commit_skipped command=%s worker=%s reason=resume_merge_owned",

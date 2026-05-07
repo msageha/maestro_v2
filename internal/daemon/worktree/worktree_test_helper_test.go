@@ -35,10 +35,6 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *Manager {
 			TTLHours:     ptr.Int(24),
 			MaxWorktrees: ptr.Int(32),
 		},
-		CommitPolicy: model.CommitPolicyConfig{
-			// Zero-valued: no enforcement (MaxFiles=0 means unlimited,
-			// RequireGitignore=false, MessagePattern="" means no check)
-		},
 	}
 
 	logger := log.New(os.Stderr, "", 0)

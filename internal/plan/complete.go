@@ -44,6 +44,114 @@ func (e *staleTaskResultsError) Error() string {
 	return fmt.Sprintf("stale task results in H3 conflict path: intent_version=%d, current_version=%d", e.IntentVersion, e.CurrentVersion)
 }
 
+// advancePhasesInline walks every active phase and transitions it to a
+// terminal status when every task in the phase has reached a terminal
+// effective status. Mirrors the daemon-side checkActivePhaseCompletion
+// rules so plan_complete + auto-cancel produce the same convergence
+// without waiting for the next scan cycle.
+//
+// Transition priority: failed > cancelled > completed. A phase whose
+// tasks include any failed → PhaseStatusFailed. Otherwise if any
+// cancelled → PhaseStatusCancelled. Otherwise if every task is
+// completed → PhaseStatusCompleted.
+//
+// Idempotent: phases already at a terminal status are skipped.
+func advancePhasesInline(state *model.CommandState) {
+	if state == nil {
+		return
+	}
+	now := nowUTC()
+	for i := range state.Phases {
+		phase := &state.Phases[i]
+		if model.IsPhaseTerminal(phase.Status) {
+			continue
+		}
+		taskIDs := phase.TaskIDs
+		if len(taskIDs) == 0 {
+			continue
+		}
+		allTerminal := true
+		hasFailed := false
+		hasCancelled := false
+		for _, tid := range taskIDs {
+			ts := EffectiveStatusForCompletion(tid, state)
+			if ts == "" || !model.IsTerminal(ts) {
+				allTerminal = false
+				break
+			}
+			switch ts {
+			case model.StatusFailed, model.StatusDeadLetter:
+				hasFailed = true
+			case model.StatusCancelled:
+				hasCancelled = true
+			}
+		}
+		if !allTerminal {
+			continue
+		}
+		var newStatus model.PhaseStatus
+		switch {
+		case hasFailed:
+			newStatus = model.PhaseStatusFailed
+		case hasCancelled:
+			newStatus = model.PhaseStatusCancelled
+		default:
+			newStatus = model.PhaseStatusCompleted
+		}
+		phase.Status = newStatus
+		phase.CompletedAt = &now
+	}
+}
+
+// autoCancelPausedForReplanIfBlocking marks every required task currently
+// at StatusPausedForReplan as StatusCancelled, but only when those tasks
+// are the SOLE remaining non-terminal blockers. Returns the number of
+// tasks transitioned. Used by Complete() to remove the Planner-must-call-
+// request-cancel-first friction reported in Report 2026-05-04 issue-4.
+//
+// Safety:
+//   - Tasks at any other non-terminal status (planned/ready/dispatched/
+//     in_progress/etc.) abort the auto-cancel; the Planner is calling
+//     complete prematurely and should see the existing "required tasks
+//     not terminal" error so it can wait or retry.
+//   - We only operate on RequiredTaskIDs. Optional tasks have their own
+//     terminality semantics and the plan can complete without them.
+//   - The cancellation reason is recorded so audit logs still surface
+//     what happened.
+func autoCancelPausedForReplanIfBlocking(state *model.CommandState) int {
+	if state == nil {
+		return 0
+	}
+	pausedIDs := make([]string, 0)
+	for _, taskID := range state.RequiredTaskIDs {
+		ts, ok := state.TaskStates[taskID]
+		if !ok {
+			// Unknown required task — let CanComplete surface the error.
+			return 0
+		}
+		if model.IsTerminal(ts) {
+			continue
+		}
+		if ts != model.StatusPausedForReplan {
+			// At least one non-paused, non-terminal task — Planner is
+			// calling complete prematurely. Don't auto-cancel anything.
+			return 0
+		}
+		pausedIDs = append(pausedIDs, taskID)
+	}
+	if len(pausedIDs) == 0 {
+		return 0
+	}
+	if state.CancelledReasons == nil {
+		state.CancelledReasons = make(map[string]string)
+	}
+	for _, taskID := range pausedIDs {
+		state.TaskStates[taskID] = model.StatusCancelled
+		state.CancelledReasons[taskID] = "auto_cancelled_at_plan_complete:paused_for_replan_unblocked"
+	}
+	return len(pausedIDs)
+}
+
 // computeTaskResultsVersion computes a deterministic fingerprint from
 // aggregated task results. The version changes whenever the set of results
 // or their statuses change. Returns 0 only when called with nil/empty results
@@ -144,6 +252,38 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		}, nil
 	}
 
+	// Pre-check: when the only blockers preventing completion are tasks at
+	// StatusPausedForReplan, auto-cancel them with a synthetic reason so
+	// the Planner does not have to make a separate request-cancel call
+	// before plan_complete (Report 2026-05-04 issue-4 observed a Planner
+	// spinning ~4 minutes retrying plan_complete after max_tasks
+	// enforcement forced it to abandon retry-add). The Planner explicitly
+	// calling plan_complete is the load-bearing intent — "I have decided
+	// to finalise" — so abandoning the stuck tasks is consistent with
+	// that decision. R10 deadletter would have done the same thing
+	// eventually, just an hour later. We do NOT auto-cancel
+	// failed/dead_letter tasks because those carry meaningful failure
+	// outcomes the plan-status derivation should still see.
+	if autoCancelled := autoCancelPausedForReplanIfBlocking(state); autoCancelled > 0 {
+		state.UpdatedAt = nowUTC()
+		// Force-advance any phase whose tasks are now terminal. Without
+		// this, the auto-cancel writes the task transitions but the
+		// phase-level transition (active → cancelled/failed/completed)
+		// is left to the next daemon scan. Reports of 2026-05-04
+		// observed cases where the scan never re-evaluated the phase
+		// (cache TTL, scan-skip, or worker.Status drift) and the
+		// command stalled indefinitely with phase=active. Doing the
+		// transition inline here makes plan_complete deterministic:
+		// once the Planner says "finalise", the phase is moved to its
+		// terminal state in the same write.
+		advancePhasesInline(state)
+		if err := sm.SaveState(state); err != nil {
+			return nil, fmt.Errorf("save state after auto-cancel paused_for_replan: %w", err)
+		}
+		slog.Info("Complete: auto-cancelled paused_for_replan tasks to unblock plan completion",
+			"command_id", opts.CommandID, "count", autoCancelled)
+	}
+
 	// can-complete validation
 	derivedPlanStatus, err := CanComplete(state)
 	if err != nil {
@@ -196,22 +336,44 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// about the base branch state.
 	if resultStatus == model.StatusCompleted {
 		if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
-			var notPub *worktreeNotPublishedError
-			if errors.As(err, &notPub) {
-				// Publish hasn't completed yet. Write a deferred intent so the
-				// daemon can auto-complete after publish, and return a non-error
-				// "deferred_publish" result to the caller.
-				if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
-					return nil, fmt.Errorf("write deferred complete: %w", writeErr)
+			// Terminal publish failure (quarantined): non-retryable, do NOT
+			// defer. Promote the command to `failed` so plan_complete is
+			// finalized, command_failed notification reaches the
+			// orchestrator, and the gating loop in result_handler exits
+			// cleanly. Tasks are technically completed but the command
+			// itself fails because integration → main never reaches
+			// publish (Report 2026-05-06 round-3 P0).
+			var termErr *worktreePublishTerminalError
+			if errors.As(err, &termErr) {
+				slog.Warn("Complete: worktree publish terminally failed; finalizing command as failed",
+					"command_id", opts.CommandID,
+					"integration_status", termErr.IntegrationStatus,
+					"reason", termErr.Reason,
+				)
+				resultStatus = model.StatusFailed
+				derivedPlanStatus = model.PlanStatusFailed
+				// Fall through to the normal aggregation / state finalize
+				// path below. Task results are still aggregated so the
+				// orchestrator notification carries per-task summaries.
+			} else {
+				var notPub *worktreeNotPublishedError
+				if errors.As(err, &notPub) {
+					// Publish hasn't completed yet (still merging/publishing or
+					// retryable failed). Write a deferred intent so the daemon
+					// can auto-complete after publish, and return a non-error
+					// "deferred_publish" result to the caller.
+					if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
+						return nil, fmt.Errorf("write deferred complete: %w", writeErr)
+					}
+					slog.Info("Complete: deferred until worktree publish",
+						"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
+					return &CompleteResult{
+						CommandID: opts.CommandID,
+						Status:    "deferred_publish",
+					}, nil
 				}
-				slog.Info("Complete: deferred until worktree publish",
-					"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
-				return &CompleteResult{
-					CommandID: opts.CommandID,
-					Status:    "deferred_publish",
-				}, nil
+				return nil, err
 			}
-			return nil, err
 		}
 	}
 
@@ -228,10 +390,18 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// Warn if aggregated task result count diverges from expected_task_count
 	// in state. This detects cases where the Planner's summary text may claim
 	// a different number of tasks than actually exist.
-	if len(taskResults) != state.ExpectedTaskCount {
+	//
+	// Verify-repair lineage adjustment: when an injected repair task supersedes
+	// its predecessor, both the original and the repair write a result file.
+	// Counting both inflates aggregated_results past expected_task_count even
+	// though only one *logical* task slot exists. Reduce to the lineage-latest
+	// view before comparing — see EffectiveStatusForCompletion / LatestDescendant.
+	logicalResultCount := lineageLatestResultCount(taskResults, state.RetryLineage)
+	if logicalResultCount != state.ExpectedTaskCount {
 		slog.Warn("Complete: task result count does not match expected_task_count",
 			"command_id", opts.CommandID,
 			"aggregated_results", len(taskResults),
+			"logical_result_count", logicalResultCount,
 			"expected_task_count", state.ExpectedTaskCount)
 	}
 
@@ -489,6 +659,36 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 	return taskResults, partialErrors, nil
 }
 
+// lineageLatestResultCount counts task results after collapsing each retry
+// lineage chain to its single latest descendant. The aggregator
+// (aggregateTaskResults) returns one entry per result file, which inflates
+// counts when verify-repair has injected a successor for a previously
+// finalised task — both the original (now superseded/cancelled) and the
+// repair publish their own result. expected_task_count tracks the count of
+// logical task slots, so the comparison must collapse lineage chains too.
+//
+// Algorithm: walk RetryLineage to build the set of "superseded" task IDs
+// (any taskID that appears as a predecessor i.e. a *value* in the map), then
+// count results whose TaskID is NOT in that set. Result files for tasks
+// outside any lineage chain pass through unchanged.
+func lineageLatestResultCount(results []model.CommandResultTask, retryLineage map[string]string) int {
+	if len(retryLineage) == 0 {
+		return len(results)
+	}
+	superseded := make(map[string]struct{}, len(retryLineage))
+	for _, predecessor := range retryLineage {
+		superseded[predecessor] = struct{}{}
+	}
+	count := 0
+	for _, r := range results {
+		if _, dropped := superseded[r.TaskID]; dropped {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 // checkWorktreePublished verifies that the worktree integration branch has been
 // published before allowing command completion. Returns nil if worktree mode is
 // disabled, the worktree state file does not exist, or the integration status is
@@ -518,6 +718,18 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 	// the publish guard should pass.
 	if wcs.Integration.Status == model.IntegrationStatusCreated {
 		return nil
+	}
+
+	// Quarantine is a terminal-failed state (R8 reconciler has confirmed
+	// the publish is non-retryable). Waiting on deferred_publish would
+	// wedge plan_complete forever and the orchestrator would never get a
+	// notification (Report 2026-05-06 P0). Returning a dedicated error
+	// type lets the caller fail-terminal plan_complete cleanly.
+	if wcs.Integration.Status == model.IntegrationStatusQuarantined {
+		return &worktreePublishTerminalError{
+			IntegrationStatus: string(wcs.Integration.Status),
+			Reason:            wcs.Integration.QuarantineReason,
+		}
 	}
 
 	if wcs.Integration.Status != model.IntegrationStatusPublished {

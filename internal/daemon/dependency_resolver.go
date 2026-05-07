@@ -81,6 +81,15 @@ func (dr *DependencyResolver) mergeGateAllows(commandID, phaseID string) bool {
 // This lets a queue task whose declared dep is now cancelled (with a
 // "superseded_by_*" reason) recognise its lineage as still in flight or
 // completed without needing the queue's BlockedBy slice to be rewritten.
+//
+// Integration-merge aware: tasks that execute on the integration worktree
+// (RunOnIntegration) or the main branch (RunOnMain) need their cross-phase
+// dependencies' commits to actually be present in integration, not just for
+// the dep task to be queue-completed. We additionally gate on the merge
+// gate (the same gate isPhaseMergeRecorded uses) so a verify_repair retry
+// with RunOnIntegration=true does not run against a stale integration tree.
+// Same-phase deps are intentionally NOT gated here: phase merge happens at
+// phase boundary, so requiring it for a same-phase dep would deadlock.
 func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	if len(task.BlockedBy) == 0 {
 		return false, nil
@@ -103,8 +112,68 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 		}
 	}
 
+	if task.RunOnIntegration || task.RunOnMain {
+		if blocked, depID, depPhase := dr.isBlockedOnIntegrationMerge(task); blocked {
+			dr.log(LogLevelInfo,
+				"task_blocked_on_integration_merge task=%s run_on_integration=%v run_on_main=%v dep=%s dep_phase=%s "+
+					"(awaiting phase merge so dep commits reach integration)",
+				task.ID, task.RunOnIntegration, task.RunOnMain, depID, depPhase)
+			return true, nil
+		}
+	}
+
 	dr.log(LogLevelDebug, "task_unblocked task=%s", task.ID)
 	return false, nil
+}
+
+// isBlockedOnIntegrationMerge reports whether `task` (which is RunOnIntegration
+// or RunOnMain) has any cross-phase dep whose phase merge has not yet been
+// recorded. Returns the offending dep+phase for logging.
+//
+// Same-phase deps are skipped: requiring phase merge for an in-phase dep
+// would deadlock — phase merge happens only when every required task is
+// terminal, including this one.
+//
+// Phaseless commands (commands without declared phases) are always allowed:
+// the merge gate has nothing meaningful to say there.
+func (dr *DependencyResolver) isBlockedOnIntegrationMerge(task *model.Task) (bool, string, string) {
+	phaseByTask, err := dr.buildTaskToPhaseMap(task.CommandID)
+	if err != nil || len(phaseByTask) == 0 {
+		return false, "", ""
+	}
+	// Tasks don't carry a PhaseID field directly — derive it from the
+	// task-to-phase map we already built.
+	currentPhaseID := phaseByTask[task.ID]
+	for _, depTaskID := range task.BlockedBy {
+		depPhaseID := phaseByTask[depTaskID]
+		if depPhaseID == "" || depPhaseID == currentPhaseID {
+			continue
+		}
+		if !dr.mergeGateAllows(task.CommandID, depPhaseID) {
+			return true, depTaskID, depPhaseID
+		}
+	}
+	return false, "", ""
+}
+
+// buildTaskToPhaseMap returns a {taskID -> phaseID} map for every required
+// task across all of the command's phases. Returns an empty map (with nil
+// error) for phaseless commands so callers can short-circuit cleanly.
+func (dr *DependencyResolver) buildTaskToPhaseMap(commandID string) (map[string]string, error) {
+	phases, err := dr.stateManager.GetCommandPhases(commandID)
+	if err != nil {
+		if errors.Is(err, ErrStateNotFound) {
+			return map[string]string{}, nil
+		}
+		return nil, err
+	}
+	out := make(map[string]string, len(phases)*4)
+	for _, p := range phases {
+		for _, tid := range p.RequiredTaskIDs {
+			out[tid] = p.ID
+		}
+	}
+	return out, nil
 }
 
 // CheckDependencyFailure checks if any of a task's dependencies have failed.

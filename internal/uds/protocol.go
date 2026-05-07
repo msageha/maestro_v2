@@ -103,7 +103,16 @@ func inferCallerRoleFromTmuxPane() string {
 	if !validTmuxPaneID(paneID) {
 		return ""
 	}
-	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{@role}").Output() //nolint:gosec // paneID is constrained to tmux's %<digits> form.
+	// Per-instance socket isolation (Report 2026-05-06 round-4 LOW): each project's
+	// tmux server runs on `tmux -L <socket>`, so a query against the default
+	// socket cannot see the pane. We extract the absolute socket path from
+	// the TMUX env (`<socket_path>,<pid>,<session_id>` — set by the tmux
+	// client itself, so it is trustworthy) and pass it as `-S <socket_path>`.
+	args := []string{"display-message", "-t", paneID, "-p", "#{@role}"}
+	if socketPath := socketPathFromTmuxEnv(os.Getenv("TMUX")); socketPath != "" {
+		args = append([]string{"-S", socketPath}, args...)
+	}
+	out, err := exec.Command("tmux", args...).Output() //nolint:gosec // paneID is constrained to tmux's %<digits> form; socketPath comes from TMUX env set by tmux itself.
 	if err != nil {
 		return ""
 	}
@@ -112,6 +121,22 @@ func inferCallerRoleFromTmuxPane() string {
 		return ""
 	}
 	return role
+}
+
+// socketPathFromTmuxEnv parses the TMUX env variable (set by tmux for
+// processes running inside a pane) to extract the absolute socket path
+// the parent tmux server is listening on. Format is
+// `<socket_path>,<server_pid>,<session_id>`. Returns "" when TMUX is
+// unset or malformed (caller falls back to default socket).
+func socketPathFromTmuxEnv(env string) string {
+	if env == "" {
+		return ""
+	}
+	idx := strings.IndexByte(env, ',')
+	if idx <= 0 {
+		return ""
+	}
+	return env[:idx]
 }
 
 func validTmuxPaneID(s string) bool {

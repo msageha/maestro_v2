@@ -280,8 +280,8 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				// surfaces the real failure path instead.
 				allOK := true
 				for _, tid := range phase.TaskIDs {
-					ts, ok := state.TaskStates[tid]
-					if !ok || (ts != model.StatusCompleted && ts != model.StatusCancelled) {
+					ts := EffectiveStatusForCompletion(tid, state)
+					if ts == "" || (ts != model.StatusCompleted && ts != model.StatusCancelled) {
 						allOK = false
 						break
 					}
@@ -294,10 +294,21 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				return "", &planValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}
 
-			// Verify Phase-Task consistency: all tasks within a terminal phase must also be terminal
+			// Verify Phase-Task consistency: every task within a terminal
+			// phase must itself be terminal — but consult the lineage-aware
+			// effective status, not the raw TaskStates entry. A retry chain
+			// produces intermediate predecessors whose raw status hangs at
+			// repair_pending / cancelled while the lineage successor lands
+			// completed; the phase as a whole is satisfied so the plan
+			// completion check must not fail on the structural straggler.
+			// (Reproduced 2026-05-03 Report 1 #P1.)
 			for _, tid := range phase.TaskIDs {
-				if ts, ok := state.TaskStates[tid]; ok && !model.IsTerminal(ts) {
-					return "", &planValidationError{Msg: fmt.Sprintf("phase %q is terminal (%s) but task %s is non-terminal (%s)", phase.Name, phase.Status, tid, ts)}
+				if _, ok := state.TaskStates[tid]; !ok {
+					continue
+				}
+				ts := EffectiveStatusForCompletion(tid, state)
+				if !model.IsTerminal(ts) {
+					return "", &planValidationError{Msg: fmt.Sprintf("phase %q is terminal (%s) but task %s is non-terminal (effective=%s, raw=%s)", phase.Name, phase.Status, tid, ts, state.TaskStates[tid])}
 				}
 			}
 		}

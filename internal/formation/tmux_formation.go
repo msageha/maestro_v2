@@ -336,7 +336,11 @@ func shellReadyTimeout(cfg model.Config) time.Duration {
 var killPaneByTarget = func(pane string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "tmux", "kill-pane", "-t", pane).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; pane target is derived from internal formation setup
+	args := []string{"kill-pane", "-t", pane}
+	if socket := tmux.GetTmuxSocket(); socket != "" {
+		args = append([]string{"-L", socket}, args...)
+	}
+	if err := exec.CommandContext(ctx, "tmux", args...).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; pane target is derived from internal formation setup
 		slog.Warn("kill-pane failed", "pane", pane, "error", err)
 	}
 }

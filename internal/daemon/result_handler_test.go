@@ -35,6 +35,37 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mocks.MockExecuto
 	return rh, mock
 }
 
+// seedTerminalTaskState writes a minimal CommandState file with the given
+// task at StatusCompleted so processWorkerResultFile.gateNotify (which
+// requires a Planner-visible terminal status) lets the result through.
+// Most legacy result_handler_test.go cases seeded only the result file
+// because the prior gateNotify behaviour notified on missing-state-file;
+// the post-2026-05-05 P0-B redesign defers in that case to close the
+// notify-before-state-write race.
+func seedTerminalTaskState(t *testing.T, maestroDir, commandID string, taskIDs ...string) {
+	t.Helper()
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+	taskStates := make(map[string]model.Status, len(taskIDs))
+	for _, id := range taskIDs {
+		taskStates[id] = model.StatusCompleted
+	}
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking:  model.TaskTracking{TaskStates: taskStates},
+		CreatedAt:     "2026-01-01T00:00:00Z",
+		UpdatedAt:     "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, commandID+".yaml"), state); err != nil {
+		t.Fatalf("write command state: %v", err)
+	}
+}
+
 func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
@@ -59,6 +90,7 @@ func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		t.Fatalf("write result: %v", err)
 	}
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	n := rh.processWorkerResultFile("worker1")
 	if n != 1 {
@@ -186,6 +218,7 @@ func TestResultHandler_WorkerNotification_ExpiredLease(t *testing.T) {
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	n := rh.processWorkerResultFile("worker1")
 	if n != 1 {
@@ -245,6 +278,7 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	n := rh.processWorkerResultFile("worker1")
 	if n != 0 {
@@ -334,6 +368,7 @@ func TestResultHandler_WorkerNotification_SubmitConfirmUncertain_NotRetried(t *t
 	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf); err != nil {
 		t.Fatalf("write result: %v", err)
 	}
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	rh.processWorkerResultFile("worker1")
 
@@ -621,6 +656,8 @@ func TestResultHandler_ScanAllResults(t *testing.T) {
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker2.yaml"), rf2)
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc",
+		"task_0000000001_aaa11111", "task_0000000002_aaa22222", "task_0000000003_aaa33333")
 
 	total := rh.ScanAllResults()
 	if total != 2 {
@@ -646,6 +683,7 @@ func TestResultHandler_HandleResultFileEvent(t *testing.T) {
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	rh.HandleResultFileEvent(resultPath)
 
@@ -738,6 +776,7 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
 
 	// First attempt: inline retry exhausts all attempts (1 initial + 1 retry = 2 calls), then sets backoff
 	expectedCalls := 1 + cfg.Retry.EffectiveResultNotifyInlineRetries() // initial + inline retries
@@ -784,6 +823,26 @@ func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
+	// Note: Failed status is also terminal, so both tasks pass gateNotify.
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc",
+		"task_0000000001_11111111", "task_0000000002_22222222")
+	// Override the second task to Failed so model.IsTerminal still returns
+	// true for both (Completed + Failed).
+	{
+		statePath := filepath.Join(maestroDir, "state", "commands", "cmd_0000000001_cccccccc.yaml")
+		data, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var cs model.CommandState
+		if err := yamlv3.Unmarshal(data, &cs); err != nil {
+			t.Fatal(err)
+		}
+		cs.TaskStates["task_0000000002_22222222"] = model.StatusFailed
+		if err := yamlutil.AtomicWrite(statePath, cs); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	n := rh.processWorkerResultFile("worker1")
 	if n != 2 {
@@ -896,5 +955,276 @@ func TestResultHandler_SweepExhaustedNotifications_Worker(t *testing.T) {
 	_ = yamlv3.Unmarshal(nqData, &nq)
 	if len(nq.Notifications) != 1 {
 		t.Errorf("sweep must be idempotent, got %d notifications", len(nq.Notifications))
+	}
+}
+
+// TestResultHandler_VerifyPipelineGate_DefersUntilStamp pins the
+// post-2026-05-06 P0-A REGRESSION fix: a worker result entry that
+// declares the task as RunOnIntegration and reports completed must NOT
+// be notified to the Planner until VerifyOutcomeAppliedAt is stamped on
+// the result entry, even if state[taskID] briefly looks terminal due to
+// a race or a stale state-file write.
+func TestResultHandler_VerifyPipelineGate_DefersUntilStamp(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	rh, mock := newTestResultHandler(maestroDir)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:               "res_0000000001_aaaaaaaa",
+				TaskID:           "task_0000000001_bbbbbbbb",
+				CommandID:        "cmd_0000000001_cccccccc",
+				Status:           model.StatusCompleted,
+				CreatedAt:        now,
+				RunOnIntegration: true,
+				// VerifyOutcomeAppliedAt deliberately nil — verify pipeline
+				// has not yet stamped it.
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+	// Even with state at terminal, the Layer-1 verify-pipeline guard
+	// must defer notify until VerifyOutcomeAppliedAt is set.
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
+
+	n := rh.processWorkerResultFile("worker1")
+	if n != 0 {
+		t.Fatalf("expected 0 notified (verify pipeline gate must defer), got %d", n)
+	}
+	if len(mock.Calls) != 0 {
+		t.Fatalf("expected 0 executor calls (notify must defer), got %d", len(mock.Calls))
+	}
+
+	// Stamp the verify outcome and re-scan: gate should now release.
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var updated model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	stamp := time.Now().UTC().Format(time.RFC3339)
+	updated.Results[0].VerifyOutcomeAppliedAt = &stamp
+	if err := yamlutil.AtomicWrite(resultPath, updated); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	n = rh.processWorkerResultFile("worker1")
+	if n != 1 {
+		t.Fatalf("expected 1 notified after stamp, got %d", n)
+	}
+}
+
+// TestResultHandler_NormalWorkerEntry_NotGatedByVerifyMarker pins the
+// invariant that ordinary worker entries (RunOnIntegration=false and
+// RunOnMain=false) do not require the verify-pipeline stamp — Phase A
+// stamps them eagerly so the gate falls back to the state-terminal
+// allowlist alone.
+func TestResultHandler_NormalWorkerEntry_NotGatedByVerifyMarker(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	rh, mock := newTestResultHandler(maestroDir)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	stamp := now
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:                     "res_0000000001_aaaaaaaa",
+				TaskID:                 "task_0000000001_bbbbbbbb",
+				CommandID:              "cmd_0000000001_cccccccc",
+				Status:                 model.StatusCompleted,
+				CreatedAt:              now,
+				RunOnIntegration:       false,
+				RunOnMain:              false,
+				VerifyOutcomeAppliedAt: &stamp,
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+	seedTerminalTaskState(t, maestroDir, "cmd_0000000001_cccccccc", "task_0000000001_bbbbbbbb")
+
+	n := rh.processWorkerResultFile("worker1")
+	if n != 1 {
+		t.Fatalf("expected 1 notified, got %d", n)
+	}
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(mock.Calls))
+	}
+}
+
+// TestResultHandler_RepairPendingSuperseded_SilentAck pins the
+// supersede-by-retry path: when verify failure causes the original
+// task to be cancelled with a "superseded_by_..." reason and a retry
+// task is enqueued, the original result entry must be silently ack'd
+// (Notified=true) and emit `notify_planner_skipped_superseded` rather
+// than firing a stale `notify_planner_success` to the Planner. The
+// Planner only learns the outcome from the retry's own result.
+func TestResultHandler_RepairPendingSuperseded_SilentAck(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	rh, mock := newTestResultHandler(maestroDir)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	stamp := now
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:                     "res_0000000001_aaaaaaaa",
+				TaskID:                 "task_0000000001_bbbbbbbb",
+				CommandID:              "cmd_0000000001_cccccccc",
+				Status:                 model.StatusCompleted,
+				CreatedAt:              now,
+				RunOnIntegration:       true,
+				VerifyOutcomeAppliedAt: &stamp,
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	// State: original task is cancelled with a superseded_by_* reason
+	// (verify failed, retry scheduled). gateNotify Layer 2 lets it
+	// through (cancelled IS terminal), but the notify callback must
+	// detect the supersede and silently ack instead of firing the
+	// Planner notification.
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0o750); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_0000000001_cccccccc",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_0000000001_bbbbbbbb": model.StatusCancelled,
+			},
+			CancelledReasons: map[string]string{
+				"task_0000000001_bbbbbbbb": "superseded_by_verify_repair: repair_task=task_retry reason=verify_failed",
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_0000000001_cccccccc.yaml"), state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	n := rh.processWorkerResultFile("worker1")
+	if n != 1 {
+		t.Fatalf("expected 1 silent ack (counted as processed), got %d", n)
+	}
+	// Critical: NO Planner notification was sent (silent ack).
+	if len(mock.Calls) != 0 {
+		t.Fatalf("expected 0 executor calls (silent ack), got %d: %+v", len(mock.Calls), mock.Calls)
+	}
+
+	// The result file entry must be marked Notified=true so the next
+	// scan does not retry (preventing a permanent backoff loop on a
+	// task whose Planner notification is intentionally suppressed).
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var updated model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !updated.Results[0].Notified {
+		t.Errorf("superseded result must be marked Notified=true after silent ack")
+	}
+}
+
+// newTestResultHandlerWithLog mirrors newTestResultHandler but exposes
+// the underlying log buffer so log-key assertions don't depend on
+// brittle stderr capture. Used by status-based log-key tests below.
+func newTestResultHandlerWithLog(maestroDir string) (*ResultHandler, *mocks.MockExecutor, *bytes.Buffer) {
+	cfg := model.Config{
+		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+	}
+	lockMap := lock.NewMutexMap()
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	var buf bytes.Buffer
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&buf, "", 0), LogLevelDebug, ep, RealClock{})
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
+	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return mock, nil
+	})
+	return rh, mock, &buf
+}
+
+// TestResultHandler_CommandNotification_LogKeysAreStatusAware pins the
+// post-2026-05-06 P0 fix: notify_orchestrator log keys reflect the
+// command outcome, NOT just the delivery success. Operators grepping
+// daemon.log for `notify_orchestrator_success` used to surface
+// cancelled / failed commands as "success", which made auto-cancel
+// (paused_for_replan converted at plan_complete) look like a healthy
+// success in the audit trail.
+func TestResultHandler_CommandNotification_LogKeysAreStatusAware(t *testing.T) {
+	cases := []struct {
+		name      string
+		status    model.Status
+		wantKey   string
+		forbidKey string
+	}{
+		{"completed", model.StatusCompleted, "notify_orchestrator_completed", "notify_orchestrator_success"},
+		{"cancelled", model.StatusCancelled, "notify_orchestrator_cancelled", "notify_orchestrator_success"},
+		{"failed", model.StatusFailed, "notify_orchestrator_failed_status", "notify_orchestrator_success"},
+		{"dead_letter", model.StatusDeadLetter, "notify_orchestrator_failed_status", "notify_orchestrator_success"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			maestroDir := setupTestMaestroDir(t)
+			rh, _, logBuf := newTestResultHandlerWithLog(maestroDir)
+
+			os.MkdirAll(filepath.Join(maestroDir, "queue"), 0755)
+			rf := model.CommandResultFile{
+				SchemaVersion: 1,
+				FileType:      "result_command",
+				Results: []model.CommandResult{{
+					ID:        "res_status_log_test",
+					CommandID: "cmd_status_log_test",
+					Status:    tc.status,
+					Summary:   "x",
+					CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				}},
+			}
+			resultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+			if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+				t.Fatalf("write result: %v", err)
+			}
+
+			if n := rh.processCommandResultFile(); n != 1 {
+				t.Fatalf("expected 1 notified, got %d", n)
+			}
+			out := logBuf.String()
+			if !strings.Contains(out, tc.wantKey) {
+				t.Errorf("log should contain %q, got:\n%s", tc.wantKey, out)
+			}
+			if strings.Contains(out, tc.forbidKey) {
+				t.Errorf("log must NOT contain %q (legacy key was status-blind), got:\n%s",
+					tc.forbidKey, out)
+			}
+		})
 	}
 }

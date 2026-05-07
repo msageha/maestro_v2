@@ -549,10 +549,13 @@ func TestRealVerifyRunner_AbortedContextReturnsError(t *testing.T) {
 func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
-	// `;` is unsupported shell syntax, so Validate rejects this command.
+	// Unknown verify category — strict YAML decode rejects with a
+	// helpful error rather than silently dropping the entries (which
+	// previously surfaced as "verify config must contain at least one
+	// command" and stalled the Planner).
 	writeVerifyYAML(t, r, `verify:
-  build:
-    - "echo a; rm -rf /"
+  slow_lint:
+    - "echo a"
 `)
 
 	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
@@ -560,10 +563,39 @@ func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if out.Passed {
-		t.Fatalf("expected fail when verify.yaml is invalid")
+		t.Fatalf("expected fail when verify.yaml has an unknown category")
 	}
 	if !strings.Contains(out.Reason, "verify_config_invalid") {
 		t.Errorf("reason should report config error, got %q", out.Reason)
+	}
+}
+
+// TestRealVerifyRunner_AcceptsShellMetacharacters pins the post-2026-05-06
+// shell-passthrough invariant: verify commands run under `bash -c` so
+// the LLM-authored snapshot can use `;`, `&&`, `|`, env substitutions
+// and shell builtins without a separate direct-exec grammar. The
+// previous design rejected `bash -lc "sleep 35; flutter analyze"` at
+// load time, which forced the Planner into a retry loop with no
+// recovery path (Report 2026-05-06 issue-3).
+func TestRealVerifyRunner_AcceptsShellMetacharacters(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - "true && echo ok | cat"
+  lint:
+    - "FOO=bar bash -lc 'echo $FOO'"
+`)
+
+	// commandID must match writeVerifyYAML's snapshot key (cmd-1) so the
+	// runner picks up the freshly written verify.yaml instead of the
+	// fallback `git diff --check`.
+	out, err := r.Run(context.Background(), "task-shell", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass for shell metacharacter commands, got reason=%q", out.Reason)
 	}
 }
 

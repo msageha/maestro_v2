@@ -13,8 +13,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/plan"
 )
 
-const allowVerifySkipEnv = "MAESTRO_ALLOW_VERIFY_SKIP"
-
 // runDaemon starts the maestro daemon process.
 func runDaemon(args []string) error {
 	cmd := NewCommand("maestro daemon", "maestro daemon")
@@ -115,10 +113,18 @@ func runDaemon(args []string) error {
 	verifyLogger := slog.New(slog.NewTextHandler(verifyLogFile, nil)).With(
 		"component", "verify_runner",
 	)
+	// Route slog.Default to the same daemon.log file. Background-launched
+	// daemons discard stdout/stderr (formation/daemon.go), so slog calls
+	// outside the explicit logger plumbing (e.g. paneactivity's
+	// `pane_blocked_prompt_detected` warning) are otherwise silently
+	// dropped. Reports of 2026-05-04 confirmed `lease_extend_pane_blocked`
+	// fired on the daemon's structured logger but the corresponding
+	// slog.Warn from the tracker never reached daemon.log. Wiring
+	// slog.Default to the file produces a single observable surface.
+	slog.SetDefault(slog.New(slog.NewTextHandler(verifyLogFile, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})).With("component", "default"))
 	if cfg.Verify.EffectiveEnabled() {
-		if err := clearVerifyStatusWarning(maestroDir); err != nil {
-			verifyLogger.Warn("verify_status_warning_clear_failed", "error", err)
-		}
 		projectDir := cfg.Maestro.ProjectRoot
 		if projectDir == "" {
 			// Fall back to the daemon's CWD when project_root is not pinned in
@@ -129,14 +135,16 @@ func runDaemon(args []string) error {
 		}
 		d.SetVerifyRunner(daemon.NewRealVerifyRunner(maestroDir, projectDir, verifyLogger))
 	} else {
-		if os.Getenv(allowVerifySkipEnv) != "1" {
-			return fmt.Errorf("maestro daemon: verify.enabled=false requires %s=1; refusing to start with silent verification skip", allowVerifySkipEnv)
-		}
-		verifyLogger.Warn("verify_runner_skip_explicit",
-			"reason", "verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1 — verification is disabled by explicit emergency opt-out")
-		if err := writeVerifyStatusWarning(maestroDir); err != nil {
-			verifyLogger.Warn("verify_status_warning_write_failed", "error", err)
-		}
+		// verify.enabled=false is a normal operating mode for projects that
+		// are not software-development workflows (research, documentation,
+		// note-taking, …). The autonomous LLM Orchestration design treats
+		// "no machine-checkable verify step" as the default: it is the
+		// operator's responsibility to opt in by writing `.maestro/verify.yaml`
+		// and flipping `verify.enabled: true`. Surface the disabled state at
+		// INFO so daemon.log makes the choice visible without forcing an
+		// emergency env gate.
+		verifyLogger.Info("verify_runner_disabled",
+			"reason", "verify.enabled=false in config.yaml — daemon will skip per-task verification (normal mode for non-software-dev workflows)")
 		d.SetVerifyRunner(daemon.NewSkipVerifyRunner())
 	}
 	d.SetVerifyAsync(true)
@@ -151,21 +159,4 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("maestro daemon: %w", err)
 	}
 	return nil
-}
-
-func writeVerifyStatusWarning(maestroDir string) error {
-	stateDir := filepath.Join(maestroDir, "state")
-	if err := os.MkdirAll(stateDir, 0o750); err != nil {
-		return err
-	}
-	data := []byte("schema_version: 1\nfile_type: verify_status\nmode: skipped\nreason: verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1\n")
-	return os.WriteFile(filepath.Join(stateDir, "verify_status.yaml"), data, 0o600)
-}
-
-func clearVerifyStatusWarning(maestroDir string) error {
-	err := os.Remove(filepath.Join(maestroDir, "state", "verify_status.yaml"))
-	if err == nil || os.IsNotExist(err) {
-		return nil
-	}
-	return err
 }

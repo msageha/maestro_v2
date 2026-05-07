@@ -3,10 +3,10 @@ package model
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -38,12 +38,23 @@ type verifyFile struct {
 	Verify VerifyConfig `yaml:"verify"`
 }
 
-var (
-	unsupportedCommandChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n", "\r"}
-	envAssignmentName       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-)
+// unsupportedCommandChars only rejects characters that break the YAML
+// document itself or split a single command across lines (newlines /
+// carriage returns). Shell metacharacters (`;`, `&&`, `||`, “ ` “, `$(`,
+// `${`, `|`, `<`, `>`) used to be rejected as "direct exec" defense-in-
+// depth, but verify commands now run under `bash -c` so the LLM-authored
+// snapshot can use the natural shell syntax it would otherwise resort to
+// (`bash -lc "sleep 35; flutter analyze"`, command pipelines, env
+// substitutions, …). Security is the responsibility of the operator's
+// `~/.claude` policy hook, which inspects every spawned process —
+// duplicating that check here only makes the verify path brittle.
+var unsupportedCommandChars = []string{"\n", "\r"}
 
-// VerifyCommand is a parsed direct-exec verify command.
+// VerifyCommand is a parsed verify command. With the 2026-05-06 shell-
+// passthrough redesign, Args is always [bash, -c, <cmd>] — Env is no
+// longer split out at parse time because `bash -c` understands `KEY=val
+// cmd` itself. The struct is preserved for API compatibility with
+// existing callers.
 type VerifyCommand struct {
 	Env  []string
 	Args []string
@@ -91,7 +102,9 @@ func (v *VerifyConfig) AllCommands() []string {
 	return cmds
 }
 
-// Validate checks that all commands are simple direct-exec invocations.
+// Validate checks that no command contains a YAML-document-breaking
+// character (newline / carriage return). Shell metacharacters are
+// allowed — the verify runner executes commands under `bash -c`.
 func (v *VerifyConfig) Validate() error {
 	for _, cmd := range v.AllCommands() {
 		if strings.TrimSpace(cmd) == "" {
@@ -99,133 +112,26 @@ func (v *VerifyConfig) Validate() error {
 		}
 		for _, ch := range unsupportedCommandChars {
 			if strings.Contains(cmd, ch) {
-				return fmt.Errorf("verify config: unsupported character %q in command %q", ch, cmd)
+				return fmt.Errorf("verify config: unsupported character %q in command %q (commands must be a single line)", ch, cmd)
 			}
-		}
-		parsed, err := ParseVerifyCommand(cmd)
-		if err != nil {
-			return fmt.Errorf("verify config: invalid command %q: %w", cmd, err)
-		}
-		if isShellCInvocation(parsed.Args) {
-			return fmt.Errorf("verify config: shell -c is not supported in command %q", cmd)
 		}
 	}
 	return nil
 }
 
-func isShellCInvocation(args []string) bool {
-	if len(args) < 2 {
-		return false
-	}
-	exe := filepath.Base(args[0])
-	if exe != "sh" && exe != "bash" {
-		return false
-	}
-	return strings.HasPrefix(args[1], "-") && strings.Contains(args[1], "c")
-}
-
-// ParseVerifyCommand parses the limited verify command grammar used for direct
-// exec: optional leading KEY=VALUE environment assignments followed by argv.
+// ParseVerifyCommand wraps a verify command for `bash -c` execution.
+// The command is passed verbatim to bash so the LLM-authored snapshot
+// can use shell metacharacters (`;`, `&&`, pipelines, env substitution,
+// …) without having to learn a separate direct-exec grammar. Returns
+// the canonical Args = [bash, -c, <cmd>] used by execVerifyCommand.
 func ParseVerifyCommand(command string) (VerifyCommand, error) {
-	fields, err := splitVerifyFields(command)
-	if err != nil {
-		return VerifyCommand{}, err
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" {
+		return VerifyCommand{}, fmt.Errorf("empty command")
 	}
-	var parsed VerifyCommand
-	i := 0
-	for ; i < len(fields); i++ {
-		name, ok := envAssignmentNameOf(fields[i])
-		if !ok {
-			break
-		}
-		if !envAssignmentName.MatchString(name) {
-			return VerifyCommand{}, fmt.Errorf("invalid env assignment name %q", name)
-		}
-		parsed.Env = append(parsed.Env, fields[i])
-	}
-	if i >= len(fields) {
-		return VerifyCommand{}, fmt.Errorf("missing executable")
-	}
-	parsed.Args = fields[i:]
-	return parsed, nil
-}
-
-func envAssignmentNameOf(field string) (string, bool) {
-	idx := strings.IndexByte(field, '=')
-	if idx <= 0 {
-		return "", false
-	}
-	return field[:idx], true
-}
-
-func splitVerifyFields(command string) ([]string, error) {
-	var fields []string
-	var b strings.Builder
-	inSingle := false
-	inDouble := false
-	haveToken := false
-
-	flush := func() {
-		if haveToken {
-			fields = append(fields, b.String())
-			b.Reset()
-			haveToken = false
-		}
-	}
-
-	for i := 0; i < len(command); i++ {
-		ch := command[i]
-		switch {
-		case inSingle:
-			if ch == '\'' {
-				inSingle = false
-			} else {
-				b.WriteByte(ch)
-				haveToken = true
-			}
-		case inDouble:
-			switch ch {
-			case '"':
-				inDouble = false
-			case '\\':
-				i++
-				if i >= len(command) {
-					return nil, fmt.Errorf("trailing escape")
-				}
-				b.WriteByte(command[i])
-				haveToken = true
-			default:
-				b.WriteByte(ch)
-				haveToken = true
-			}
-		default:
-			switch ch {
-			case '\'':
-				inSingle = true
-				haveToken = true
-			case '"':
-				inDouble = true
-				haveToken = true
-			case '\\':
-				i++
-				if i >= len(command) {
-					return nil, fmt.Errorf("trailing escape")
-				}
-				b.WriteByte(command[i])
-				haveToken = true
-			case ' ', '\t':
-				flush()
-			default:
-				b.WriteByte(ch)
-				haveToken = true
-			}
-		}
-	}
-	if inSingle || inDouble {
-		return nil, fmt.Errorf("unterminated quote")
-	}
-	flush()
-	return fields, nil
+	return VerifyCommand{
+		Args: []string{"bash", "-c", trimmed},
+	}, nil
 }
 
 // LoadOrDefaultVerifyConfig reads and parses a verify.yaml file.
@@ -262,23 +168,48 @@ func LoadOrDefaultVerifyConfigForProject(projectRoot, path string) (*VerifyConfi
 	return cfg, nil
 }
 
+// ParseVerifyConfigYAML decodes a verify.yaml document body with the
+// same strict-decode + Validate pipeline that LoadVerifyConfig uses.
+// CLI and UDS write paths share this helper so that an unknown
+// category (e.g. `slow_lint:`) is rejected with the same helpful
+// error in every code path — previously the CLI / UDS paths used a
+// non-strict yamlv3.Unmarshal and the unknown entry was silently
+// dropped, surfacing only as "verify config must contain at least
+// one command" when the surviving config happened to be empty
+// (Report 2026-05-06 P0-1 / P1-1).
+func ParseVerifyConfigYAML(data []byte) (*VerifyConfig, error) {
+	var f verifyFile
+	dec := yamlv3.NewDecoder(strings.NewReader(string(data)))
+	dec.KnownFields(true)
+	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("%w (allowed categories: build, lint, test, typecheck, security, performance)", err)
+	}
+	if err := f.Verify.Validate(); err != nil {
+		return nil, err
+	}
+	return &f.Verify, nil
+}
+
 // LoadVerifyConfig reads and parses a verify.yaml file.
-// The parsed config is validated via Validate() so that unsupported shell
-// syntax in command strings is rejected at load time. Callers that
-// rely on a Fallback (DefaultVerifyConfig) should use LoadOrDefaultVerifyConfig.
+// The parsed config is validated via Validate() so that unsupported
+// commands are rejected at load time. Strict YAML decoding (KnownFields
+// = true) rejects unknown verify categories with a helpful error rather
+// than silently dropping them — a Planner that wrote `verify: { slow_lint:
+// [...] }` used to see "verify config must contain at least one command"
+// because every entry under an unknown key was discarded; now the error
+// names the offending field so the caller can correct the snapshot.
+// Callers that rely on a Fallback (DefaultVerifyConfig) should use
+// LoadOrDefaultVerifyConfig.
 func LoadVerifyConfig(path string) (*VerifyConfig, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path from validated inputs
 	if err != nil {
 		return nil, fmt.Errorf("load verify config: %w", err)
 	}
-	var f verifyFile
-	if err := yamlv3.Unmarshal(data, &f); err != nil {
+	cfg, err := ParseVerifyConfigYAML(data)
+	if err != nil {
 		return nil, fmt.Errorf("load verify config: %w", err)
 	}
-	if err := f.Verify.Validate(); err != nil {
-		return nil, fmt.Errorf("load verify config: %w", err)
-	}
-	return &f.Verify, nil
+	return cfg, nil
 }
 
 // SaveVerifyConfig writes a VerifyConfig to the given path atomically.

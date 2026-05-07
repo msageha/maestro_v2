@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -200,29 +202,21 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 	return inFlight
 }
 
-// phaseTasksAllCompleted reports whether every required task of the given phase
-// is in StatusCompleted according to the state reader (authoritative source).
-// Returns false if any task is missing, errored, or not completed. A phase with
-// no required tasks is treated as "not fully completed" — callers that want to
-// skip empty phases should do so explicitly (the merge collector does).
+// phaseTasksAllTerminal reports whether every task of the given phase has
+// reached a terminal effective status (any of completed/failed/cancelled/
+// dead_letter/aborted/timed_out). Used by the merge collector to decide
+// whether a phase has converged enough to push worker output onto
+// integration — even a phase that ended in PhaseStatusFailed should
+// have its completed-task outputs landed once every task finished, so
+// publish/cleanup paths can proceed without leaving worker worktrees
+// permanently at WorktreeStatusActive (Report 2026-05-04 stall).
 //
-// Scoped against `stateReader` rather than the in-memory task queue snapshot so
-// that the "is this phase actually done?" check uses the same source of truth
-// as DependencyResolver.checkActivePhaseCompletion; otherwise queue/state drift
-// can cause Phase B to see a phase as mergeable while the resolver still treats
-// it as active (or vice versa).
-//
-// Lineage-aware: a task whose lineage successor has already completed is
-// treated as effectively completed even though the raw status is
-// Cancelled (superseded_by_*). This keeps the merge gate consistent with
-// checkActivePhaseCompletion's lineage view, which is the only way to
-// publish a phase whose verify-repair retry succeeded.
-//
-// Observes phase.TaskIDs (every task) when available, falling back to
-// RequiredTaskIDs for legacy callers/tests. An all-optional phase
-// otherwise has an empty RequiredTaskIDs slice and would keep the merge
-// gate shut indefinitely.
-func phaseTasksAllCompleted(stateReader StateReader, commandID string, phase PhaseInfo) bool {
+// Lineage-aware via GetEffectiveTaskStatus: a task whose lineage
+// successor finished is treated as if it had reached the successor's
+// status, the same view checkActivePhaseCompletion uses. Tasks the
+// state reader cannot resolve (missing entry, transient error) fall
+// back to "non-terminal" so a degraded read does not race the gate.
+func phaseTasksAllTerminal(stateReader StateReader, commandID string, phase PhaseInfo) bool {
 	if stateReader == nil {
 		return false
 	}
@@ -235,7 +229,10 @@ func phaseTasksAllCompleted(stateReader StateReader, commandID string, phase Pha
 	}
 	for _, taskID := range taskIDs {
 		status, err := stateReader.GetEffectiveTaskStatus(commandID, taskID)
-		if err != nil || status != model.StatusCompleted {
+		if err != nil {
+			return false
+		}
+		if !model.IsTerminal(status) {
 			return false
 		}
 	}
@@ -253,12 +250,18 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 
 	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
 	if err != nil {
+		qh.log(LogLevelDebug,
+			"phase_merge_skip command=%s reason=get_phases_error error=%v",
+			commandID, err)
 		return nil
 	}
 
 	// Load worktree state to check already-merged phases
 	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
 	if err != nil {
+		qh.log(LogLevelDebug,
+			"phase_merge_skip command=%s reason=load_state_error error=%v",
+			commandID, err)
 		return nil
 	}
 
@@ -296,7 +299,6 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 
 	// Build workerID → task purpose map from task queues
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
-	workerExpectedPaths := buildWorkerExpectedPaths(commandID, taskQueues)
 
 	// Fallback for commands that declare no phases: worker worktree writes
 	// can still occur, so collect a single implicit-phase merge once all
@@ -317,6 +319,19 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 	workerIDs := eligibleWorkerIDsForAutoCommit(cmdState.Workers)
 	workerIDs = qh.filterWorkersAwaitingCommitRecovery(commandID, workerIDs, cmdState, taskQueues)
 	if len(workerIDs) == 0 {
+		// Surface the empty-worker-set case so operators inspecting a
+		// stalled command can tell whether the merge collector even saw
+		// anything to commit. Reports of 2026-05-04 saw a stall where
+		// no worker_committed log fired and there was no diagnostic to
+		// distinguish "merge collector did not run" from "no eligible
+		// workers".
+		var workerStatuses []string
+		for _, ws := range cmdState.Workers {
+			workerStatuses = append(workerStatuses, ws.WorkerID+":"+string(ws.Status))
+		}
+		qh.log(LogLevelDebug,
+			"phase_merge_skip command=%s reason=no_eligible_workers integration_status=%s workers=%v",
+			commandID, cmdState.Integration.Status, workerStatuses)
 		return nil
 	}
 
@@ -326,43 +341,75 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		// Skip phases already merged.
 		if cmdState.MergedPhases != nil {
 			if _, merged := cmdState.MergedPhases[phase.ID]; merged {
+				qh.log(LogLevelDebug,
+					"phase_merge_skip command=%s phase=%s reason=already_merged",
+					commandID, phase.ID)
 				continue
 			}
 		}
-		// Only merge if this phase has tasks.
-		if len(phase.RequiredTaskIDs) == 0 {
+		// Only merge if this phase has tasks. We accept either TaskIDs
+		// (full set) or RequiredTaskIDs (legacy callers / fixtures that
+		// only populate the required slice). All-optional phases would
+		// otherwise have an empty RequiredTaskIDs but a populated
+		// TaskIDs and were silently skipped by the previous gate.
+		if len(phase.TaskIDs) == 0 && len(phase.RequiredTaskIDs) == 0 {
+			qh.log(LogLevelDebug,
+				"phase_merge_skip command=%s phase=%s reason=no_tasks",
+				commandID, phase.ID)
 			continue
 		}
-		// Never merge a phase that terminated unsuccessfully. Failed/cancelled/
-		// timed_out phases must not emit partial changes into integration; those
-		// are handled by publish/cleanup paths.
-		if phase.Status == model.PhaseStatusFailed ||
-			phase.Status == model.PhaseStatusCancelled ||
-			phase.Status == model.PhaseStatusTimedOut {
-			continue
-		}
-		// Accept both `phase.Status == completed` and `phase.Status == active
-		// with all required tasks completed`. The latter covers the case where
-		// stepPhaseTransitions defers the Completed transition until the
-		// worktree merge has been recorded (via isPhaseMergeRecorded): without
-		// this relaxation, the merge never starts because the phase never
-		// transitions, producing a deadlock between the merge-gate and the
-		// merge collection.
-		if phase.Status != model.PhaseStatusCompleted && !phaseTasksAllCompleted(stateReader, commandID, phase) {
+		// Phase status is no longer a hard gate. Earlier versions skipped
+		// failed/cancelled/timed_out phases entirely so partial outputs
+		// would not leak onto integration, but Report 2026-05-04 pinned
+		// the resulting deadlock: a phase with 6 completed tasks + 2 failed
+		// goes to PhaseStatusFailed → merge collector skips it → worker
+		// worktrees stay at WorktreeStatusActive with uncommitted output →
+		// publish gate's pendingWorker check defers cleanup forever (the
+		// worker output is "real work"), and the daemon loops emitting
+		// `worktree_publish_skip_no_commits_deferred` indefinitely.
+		// Operator intervention was the only escape.
+		//
+		// New policy: collect the merge regardless of phase outcome. The
+		// underlying autonomous-LLM-orchestration contract is "trust worker
+		// output verbatim and let the next stage decide" — failed plans
+		// already have a separate publish-gate check that blocks main
+		// publish on PlanStatusFailed/Cancelled, so partial integration
+		// state never reaches main. What the merge buys is forward
+		// progress: worker.Status advances to Committed/Integrated, the
+		// publish gate stops blocking on Active workers, and cleanup can
+		// run cleanly. Operators inspecting integration after a failed
+		// plan see exactly what the workers produced.
+		//
+		// Phase merge is still gated on "all required tasks have
+		// terminated" — a partially-completed phase whose tasks are still
+		// in flight should not be force-merged (a successor task may
+		// produce more work for the same worker).
+		if !phaseTasksAllTerminal(stateReader, commandID, phase) {
+			qh.log(LogLevelDebug,
+				"phase_merge_skip command=%s phase=%s phase_status=%s reason=tasks_not_all_terminal",
+				commandID, phase.ID, phase.Status)
 			continue
 		}
 
+		qh.log(LogLevelInfo,
+			"phase_merge_collected command=%s phase=%s phase_status=%s workers=%v",
+			commandID, phase.ID, phase.Status, workerIDs)
 		items = append(items, worktreeMergeItem{
-			CommandID:           commandID,
-			PhaseID:             phase.ID,
-			WorkerIDs:           workerIDs,
-			WorkerPurposes:      workerPurposes,
-			WorkerExpectedPaths: workerExpectedPaths,
+			CommandID:      commandID,
+			PhaseID:        phase.ID,
+			WorkerIDs:      workerIDs,
+			WorkerPurposes: workerPurposes,
 		})
 	}
 
 	return items
 }
+
+// Removed: buildWorkerExpectedPaths. The expected_paths gate that policed
+// worker outputs against a Planner-declared file list was retired together
+// with the rest of the commit-policy gates — workers' diffs are now
+// committed verbatim and downstream verify catches anomalies. Re-introducing
+// the builder would re-enable that gate by side effect.
 
 // buildWorkerPurposes builds a workerID → task purpose map from task queues.
 // Uses the most recently dispatched task's purpose for each worker.
@@ -380,36 +427,6 @@ func buildWorkerPurposes(_ string, taskQueues map[string]*taskQueueEntry) map[st
 		return nil
 	}
 	return purposes
-}
-
-func buildWorkerExpectedPaths(commandID string, taskQueues map[string]*taskQueueEntry) map[string][]string {
-	pathsByWorker := make(map[string][]string)
-	seenByWorker := make(map[string]map[string]struct{})
-	for queueFile, tqEntry := range taskQueues {
-		workerID := strings.TrimSuffix(filepath.Base(queueFile), ".yaml")
-		if workerID == "" {
-			continue
-		}
-		for _, task := range tqEntry.Queue.Tasks {
-			if task.CommandID != commandID || task.Status != model.StatusCompleted {
-				continue
-			}
-			if seenByWorker[workerID] == nil {
-				seenByWorker[workerID] = make(map[string]struct{})
-			}
-			for _, p := range task.ExpectedPaths {
-				if _, ok := seenByWorker[workerID][p]; ok {
-					continue
-				}
-				seenByWorker[workerID][p] = struct{}{}
-				pathsByWorker[workerID] = append(pathsByWorker[workerID], p)
-			}
-		}
-	}
-	if len(pathsByWorker) == 0 {
-		return nil
-	}
-	return pathsByWorker
 }
 
 // hasExpiredLeases checks whether any queue entry has an expired lease.
@@ -588,10 +605,18 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	// No failures — check integration status to decide action
 	switch cmdState.Integration.Status {
 	case model.IntegrationStatusQuarantined:
-		// Quarantined integrations must not be published; operator intervention required.
-		// Worktrees are preserved for inspection, but clean up any leaked _publish
-		// temp branch so it doesn't accumulate across quarantine cycles.
-		qh.log(LogLevelWarn, "worktree_publish_quarantined command=%s reason=%s",
+		// Quarantined integrations must not be published; operator
+		// intervention required. Emit WARN exactly once per
+		// (command, reason) pair to avoid scan-tick log spam — the
+		// state is durable and cannot autonomously progress past this
+		// point, so re-warning every scan adds no information. Subsequent
+		// observations are demoted to DEBUG.
+		reasonKey := commandID + "::" + cmdState.Integration.QuarantineReason
+		level := LogLevelDebug
+		if _, alreadyLogged := qh.publishQuarantineLogged.LoadOrStore(reasonKey, struct{}{}); !alreadyLogged {
+			level = LogLevelWarn
+		}
+		qh.log(level, "worktree_publish_quarantined command=%s reason=%s",
 			commandID, cmdState.Integration.QuarantineReason)
 		if qh.worktreeManager != nil {
 			qh.worktreeManager.CleanupTempPublishBranch(commandID)
@@ -711,27 +736,54 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 				commandID, cmdState.Integration.Status)
 			return publishes, cleanups
 		}
-		// Defer no_op_terminal cleanup if any worker is still at
-		// WorktreeStatusActive — that worker has uncommitted output and
-		// the implicit-phase incremental merge has not yet picked it up.
-		// Without this gate, a transient race between the final-task scan
-		// and the incremental-merge collector would tear down a worktree
-		// holding real work, causing main publish to silently lose the
-		// command's output. Once the worker auto-commit succeeds, its
-		// status advances to committed/integrated and this branch falls
-		// through to the real no-op path.
+		// Defer no_op_terminal cleanup if any worker still has uncommitted
+		// output. The previous version of this gate only consulted the
+		// cached WorktreeStatusActive flag, which mis-fires when a worker's
+		// status field has drifted out of sync with the actual git state
+		// (e.g. setWorkerStatus crash window, status overwritten by an
+		// unrelated transition). Falling back to a live git probe via
+		// IsWorkerAheadOrDirty closes that hole — Report 2026-05-03 issue-3
+		// observed a single-task command whose worker had real diff in its
+		// worktree but a non-Active status, so the gate let cleanup run
+		// and silently destroyed the worker's output.
 		var pendingWorker string
+		var pendingReason string
 		for _, ws := range cmdState.Workers {
 			if ws.Status == model.WorktreeStatusActive {
 				pendingWorker = ws.WorkerID
+				pendingReason = "status_active"
+				break
+			}
+			// Live git probe for any non-terminal worker state. Conflict /
+			// Resolving are owned by the resume-merge pipeline and must
+			// not block cleanup here. Cleanup-* / Failed are terminal from
+			// our perspective so don't require a probe.
+			switch ws.Status {
+			case model.WorktreeStatusCreated,
+				model.WorktreeStatusCommitted,
+				model.WorktreeStatusIntegrated:
+				dirty, perr := qh.worktreeManager.IsWorkerAheadOrDirty(commandID, ws.WorkerID)
+				if perr != nil {
+					// Probe failure → fail-safe (defer cleanup) so we never
+					// destroy work because we couldn't confirm cleanliness.
+					pendingWorker = ws.WorkerID
+					pendingReason = "probe_failed:" + perr.Error()
+					continue
+				}
+				if dirty {
+					pendingWorker = ws.WorkerID
+					pendingReason = "git_status_dirty_or_ahead"
+				}
+			}
+			if pendingWorker != "" {
 				break
 			}
 		}
 		if pendingWorker != "" {
 			qh.log(LogLevelWarn,
-				"worktree_publish_skip_no_commits_deferred command=%s active_worker=%s integration_status=created plan_terminal=true "+
+				"worktree_publish_skip_no_commits_deferred command=%s active_worker=%s reason=%s integration_status=created plan_terminal=true "+
 					"(uncommitted worker output present; deferring no_op_terminal cleanup until incremental merge runs)",
-				commandID, pendingWorker)
+				commandID, pendingWorker, pendingReason)
 			return publishes, cleanups
 		}
 		qh.log(LogLevelInfo,
@@ -750,7 +802,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 			// see the no-op publish path uniformly. The pre-existing
 			// worktree_publish_skip_no_commits line stays for backward-compat.
 			qh.log(LogLevelInfo,
-				"orphan_worktree_cleanup_triggered command=%s cmd_status=in_progress integration_status=created elapsed=0s threshold=0s reason=no_op_terminal "+
+				"orphan_worktree_cleanup_triggered command=%s cmd_status=in_progress integration_status=created elapsed=0s threshold=bypass(no_op) reason=no_op_terminal "+
 					"(publish gate path; no diff to publish, terminal plan)",
 				commandID)
 		}
@@ -846,6 +898,13 @@ func (qh *QueueHandler) isCommandPlannerIdle(commandID string) bool {
 // and R4PlanStatus reconciles state.PlanStatus, so a single write drives
 // the whole "command goes terminal" propagation chain.
 //
+// The synthetic result is populated from state.TaskStates so the
+// Orchestrator sees the actual task outcomes (which tasks completed,
+// which failed) rather than an empty `tasks: []` payload (Report
+// 2026-05-05 P1 v5). Worker attribution is left blank — only the
+// state file is consulted to keep this recovery path resilient to
+// missing or partial queue files.
+//
 // Returns true if a synthetic result was written, false if the call was
 // a no-op (an existing result for commandID was found, an I/O error
 // occurred, or the lock body returned early). Callers can use the bool
@@ -891,11 +950,16 @@ func (qh *QueueHandler) writeSyntheticFailedPlannerResult(commandID, reason stri
 		if rf.FileType == "" {
 			rf.FileType = "result_command"
 		}
+
+		tasks, stats, summary := qh.deriveSyntheticPlannerPayload(commandID, reason)
+
 		rf.Results = append(rf.Results, model.CommandResult{
 			ID:        resultID,
 			CommandID: commandID,
 			Status:    model.StatusFailed,
-			Summary:   "synthetic_failure: " + reason + " (daemon recovery — planner did not finalise)",
+			Summary:   summary,
+			TaskStats: stats,
+			Tasks:     tasks,
 			CreatedAt: nowStr,
 		})
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
@@ -905,12 +969,105 @@ func (qh *QueueHandler) writeSyntheticFailedPlannerResult(commandID, reason stri
 			return
 		}
 		qh.log(LogLevelInfo,
-			"synthetic_planner_result command=%s status=failed reason=%s "+
+			"synthetic_planner_result command=%s status=failed reason=%s tasks=%d completed=%d failed=%d "+
 				"(R3/R4 will walk planner queue + state.plan_status to failed on next scan)",
-			commandID, reason)
+			commandID, reason, stats.Total, stats.Completed, stats.Failed)
 		wrote = true
 	})
 	return wrote
+}
+
+// deriveSyntheticPlannerPayload reads state.TaskStates for commandID and
+// returns a Tasks slice, aggregated TaskStats, and a human-readable
+// summary that surfaces actual completed / failed task counts and the
+// IDs of failed tasks (so an Orchestrator scanning results/planner.yaml
+// is not misled into thinking the command produced zero work). Best-
+// effort: if the state file cannot be read, the tasks slice is empty
+// and the summary mentions only the synthetic reason.
+//
+// The summary also surfaces integration merge state. When a command is
+// failed at the publish gate but worker_merged events have already
+// rolled per-worker commits onto the integration branch (data-loss
+// avoidance — see failed_phase_merge_no_skip.md), the summary records
+// `integration_state=merged (partial — main publish skipped)` so the
+// Orchestrator (and a human reading results/planner.yaml) can see
+// upfront that re-running the failed task may collide with already-
+// integrated changes (Report 2026-05-05 P1 v5).
+func (qh *QueueHandler) deriveSyntheticPlannerPayload(commandID, reason string) ([]model.CommandResultTask, model.TaskStats, string) {
+	baseSummary := "synthetic_failure: " + reason + " (daemon recovery — planner did not finalise)"
+
+	statePath := commandStatePath(qh.maestroDir, commandID)
+	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
+	if err != nil {
+		return nil, model.TaskStats{}, baseSummary + integrationStateSummarySuffix(qh.maestroDir, commandID)
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		return nil, model.TaskStats{}, baseSummary + integrationStateSummarySuffix(qh.maestroDir, commandID)
+	}
+	if len(cs.TaskStates) == 0 {
+		return nil, model.TaskStats{}, baseSummary + integrationStateSummarySuffix(qh.maestroDir, commandID)
+	}
+
+	taskIDs := make([]string, 0, len(cs.TaskStates))
+	for id := range cs.TaskStates {
+		taskIDs = append(taskIDs, id)
+	}
+	sort.Strings(taskIDs)
+
+	tasks := make([]model.CommandResultTask, 0, len(taskIDs))
+	failedIDs := make([]string, 0)
+	for _, id := range taskIDs {
+		status := cs.TaskStates[id]
+		taskSummary := ""
+		if reason, ok := cs.CancelledReasons[id]; ok && reason != "" {
+			taskSummary = reason
+		}
+		tasks = append(tasks, model.CommandResultTask{
+			TaskID:  id,
+			Status:  status,
+			Summary: taskSummary,
+		})
+		if status == model.StatusFailed || status == model.StatusDeadLetter {
+			failedIDs = append(failedIDs, id)
+		}
+	}
+	stats := model.ComputeTaskStats(tasks)
+
+	summary := baseSummary
+	summary += fmt.Sprintf(" — task_stats total=%d completed=%d failed=%d cancelled=%d",
+		stats.Total, stats.Completed, stats.Failed, stats.Cancelled)
+	if len(failedIDs) > 0 {
+		summary += " — failed_tasks=" + strings.Join(failedIDs, ",")
+	}
+	summary += integrationStateSummarySuffix(qh.maestroDir, commandID)
+	return tasks, stats, summary
+}
+
+// integrationStateSummarySuffix reads state/worktrees/<commandID>.yaml
+// and returns a " — integration_state=..." suffix describing the
+// integration branch lifecycle, including a partial-merge indicator
+// when worker commits have already been merged into the integration
+// branch despite the command failing at the publish gate. Returns an
+// empty string when the worktree state file is unavailable.
+func integrationStateSummarySuffix(maestroDir, commandID string) string {
+	path := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	data, err := os.ReadFile(path) //nolint:gosec // controlled application state path
+	if err != nil {
+		return ""
+	}
+	var ws model.WorktreeCommandState
+	if err := yamlv3.Unmarshal(data, &ws); err != nil {
+		return ""
+	}
+	status := string(ws.Integration.Status)
+	if status == "" {
+		return ""
+	}
+	if ws.Integration.Status == model.IntegrationStatusMerged {
+		return fmt.Sprintf(" — integration_state=%s (partial — worker commits integrated; main publish skipped due to failed phase)", status)
+	}
+	return " — integration_state=" + status
 }
 
 // checkCommandTasksTerminal checks if all tasks for a command across all task
@@ -1071,11 +1228,10 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	}
 
 	return []worktreeMergeItem{{
-		CommandID:           commandID,
-		PhaseID:             "__implicit_phase",
-		WorkerIDs:           workerIDs,
-		WorkerPurposes:      workerPurposes,
-		WorkerExpectedPaths: buildWorkerExpectedPaths(commandID, taskQueues),
+		CommandID:      commandID,
+		PhaseID:        "__implicit_phase",
+		WorkerIDs:      workerIDs,
+		WorkerPurposes: workerPurposes,
 	}}
 }
 

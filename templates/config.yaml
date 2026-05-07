@@ -6,6 +6,24 @@
 # デフォルト値は config.go の DefaultXxx 定数に基づく。
 # 有効範囲は config.go の Validate() に基づく。
 # =============================================================================
+# Environment-variable overrides (intentionally NOT in config.yaml):
+#   MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC
+#     Threshold (seconds) before the daemon force-fails a task whose worker
+#     pane has been wedged on a confirmation/approval prompt. Default 180s
+#     (3 min). Set to 0 to disable the early-fail behaviour and fall back to
+#     the lease-extend-until-progress_timeout path.
+#   MAESTRO_LOG_PANE_TAIL
+#     "1" to include pane-tail snippets in clear_confirm / blocked-pane
+#     diagnostic logs. Off by default for privacy: pane content can carry
+#     sensitive operator data.
+#   MAESTRO_AGENT_TMPDIR_OVERRIDE
+#     "0" to skip the default <maestroDir>/cache/tmp TMPDIR override when
+#     launching agents. Off by default — the override is required for
+#     macOS sandbox compatibility (mktemp under inherited TMPDIR fails).
+#   MAESTRO_LOCKORDER
+#     Lock-order checker mode for race debugging ("off"/"warn"/"panic").
+#     Default "off" — only useful during invariant investigations.
+# =============================================================================
 
 # --- Project ---
 # プロジェクトの識別情報。
@@ -147,19 +165,21 @@ watcher:
   wait_ready_max_retries: 15
   # clear_confirm_timeout_sec: クリア確認の1回あたりタイムアウト (秒)
   # type: int | default: 0 | range: >= 0
-  clear_confirm_timeout_sec: 5
+  # 8s は Claude Code TUI の起動初期遅延 (~3-5s) を吸収できる値。短すぎると
+  # dispatch_task_failed clear_confirm が頻発し dispatch latency が積み重なる。
+  clear_confirm_timeout_sec: 8
   # clear_confirm_poll_ms: クリア確認ウィンドウ内のポーリング間隔 (ms)
   # type: int | default: 0 | range: >= 0
   clear_confirm_poll_ms: 250
   # clear_max_attempts: クリア送信の最大試行回数 (初回含む)
   # type: int | default: 0 | range: >= 0
-  clear_max_attempts: 3
+  # 7 × 8s = 56s 予算で Claude Code TUI の cold-start (~40-50s) を吸収する。
+  # 5 attempts は workspace bench で transient miss が再発したため拡張
+  # (Report 2026-05-06 第 3 回 P2)。
+  clear_max_attempts: 7
   # clear_retry_backoff_ms: クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
   # type: int | default: 0 | range: >= 0
   clear_retry_backoff_ms: 500
-  # clear_second_enter_delay_ms: /clear 後の2回目 Enter 送信までの遅延 (ms)
-  # type: int | default: 0 | range: >= 0
-  clear_second_enter_delay_ms: 500
   # shell_ready_timeout_sec: Agent シェル準備完了のタイムアウト (秒、0=デフォルト10秒)
   # type: int | default: 10 (defaultShellReadyTimeoutSec) | range: >= 0
   shell_ready_timeout_sec: 10
@@ -342,16 +362,10 @@ worktree:
   # stall_cleanup_after: 全タスク terminal だが phase が非 terminal のまま停滞時の fast-track cleanup 発火までの時間
   # type: string (duration) | default: "10m" (DefaultStallCleanupAfter) | range: time.ParseDuration 互換, "0s"=無効
   stall_cleanup_after: "10m"
-  commit_policy:
-    # max_files: 1コミットあたりの最大ステージングファイル数 (0=無制限)
-    # type: *int | default: 100 (DefaultCommitMaxFiles) | range: >= 0
-    max_files: 100
-    # require_gitignore: .gitignore の存在を要求する
-    # type: bool | default: false | range: true/false
-    require_gitignore: true
-    # message_pattern: コミットメッセージの正規表現バリデーション (空=チェックなし)
-    # type: string | default: "" | range: 制限なし (有効な正規表現)
-    message_pattern: "^.+"
+  # (Removed) commit_policy: max_files / require_gitignore / message_pattern
+  # gates predated the orchestrator's "commit Worker output verbatim" model
+  # and the runtime no longer reads them. Any prior `commit_policy:` block
+  # in user configs is silently ignored.
   gc:
     # enabled: 定期 GC の有効化
     # type: bool | default: false | range: true/false
@@ -408,10 +422,17 @@ quality_gates:
 
 # --- Verify Daemon ---
 # Daemon 所有の検証ランナーと verify_pending stall 復旧。
+#
+# `enabled: true` にした場合、`maestro plan submit` はコマンド毎に
+# `.maestro/verify.yaml` ベースのスナップショットを必須とする (build /
+# lint / test / typecheck などの検証コマンド一覧)。これはソフトウェア開発
+# プロジェクトでは有用だが、研究・ドキュメント・ノート系のリポジトリでは
+# 不要なため、テンプレートのデフォルトは `false` にしている。検証カテゴリを
+# 使いたい場合のみ true にし、`maestro verify write` で snapshot を書く。
 verify:
-  # enabled: 実検証ランナーの有効化。false は緊急退避用途のみで、daemon 起動時に MAESTRO_ALLOW_VERIFY_SKIP=1 も必要。
-  # type: *bool | default: true | range: true/false
-  enabled: true
+  # enabled: 実検証ランナーの有効化。
+  # type: *bool | default: false | range: true/false
+  enabled: false
   # stall_threshold_sec: verify_pending の stall を repair_pending に復旧する秒数。0 は復旧無効。
   # type: *int | default: 600 (DefaultVerifyStallThresholdSec) | range: >= 0
   stall_threshold_sec: 600
@@ -429,31 +450,28 @@ admission_control:
   # type: int | default: 1 (DefaultMaxConcurrentRepair) | range: >= 0
   max_concurrent_repair: 1
 
-# --- Fallback ---
-# Worker の連続失敗時の縮退動作制御。
-fallback:
-  # enabled: フォールバックモードの有効化フラグ。明示的に false にした場合のみ無効。
-  # type: *bool | default: true | range: true/false
-  enabled: true
-  # consecutive_failure_threshold: 縮退発動の連続失敗しきい値
-  # type: int | default: 5 (DefaultConsecutiveFailureThreshold) | range: >= 0
-  consecutive_failure_threshold: 5
-  # recovery_check_interval_sec: 回復チェック間隔 (秒)
-  # type: int | default: 60 (DefaultRecoveryCheckIntervalSec) | range: >= 0
-  recovery_check_interval_sec: 60
-  # min_healthy_duration_sec: 正常復帰に必要な最小持続時間 (秒)
-  # type: int | default: 120 (DefaultMinHealthyDurationSec) | range: >= 0
-  min_healthy_duration_sec: 120
+# (Removed) fallback: degraded-mode worker blacklisting was retired —
+# blacklisting a worker on consecutive failures created a deadlock where
+# the same worker could never reach `healthy` because its dispatch was
+# suppressed. Autonomous LLM Orchestration recovers via per-task retry,
+# repair tasks, dead-letter, and the circuit_breaker progress_timeout;
+# whole-worker silencing is incompatible with that model. The Fallback
+# struct is kept for YAML backward compat but the daemon no longer reads
+# it, so any prior `fallback:` block in user configs is silently ignored.
 
 # --- Review ---
 # 非同期ヘテロジニアスモデルによるコードレビュー。
 # enabled: true にすると newReviewCoordinator() が起動し、対象タスクのレビューを
 # dispatch する (daemon_startup.go: review_coordinator.go)。利用するモデルを
 # models に並べる必要がある (空のままでは review が走らない)。
+#
+# コードレビューは典型的なソフトウェア開発ワークフローを想定した機能で、
+# 研究・ドキュメント系のリポジトリでは出力が雑音になりやすいため、テンプレートの
+# デフォルトは `false`。ソフトウェア開発でレビューを回したい場合のみ true にする。
 review:
   # enabled: レビュー機能の有効化フラグ (opt-in)
   # type: bool | default: false | range: true/false
-  enabled: true
+  enabled: false
   # models: レビューに使用するモデルリスト (例: ["sonnet"], ["opus"])
   # type: []string | default: [] | range: 制限なし
   models: ["codex"]
@@ -517,9 +535,10 @@ bandit:
 # おり、書かれたカテゴリだけが critical (weight 1.0) として実行されます。
 # 本セクションは EnsembleVerifier の起動可否と自動リトライ回数のみ制御します。
 extended_verification:
-  # enabled: 拡張検証の有効化フラグ (opt-in)
+  # enabled: 拡張検証の有効化フラグ (opt-in)。`verify.enabled` と連動して
+  # 動作する。研究/ドキュメント系プロジェクトでは不要なため default false。
   # type: *bool | default: false | range: true/false
-  enabled: true
+  enabled: false
   # max_auto_retries: 自動リトライの最大回数
   # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
   max_auto_retries: 2

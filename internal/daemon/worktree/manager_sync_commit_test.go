@@ -591,40 +591,43 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	})
 }
 
-// TestCommitWorkerChanges_SensitiveFilesNotStaged verifies that sensitive files
-// (e.g., .env, *.key, *.pem) are not staged by CommitWorkerChanges even when
-// they are not covered by .gitignore.
-func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
+// TestCommitWorkerChanges_GitignoredFilesNotStaged verifies that the canonical
+// .gitignore-driven exclusion path still applies — `git add -A` honours
+// .gitignore, so files matching ignore patterns stay out of the commit even
+// though the orchestrator no longer maintains a separate sensitive-file list.
+// (Sensitive-file safety lives in the worker's environment / repo .gitignore.)
+func TestCommitWorkerChanges_GitignoredFilesNotStaged(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := createForCommand(wm, "cmd_sensitive", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gitignored", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
-	wtPath, err := wm.GetWorkerPath("cmd_sensitive", "worker1")
+	wtPath, err := wm.GetWorkerPath("cmd_gitignored", "worker1")
 	if err != nil {
 		t.Fatalf("GetWorkerPath failed: %v", err)
 	}
 
-	// Create a legitimate file and several sensitive files
+	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"),
+		[]byte("*.key\n*.secret\ncredentials.*\n.env\n.env.*\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	sensitiveFiles := []string{".env", ".env.local", "server.key", "cert.pem", "credentials.json", "token.secret"}
-	for _, f := range sensitiveFiles {
-		if err := os.WriteFile(filepath.Join(wtPath, f), []byte("sensitive data"), 0644); err != nil {
+	ignored := []string{".env", ".env.local", "server.key", "credentials.json", "token.secret"}
+	for _, f := range ignored {
+		if err := os.WriteFile(filepath.Join(wtPath, f), []byte("ignored"), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	// Commit
-	if err := wm.CommitWorkerChanges("cmd_sensitive", "worker1", "add main.go"); err != nil {
+	if err := wm.CommitWorkerChanges("cmd_gitignored", "worker1", "add main.go"); err != nil {
 		t.Fatalf("CommitWorkerChanges failed: %v", err)
 	}
 
-	// Verify committed files: main.go should be committed, sensitive files should NOT
 	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
 	cmd.Dir = wtPath
 	out, err := cmd.Output()
@@ -636,16 +639,14 @@ func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
 	if !strings.Contains(committedFiles, "main.go") {
 		t.Error("main.go should have been committed")
 	}
-	for _, f := range sensitiveFiles {
+	for _, f := range ignored {
 		if strings.Contains(committedFiles, f) {
-			t.Errorf("sensitive file %q should NOT have been committed", f)
+			t.Errorf("gitignored file %q should NOT have been committed", f)
 		}
 	}
-
-	// Verify sensitive files still exist on disk (not deleted, just not committed)
-	for _, f := range sensitiveFiles {
+	for _, f := range ignored {
 		if _, statErr := os.Stat(filepath.Join(wtPath, f)); os.IsNotExist(statErr) {
-			t.Errorf("sensitive file %q should still exist on disk", f)
+			t.Errorf("gitignored file %q should still exist on disk", f)
 		}
 	}
 }

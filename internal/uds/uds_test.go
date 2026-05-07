@@ -882,6 +882,36 @@ func TestNewRequest_MarshalError(t *testing.T) {
 	}
 }
 
+// TestSocketPathFromTmuxEnv pins the parser used by inferCallerRoleFromTmuxPane
+// to extract the per-instance tmux socket path from the TMUX env variable.
+// Without this, CLI clients running inside a `tmux -L maestro-<x>` pane would
+// query the default tmux server (no `maestro-<x>` session exists there) and
+// the @role lookup would silently fall through to the process-ancestor
+// fallback (Report 2026-05-06 round-4 LOW).
+func TestSocketPathFromTmuxEnv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		env  string
+		want string
+	}{
+		{name: "empty", env: "", want: ""},
+		{name: "standard_format", env: "/private/tmp/tmux-501/maestro-proj-abcdef12,12345,0", want: "/private/tmp/tmux-501/maestro-proj-abcdef12"},
+		{name: "default_socket", env: "/tmp/tmux-1000/default,98765,2", want: "/tmp/tmux-1000/default"},
+		{name: "no_comma", env: "malformed", want: ""},
+		{name: "leading_comma", env: ",12345,0", want: ""},
+		{name: "spaces_in_path", env: "/tmp/has space/sock,12,0", want: "/tmp/has space/sock"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := socketPathFromTmuxEnv(tt.env); got != tt.want {
+				t.Errorf("socketPathFromTmuxEnv(%q) = %q, want %q", tt.env, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestValidateCallerRole(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

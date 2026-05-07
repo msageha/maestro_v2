@@ -183,6 +183,18 @@ type WorktreeStateManager interface {
 	AddCommitFailedWorker(commandID, workerID string) error
 	RemoveCommitFailedWorker(commandID, workerID string) error
 	MarkPublishConflictSignaled(commandID string) error
+	// RecoverDirtyWorktreeQuarantine clears a transient-pollution quarantine on
+	// the integration branch so the standard merge retry loop can resume.
+	// Used by phase escalation to unblock awaiting_worktree_merge stalls
+	// caused by RunOnIntegration verify build artefacts.
+	RecoverDirtyWorktreeQuarantine(commandID string) error
+	// IsWorkerAheadOrDirty reports whether a worker has content not yet
+	// in integration (uncommitted dirt OR commits past integration HEAD).
+	// Used by the RunOnIntegration / RunOnMain pre-merge gate to source
+	// the truth from the live git tree rather than the cached state file.
+	// On probe error returns true so the caller treats "unknown" as
+	// "still needs merge" rather than dispatching against a stale tree.
+	IsWorkerAheadOrDirty(commandID, workerID string) (bool, error)
 }
 
 // QueueWorktreeManager combines WorktreeGitOps and WorktreeStateManager for backward compatibility.

@@ -263,6 +263,11 @@ func projectRootFromMaestroDir(maestroDir string) string {
 }
 
 // Default values for WatcherConfig fields when unset or non-positive.
+//
+// defaultClearConfirmTimeoutSec / defaultClearMaxAttempts have explicit
+// budgets (8 s × 7 attempts = 56 s) sized to absorb Claude Code TUI
+// cold-start (~40-50 s); the previous 5 s × 5 attempts dropped
+// clear_confirm dispatch every few minutes in workspace benches.
 const (
 	defaultBusyCheckInterval      = 2   // seconds between busy-detection probes
 	defaultBusyCheckMaxRetries    = 30  // max busy-detection retry attempts
@@ -270,16 +275,10 @@ const (
 	defaultCooldownAfterClear     = 3   // seconds to wait after /clear
 	defaultWaitReadyIntervalSec   = 2   // seconds between prompt-readiness polls
 	defaultWaitReadyMaxRetries    = 15  // max prompt-readiness poll attempts
-	defaultClearConfirmTimeoutSec = 5   // seconds to wait for /clear confirmation
+	defaultClearConfirmTimeoutSec = 8   // seconds to wait for /clear confirmation
 	defaultClearConfirmPollMs     = 250 // milliseconds between /clear confirmation polls
-	defaultClearMaxAttempts       = 3   // max /clear retry attempts
+	defaultClearMaxAttempts       = 7   // max /clear retry attempts
 	defaultClearRetryBackoffMs    = 500 // milliseconds backoff between /clear retries
-	// defaultClearSecondEnterDelayMs is retained for backward compatibility with
-	// existing config.yaml files that still set clear_second_enter_delay_ms.
-	// clearAndConfirm no longer sends a second Enter (Claude Code 2.x re-runs
-	// /clear when it sees the trailing Enter), so the value is unused at
-	// runtime; only applyDefaults still touches it to keep the field round-trippable.
-	defaultClearSecondEnterDelayMs = 500
 )
 
 func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
@@ -312,9 +311,6 @@ func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	}
 	if cfg.ClearRetryBackoffMs <= 0 {
 		cfg.ClearRetryBackoffMs = defaultClearRetryBackoffMs
-	}
-	if cfg.ClearSecondEnterDelayMs <= 0 {
-		cfg.ClearSecondEnterDelayMs = defaultClearSecondEnterDelayMs
 	}
 	return cfg
 }

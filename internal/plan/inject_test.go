@@ -796,13 +796,15 @@ func setupInjectFixtureWithPhases(t *testing.T) (string, string, string, string,
 	return maestroDir, commandID, taskID1, phase1ID, phase2ID
 }
 
-// TestAddTask_AllowsExceedingMaxTasksAdvisory pins the policy that
-// PhaseConstraints.MaxTasks is advisory at injection time. The cap is a
-// soft signal (a slog.Warn surfaces the breach) but injection succeeds so
-// the autonomous flow can recover when residual scope (verify-driven
-// follow-up tasks, planner-discovered missing deps) needs to grow a phase
-// past its pre-saturated cap.
-func TestAddTask_AllowsExceedingMaxTasksAdvisory(t *testing.T) {
+// TestAddTask_RejectsExceedingMaxTasks pins the policy that an
+// ordinary add-task injection must be rejected when the target phase
+// has reached its declared max_tasks cap. Report 2026-05-03 issue-3
+// observed cycle2 silently inflating from max_tasks=2 to 5 tasks
+// because the daemon previously logged an advisory warning instead of
+// failing the call. The hard reject is the load-bearing constraint;
+// the Planner can recover by replacing an existing task via
+// add-retry-task or by re-targeting another phase.
+func TestAddTask_RejectsExceedingMaxTasks(t *testing.T) {
 	maestroDir := setupMaestroDir(t)
 	commandID := "cmd_0000000060_maxtasks"
 	taskID1 := "task_0000000060_11111111"
@@ -860,7 +862,7 @@ func TestAddTask_AllowsExceedingMaxTasksAdvisory(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := addTaskTest(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		TargetPhase:        phaseID,
 		Purpose:            "p with enough length to clear shell-damage minimum",
@@ -872,20 +874,128 @@ func TestAddTask_AllowsExceedingMaxTasksAdvisory(t *testing.T) {
 		Config:             cfg,
 		LockMap:            lm,
 	})
+	if err == nil {
+		t.Fatal("expected add-task to be rejected on a phase already at max_tasks, got nil")
+	}
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(pve.Msg, "max_tasks") {
+		t.Errorf("error message = %q, want to mention 'max_tasks'", pve.Msg)
+	}
+
+	// State must be unchanged: the rejection must not leave a half-applied
+	// task in the phase.
+	updated, _ := plan_loadStateForInjectTest(t, maestroDir, commandID)
+	if updated == nil {
+		t.Fatal("expected reloadable command state after injection")
+	}
+	if len(updated.Phases) != 1 || len(updated.Phases[0].TaskIDs) != 1 {
+		t.Errorf("rejected injection must not mutate phase tasks; got %+v", updated.Phases)
+	}
+}
+
+// TestAddTask_RecoveryExemptFromMaxTasks pins that recovery
+// injections (RunOnMain post-publish verification, RunOnIntegration
+// publish_conflict resolution) bypass the max_tasks cap. Recovery
+// flows must remain available even when the Planner already filled
+// the phase to its declared parallelism budget.
+func TestAddTask_RecoveryExemptFromMaxTasks(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000061_maxtasks_recovery"
+	taskID1 := "task_0000000061_11111111"
+	phaseID := "phase_with_cap"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{taskID1},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  map[string][]string{taskID1: {}},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: phaseID,
+					Name:    "capped",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: []string{taskID1},
+					Constraints: &model.PhaseConstraints{
+						MaxTasks: 1, // cap already saturated
+					},
+				},
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Materialise a worktree state file so validateInjectRequest does not
+	// reject the RunOnIntegration path on the "integration cleaned up
+	// after publish" guard. The contents are minimal — only the file's
+	// existence matters for that gate.
+	wtPath := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
+		t.Fatalf("mkdir worktree state dir: %v", err)
+	}
+	if err := os.WriteFile(wtPath, []byte("schema_version: 1\nfile_type: state_worktree\ncommand_id: "+commandID+"\n"), 0o644); err != nil {
+		t.Fatalf("write worktree state stub: %v", err)
+	}
+
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := addTaskTest(InjectOptions{
+		CommandID:          commandID,
+		TargetPhase:        phaseID,
+		Purpose:            "publish_conflict resolution task — recovery path",
+		Content:            "resolve the conflict via add-task on the integration worktree",
+		AcceptanceCriteria: "merge succeeds and integration is publishable",
+		BloomLevel:         3,
+		Required:           true,
+		RunOnIntegration:   true, // recovery path → exempt from max_tasks
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
 	if err != nil {
-		t.Fatalf("expected add-task to succeed (max_tasks advisory), got: %v", err)
+		t.Fatalf("expected RunOnIntegration recovery injection to bypass max_tasks; got: %v", err)
 	}
 	if result == nil || result.TaskID == "" {
 		t.Fatalf("expected a new task to be added, got %+v", result)
 	}
-	// Confirm the new task is inside the phase even though it pushes the
-	// count past the cap.
 	updated, _ := plan_loadStateForInjectTest(t, maestroDir, commandID)
 	if updated == nil {
 		t.Fatal("expected reloadable command state after injection")
 	}
 	if len(updated.Phases) != 1 || len(updated.Phases[0].TaskIDs) != 2 {
-		t.Errorf("expected phase to hold 2 tasks (cap=1 advisory), got %+v", updated.Phases)
+		t.Errorf("expected phase to hold 2 tasks (recovery exempt from cap=1), got %+v", updated.Phases)
 	}
 }
 
@@ -1006,16 +1116,21 @@ func TestAddTask_NoTargetPhase_AllTerminal_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestAddTask_RunOnMain_AllTerminal verifies that a RunOnMain task can be added
-// even when all phases are terminal (post-publish verification use case).
-// Without RunOnMain, the same call returns a "all phases are terminal" error.
-func TestAddTask_RunOnMain_AllTerminal(t *testing.T) {
+// TestAddTask_RunOnMain_PostPublishRejected pins the policy that a
+// RunOnMain (or RunOnIntegration) injection must be rejected once every
+// phase is terminal on a sealed plan: the deferred completion handler
+// removes the integration worktree as soon as publish succeeds, so a
+// post-publish injection has nowhere to dispatch and would dead-letter
+// on integration_branch_check_failed before flipping plan_status to
+// failed (Report 2026-05-03 issue-2). The autonomous orchestration
+// contract treats post-publish recovery as "submit a fresh command",
+// not "extend a published plan".
+func TestAddTask_RunOnMain_PostPublishRejected(t *testing.T) {
 	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	// With RunOnMain=true, task can be added even when all phases are terminal.
-	result, err := addTaskTest(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "post-publish final verification",
 		Content:            "run go test ./... on main branch",
@@ -1027,64 +1142,50 @@ func TestAddTask_RunOnMain_AllTerminal(t *testing.T) {
 		Config:             cfg,
 		LockMap:            lm,
 	})
-	if err != nil {
-		t.Fatalf("AddTask with RunOnMain=true returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected RunOnMain injection on a fully-terminal sealed plan to be rejected, got nil")
 	}
-	if result.TaskID == "" {
-		t.Error("expected non-empty TaskID")
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
 	}
+	if !strings.Contains(pve.Msg, "integration worktree has been cleaned up") {
+		t.Errorf("error message = %q, want to mention 'integration worktree has been cleaned up'", pve.Msg)
+	}
+}
 
-	// The last phase should be reopened (Active).
-	sm := NewStateManager(maestroDir, lm)
-	state, err := sm.LoadState(commandID)
-	if err != nil {
-		t.Fatalf("load state: %v", err)
-	}
-	lastPhase := state.Phases[len(state.Phases)-1]
-	if lastPhase.Status != model.PhaseStatusActive {
-		t.Errorf("last phase status = %s, want active (reopened)", lastPhase.Status)
-	}
-	taskIDs := lastPhase.TaskIDs
-	found := false
-	for _, id := range taskIDs {
-		if id == result.TaskID {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Errorf("task %s not found in last phase TaskIDs: %v", result.TaskID, taskIDs)
-	}
+// TestAddTask_RunOnIntegration_WorktreeDisabled pins the policy that a
+// RunOnIntegration injection cannot proceed when worktree mode is
+// disabled. Without a worktree there is no integration branch to
+// dispatch against, so the injection must fail at the API boundary
+// rather than flowing through to a delayed dead-letter.
+func TestAddTask_RunOnIntegration_WorktreeDisabled(t *testing.T) {
+	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = false
+	lm := lock.NewMutexMap()
 
-	// §S0-1: RunOnMain で投入された task は Admission Control の verify バケット
-	// に分類されなければならない。空の OperationType だと verify 同時実行制限が
-	// 効かず、複数の post-publish verification が並走する。
-	var injected *model.Task
-	for i := 1; i <= 4; i++ {
-		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
-		data, err := os.ReadFile(queueFile)
-		if err != nil {
-			continue
-		}
-		var tq model.TaskQueue
-		if yamlv3.Unmarshal(data, &tq) != nil {
-			continue
-		}
-		for j := range tq.Tasks {
-			if tq.Tasks[j].ID == result.TaskID {
-				injected = &tq.Tasks[j]
-				break
-			}
-		}
-		if injected != nil {
-			break
-		}
+	_, err := addTaskTest(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "publish_conflict resolution",
+		Content:            "resolve conflict on integration branch",
+		AcceptanceCriteria: "merge succeeds",
+		BloomLevel:         3,
+		Required:           true,
+		RunOnIntegration:   true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected RunOnIntegration injection without worktree mode to be rejected, got nil")
 	}
-	if injected == nil {
-		t.Fatalf("injected task %s not found in any worker queue", result.TaskID)
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
 	}
-	if got, want := injected.OperationType, model.OperationTypeVerify; got != want {
-		t.Errorf("injected RunOnMain task OperationType = %q, want %q (§S0-1 admission classification)", got, want)
+	if !strings.Contains(pve.Msg, "worktree mode is disabled") {
+		t.Errorf("error message = %q, want to mention 'worktree mode is disabled'", pve.Msg)
 	}
 }
 

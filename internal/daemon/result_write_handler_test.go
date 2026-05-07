@@ -39,27 +39,40 @@ func makeResultWriteRequest(t *testing.T, params any) *uds.Request {
 	}
 }
 
+// workerQueueOption mutates the seeded test task before write.
+type workerQueueOption func(*model.Task)
+
+// withRunOnIntegration flips the seeded task's RunOnIntegration flag so the
+// daemon's per-task verify runner is exercised (the post-2026-05-05 redesign
+// short-circuits verify for normal worker tasks; tests that want to assert
+// VerifyRunner behaviour must opt in via this flag).
+func withRunOnIntegration() workerQueueOption {
+	return func(task *model.Task) { task.RunOnIntegration = true }
+}
+
 // setupWorkerQueue creates a worker queue with one in-progress task for testing.
-func setupWorkerQueue(t *testing.T, d *Daemon, workerID, taskID, commandID string, leaseEpoch int) {
+func setupWorkerQueue(t *testing.T, d *Daemon, workerID, taskID, commandID string, leaseEpoch int, opts ...workerQueueOption) {
 	t.Helper()
 	owner := workerID
+	task := model.Task{
+		ID:         taskID,
+		CommandID:  commandID,
+		Purpose:    "test purpose",
+		Content:    "test content",
+		BloomLevel: 3,
+		Status:     model.StatusInProgress,
+		LeaseOwner: &owner,
+		LeaseEpoch: leaseEpoch,
+		CreatedAt:  "2026-01-01T00:00:00Z",
+		UpdatedAt:  "2026-01-01T00:00:00Z",
+	}
+	for _, opt := range opts {
+		opt(&task)
+	}
 	tq := model.TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "queue_task",
-		Tasks: []model.Task{
-			{
-				ID:         taskID,
-				CommandID:  commandID,
-				Purpose:    "test purpose",
-				Content:    "test content",
-				BloomLevel: 3,
-				Status:     model.StatusInProgress,
-				LeaseOwner: &owner,
-				LeaseEpoch: leaseEpoch,
-				CreatedAt:  "2026-01-01T00:00:00Z",
-				UpdatedAt:  "2026-01-01T00:00:00Z",
-			},
-		},
+		Tasks:         []model.Task{task},
 	}
 	path := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
 	if err := yamlutil.AtomicWrite(path, tq); err != nil {
@@ -602,7 +615,18 @@ func TestResultWrite_FilesChanged(t *testing.T) {
 	}
 }
 
-func TestResultWrite_FilesChangedOutsideExpectedPathsRejected(t *testing.T) {
+// TestResultWrite_FilesChangedOutsideExpectedPathsAccepted pins the
+// policy that the daemon does NOT gate result_write on expected_paths.
+// The previous gate read worker self-reported --files-changed and
+// rejected entries that fell outside the declared paths, but a worker
+// could simply re-submit with a narrowed list to bypass it while the
+// integration commit (driven by `git add -A` against the worker
+// worktree) silently merged the out-of-bounds files (Report 1 of
+// 2026-05-03). The autonomous LLM Orchestration brief trusts worker
+// output verbatim — defensive scope-limiting belongs in the worker's
+// own ~/.claude policy hook, not in result_write — so the gate is
+// removed and files_changed is treated as descriptive metadata.
+func TestResultWrite_FilesChangedOutsideExpectedPathsAccepted(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
@@ -644,20 +668,34 @@ func TestResultWrite_FilesChangedOutsideExpectedPathsRejected(t *testing.T) {
 	})
 
 	resp := d.api.handleResultWrite(req)
-	if resp.Success {
-		t.Fatal("expected files_changed outside expected_paths to be rejected")
+	if !resp.Success {
+		t.Fatalf("expected result_write to accept files_changed regardless of expected_paths; got %+v", resp.Error)
 	}
-	if resp.Error.Code != uds.ErrCodeValidation {
-		t.Errorf("error code = %q, want %q", resp.Error.Code, uds.ErrCodeValidation)
+
+	rfPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	data, err := os.ReadFile(rfPath)
+	if err != nil {
+		t.Fatalf("read result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result file: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
+	}
+	if got := len(rf.Results[0].FilesChanged); got != 2 {
+		t.Errorf("FilesChanged must be persisted verbatim as descriptive metadata; got %d entries (%v)", got, rf.Results[0].FilesChanged)
 	}
 }
 
-// TestResultWrite_RunOnMainStripsFilesChanged asserts that the daemon
-// strips a self-reported `--files-changed` for tasks flagged RunOnMain.
-// The dispatch contract guarantees the task runs read-only against the
-// merged main branch, so any non-empty files_changed is necessarily a
-// Worker reporting bug.
-func TestResultWrite_RunOnMainStripsFilesChanged(t *testing.T) {
+// TestResultWrite_RunOnMainPreservesFilesChanged pins the policy that
+// the daemon no longer strips a self-reported --files-changed for
+// RunOnMain tasks. The previous strip-and-warn was a defensive gate
+// against a Worker reporting bug; the autonomous LLM Orchestration
+// brief instead trusts worker output verbatim. files_changed is
+// descriptive metadata only, so the value is persisted as-is.
+func TestResultWrite_RunOnMainPreservesFilesChanged(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
@@ -695,89 +733,13 @@ func TestResultWrite_RunOnMainStripsFilesChanged(t *testing.T) {
 		CommandID:    commandID,
 		LeaseEpoch:   leaseEpoch,
 		Status:       "completed",
-		Summary:      "verified — git status empty",
-		FilesChanged: []string{"feature.go"}, // bogus: read-only contract violated
+		Summary:      "verified",
+		FilesChanged: []string{"feature.go"},
 	})
 
 	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
-		t.Fatalf("result write should accept run_on_main result and strip files_changed; got error: %+v", resp.Error)
-	}
-
-	// Inspect the persisted result file to confirm files_changed was stripped.
-	rfPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
-	data, err := os.ReadFile(rfPath)
-	if err != nil {
-		t.Fatalf("read result file: %v", err)
-	}
-	var rf model.TaskResultFile
-	if err := yamlv3.Unmarshal(data, &rf); err != nil {
-		t.Fatalf("unmarshal result file: %v", err)
-	}
-	if len(rf.Results) != 1 {
-		t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
-	}
-	if len(rf.Results[0].FilesChanged) != 0 {
-		t.Errorf("FilesChanged must be stripped for run_on_main tasks; got %v", rf.Results[0].FilesChanged)
-	}
-}
-
-// TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation asserts
-// that the run_on_main strip-and-warn path runs BEFORE
-// validateFilesChangedWithinExpectedPaths so that read-only verify
-// tasks declaring narrow expected_paths don't get rejected on a Worker
-// reporting bug.
-//
-// Setup: RunOnMain task with expected_paths restricted to a docs/
-// subtree, but the Worker incorrectly reports files_changed=[feature.go]
-// for files it only inspected. With the fix, the result is accepted
-// (stripped + warned). Without the fix, validation rejects with
-// "files_changed outside expected_paths".
-func TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation(t *testing.T) {
-	t.Parallel()
-	d := newTestDaemon(t)
-	taskID := "task_0000000002_runonmain"
-	commandID := "cmd_0000000002_runonmain"
-	workerID := "worker1"
-	leaseEpoch := 1
-	owner := workerID
-
-	tq := model.TaskQueue{
-		SchemaVersion: 1,
-		FileType:      "queue_task",
-		Tasks: []model.Task{{
-			ID:            taskID,
-			CommandID:     commandID,
-			Purpose:       "verify docs",
-			Content:       "verify the published docs render correctly",
-			BloomLevel:    3,
-			Status:        model.StatusInProgress,
-			LeaseOwner:    &owner,
-			LeaseEpoch:    leaseEpoch,
-			ExpectedPaths: []string{"docs/"}, // narrow surface
-			RunOnMain:     true,
-			CreatedAt:     "2026-01-01T00:00:00Z",
-			UpdatedAt:     "2026-01-01T00:00:00Z",
-		}},
-	}
-	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
-		t.Fatalf("write worker queue: %v", err)
-	}
-	setupCommandState(t, d, commandID, []string{taskID})
-
-	req := makeResultWriteRequest(t, ResultWriteParams{
-		Reporter:     workerID,
-		TaskID:       taskID,
-		CommandID:    commandID,
-		LeaseEpoch:   leaseEpoch,
-		Status:       "completed",
-		Summary:      "docs render OK; inspected feature.go for cross-reference",
-		FilesChanged: []string{"feature.go"}, // outside docs/ — would be rejected pre-fix
-	})
-
-	resp := d.api.handleResultWrite(req)
-	if !resp.Success {
-		t.Fatalf("run_on_main strip must run before expected_paths validation; got rejection: %+v", resp.Error)
+		t.Fatalf("result write should accept run_on_main result; got error: %+v", resp.Error)
 	}
 
 	rfPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
@@ -792,8 +754,8 @@ func TestResultWrite_RunOnMainStripBeforeExpectedPathsValidation(t *testing.T) {
 	if len(rf.Results) != 1 {
 		t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
 	}
-	if len(rf.Results[0].FilesChanged) != 0 {
-		t.Errorf("FilesChanged must be stripped (run_on_main read-only contract); got %v", rf.Results[0].FilesChanged)
+	if got := len(rf.Results[0].FilesChanged); got != 1 {
+		t.Errorf("FilesChanged must be preserved as descriptive metadata even on RunOnMain; got %d entries (%v)", got, rf.Results[0].FilesChanged)
 	}
 }
 

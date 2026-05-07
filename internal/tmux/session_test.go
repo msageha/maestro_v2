@@ -105,6 +105,79 @@ func TestBuildMaestroSessionNameResolvesSymlinks(t *testing.T) {
 	}
 }
 
+// TestBuildMaestroSocketName_StableAndPerProject pins post-2026-05-06
+// P0: per-instance socket isolation derives a stable, per-project socket
+// name so two checkouts of the same project (or two different projects)
+// get distinct tmux servers, eliminating cross-instance interference
+// (SESSION_LOST race, autoAcceptTrustDialog hijack, etc.).
+func TestBuildMaestroSocketName_StableAndPerProject(t *testing.T) {
+	dir1 := t.TempDir()
+	dir2 := t.TempDir()
+
+	a1 := BuildMaestroSocketName("proj-a", dir1)
+	a2 := BuildMaestroSocketName("proj-a", dir1)
+	if a1 != a2 {
+		t.Errorf("same project+dir should produce stable socket: %q vs %q", a1, a2)
+	}
+
+	b := BuildMaestroSocketName("proj-b", dir1)
+	if a1 == b {
+		t.Errorf("different project should produce different socket: both %q", a1)
+	}
+
+	a1d2 := BuildMaestroSocketName("proj-a", dir2)
+	if a1 == a1d2 {
+		t.Errorf("different dir should produce different socket: both %q", a1)
+	}
+}
+
+// TestTmuxArgs_PrependsSocketFlag pins that tmuxArgs prepends `-L <socket>`
+// to the argv when a socket is set, and is a no-op when unset. This is
+// the fan-in for instance isolation; missing it means a particular call
+// site bypasses the per-instance socket and reaches the default tmux
+// server, recreating the exact race the change is meant to fix.
+func TestTmuxArgs_PrependsSocketFlag(t *testing.T) {
+	orig := GetTmuxSocket()
+	t.Cleanup(func() { SetTmuxSocket(orig) })
+
+	SetTmuxSocket("")
+	if got := tmuxArgs([]string{"has-session"}); len(got) != 1 || got[0] != "has-session" {
+		t.Errorf("empty socket should pass-through, got %v", got)
+	}
+
+	SetTmuxSocket("maestro-test")
+	got := tmuxArgs([]string{"has-session", "-t", "x"})
+	want := []string{"-L", "maestro-test", "has-session", "-t", "x"}
+	if len(got) != len(want) {
+		t.Fatalf("len mismatch: got %v want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("argv[%d]: got %q want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSetTmuxSocket_Sanitizes pins that the socket name sanitizer
+// strips unsafe characters (matching the session name policy) so the
+// socket name is safe to embed in `tmux -L <socket>` and the resulting
+// socket file path.
+func TestSetTmuxSocket_Sanitizes(t *testing.T) {
+	orig := GetTmuxSocket()
+	t.Cleanup(func() { SetTmuxSocket(orig) })
+
+	SetTmuxSocket("foo/bar:baz qux")
+	got := GetTmuxSocket()
+	if got != "foo_bar_baz_qux" {
+		t.Errorf("expected sanitized socket name, got %q", got)
+	}
+
+	SetTmuxSocket("")
+	if GetTmuxSocket() != "" {
+		t.Errorf("empty socket should disable -L flag, got %q", GetTmuxSocket())
+	}
+}
+
 func TestSessionLifecycle(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)

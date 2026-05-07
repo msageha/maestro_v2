@@ -606,9 +606,13 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 	}
 }
 
-// TestMergeToIntegration_DirtyIntegrationWorktree tests that MergeToIntegration
-// returns an error when the integration worktree has uncommitted changes.
-func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
+// TestMergeToIntegration_DirtyIntegrationWorktreeAutoCleaned verifies that
+// MergeToIntegration auto-cleans transient pollution in the integration
+// worktree (e.g. RunOnIntegration verify build artefacts) and proceeds with
+// the merge instead of marking the integration Failed. The orchestrator
+// owns the integration worktree; treating dirt there as a hard error
+// stalled final_verification phases indefinitely under the prior design.
+func TestMergeToIntegration_DirtyIntegrationWorktreeAutoCleaned(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
@@ -618,7 +622,6 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
-	// Worker1: create and commit a file so there's something to merge
 	wt1, err := wm.GetWorkerPath("cmd_dirty_int", "worker1")
 	if err != nil {
 		t.Fatalf("GetWorkerPath failed: %v", err)
@@ -630,31 +633,41 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Make integration worktree dirty by creating an untracked file
+	// Drop transient pollution into the integration worktree (mirrors what
+	// a RunOnIntegration verify task would leave behind).
 	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_dirty_int", "_integration")
 	if err := os.WriteFile(filepath.Join(integrationPath, "dirty.txt"), []byte("dirty"), 0644); err != nil {
 		t.Fatal(err)
 	}
-
-	// MergeToIntegration should fail due to dirty worktree
-	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_dirty_int", workers, nil)
-	if err == nil {
-		t.Fatal("expected error due to dirty integration worktree")
+	if err := os.MkdirAll(filepath.Join(integrationPath, "build_out"), 0755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "uncommitted changes") {
-		t.Errorf("error should mention uncommitted changes, got: %v", err)
+	if err := os.WriteFile(filepath.Join(integrationPath, "build_out", "main.js"), []byte("artefact"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_dirty_int", workers, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration must auto-clean and succeed; got: %v", err)
 	}
 	if len(conflicts) != 0 {
 		t.Errorf("expected 0 conflicts, got %d", len(conflicts))
 	}
 
-	// Verify integration status is persisted as "failed" (prevents stale publish)
+	// Pollution must be gone after auto-clean.
+	if _, err := os.Stat(filepath.Join(integrationPath, "dirty.txt")); !os.IsNotExist(err) {
+		t.Errorf("dirty.txt should have been cleaned, stat err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(integrationPath, "build_out")); !os.IsNotExist(err) {
+		t.Errorf("build_out/ should have been cleaned, stat err=%v", err)
+	}
+
 	state, err := wm.GetCommandState("cmd_dirty_int")
 	if err != nil {
 		t.Fatalf("GetCommandState failed: %v", err)
 	}
-	if state.Integration.Status != model.IntegrationStatusFailed {
-		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
+	if state.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusMerged)
 	}
 }
 
@@ -718,20 +731,23 @@ func TestMergeToIntegration_TransientError(t *testing.T) {
 	// Remove lock before reading state
 	os.Remove(lockFile)
 
-	// Verify worker status is "failed" (not "conflict")
+	// Pre-merge cleanup (reset --hard / clean -fd) hits the lock and bails
+	// out before any worker merge is attempted. The integration is marked
+	// Failed so the publish gate blocks; worker status stays at Committed
+	// because no per-worker merge attempt actually ran.
 	state, err := wm.GetCommandState("cmd_nce")
 	if err != nil {
 		t.Fatalf("GetCommandState failed: %v", err)
 	}
 	for _, ws := range state.Workers {
 		if ws.WorkerID == "worker1" {
-			if ws.Status != model.WorktreeStatusFailed {
-				t.Errorf("worker1 status = %q, want %q", ws.Status, model.WorktreeStatusFailed)
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker1 status = %q, want %q (pre-merge bailout must not flip worker)",
+					ws.Status, model.WorktreeStatusCommitted)
 			}
 		}
 	}
 
-	// Verify integration status is "failed"
 	if state.Integration.Status != model.IntegrationStatusFailed {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
 	}
@@ -1183,19 +1199,21 @@ func TestMergeToIntegration_SkippedWorkerCausesPartialMerge(t *testing.T) {
 
 	_ = conflicts // may contain partial results
 
-	// Verify state: worker2 should be failed, integration should be failed (recovery error)
+	// Pre-merge cleanup hits the lock and bails out before any per-worker
+	// merge actually runs, so worker status stays at Committed and the
+	// integration is marked Failed so publish is blocked.
 	state, err := wm.GetCommandState(commandID)
 	if err != nil {
 		t.Fatalf("GetCommandState: %v", err)
 	}
 	for _, ws := range state.Workers {
 		if ws.WorkerID == "worker2" {
-			if ws.Status != model.WorktreeStatusFailed {
-				t.Errorf("worker2 status = %q, want %q", ws.Status, model.WorktreeStatusFailed)
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker2 status = %q, want %q (pre-merge bailout must not flip worker)",
+					ws.Status, model.WorktreeStatusCommitted)
 			}
 		}
 	}
-	// Integration status should be failed (recovery error halts before final status determination)
 	if state.Integration.Status != model.IntegrationStatusFailed {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
 	}

@@ -137,52 +137,27 @@ func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
 	return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair)
 }
 
-// --- Fallback ---
-
-// Fallback controls degraded-mode behavior when workers experience consecutive failures.
-type Fallback struct {
-	Enabled                     *bool `yaml:"enabled"`
-	ConsecutiveFailureThreshold int   `yaml:"consecutive_failure_threshold"`
-	RecoveryCheckIntervalSec    int   `yaml:"recovery_check_interval_sec"`
-	MinHealthyDurationSec       int   `yaml:"min_healthy_duration_sec"`
-}
-
-// EffectiveEnabled returns Enabled, defaulting to true so degraded-mode
-// protection is active unless operators explicitly disable it.
-func (f Fallback) EffectiveEnabled() bool {
-	return effectiveValue(f.Enabled, true)
-}
-
-// EffectiveConsecutiveFailureThreshold returns ConsecutiveFailureThreshold, or DefaultConsecutiveFailureThreshold when zero.
-func (f Fallback) EffectiveConsecutiveFailureThreshold() int {
-	return effectiveNonZero(f.ConsecutiveFailureThreshold, DefaultConsecutiveFailureThreshold)
-}
-
-// EffectiveRecoveryCheckIntervalSec returns RecoveryCheckIntervalSec, or DefaultRecoveryCheckIntervalSec when zero.
-func (f Fallback) EffectiveRecoveryCheckIntervalSec() int {
-	return effectiveNonZero(f.RecoveryCheckIntervalSec, DefaultRecoveryCheckIntervalSec)
-}
-
-// EffectiveMinHealthyDurationSec returns MinHealthyDurationSec, or DefaultMinHealthyDurationSec when zero.
-func (f Fallback) EffectiveMinHealthyDurationSec() int {
-	return effectiveNonZero(f.MinHealthyDurationSec, DefaultMinHealthyDurationSec)
-}
+// (Removed) Fallback struct — degraded-mode worker blacklisting was
+// retired (autonomous LLM Orchestration recovers via per-task retry,
+// dead-letter, and circuit_breaker progress_timeout; whole-worker
+// silencing is incompatible with that model). Old YAML configs with a
+// `fallback:` block continue to load — yaml.v3 ignores unknown fields by
+// default — but the daemon no longer reads or acts on the values.
 
 // --- WorktreeConfig ---
 
 // WorktreeConfig controls Worker worktree isolation (default enabled).
 type WorktreeConfig struct {
-	Enabled          bool               `yaml:"enabled"`
-	BaseBranch       string             `yaml:"base_branch"`
-	PathPrefix       string             `yaml:"path_prefix"`
-	AutoCommit       bool               `yaml:"auto_commit"`
-	AutoMerge        bool               `yaml:"auto_merge"`
-	MergeStrategy    string             `yaml:"merge_strategy"`
-	CleanupOnSuccess bool               `yaml:"cleanup_on_success"`
-	CleanupOnFailure bool               `yaml:"cleanup_on_failure"`
-	GitTimeoutSec    *int               `yaml:"git_timeout_sec"`
-	GC               WorktreeGCConfig   `yaml:"gc"`
-	CommitPolicy     CommitPolicyConfig `yaml:"commit_policy"`
+	Enabled          bool             `yaml:"enabled"`
+	BaseBranch       string           `yaml:"base_branch"`
+	PathPrefix       string           `yaml:"path_prefix"`
+	AutoCommit       bool             `yaml:"auto_commit"`
+	AutoMerge        bool             `yaml:"auto_merge"`
+	MergeStrategy    string           `yaml:"merge_strategy"`
+	CleanupOnSuccess bool             `yaml:"cleanup_on_success"`
+	CleanupOnFailure bool             `yaml:"cleanup_on_failure"`
+	GitTimeoutSec    *int             `yaml:"git_timeout_sec"`
+	GC               WorktreeGCConfig `yaml:"gc"`
 	// StallTimeoutMinutes is the threshold after which a command whose tasks
 	// and phases are all terminal but whose integration branch is still in
 	// {created, merged} is treated as stalled and surfaced to the planner.
@@ -246,22 +221,14 @@ func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
 	return effectiveValue(w.FallbackMergeTimeoutMinutes, DefaultFallbackMergeTimeoutMinutes)
 }
 
-// --- CommitPolicyConfig ---
-
-// CommitPolicyConfig enforces safety checks before committing worker changes.
-// Zero-valued config means no enforcement. Set fields explicitly via config.yaml
-// to enable checks. Recommended template values: MaxFiles=60, RequireGitignore=true,
-// MessagePattern="^.+" (non-empty message).
-type CommitPolicyConfig struct {
-	MaxFiles         *int   `yaml:"max_files"`         // max staged files per commit; nil=default(60), 0=unlimited
-	RequireGitignore bool   `yaml:"require_gitignore"` // require .gitignore existence
-	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
-}
-
-// EffectiveMaxFiles returns MaxFiles, or DefaultCommitMaxFiles when unset.
-func (c CommitPolicyConfig) EffectiveMaxFiles() int {
-	return effectiveValue(c.MaxFiles, DefaultCommitMaxFiles)
-}
+// (Removed) CommitPolicyConfig — max_files / require_gitignore /
+// message_pattern were policy gates predating the orchestrator's
+// "commit Worker output verbatim" model. The runtime no longer reads
+// any of these fields; keeping the schema only invited operators to
+// re-enable a guard rail that would simply reject otherwise valid
+// commits and stall the iteration. See the integration_worktree_orchestrator_owns
+// memory and the orchestrator commit policy documentation for the
+// final design.
 
 // --- WorktreeGCConfig ---
 

@@ -34,6 +34,14 @@ func RunUp(opts UpOptions) (err error) {
 	// so different checkouts of the same project don't share a session slot
 	// (see tmux.BuildMaestroSessionName).
 	tmux.SetSessionName(tmux.BuildMaestroSessionName(opts.Config.Project.Name, opts.MaestroDir))
+	// Configure a per-project tmux socket (`tmux -L <socket>`). Sharing
+	// the default socket lets concurrent maestro instances of different
+	// projects pile sessions onto the same tmux server, producing
+	// SESSION_LOST races, ID collisions, and stray autoAcceptTrustDialog
+	// keypresses (Report 2026-05-06 P0). One socket per instance also
+	// means one tmux server per instance, so coexisting instances stay
+	// fully isolated and the shared-server races vanish structurally.
+	tmux.SetTmuxSocket(tmux.BuildMaestroSocketName(opts.Config.Project.Name, opts.MaestroDir))
 
 	// Initialize tmux debug logger for session lifecycle diagnostics.
 	tmuxLog, tmuxLogErr := initTmuxDebugLog(opts.MaestroDir)
@@ -90,7 +98,7 @@ func RunUp(opts UpOptions) (err error) {
 	}
 
 	// Start daemon in background
-	if err := startDaemon(); err != nil {
+	if err := startDaemon(opts.MaestroDir); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
 
@@ -104,12 +112,20 @@ func RunUp(opts UpOptions) (err error) {
 		return fmt.Errorf("resolve daemon socket path: %w", err)
 	}
 	if err := waitDaemonReady(socketPath, 10*time.Second); err != nil {
-		// Daemon failed to start — clean up
+		// Daemon failed to start — clean up. Surface the tail of the
+		// daemon startup log so operators see the actual cause (e.g. a
+		// config validation error from runDaemon's early return) instead
+		// of the bare "ping timeout" message that was the symptom.
+		tail := daemonStartupTail(opts.MaestroDir, 4096)
 		_ = stopDaemon(opts.MaestroDir)
 		if err := tmux.KillSession(); err != nil {
 			slog.Warn("KillSession failed during daemon not ready cleanup", "error", err)
 		}
-		return fmt.Errorf("daemon not ready: %w", err)
+		if tail != "" {
+			return fmt.Errorf("daemon not ready: %w\n--- daemon startup log (last 4 KiB of %s) ---\n%s\n--- end startup log ---",
+				err, daemonStartupLogPath(opts.MaestroDir), tail)
+		}
+		return fmt.Errorf("daemon not ready: %w (startup log empty at %s)", err, daemonStartupLogPath(opts.MaestroDir))
 	}
 
 	fmt.Println("Maestro formation is up.")

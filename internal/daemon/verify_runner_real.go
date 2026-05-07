@@ -170,17 +170,27 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 	// polyglot orchestration the constraint is inapplicable. Commit-
 	// boundary enforcement still happens at commit_policy time when the
 	// worktree is staged for integration.
+	// expected_paths advisory was historically emitted at WARN per-task,
+	// which produced false-positive operator alerts in the autonomous LLM
+	// orchestration model. The same-worker wave-crossing inline commit
+	// causes every subsequent task on that worker to legitimately observe
+	// the previous task's diff via `git status`, so the advisory fired on
+	// every healthy chained task; the surface noise was the actual signal,
+	// not the observation it described. Demoted to debug — the gate has no
+	// enforcement role (commit-policy enforcement was retired alongside
+	// other defensive gates) so its only remaining purpose is operator
+	// curiosity, which the debug-level log fully serves.
 	if len(expectedPaths) > 0 {
 		changed, err := gitChangedFiles(ctx, runDir)
 		if err != nil {
-			r.logger.Warn("verify_expected_paths_check_skipped",
+			r.logger.Debug("verify_expected_paths_check_skipped",
 				"task_id", taskID, "command_id", commandID, "error", err.Error(),
 				"reason", "git_status_unavailable")
 		} else if outside := filesOutsideExpectedPaths(changed, expectedPaths); len(outside) > 0 {
-			r.logger.Warn("verify_expected_paths_advisory",
+			r.logger.Debug("verify_expected_paths_advisory",
 				"task_id", taskID, "command_id", commandID,
 				"files_outside_expected", outside, "expected_paths", expectedPaths,
-				"note", "advisory only; verify proceeds. Commit-policy will enforce final boundary.")
+				"note", "advisory only; verify proceeds.")
 		}
 	}
 
@@ -521,20 +531,22 @@ func verifyPathAllowed(file string, expectedPaths []string) bool {
 	return false
 }
 
-// execVerifyCommand runs cmd as argv without invoking a shell, with cmd.Dir =
-// dir, capturing the combined output. Returns (output, exitCode, error).
-// exitCode is 0 on success, non-zero on command failure, and -1 when the
-// process could not be started.
+// execVerifyCommand runs cmd through `bash -c` so that LLM-authored
+// verify snapshots can use natural shell syntax (`;`, `&&`, pipelines,
+// env substitutions). Direct-exec was the previous design but forced the
+// LLM to learn a separate command grammar — and even then a snapshot
+// like `bash -lc "sleep 35; flutter analyze"` was rejected at validation
+// time. Operator security policy lives in `~/.claude` policy hooks
+// instead. Returns (output, exitCode, error). exitCode is 0 on success,
+// non-zero on command failure, and -1 when bash itself could not be
+// started.
 func execVerifyCommand(ctx context.Context, dir, cmd string) (string, int, error) {
 	parsed, err := model.ParseVerifyCommand(cmd)
 	if err != nil {
 		return "", -1, err
 	}
-	c := exec.CommandContext(ctx, parsed.Args[0], parsed.Args[1:]...) //nolint:gosec // executable and args come from validated verify config and are executed without a shell
+	c := exec.CommandContext(ctx, parsed.Args[0], parsed.Args[1:]...) //nolint:gosec // command body is operator-authored verify config; security is enforced by the operator's ~/.claude policy hook
 	c.Dir = dir
-	if len(parsed.Env) > 0 {
-		c.Env = append(os.Environ(), parsed.Env...)
-	}
 	var buf bytes.Buffer
 	c.Stdout = &buf
 	c.Stderr = &buf

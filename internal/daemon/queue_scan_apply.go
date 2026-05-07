@@ -68,6 +68,36 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 					}
 					return
 				}
+				// ErrSubmitConfirmUncertain on a command dispatch: the
+				// Planner pane probe couldn't confirm the paste landed.
+				// Tasks treat this as "assume running" because the worker's
+				// next action is a `result write` we can detect, but for
+				// commands the only "I'm running" signal is the Planner
+				// itself calling `plan submit`, which writes the state
+				// file. R0-dispatch eventually reverts to pending after
+				// 600s (default), and that 10-minute round-trip per
+				// attempt makes the retry.command_dispatch=5 budget take
+				// ~50 min to dead-letter — long enough that operators
+				// observe a "stuck in dispatch loop" symptom (Report
+				// 2026-05-05 P1). Release the lease here so the next
+				// scan retries within scan_interval (default 60s); after
+				// retry.command_dispatch attempts the dead-letter
+				// processor retires the command and notifies the
+				// Orchestrator. The pane state may still be wedged so
+				// retries probably keep failing — but they fail fast
+				// instead of holding the queue slot.
+				if errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain) {
+					qh.log(LogLevelWarn,
+						"dispatch_failed_uncertain_release type=command id=%s attempts=%d "+
+							"(planner-pane probe inconclusive; releasing lease so dead-letter can retire after retry.command_dispatch attempts)",
+						cmd.ID, cmd.Attempts)
+					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+						qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
+					} else {
+						qh.scanExecutor.scanCounters.LeaseReleases++
+					}
+					return
+				}
 				qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 			},
 			onSuccess: func() { qh.scanExecutor.scanCounters.CommandsDispatched++ },
@@ -152,7 +182,14 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 					// picks it up via the standard expired-in_progress recovery
 					// path.
 					if errors.Is(dr.Error, agent.ErrSubmitConfirmUncertain) {
-						qh.log(LogLevelWarn,
+						// INFO severity: the upstream paste landed; the lease
+						// stays open and the worker proceeds. The pane probe
+						// was over-cautious (reported 2026-05-04 — workers
+						// reliably completed the task afterwards), so emitting
+						// at WARN was producing dashboard noise without
+						// distinguishing real submit failures from probe
+						// false-negatives.
+						qh.log(LogLevelInfo,
 							"dispatch_uncertain_assume_running type=task id=%s command=%s lease_epoch=%d error=%v "+
 								"(lease retained; worker likely received the prompt — re-dispatch deferred until lease TTL expires)",
 							task.ID, task.CommandID, task.LeaseEpoch, dr.Error)
@@ -322,23 +359,34 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		})
 
 		// Hang-release cooldown: when busy-check flips a task back to
-		// StatusPending, stamping NotBefore enforces a minimum quiet period
-		// before another scan can re-acquire, breaking the tight idle→
-		// release→re-dispatch→idle loop that would otherwise burn the
-		// retry budget invisibly. Attempts is bumped so the dead-letter
-		// processor still terminates the entry after
-		// retry.task_dispatch_attempts cycles. 5 minutes is a deliberate
-		// compromise between "give a slow Worker a chance to recover" and
-		// "do not let a hung worker freeze the queue indefinitely".
+		// StatusPending, stamping NotBefore enforces a minimum quiet
+		// period before another scan can re-acquire, breaking the tight
+		// idle→release→re-dispatch→idle loop. Attempts is bumped so the
+		// dead-letter processor terminates the entry after
+		// retry.task_dispatch_attempts cycles.
+		//
+		// hangAttemptCost is intentionally 1 (not >1): an over-eager
+		// amplifier was tested in 7th e2e (2026-05-03) and surfaced a
+		// false-positive risk for long-running LLM thinking tasks where
+		// the pane emits output infrequently — two such "quiet" windows
+		// would push attempts past max_attempts and dead-letter a task
+		// that is genuinely making progress. Keeping cost=1 means the
+		// dead-letter threshold is reached only after `task_dispatch`
+		// (default 5) consecutive hang releases, by which point the
+		// Worker really is wedged. The cooldown still breaks the tight
+		// loop, so the Worker pane gets a clean pause between attempts.
 		if statusBefore == model.StatusInProgress && task.Status == model.StatusPending && !bc.Busy && !bc.Undecided {
-			const hangReleaseCooldown = 5 * time.Minute
+			const (
+				hangReleaseCooldown = 2 * time.Minute
+				hangAttemptCost     = 1
+			)
 			notBefore := qh.clock.Now().Add(hangReleaseCooldown).UTC().Format(time.RFC3339)
 			task.NotBefore = &notBefore
-			task.Attempts++
+			task.Attempts += hangAttemptCost
 			qh.log(LogLevelInfo,
-				"task_hang_release_cooldown task=%s worker=%s attempts=%d not_before=%s "+
-					"(pane idle confirmed; cooldown applied to break dispatch loop)",
-				task.ID, bc.Item.AgentID, task.Attempts, notBefore)
+				"task_hang_release_cooldown task=%s worker=%s attempts=%d cost=%d not_before=%s "+
+					"(pane idle while in_progress; cooldown applied, dead-letter at attempts>=max_attempts)",
+				task.ID, bc.Item.AgentID, task.Attempts, hangAttemptCost, notBefore)
 		}
 		return
 	}

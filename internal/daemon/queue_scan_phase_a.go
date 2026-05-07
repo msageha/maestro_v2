@@ -31,6 +31,7 @@ func (qh *QueueHandler) executePhaseASteps(s *scanState) {
 	qh.stepWorktreePhaseMerges(s)
 	qh.stepRetryCommitFailedWorkers(s)
 	qh.stepWorktreePublish(s)
+	qh.stepFinalizeQuarantinedDeferredComplete(s)
 	qh.stepWorktreeFastTrackCleanup(s)
 	qh.stepWorktreeOrphanCleanup(s)
 	qh.stepWorktreeStallDetection(s)
@@ -38,6 +39,12 @@ func (qh *QueueHandler) executePhaseASteps(s *scanState) {
 	qh.stepCheckWorktreeConfigViolations(s)
 	qh.stepPlannerSignals(s)
 	qh.stepPreemptiveRenewal(s)
+	// Run blocked-pane timeout BEFORE dispatch/recovery so the threshold
+	// is enforced at scan-tick granularity (default 60s) rather than at
+	// lease expiry (default 5 min). Failing here removes the task from
+	// the in-progress set the downstream steps see, avoiding redundant
+	// busy-check work on a pane the daemon has already given up on.
+	qh.stepBlockedPaneTimeout(s)
 	qh.stepDispatchOrRecovery(s)
 	qh.stepDependencyFailures(s)
 	qh.stepIdleStatusSync(s)
@@ -401,7 +408,18 @@ func (qh *QueueHandler) stepCancelAutoComplete(s *scanState) {
 			if s.notifications.Path == "" {
 				s.notifications.Path = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
 			}
-			qh.log(LogLevelInfo, "cancel_auto_complete_notification command=%s notif_id=%s", item.CommandID, notifID)
+			// WARN level so operators grepping daemon.log for cancelled
+			// outcomes (the canonical workflow established by the
+			// notify_log_status_keys memory) see this auto-cancel path
+			// even when the canonical result_handler path
+			// (notify_orchestrator_cancelled) does not fire — auto-
+			// complete bypasses planner.yaml writes, so the
+			// status-aware key key only emits via this synthesis
+			// (Report 2026-05-06 P3 issue-6).
+			qh.log(LogLevelWarn,
+				"notify_orchestrator_cancelled_auto_complete command=%s notif_id=%s "+
+					"(daemon synthesised a cancelled notification; investigate the cancellation reason in state.cancelled_reasons)",
+				item.CommandID, notifID)
 		}
 	}
 }

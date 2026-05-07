@@ -1,3 +1,4 @@
+//revive:disable-next-line:var-naming // internal/metrics is intentionally named to mirror runtime/metrics' purpose; no import collision in this codebase
 package metrics
 
 import (

@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -337,6 +338,58 @@ func TestBuildWorkerStates_NegativeCount(t *testing.T) {
 	_, err := BuildWorkerStates(maestroDir, config)
 	if err == nil {
 		t.Fatal("expected error for negative Count, got nil")
+	}
+}
+
+// TestBuildWorkerStates_CountsInProgressForLoadBalance pins post-2026-05-06
+// P3: in_progress tasks must count toward load balance the same way
+// pending tasks do. Counting only pending lets a worker that is busy on a
+// long-running task report PendingCount=0, so the next submit's
+// alphabetical tie-break always picks worker1 and the other workers stay
+// idle.
+func TestBuildWorkerStates_CountsInProgressForLoadBalance(t *testing.T) {
+	maestroDir := t.TempDir()
+	queueDir := filepath.Join(maestroDir, "queue")
+	if err := os.MkdirAll(queueDir, 0o755); err != nil {
+		t.Fatalf("mkdir queue: %v", err)
+	}
+
+	queue1 := `schema_version: 1
+file_type: queue_worker
+worker_id: worker1
+tasks:
+  - id: task_aaaaaaaa
+    command_id: cmd_x
+    status: in_progress
+    sequence_in_command: 1
+`
+	queue2 := `schema_version: 1
+file_type: queue_worker
+worker_id: worker2
+tasks: []
+`
+	if err := os.WriteFile(filepath.Join(queueDir, "worker1.yaml"), []byte(queue1), 0o644); err != nil {
+		t.Fatalf("write q1: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(queueDir, "worker2.yaml"), []byte(queue2), 0o644); err != nil {
+		t.Fatalf("write q2: %v", err)
+	}
+
+	cfg := model.WorkerConfig{Count: 2, DefaultModel: "sonnet"}
+	states, err := BuildWorkerStates(maestroDir, cfg)
+	if err != nil {
+		t.Fatalf("BuildWorkerStates: %v", err)
+	}
+	if len(states) != 2 {
+		t.Fatalf("expected 2 states, got %d", len(states))
+	}
+	w1 := states[0]
+	w2 := states[1]
+	if w1.WorkerID != "worker1" || w1.PendingCount != 1 {
+		t.Errorf("worker1 should have PendingCount=1 (in_progress counted), got %+v", w1)
+	}
+	if w2.WorkerID != "worker2" || w2.PendingCount != 0 {
+		t.Errorf("worker2 should have PendingCount=0, got %+v", w2)
 	}
 }
 

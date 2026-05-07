@@ -122,16 +122,20 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 
 func validateReportedResultTransition(existing, recorded model.Status) error {
 	// A worker that has been handed an in-progress queue entry can land at
-	// any of the dispatch-pipeline states (ready / dispatched / running)
-	// depending on how far the daemon's lifecycle hops have caught up
-	// when it reports completion. Phase B routes the recorded terminal
-	// status through the §2.1 verify_pending → completed/repair pipeline
-	// via AdvanceTaskState's BFS, so all of these "still-progressing"
+	// any of the dispatch-pipeline states (planned / ready / dispatched /
+	// running) depending on how far the daemon's lifecycle hops have
+	// caught up when it reports completion. Retry tasks specifically
+	// enter the lifecycle at `planned` (AddRetryTask) and a fast worker
+	// can stream a result back before R0_Dispatch has stamped the queue
+	// entry up to `running`. Phase B routes the recorded terminal status
+	// through the §2.1 verify_pending → completed/repair pipeline via
+	// AdvanceTaskState's BFS, so all of these "still-progressing"
 	// sources are expected at the result-write boundary and are NOT a
-	// state-machine violation worth waking an operator over.
+	// state-machine violation worth waking an operator over (Report
+	// 2026-05-06 P1-2 — `planned → completed` ERROR log was noise).
 	if recorded == model.StatusCompleted || recorded == model.StatusFailed {
 		switch existing {
-		case model.StatusReady, model.StatusDispatched, model.StatusRunning:
+		case model.StatusPlanned, model.StatusReady, model.StatusDispatched, model.StatusRunning:
 			return nil
 		}
 	}
@@ -145,12 +149,17 @@ func validateReportedResultTransition(existing, recorded model.Status) error {
 //
 //   - completed              → verify_pending (caller runs VerifyRunner;
 //     final status is applied in applyVerifyOutcome).
-//   - failed + retry         → verify_pending → repair_pending (a retry task
-//     has been scheduled; planner is not asked to replan).
-//   - failed + max_repair    → verify_pending → repair_pending →
-//     paused_for_replan (§S2-2 Circuit Breaker triggers replan).
-//   - failed (non-retryable) → verify_pending → repair_pending →
-//     paused_for_replan (no repair producer exists, so Planner must replan).
+//   - failed + retry         → cancelled (terminal; superseded_by_retry).
+//     A replacement task is already enqueued, so the original is closed
+//     immediately rather than parked at repair_pending awaiting an
+//     applyVerifyOutcome that may never run when verify is disabled
+//     (Report 2026-05-06 bug-1 — verify.enabled=false sites wedged
+//     forever because R2 deferred to verify pipeline ownership and
+//     the verify pipeline was a no-op).
+//   - failed + max_repair    → paused_for_replan (§S2-2 Circuit Breaker
+//     triggers replan; the replan path is verify-independent).
+//   - failed (non-retryable) → paused_for_replan (no retry producer exists,
+//     Planner must replan; verify-independent path).
 //   - cancelled              → cancelled (universal transition).
 //
 // Returns true if the task is parked at verify_pending awaiting the
@@ -185,19 +194,38 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 	case model.StatusFailed:
 		switch {
 		case retryScheduled:
-			h.advanceOrForce(state, params, model.StatusVerifyPending)
-			h.advanceOrForce(state, params, model.StatusRepairPending)
+			// A replacement task is already enqueued; this task is
+			// superseded. Mark it terminal-cancelled directly so the
+			// publish gate can release immediately. Routing through
+			// verify_pending → repair_pending was the previous design,
+			// but it relied on applyVerifyOutcome (or R9_VerifyStall)
+			// to walk the task to cancelled afterward — both of those
+			// are no-ops when verify.enabled=false, so the task sat at
+			// repair_pending forever and R2 kept skipping it ("repair
+			// pipeline owns this slot"), wedging the whole iteration
+			// (Report 2026-05-06 bug-1).
+			state.TaskStates[params.TaskID] = model.StatusCancelled
+			if state.CancelledReasons == nil {
+				state.CancelledReasons = make(map[string]string)
+			}
+			state.CancelledReasons[params.TaskID] = "superseded_by_retry: replacement task enqueued; original closed"
+			h.logFn(LogLevelInfo,
+				"result_write_superseded_by_retry task=%s command=%s "+
+					"(retry already enqueued; original cancelled directly to avoid repair_pending wedge)",
+				params.TaskID, params.CommandID)
 		case abortByMaxRepair:
-			h.advanceOrForce(state, params, model.StatusVerifyPending)
-			h.advanceOrForce(state, params, model.StatusRepairPending)
+			// Max-repair abort: the §S2-2 Circuit Breaker has decided
+			// the task cannot be recovered automatically. Park at
+			// paused_for_replan so the Planner can produce a different
+			// strategy. The previous detour through verify_pending →
+			// repair_pending added no value and would wedge under
+			// verify.enabled=false (same root cause as the retry
+			// branch above).
 			h.advanceOrForce(state, params, model.StatusPausedForReplan)
 		default:
-			// Non-retryable worker failures still pass through the §2.1
-			// repair pipeline. No retry producer exists for this branch, so
-			// the task is paused for replanning instead of landing directly
-			// at the generic failed terminal.
-			h.advanceOrForce(state, params, model.StatusVerifyPending)
-			h.advanceOrForce(state, params, model.StatusRepairPending)
+			// Non-retryable worker failure with no Circuit Breaker
+			// trip: same handling as the max_repair branch — park at
+			// paused_for_replan, let Planner replan.
 			h.advanceOrForce(state, params, model.StatusPausedForReplan)
 		}
 		return false
@@ -250,7 +278,7 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 	defer h.lockMap.Unlock(cmdLockKey)
 
 	statePath := commandStatePath(h.maestroDir, params.CommandID)
-	return updateYAMLFile(statePath, func(state *model.CommandState) error {
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.TaskStates == nil {
 			h.logFn(LogLevelWarn,
 				"verify_outcome_skipped task=%s command=%s next=%s (state has no task entries)",
@@ -280,7 +308,67 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 			"verify_outcome_applied task=%s command=%s next=%s reason=%q",
 			params.TaskID, params.CommandID, nextStatus, reason)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Stamp VerifyOutcomeAppliedAt on the verify-pipeline result entry so
+	// the notify gate (taskTerminalForNotify) releases it on the next scan.
+	// Lifecycle invariant: every entry that arrives in result_handler with
+	// RunOnIntegration / RunOnMain && Status=completed remains gated until
+	// this stamp is written, regardless of any race in state file writes.
+	h.markVerifyOutcomeAppliedOnResult(params.Reporter, params.TaskID, params.CommandID)
+	return nil
+}
+
+// markVerifyOutcomeAppliedOnResult stamps VerifyOutcomeAppliedAt on the
+// reporter's result file entry for the given task. Best-effort: failure to
+// re-write the result file logs a warning but does not roll back the verify
+// outcome — the next scan tick will still gate the entry on
+// state[taskID]=terminal allowlist as a back-stop, and a missing stamp on a
+// terminal-state task simply means the gate falls back to the legacy
+// allowlist behaviour for that one entry.
+func (h *ResultWriteAPI) markVerifyOutcomeAppliedOnResult(workerID, taskID, commandID string) {
+	resultLockKey := "result:" + workerID
+	h.lockMap.Lock(resultLockKey)
+	defer h.lockMap.Unlock(resultLockKey)
+
+	rf, err := h.fileStore.LoadResultFile(workerID)
+	if err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_outcome_stamp_skip_load worker=%s task=%s command=%s error=%v "+
+				"(notify gate will fall back to state[taskID]=terminal allowlist)",
+			workerID, taskID, commandID, err)
+		return
+	}
+	now := h.clock.Now().UTC().Format(time.RFC3339)
+	mutated := false
+	for i := range rf.Results {
+		r := &rf.Results[i]
+		if r.TaskID != taskID || r.CommandID != commandID {
+			continue
+		}
+		if r.VerifyOutcomeAppliedAt != nil {
+			continue
+		}
+		stamp := now
+		r.VerifyOutcomeAppliedAt = &stamp
+		mutated = true
+	}
+	if !mutated {
+		return
+	}
+	if err := h.fileStore.SaveResultFile(workerID, rf); err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_outcome_stamp_skip_save worker=%s task=%s command=%s error=%v "+
+				"(notify gate will fall back to state[taskID]=terminal allowlist)",
+			workerID, taskID, commandID, err)
+		return
+	}
+	h.recordSelfWrite(h.fileStore.ResultFilePath(workerID), rf)
+	h.logFn(LogLevelDebug,
+		"verify_outcome_stamped_result worker=%s task=%s command=%s applied_at=%s",
+		workerID, taskID, commandID, now)
 }
 
 // resolveRecordedStatus determines the task status to record in the command

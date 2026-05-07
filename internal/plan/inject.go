@@ -4,12 +4,53 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// hasIntegrationCleanedUp reports whether the command's integration was
+// taken to a terminal post-publish state (Published or Cleanup-equivalent).
+// Used by validateInjectRequest to distinguish "worktree mode off" from
+// "worktree state cleaned up after publish" when the state file is absent.
+//
+// PlanStatusSealed remains the live state until the deferred completion
+// handler observes publish success and flips it to Completed; the publish /
+// cleanup flow can therefore retire the integration worktree while the
+// command is still nominally sealed. To catch that window the cleanup
+// detection considers any phase having reached a phase-terminal state on a
+// sealed plan as evidence that the integration worktree is gone — the
+// post-publish reconciler removes worktree state regardless of the eventual
+// PlanStatus transition.
+func hasIntegrationCleanedUp(state *model.CommandState) bool {
+	if state == nil {
+		return false
+	}
+	if state.PlanStatus == model.PlanStatusCompleted {
+		return true
+	}
+	// During the publish→completion window plan_status is still sealed but
+	// every phase is terminal. Treat that as "integration cleaned up" so
+	// post-publish RunOnIntegration/RunOnMain injections fail fast at the
+	// API boundary instead of dead-lettering on
+	// integration_branch_check_failed.
+	if state.PlanStatus == model.PlanStatusSealed && len(state.Phases) > 0 {
+		allTerminal := true
+		for _, p := range state.Phases {
+			if !model.IsPhaseTerminal(p.Status) {
+				allTerminal = false
+				break
+			}
+		}
+		if allTerminal {
+			return true
+		}
+	}
+	return false
+}
 
 // InjectOptions holds the configuration for injecting a new task into a sealed plan.
 type InjectOptions struct {
@@ -229,24 +270,52 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		selectedPhaseIdx = targetIdx
 	}
 
-	// max_tasks is treated as advisory at injection time. A hard reject
-	// previously surfaced as an unrecoverable failure flow (Planner needed
-	// to add a task to address residual scope, but the cap had already been
-	// reached) — exactly the "failing for structural reasons rather than
-	// real outcomes" pattern the user flagged as an autonomous LLM
-	// orchestration anti-pattern. The cap remains useful as a soft
-	// indicator that the Planner is exceeding its own declared
-	// parallelism budget; surface it via slog.Warn so operators / future
-	// audits can see the breach without forcing an abort. Phase merge
-	// semantics do not depend on the count being below the cap.
+	// max_tasks enforcement at injection time. RunOnMain / RunOnIntegration
+	// injections bypass the cap because they are recovery operations
+	// (post-publish verification, publish_conflict resolution) — the
+	// Planner *must* be able to insert them even when the phase has
+	// reached its declared parallelism budget. Ordinary new tasks are
+	// hard-rejected so a Planner that emits add-task in a loop after
+	// the phase went active does not silently inflate the phase past
+	// its contract (Report 2026-05-03 issue-3 observed cycle2 receiving 5
+	// tasks against max_tasks=2).
+	//
+	// The Planner sees a clear validation error and can either:
+	//   - re-balance scope across remaining phases
+	//   - submit an add-retry-task instead (replaces an existing task)
+	//   - issue a fresh command with a revised plan
+	// Each of those options preserves autonomous flow without letting
+	// the constraint quietly degrade.
 	if selectedPhaseIdx >= 0 && state.Phases[selectedPhaseIdx].Constraints != nil {
 		maxT := state.Phases[selectedPhaseIdx].Constraints.MaxTasks
 		if maxT > 0 && len(state.Phases[selectedPhaseIdx].TaskIDs) > maxT {
-			slog.Warn("add-task exceeds declared max_tasks (advisory)",
-				"phase_id", state.Phases[selectedPhaseIdx].PhaseID,
-				"task_count_after_injection", len(state.Phases[selectedPhaseIdx].TaskIDs),
-				"max_tasks", maxT,
-				"new_task_id", newTaskID)
+			recoveryExempt := opts.RunOnMain || opts.RunOnIntegration
+			if recoveryExempt {
+				slog.Warn("add-task exceeds declared max_tasks (recovery exempt)",
+					"phase_id", state.Phases[selectedPhaseIdx].PhaseID,
+					"task_count_after_injection", len(state.Phases[selectedPhaseIdx].TaskIDs),
+					"max_tasks", maxT,
+					"new_task_id", newTaskID,
+					"exemption_reason", "run_on_main_or_run_on_integration_recovery")
+			} else {
+				// Compute existing count BEFORE restoreState. After
+				// restoreState the in-memory state has been reverted to
+				// the pre-append snapshot, so `len(...)` is the original
+				// count. Using `len(...) - 1` after restoreState produced
+				// an off-by-one in the error message (Report 2026-05-04
+				// observed "already contains 1 task(s)" on a phase with 2).
+				// We reload from origStateBytes for the count instead of
+				// trusting the in-memory state, which decouples the count
+				// from whichever side of restoreState the message is
+				// rendered on.
+				existingCount := len(state.Phases[selectedPhaseIdx].TaskIDs) - 1
+				if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+					slog.Error("state restore failed during max_tasks rejection", "error", rsErr)
+				}
+				return nil, &planValidationError{Msg: fmt.Sprintf(
+					"phase %q has constraints.max_tasks=%d and already contains %d task(s); injecting another would exceed the cap. Either replace an existing task via add-retry-task, target a different phase via --target-phase, or submit a fresh command with a revised plan.",
+					state.Phases[selectedPhaseIdx].PhaseID, maxT, existingCount)}
+			}
 		}
 	}
 
@@ -332,6 +401,52 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 func validateInjectRequest(state *model.CommandState, opts InjectOptions) error {
 	if state.PlanStatus != model.PlanStatusSealed {
 		return &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
+	}
+
+	// RunOnIntegration / RunOnMain tasks dispatch against the integration
+	// worktree or the published main branch. Once the worktree state has
+	// been cleaned up (publish completed → cleanup ran), the integration
+	// worktree no longer exists; injecting such a task would dispatch into
+	// missing state, exhaust retry attempts on `integration_branch_check_failed`,
+	// dead-letter, and flip plan_status to failed (Report 2026-05-03 issue-2).
+	// Reject the injection at the API boundary so the Planner sees a clear
+	// validation error instead of a delayed dead-letter cascade. The
+	// post-publish recovery story is "submit a fresh command", not
+	// "extend a finished plan".
+	if opts.RunOnIntegration || opts.RunOnMain {
+		// RunOnIntegration/RunOnMain require an integration worktree. If
+		// worktree mode is not enabled for this formation, the dispatcher
+		// has nowhere to place the task and would dead-letter on
+		// integration_branch_check_failed. Reject at the boundary so the
+		// Planner sees a clear validation error rather than a delayed
+		// cascade that flips plan_status to failed (Report 2026-05-03 issue-2).
+		if !opts.Config.Worktree.Enabled {
+			return &planValidationError{Msg: fmt.Sprintf(
+				"cannot inject run_on_integration/run_on_main task into command %s: worktree mode is disabled for this formation. Enable worktree.enabled in config.yaml or submit a regular task without --run-on-integration/--run-on-main.",
+				opts.CommandID)}
+		}
+		if opts.MaestroDir != "" && opts.CommandID != "" {
+			worktreeStatePath := filepath.Join(opts.MaestroDir, "state", "worktrees", opts.CommandID+".yaml")
+			if _, err := os.Stat(worktreeStatePath); err != nil {
+				if os.IsNotExist(err) {
+					// worktree state absent on a worktree-enabled formation
+					// can only mean cleanup ran after publish (the
+					// reconciler removes the file once integration is
+					// retired). Either way the dispatcher has nothing to
+					// run against — reject explicitly. hasIntegrationCleanedUp
+					// also catches the publish→completion window where
+					// plan_status is still sealed but every phase is terminal.
+					if model.IsPlanTerminal(state.PlanStatus) || hasIntegrationCleanedUp(state) {
+						return &planValidationError{Msg: fmt.Sprintf(
+							"cannot inject run_on_integration/run_on_main task into command %s: integration worktree has been cleaned up after publish. Submit a fresh command rather than extending a published plan.",
+							opts.CommandID)}
+					}
+					return &planValidationError{Msg: fmt.Sprintf(
+						"cannot inject run_on_integration/run_on_main task into command %s: integration worktree state file is missing. The integration worktree may have been cleaned up; submit a fresh command instead.",
+						opts.CommandID)}
+				}
+			}
+		}
 	}
 
 	// CompletionPolicy.AllowDynamicTasks intentionally NOT enforced here:

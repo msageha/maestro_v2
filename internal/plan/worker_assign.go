@@ -292,7 +292,13 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 				return nil, fmt.Errorf("parse queue file %s: %w", queueFile, err)
 			}
 			for _, task := range tq.Tasks {
-				if task.Status == model.StatusPending {
+				// Count pending + in_progress together for load balancing.
+				// Excluding in_progress would let a long-running task occupy
+				// a worker but read as PendingCount=0 to the next submit
+				// batch, which the tie-break would then always resolve to
+				// worker1 — leaving the other workers idle (Report
+				// 2026-05-06 P3).
+				if task.Status == model.StatusPending || task.Status == model.StatusInProgress {
 					pendingCount++
 				}
 			}

@@ -19,6 +19,8 @@ import (
 // RunDown executes the 'maestro down' command.
 func RunDown(maestroDir string, cfg model.Config) error {
 	tmux.SetSessionName(tmux.BuildMaestroSessionName(cfg.Project.Name, maestroDir))
+	// Must use the same per-instance socket as up.go.
+	tmux.SetTmuxSocket(tmux.BuildMaestroSocketName(cfg.Project.Name, maestroDir))
 
 	// Initialize tmux debug logger for down process
 	tmuxLog, tmuxLogErr := initTmuxDebugLog(maestroDir)

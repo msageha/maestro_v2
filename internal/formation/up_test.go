@@ -3,6 +3,7 @@ package formation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -489,3 +490,86 @@ func TestProcessAlive_ZeroAndNegative(t *testing.T) {
 // be mocked without a real tmux session or interface extraction. The guard logic
 // is covered by integration tests. errSessionExists is a simple sentinel error
 // that does not require a dedicated test.
+
+// TestResetFormation_ArchivesInProgressCommands pins the
+// post-2026-05-06 Bug #2 fix: when `maestro up -f` runs while planner.yaml
+// has a non-terminal command, the command must be archived under
+// quarantine/lost_commands/ before the queue is wiped, so the operator
+// can recover the lost instruction (Report 2026-05-06 — a force-reset
+// silently dropped a `cmd_..._ef7848c0e032d799` mid-flight).
+func TestResetFormation_ArchivesInProgressCommands(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+
+	// Seed planner.yaml with one in-progress + one completed command.
+	queue := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{ID: "cmd_inflight_aaaaaaaaaaaaaaaa", Status: model.StatusInProgress},
+			{ID: "cmd_done_bbbbbbbbbbbbbbbbbbbb", Status: model.StatusCompleted},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), &queue); err != nil {
+		t.Fatalf("seed planner queue: %v", err)
+	}
+	writeConfig(t, maestroDir, model.Config{})
+
+	if err := resetFormation(maestroDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// planner.yaml should be cleared.
+	if _, err := os.Stat(filepath.Join(maestroDir, "queue", "planner.yaml")); !os.IsNotExist(err) {
+		t.Errorf("planner.yaml should be cleared after reset")
+	}
+
+	// In-progress command should be archived; completed command should NOT.
+	archiveDir := filepath.Join(maestroDir, "quarantine", "lost_commands")
+	entries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatalf("read archive dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 archived command, got %d (%v)", len(entries), entries)
+	}
+	if !strings.HasPrefix(entries[0].Name(), "cmd_inflight_aaaaaaaaaaaaaaaa-") {
+		t.Errorf("unexpected archive name %q (should start with the in-flight command id)", entries[0].Name())
+	}
+}
+
+// TestResetFormation_NoArchiveWhenAllTerminal pins the no-op path: a
+// reset issued when every command in planner.yaml is already terminal
+// must not write anything to quarantine/lost_commands/ so operators do
+// not get spurious "lost command" archives during normal restart.
+func TestResetFormation_NoArchiveWhenAllTerminal(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+
+	queue := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{ID: "cmd_done1_aaaaaaaaaaaaaaaaaa", Status: model.StatusCompleted},
+			{ID: "cmd_fail1_bbbbbbbbbbbbbbbbbb", Status: model.StatusFailed},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), &queue); err != nil {
+		t.Fatalf("seed planner queue: %v", err)
+	}
+	writeConfig(t, maestroDir, model.Config{})
+
+	if err := resetFormation(maestroDir); err != nil {
+		t.Fatal(err)
+	}
+
+	archiveDir := filepath.Join(maestroDir, "quarantine", "lost_commands")
+	entries, err := os.ReadDir(archiveDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return // no archive at all is the cleanest outcome
+		}
+		t.Fatalf("read archive dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("expected 0 archived commands when all terminal, got %d", len(entries))
+	}
+}

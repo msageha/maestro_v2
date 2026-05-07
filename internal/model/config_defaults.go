@@ -118,10 +118,8 @@ const (
 	// progress_timeout_minutes).
 	DefaultPausedForReplanDeadletterSec = 3600
 
-	// Fallback
-	DefaultConsecutiveFailureThreshold = 5
-	DefaultRecoveryCheckIntervalSec    = 60
-	DefaultMinHealthyDurationSec       = 120
+	// (Removed) Fallback defaults — degraded-mode worker blacklisting was
+	// retired; the daemon no longer reads fallback.* config.
 
 	// WorktreeConfig
 	DefaultBaseBranch                  = "main"
@@ -135,8 +133,7 @@ const (
 	// ShutdownConfig
 	DefaultShutdownTimeoutSec = 30
 
-	// CommitPolicyConfig
-	DefaultCommitMaxFiles = 60
+	// (Removed) CommitPolicyConfig defaults — gates retired (see config_types.go).
 
 	// WorktreeGCConfig
 	DefaultGCTTLHours     = 24

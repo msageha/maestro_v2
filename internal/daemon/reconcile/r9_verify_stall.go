@@ -3,6 +3,7 @@ package reconcile
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +35,15 @@ type R9VerifyStall struct{}
 // matching worker result is older than the configured threshold, and rewrites
 // their TaskStates entry to repair_pending.
 func (R9VerifyStall) Apply(run *Run) Outcome {
+	// verify.enabled=false means the daemon wires NewSkipVerifyRunner, so
+	// no task ever enters verify_pending. Running R9 in that mode just
+	// produces noisy WARN ("R9 verify_config_load_failed … no such file
+	// or directory") for commands that never had a verify snapshot
+	// written — Report 2026-05-05. Treat the disabled flag as the SSoT
+	// and short-circuit before scanning any state files.
+	if !run.Deps.Config.Verify.EffectiveEnabled() {
+		return Outcome{}
+	}
 	thresholdSec := run.Deps.Config.Verify.EffectiveStallThresholdSec()
 	if thresholdSec <= 0 {
 		return Outcome{} // disabled
@@ -256,7 +266,12 @@ func r9EffectiveVerifyStallThreshold(run *Run, commandID string, configured time
 	path := filepath.Join(run.Deps.MaestroDir, "state", "verify", commandID+".yaml")
 	cfg, err := model.LoadVerifyConfig(path)
 	if err != nil {
-		if !os.IsNotExist(err) {
+		// LoadVerifyConfig wraps with fmt.Errorf("...: %w"), so the
+		// legacy os.IsNotExist check returned false and the WARN fired
+		// every scan for commands without a snapshot — including newly
+		// submitted commands before Planner writes their verify config
+		// (Report 2026-05-05). errors.Is unwraps the chain.
+		if !errors.Is(err, fs.ErrNotExist) {
 			run.Log(core.LogLevelWarn,
 				"R9 verify_config_load_failed command=%s path=%s error=%v (using configured threshold)",
 				commandID, path, err)

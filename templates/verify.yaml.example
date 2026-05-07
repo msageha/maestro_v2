@@ -13,12 +13,14 @@
 #   cat verify.yaml | maestro verify write --command-id <command_id> --config-file -
 #
 # Constraints (enforced by VerifyConfig.Validate):
-#   - Each command is direct-exec; shell metacharacters (`;`, `&&`, `||`,
-#     backtick, `$(`, `${`, pipe, redirect, newline) are NOT allowed.
-#     If a command needs them, wrap it in a script that the verify command
-#     invokes by path.
-#   - `sh -c` / `bash -c` invocations are rejected.
-#   - Leading `KEY=VALUE` env assignments are allowed.
+#   - Each command must fit on a single YAML scalar (no embedded newline /
+#     carriage return).
+#   - Each command runs under `bash -c`, so shell metacharacters (`;`,
+#     `&&`, `||`, pipelines, redirects, env substitutions) are allowed —
+#     write the command exactly as you would on a shell prompt.
+#   - Categories must be one of: build, lint, test, typecheck, security,
+#     performance. Any other top-level key under `verify:` is rejected
+#     with a helpful error rather than being silently dropped.
 #
 # Notes for autonomous LLM orchestration:
 #   - Verify is best-effort. A failing verify command schedules a repair

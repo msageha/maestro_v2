@@ -3,7 +3,6 @@ package model
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -158,7 +157,80 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	}
 }
 
-func TestLoadConfig_RejectsUnknownField(t *testing.T) {
+// TestRetiredConfigPaths_DetectionTable pins the detection logic for
+// nested retired keys (the schema-walk side of the unknown-key WARN).
+// The earlier check only saw top-level typos, so a legacy
+// `worktree.commit_policy:` block sat in operator configs and looked
+// "active" while the daemon ignored it (Report 2026-05-05).
+func TestRetiredConfigPaths_DetectionTable(t *testing.T) {
+	type tc struct {
+		name string
+		yaml string
+		path string
+		want bool
+	}
+	cases := []tc{
+		{
+			name: "worktree.commit_policy block present",
+			yaml: "worktree:\n  enabled: true\n  commit_policy:\n    max_files: 50\n",
+			path: "worktree.commit_policy",
+			want: true,
+		},
+		{
+			name: "no commit_policy nested",
+			yaml: "worktree:\n  enabled: true\n",
+			path: "worktree.commit_policy",
+			want: false,
+		},
+		{
+			name: "fallback top-level present",
+			yaml: "fallback:\n  enabled: true\n",
+			path: "fallback",
+			want: true,
+		},
+		{
+			name: "watcher.clear_second_enter_delay_ms scalar",
+			yaml: "watcher:\n  clear_second_enter_delay_ms: 500\n",
+			path: "watcher.clear_second_enter_delay_ms",
+			want: true,
+		},
+		{
+			name: "missing intermediate node",
+			yaml: "agents:\n  workers:\n    count: 1\n",
+			path: "worktree.commit_policy",
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			var doc yaml.Node
+			if err := yaml.Unmarshal([]byte(c.yaml), &doc); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			root := &doc
+			if root.Kind == yaml.DocumentNode && len(root.Content) > 0 {
+				root = root.Content[0]
+			}
+			got := nodeHasPath(root, splitDotPath(c.path))
+			if got != c.want {
+				t.Errorf("nodeHasPath(%q) = %v, want %v", c.path, got, c.want)
+			}
+		})
+	}
+}
+
+// TestLoadConfig_IgnoresUnknownField verifies that the loader silently
+// ignores unknown YAML fields. The previous strict-decode policy broke
+// upgrade paths whenever a field was retired (e.g. the legacy
+// `fallback:` block from the degraded-mode worker blacklist), forcing
+// every operator to hand-edit config.yaml before the daemon would
+// start. The autonomous LLM orchestration brief explicitly rejects
+// configuration parsing as a daemon-startup failure mode, so unknown
+// fields are now tolerated and surfaced only via the missing-default
+// behaviour.
+func TestLoadConfig_IgnoresUnknownField(t *testing.T) {
 	t.Cleanup(ResetConfigCache)
 
 	dir := t.TempDir()
@@ -181,16 +253,18 @@ worktree:
   cleanup_on_failure: false
 verfiy:
   enabled: true
+fallback:
+  enabled: true
 `)
 	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err := LoadConfig(dir)
-	if err == nil {
-		t.Fatal("expected unknown field error")
+	cfg, err := LoadConfig(dir)
+	if err != nil {
+		t.Fatalf("expected unknown fields to be ignored, got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "field verfiy not found") {
-		t.Fatalf("expected strict YAML unknown-field error, got: %v", err)
+	if cfg.Project.Name != "test" {
+		t.Errorf("Project.Name = %q, want %q", cfg.Project.Name, "test")
 	}
 }

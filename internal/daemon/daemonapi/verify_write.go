@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -16,20 +14,29 @@ import (
 // `maestro verify write` UDS request the planner uses to pin the verify
 // commands a specific plan must satisfy).
 type VerifyWrite struct {
-	maestroDir string
-	lock       func()
-	unlock     func()
-	logInfof   Logf
+	maestroDir     string
+	lock           func()
+	unlock         func()
+	logInfof       Logf
+	logWarnf       Logf
+	verifyEnabledF func() bool
 }
 
 // NewVerifyWrite constructs a VerifyWrite handler. lock/unlock guard the
 // snapshot file write so concurrent writes from CLI / planner serialize.
-func NewVerifyWrite(maestroDir string, lock func(), unlock func(), logInfof Logf) *VerifyWrite {
+// verifyEnabledF reports whether the daemon's verify runner is currently
+// enabled — used to warn the operator when a Planner writes a verify
+// snapshot the daemon will silently never execute (Report 2026-05-05 P1).
+// nil verifyEnabledF disables the warning (legacy callers without config
+// access).
+func NewVerifyWrite(maestroDir string, lock func(), unlock func(), logInfof, logWarnf Logf, verifyEnabledF func() bool) *VerifyWrite {
 	return &VerifyWrite{
-		maestroDir: maestroDir,
-		lock:       lock,
-		unlock:     unlock,
-		logInfof:   logInfof,
+		maestroDir:     maestroDir,
+		lock:           lock,
+		unlock:         unlock,
+		logInfof:       logInfof,
+		logWarnf:       logWarnf,
+		verifyEnabledF: verifyEnabledF,
 	}
 }
 
@@ -62,17 +69,12 @@ func (h *VerifyWrite) Handle(req *uds.Request) *uds.Response {
 			fmt.Sprintf("config_data exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes))
 	}
 
-	var wrapper struct {
-		Verify model.VerifyConfig `yaml:"verify"`
-	}
-	if err := yamlv3.Unmarshal([]byte(params.ConfigData), &wrapper); err != nil {
+	cfg, err := model.ParseVerifyConfigYAML([]byte(params.ConfigData))
+	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("parse verify config: %v", err))
 	}
-	if wrapper.Verify.IsEmpty() {
+	if cfg.IsEmpty() {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "verify config must contain at least one command")
-	}
-	if err := wrapper.Verify.Validate(); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, err.Error())
 	}
 
 	if h.lock != nil {
@@ -81,11 +83,22 @@ func (h *VerifyWrite) Handle(req *uds.Request) *uds.Response {
 	}
 
 	path := filepath.Join(h.maestroDir, "state", "verify", params.CommandID+".yaml")
-	if err := model.SaveVerifyConfig(path, &wrapper.Verify); err != nil {
+	if err := model.SaveVerifyConfig(path, cfg); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 	if h.logInfof != nil {
-		h.logInfof("verify_write command=%s commands=%d", params.CommandID, len(wrapper.Verify.AllCommands()))
+		h.logInfof("verify_write command=%s commands=%d", params.CommandID, len(cfg.AllCommands()))
+	}
+	// When verify.enabled=false the snapshot has just been written but
+	// the runner is wired with NewSkipVerifyRunner, so the daemon will
+	// silently never execute the commands. Warn so the operator sees
+	// the misconfiguration before publish (Report 2026-05-05 P1: Planner
+	// wrote `go vet ./...` etc. but daemon log only showed
+	// `verify_runner_disabled`).
+	if h.verifyEnabledF != nil && h.logWarnf != nil && !h.verifyEnabledF() {
+		h.logWarnf("verify_write_with_runner_disabled command=%s commands=%d "+
+			"(verify.enabled=false in config.yaml — snapshot stored but daemon runner is no-op; the only place the snapshot is consulted is RunOnIntegration / RunOnMain tasks once you flip verify.enabled to true)",
+			params.CommandID, len(cfg.AllCommands()))
 	}
 	return uds.SuccessResponse(map[string]string{"status": "written", "command_id": params.CommandID})
 }

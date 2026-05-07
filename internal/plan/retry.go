@@ -524,6 +524,42 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 			opts.RetryOf, retryOfStatus)}
 	}
 
+	// Active-retry uniqueness: at most one *active* retry chain may be
+	// outstanding for a given predecessor. Pre-2026-05-06 this guard was
+	// missing and a race between daemon auto-retry and Planner
+	// `plan add-retry-task` could enqueue two replacement tasks for the
+	// same failed predecessor — both inheriting the original's
+	// dependencies — which then competed for the same downstream
+	// blocked-by edges and surfaced as `result_write
+	// invalid_state_transition planned → completed` when the second
+	// retry's worker reported in (Report 2026-05-06 P1-2).
+	//
+	// Walk RetryLineage looking for any descendant whose predecessor is
+	// opts.RetryOf and whose state is non-terminal (planned, ready,
+	// dispatched, running, verify_pending, repair_pending). If one
+	// exists, refuse the new retry — the operator should let the
+	// existing retry run to completion or cancel it explicitly first.
+	for descendantID, predecessor := range state.RetryLineage {
+		if predecessor != opts.RetryOf {
+			continue
+		}
+		descendantStatus, ok := state.TaskStates[descendantID]
+		if !ok {
+			continue
+		}
+		if model.IsTerminal(descendantStatus) {
+			// A terminal descendant means the prior retry chain has
+			// resolved (failed / cancelled / completed) — chaining a
+			// new retry off the original is acceptable. RetryLineage
+			// keeps the historical record; the new entry simply joins
+			// the chain at opts.RetryOf again.
+			continue
+		}
+		return nil, &planValidationError{Msg: fmt.Sprintf(
+			"retry-of task %s already has an active retry %s (status=%s); only one outstanding retry per predecessor is allowed — wait for it to terminate or cancel it explicitly first",
+			opts.RetryOf, descendantID, descendantStatus)}
+	}
+
 	// Find phase membership
 	phase, phaseIdx := findPhaseForTask(state, opts.RetryOf)
 	if phase != nil {

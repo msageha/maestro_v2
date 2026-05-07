@@ -987,6 +987,51 @@ func writeWorktreeState(t *testing.T, maestroDir, commandID string, integrationS
 	}
 }
 
+// TestComplete_WorktreeEnabled_Quarantined_FailsTerminally pins post-2026-05-06
+// round-3 P0: when integration is quarantined (publish failures exhausted),
+// Complete must finalize the command as `failed` rather than writing a
+// deferred_publish intent that would never resolve. This routes the
+// orchestrator notification through the standard failed path, ending the
+// "publish quarantined → orchestrator never notified" wedge.
+func TestComplete_WorktreeEnabled_Quarantined_FailsTerminally(t *testing.T) {
+	commandID := "cmd_0000000051_aabbccdd"
+	taskID1 := "task_0000000051_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusQuarantined)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "publish quarantined — should finalize as failed",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusFailed) {
+		t.Errorf("Status = %q, want %q (quarantine must produce failed terminal, NOT deferred_publish)",
+			result.Status, model.PlanStatusFailed)
+	}
+	// Verify NO deferred intent was written (otherwise the wedge would persist)
+	dc, err := readDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("readDeferredComplete error: %v", err)
+	}
+	if dc != nil {
+		t.Errorf("expected NO deferred_complete intent for quarantined integration, got: %+v", dc)
+	}
+}
+
 func TestComplete_WorktreeEnabled_PartialMerge_Deferred(t *testing.T) {
 	commandID := "cmd_0000000050_aabbccdd"
 	taskID1 := "task_0000000050_11111111"

@@ -50,7 +50,6 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 			TTLHours:     ptr.Int(24),
 			MaxWorktrees: ptr.Int(32),
 		},
-		CommitPolicy: model.CommitPolicyConfig{},
 	}
 
 	logger := log.New(os.Stderr, "", 0)

@@ -95,7 +95,4 @@ type WorktreeManager = worktree.Manager
 // NewWorktreeManager is an alias for worktree.NewManager.
 var NewWorktreeManager = worktree.NewManager
 
-// CommitPolicyViolation is an alias for worktree.CommitPolicyViolation.
-type CommitPolicyViolation = worktree.CommitPolicyViolation
-
 // --- Learnings aliases ---

@@ -81,6 +81,8 @@ func newAPI(d *Daemon) *API {
 			shared.acquireFileLock,
 			shared.releaseFileLock,
 			func(format string, args ...any) { d.log(LogLevelInfo, format, args...) },
+			func(format string, args ...any) { d.log(LogLevelWarn, format, args...) },
+			func() bool { return d.config.Verify.EffectiveEnabled() },
 		),
 	}
 }

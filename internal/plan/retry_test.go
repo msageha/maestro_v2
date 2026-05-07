@@ -1672,3 +1672,103 @@ func sliceEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestAddRetryTask_RejectsDuplicateActiveRetry pins the post-2026-05-06
+// active-retry-uniqueness invariant: when a retry chain for a given
+// predecessor already has a non-terminal descendant, a second
+// AddRetryTask call for the same predecessor must be rejected. Without
+// this, a daemon-side auto-retry race produced two replacement tasks
+// for the same failed task, both inheriting the same dependencies, and
+// downstream `result_write invalid_state_transition planned →
+// completed` errors followed (Report 2026-05-06 P1-2).
+func TestAddRetryTask_RejectsDuplicateActiveRetry(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// First retry — the canonical happy path.
+	first, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "first retry",
+		Content:            "redo task",
+		AcceptanceCriteria: "task passes",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("first AddRetryTask: %v", err)
+	}
+	// First retry is now planned (non-terminal). Second AddRetryTask
+	// for the same predecessor must be refused.
+	_, err = addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "second retry",
+		Content:            "redo task again",
+		AcceptanceCriteria: "task passes",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatalf("second AddRetryTask for the same predecessor must be rejected, got success: first=%s", first.TaskID)
+	}
+	if !strings.Contains(err.Error(), "already has an active retry") {
+		t.Errorf("error should explain the duplicate-retry refusal, got: %v", err)
+	}
+}
+
+// TestAddRetryTask_AllowsRetryAfterPriorRetryTerminates pins the
+// counterpart: once the prior retry chain reaches a terminal state, a
+// fresh retry for the original predecessor is allowed (operators should
+// be able to chain retries when each one fails terminally).
+func TestAddRetryTask_AllowsRetryAfterPriorRetryTerminates(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	first, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "first retry",
+		Content:            "redo",
+		AcceptanceCriteria: "pass",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("first AddRetryTask: %v", err)
+	}
+
+	// Walk the first retry to a terminal status (failed) so the chain
+	// is closed. Second retry of the original must now succeed.
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	state.TaskStates[first.TaskID] = model.StatusFailed
+	if err := sm.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	if _, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "second retry",
+		Content:            "redo",
+		AcceptanceCriteria: "pass",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	}); err != nil {
+		t.Errorf("second AddRetryTask after first chain terminated must succeed, got: %v", err)
+	}
+}

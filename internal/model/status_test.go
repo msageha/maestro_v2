@@ -421,6 +421,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 	}{
 		{WorktreeStatusCreated, WorktreeStatusActive},
 		{WorktreeStatusCreated, WorktreeStatusCommitted},
+		{WorktreeStatusCreated, WorktreeStatusIntegrated},    // no-op merge (worker had no commits)
 		{WorktreeStatusCreated, WorktreeStatusFailed},
 		{WorktreeStatusCreated, WorktreeStatusPublished},     // bulk publish
 		{WorktreeStatusCreated, WorktreeStatusCleanupDone},   // cleanup
@@ -479,7 +480,6 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCleanupDone, WorktreeStatusActive},    // terminal
 		{WorktreeStatusCleanupDone, WorktreeStatusPublished}, // terminal
 		{WorktreeStatusCleanupFailed, WorktreeStatusActive},  // only cleanup_done allowed
-		{WorktreeStatusCreated, WorktreeStatusIntegrated},    // must go through committed first
 		{WorktreeStatusPublished, WorktreeStatusActive},      // only cleanup transitions allowed
 		{WorktreeStatusPublished, WorktreeStatusCommitted},   // only cleanup transitions allowed
 		{WorktreeStatusActive, WorktreeStatusResolving},      // resolving only reachable from conflict

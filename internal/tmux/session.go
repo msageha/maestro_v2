@@ -242,7 +242,7 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
 	loadCtx, loadCancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer loadCancel()
-	cmd := exec.CommandContext(loadCtx, "tmux", "load-buffer", "-b", bufName, "-") //nolint:gosec // "tmux" is a fixed command; bufName is an internal counter-based name
+	cmd := exec.CommandContext(loadCtx, "tmux", tmuxArgs([]string{"load-buffer", "-b", bufName, "-"})...) //nolint:gosec // "tmux" is a fixed command; bufName is an internal counter-based name
 	cmd.Stdin = strings.NewReader(text)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		stderr := strings.TrimSpace(string(out))
@@ -302,8 +302,24 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 // the current design is intentional given the single-session-per-process model.
 var sessionName atomic.Value
 
+// tmuxSocket holds the per-instance tmux socket name (passed as the
+// argument to `tmux -L <socket>`). An empty string means use the default
+// socket (kept for backward compatibility and tests).
+//
+// Sharing the default socket lets concurrent maestro instances from
+// different projects pile sessions onto the same tmux server, which
+// produced SESSION_LOST races, ID collisions, and stray
+// autoAcceptTrustDialog keypresses (Report 2026-05-06: every time `tmux
+// ls` showed coexisting instances, the later `up` reproducibly observed
+// SESSION_LOST).
+//
+// One socket per instance gives each instance its own tmux server and
+// removes the shared-server races structurally.
+var tmuxSocket atomic.Value
+
 func init() {
 	sessionName.Store("maestro")
+	tmuxSocket.Store("")
 }
 
 // unsafeSessionChars matches characters that are unsafe in tmux session names.
@@ -333,6 +349,62 @@ func SetSessionName(name string) {
 		sanitized = "maestro"
 	}
 	sessionName.Store(sanitized)
+}
+
+// GetTmuxSocket returns the current tmux socket name. An empty string
+// means the default socket (no `-L` flag is added).
+func GetTmuxSocket() string {
+	v, ok := tmuxSocket.Load().(string)
+	if !ok {
+		return ""
+	}
+	return v
+}
+
+// SetTmuxSocket updates the tmux socket name used by `tmux -L <name>`.
+// Unsafe characters are sanitised with the same rules as the session
+// name. An empty string means the default socket (backward compat).
+func SetTmuxSocket(name string) {
+	if name == "" {
+		tmuxSocket.Store("")
+		return
+	}
+	sanitized := unsafeSessionChars.ReplaceAllString(name, "_")
+	tmuxSocket.Store(sanitized)
+}
+
+// BuildMaestroSocketName returns a per-project tmux socket name. It is
+// stabilised by the same rule as the session name (project name +
+// maestroDir hash). Socket names are used as a filesystem path, so we
+// keep them short (tmux itself accepts up to ~104 chars; we stay well
+// below that).
+func BuildMaestroSocketName(projectName, maestroDir string) string {
+	base := "maestro-" + projectName
+	if maestroDir == "" {
+		return base
+	}
+	canonical := maestroDir
+	if abs, err := filepath.Abs(maestroDir); err == nil {
+		canonical = filepath.Clean(abs)
+		if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
+			canonical = filepath.Clean(resolved)
+		}
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return base + "-" + hex.EncodeToString(sum[:])[:8]
+}
+
+// tmuxArgs returns the tmux argv prefix with socket settings applied.
+// When a socket is configured, `-L <socket>` is prepended to args.
+func tmuxArgs(args []string) []string {
+	socket := GetTmuxSocket()
+	if socket == "" {
+		return args
+	}
+	combined := make([]string, 0, len(args)+2)
+	combined = append(combined, "-L", socket)
+	combined = append(combined, args...)
+	return combined
 }
 
 // BuildMaestroSessionName returns a stable, collision-resistant tmux session
@@ -371,7 +443,7 @@ func BuildMaestroSessionName(projectName, maestroDir string) string {
 func SessionExists() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run() //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
+	err := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"has-session", "-t", exactSessionTarget()})...).Run() //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 	exists := err == nil
 	debugLog("SessionExists session=%s exists=%v", GetSessionName(), exists)
 	return exists
@@ -439,7 +511,7 @@ func SessionHealthCheckDetailed() SessionHealthResult {
 
 	// Check session (use "=" prefix for exact name matching)
 	exactName := "=" + name
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactName) //nolint:gosec // "tmux" is a fixed command; exactName is derived from validated session name
+	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"has-session", "-t", exactName})...) //nolint:gosec // "tmux" is a fixed command; exactName is derived from validated session name
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		result.Alive = true
@@ -460,7 +532,7 @@ func SessionHealthCheckDetailed() SessionHealthResult {
 	debugLog("SessionHealthCheck DEAD session=%s stderr=%q", name, result.Stderr)
 
 	// Check if tmux server itself is running
-	serverCmd := exec.CommandContext(ctx, "tmux", "list-sessions")
+	serverCmd := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"list-sessions"})...)
 	serverOut, serverErr := serverCmd.CombinedOutput()
 	if serverErr != nil {
 		debugLog("SessionHealthCheck SERVER_DOWN stderr=%q", strings.TrimSpace(string(serverOut)))
@@ -770,7 +842,7 @@ func SetServerOption(name, value string) error {
 func SetSessionOption(name, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
+	if err := exec.CommandContext(ctx, "tmux", tmuxArgs([]string{"has-session", "-t", exactSessionTarget()})...).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 		return fmt.Errorf("set-option (session): session %q not found: %w", GetSessionName(), err)
 	}
 	return run("set-option", "-t", GetSessionName(), name, value)
@@ -804,7 +876,7 @@ func SelectWindow(windowTarget string) error {
 // AttachSession attaches the current terminal to the maestro tmux session.
 // This replaces the current process with tmux attach-session.
 func AttachSession() error {
-	cmd := exec.Command("tmux", "attach-session", "-t", exactSessionTarget()) //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
+	cmd := exec.Command("tmux", tmuxArgs([]string{"attach-session", "-t", exactSessionTarget()})...) //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -859,15 +931,16 @@ func runCtx(ctx context.Context, args ...string) error {
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
+	op := args[0]
+	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(args)...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
 			debugLog("runCtx TIMEOUT args=%v stderr=%q", args, stderr)
-			return &Error{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return &Error{Kind: contextErrorKind(ctx.Err()), Op: op, Stderr: stderr, Err: ctx.Err()}
 		}
-		classified := classifyError(args[0], stderr, err)
+		classified := classifyError(op, stderr, err)
 		debugLog("runCtx %s args=%v kind=%s stderr=%q", debugLevelForErrorKind(classified.Kind), args, classified.Kind, stderr)
 		return classified
 	}
@@ -899,14 +972,15 @@ func outputCtx(ctx context.Context, args ...string) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
+	op := args[0]
+	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(args)...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
-			return "", &Error{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return "", &Error{Kind: contextErrorKind(ctx.Err()), Op: op, Stderr: stderr, Err: ctx.Err()}
 		}
-		return "", classifyError(args[0], stderr, err)
+		return "", classifyError(op, stderr, err)
 	}
 	return string(out), nil
 }
