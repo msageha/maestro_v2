@@ -33,7 +33,7 @@ type ExecRequest struct {
 	// (e.g. final verification). When true, the executor sets the pane-scoped
 	// tmux user variable @run_on_main=1 before delivery so the PreToolUse
 	// hook can deny Write/Edit operations — main branch is read-only for
-	// Workers in this mode (REQUIREMENTS.md §S2 / Worker safety).
+	// Workers in this mode (Worker safety).
 	RunOnMain bool
 }
 
