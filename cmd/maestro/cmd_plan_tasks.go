@@ -14,9 +14,9 @@ import (
 // explicit value the user typed. Without a sentinel, a typo such as
 // `--max-repair-count 0` is indistinguishable from the unset state and would
 // silently fall back to the default — a footgun for an abort threshold that
-// REQUIREMENTS.md §S2-2 mandates as a hard stop. -1 was chosen because it is
-// outside the valid range for both max_repair_count (≥1) and
-// max_wall_clock_sec (≥1) and is unlikely to be typed deliberately.
+// must act as a hard stop. -1 was chosen because it is outside the valid
+// range for both max_repair_count (≥1) and max_wall_clock_sec (≥1) and is
+// unlikely to be typed deliberately.
 const dabUnset = -1
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
@@ -36,7 +36,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.StringVar(&acceptanceCriteriaFile, "acceptance-criteria-file", "", "Read acceptance criteria from a file or '-' for stdin (mutually exclusive with --acceptance-criteria)")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
-	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required by REQUIREMENTS.md §S3-1)")
+	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required)")
 	cmd.Var(&definitionOfDone, "definition-of-done", "definition_of_done entry (repeatable; overrides acceptance_criteria as done conditions)")
 	cmd.IntVar(&maxRepairCount, "max-repair-count", dabUnset, "definition_of_abort.max_repair_count (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
@@ -121,7 +121,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&workerID, "worker-id", "", "Target worker for task assignment (optional; defaults to least-loaded)")
 	cmd.StringVar(&targetPhase, "target-phase", "", "Phase ID to place the task in (optional; overrides default phase selection)")
 	cmd.StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key to prevent duplicate task injection on retry")
-	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required by REQUIREMENTS.md §S3-1)")
+	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required)")
 	cmd.Var(&definitionOfDone, "definition-of-done", "definition_of_done entry (repeatable; overrides acceptance_criteria as done conditions)")
 	cmd.IntVar(&maxRepairCount, "max-repair-count", dabUnset, "definition_of_abort.max_repair_count (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
@@ -271,8 +271,8 @@ func readFlagInputFile(flagName, path string, maxStdinBytes int) ([]byte, error)
 // buildDefinitionOfAbort assembles a *model.DefinitionOfAbort from the
 // individual CLI flags shared by add-task and add-retry-task. The dabUnset
 // sentinel inherits the model defaults; any other non-positive value is
-// rejected so a typo cannot silently disable a REQUIREMENTS.md §S2-2 abort
-// threshold. The plan layer validates the final values against §S3-1 bounds.
+// rejected so a typo cannot silently disable an abort threshold. The plan
+// layer validates the final values against the configured bounds.
 func buildDefinitionOfAbort(maxRepairCount, maxWallClockSec int, explicitFailureConditions []string) (*model.DefinitionOfAbort, error) {
 	defaults := model.DefaultDefinitionOfAbort()
 	doa := model.DefinitionOfAbort{
