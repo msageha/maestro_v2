@@ -109,8 +109,7 @@ func validateRequiredVerifySnapshot(opts SubmitOptions) error {
 			return &planValidationError{Msg: fmt.Sprintf(
 				"verify config snapshot is required before plan submit for command %s.\n"+
 					"  Quick fix: maestro verify write --command-id %s --config-file <verify.yaml>\n"+
-					"  Or via stdin: cat verify.yaml | maestro verify write --command-id %s --config-file -\n"+
-					"  See templates/verify.yaml.example for a minimal valid config.",
+					"  Or via stdin: cat verify.yaml | maestro verify write --command-id %s --config-file -",
 				opts.CommandID, opts.CommandID, opts.CommandID)}
 		}
 		return &planValidationError{Msg: fmt.Sprintf(
