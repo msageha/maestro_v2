@@ -66,20 +66,17 @@ type InjectOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
-	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
-	// definition_of_abort. These are required at injection time the same as
-	// they are required for tasks introduced via plan submit.
-	ExpectedPaths     []string
-	DefinitionOfAbort *model.DefinitionOfAbort
-	TargetWorkerID    string
-	TargetPhase       string // phase ID to place the task in; overrides default fallback logic
-	IdempotencyKey    string
-	RunOnMain         bool // run task in main branch dir instead of worker worktree
-	RunOnIntegration  bool // run task in integration worktree (for publish_conflict resolution)
-	MaestroDir        string
-	Config            model.Config
-	LockMap           *lock.MutexMap
-	ModelSelector     ModelSelector // optional: adaptive model selection
+	ExpectedPaths      []string
+	DefinitionOfAbort  *model.DefinitionOfAbort
+	TargetWorkerID     string
+	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
+	IdempotencyKey     string
+	RunOnMain          bool // run task in main branch dir instead of worker worktree
+	RunOnIntegration   bool // run task in integration worktree (for publish_conflict resolution)
+	MaestroDir         string
+	Config             model.Config
+	LockMap            *lock.MutexMap
+	ModelSelector      ModelSelector // optional: adaptive model selection
 }
 
 // InjectResult contains the outcome of a task injection.
@@ -340,12 +337,12 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	state.PlanVersion++
 	state.UpdatedAt = now
 
-	// Write queue entry. §S0-1: tasks injected to resolve publish/merge
-	// conflicts run on the integration worktree and are classified as repair
-	// operations for admission control. RunOnMain は input.go godoc で
-	// "read-only verification tasks that must evaluate the merged state on the
-	// main branch" と定義されているため verify バケットに分類する。両方 false の
-	// オペレータ手動注入タスクは未分類のまま (OpUnknown = 常時 admit)。
+	// Write queue entry. RunOnIntegration タスクは publish/merge 競合解決を
+	// integration worktree 上で行うため repair バケットに分類する。RunOnMain は
+	// input.go godoc で "read-only verification tasks that must evaluate the
+	// merged state on the main branch" と定義されているため verify バケットに
+	// 分類する。両方 false のオペレータ手動注入タスクは未分類のまま
+	// (OpUnknown = 常時 admit)。
 	opType := ""
 	switch {
 	case opts.RunOnMain:
@@ -517,11 +514,6 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 		}
 	}
 
-	// REQUIREMENTS.md §S3-1: tasks injected via add-task MUST declare
-	// expected_paths and definition_of_abort, the same as tasks submitted via
-	// plan submit. Earlier the CLI did not surface these flags so injected
-	// tasks bypassed the schema; that is now enforced here so the daemon
-	// rejects malformed input even when called from non-CLI clients.
 	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort, opts.DefinitionOfDone); err != nil {
 		return err
 	}
@@ -532,10 +524,6 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 // validateInjectedSchemaFields enforces that expected_paths and
 // definition_of_abort are present and well-formed. Shared by add-task and
 // add-retry-task entry points.
-//
-// REQUIREMENTS.md §S3-1: an empty slice is treated the same as a missing
-// field — Path-overlap heuristic (§A-4) cannot reason about a task that
-// claims to touch nothing, so the API must reject both nil and []string{}.
 func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionOfAbort, definitionOfDone []string) error {
 	errs := &ValidationErrors{}
 	if expectedPaths == nil {

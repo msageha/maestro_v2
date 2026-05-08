@@ -97,10 +97,6 @@ func shouldInsertSystemCommit(cfg model.Config) bool {
 }
 
 func buildSystemCommitTask(blockedByNames []string) TaskInput {
-	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
-	// definition_of_abort. The system-injected commit task is no exception —
-	// without explicit values here, validation will reject the auto-injected
-	// task and the whole submit will fail.
 	doa := model.DefaultDefinitionOfAbort()
 	return TaskInput{
 		Name:               "__system_commit",

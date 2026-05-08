@@ -70,7 +70,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 			}
 		}
 
-		// REQUIREMENTS.md §2.1 lifecycle progression. The recorded worker
+		// Lifecycle progression. The recorded worker
 		// status is mapped to a sequence of intermediate states so that
 		// completed/failed/paused_for_replan are reached only via the
 		// verify_pending → repair_pending pipeline that §2.1 mandates. The
@@ -156,7 +156,7 @@ func validateReportedResultTransition(existing, recorded model.Status) error {
 //     (Report 2026-05-06 bug-1 — verify.enabled=false sites wedged
 //     forever because R2 deferred to verify pipeline ownership and
 //     the verify pipeline was a no-op).
-//   - failed + max_repair    → paused_for_replan (§S2-2 Circuit Breaker
+//   - failed + max_repair    → paused_for_replan (Circuit Breaker
 //     triggers replan; the replan path is verify-independent).
 //   - failed (non-retryable) → paused_for_replan (no retry producer exists,
 //     Planner must replan; verify-independent path).
@@ -214,7 +214,7 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 					"(retry already enqueued; original cancelled directly to avoid repair_pending wedge)",
 				params.TaskID, params.CommandID)
 		case abortByMaxRepair:
-			// Max-repair abort: the §S2-2 Circuit Breaker has decided
+			// Max-repair abort: the Circuit Breaker has decided
 			// the task cannot be recovered automatically. Park at
 			// paused_for_replan so the Planner can produce a different
 			// strategy. The previous detour through verify_pending →

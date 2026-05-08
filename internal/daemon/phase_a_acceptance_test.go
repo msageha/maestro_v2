@@ -15,7 +15,7 @@ import (
 )
 
 // ============================================================================
-// Phase A Acceptance Tests — REQUIREMENTS.md §6
+// Phase A Acceptance Tests
 //
 // Phase A 完了基準:
 //   「異種モデル Reviewer の指摘事項がマージをブロックせず、

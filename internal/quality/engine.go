@@ -550,17 +550,23 @@ type FeatureGateRule struct {
 	scorer    ComplexityAnalyzer
 }
 
-// Evaluate determines the complexity level and resolves the corresponding
-// feature profile. It always returns (true, nil) — see the doc comment on
-// FeatureGateRule for why this rule is intentionally non-blocking.
+// Evaluate is intentionally non-blocking and always returns (true, nil); see
+// the FeatureGateRule doc comment for why this rule cannot fail a task (the
+// resolved profile is not propagated through *RuleResult).
 //
-// If task.complexity_level is explicitly set in the evaluation context, it
-// overrides the computed level (§C-8 req-4). On any failure of the underlying
-// scorer, profileLevel falls back to ProfileLevelSimple (§C-8 req-6).
+// The function still walks the resolution pipeline so that any side effects
+// in the configured FeatureGateEvaluator / scorer continue to fire:
+//
+//   - If task.complexity_level is set in the evaluation context, it is used
+//     directly; otherwise the level is computed from scorer.Estimate.
+//   - The evaluator is queried for the profile at that level. If the
+//     returned profile has no enabled features, the evaluator is queried a
+//     second time with ProfileLevelSimple. Both lookup results are
+//     discarded — the function unconditionally returns (true, nil).
 func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	var level FeatureProfileLevel
 
-	// §C-8 req-4: explicit complexity level override
+	// Explicit complexity level override.
 	if raw, ok := evalCtx.GetField("task.complexity_level"); ok {
 		if s, isStr := raw.(string); isStr && s != "" {
 			level = FeatureProfileLevel(s)
@@ -575,10 +581,10 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 	}
 
 	// Resolve the profile. If the configured FeatureGateEvaluator returns an
-	// empty profile for the chosen level (mis-configured tier), fall back to
-	// the Simple profile so callers always see a usable definition. The
-	// returned profile is not propagated through *RuleResult today; see the
-	// FeatureGateRule doc comment.
+	// empty profile for the chosen level (mis-configured tier), retry the
+	// lookup with ProfileLevelSimple. Both results are discarded — the gate
+	// is non-blocking and the resolved profile is not propagated through
+	// *RuleResult; see the FeatureGateRule doc comment.
 	if profile := r.evaluator.Evaluate(level); len(profile.EnabledFeatures) == 0 {
 		r.evaluator.Evaluate(ProfileLevelSimple)
 	}
