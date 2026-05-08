@@ -186,8 +186,6 @@ type RetryOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
-	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
-	// definition_of_abort, including replacement tasks created by retry.
 	ExpectedPaths     []string
 	DefinitionOfAbort *model.DefinitionOfAbort
 	MaestroDir        string
@@ -458,9 +456,6 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 		return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, opts.BloomLevel)}
 	}
 
-	// REQUIREMENTS.md §S3-1: replacement tasks MUST declare expected_paths and
-	// definition_of_abort. Validate before any state mutation so a malformed
-	// retry request fails fast.
 	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort, opts.DefinitionOfDone); err != nil {
 		return nil, err
 	}
