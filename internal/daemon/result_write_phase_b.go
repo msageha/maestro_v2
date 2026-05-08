@@ -214,7 +214,7 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 					"(retry already enqueued; original cancelled directly to avoid repair_pending wedge)",
 				params.TaskID, params.CommandID)
 		case abortByMaxRepair:
-			// Max-repair abort: the §S2-2 Circuit Breaker has decided
+			// Max-repair abort: the Circuit Breaker has decided
 			// the task cannot be recovered automatically. Park at
 			// paused_for_replan so the Planner can produce a different
 			// strategy. The previous detour through verify_pending →

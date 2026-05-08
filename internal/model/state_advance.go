@@ -14,10 +14,9 @@ import "fmt"
 // direct ValidateTaskStateTransition shortcut and never re-routed through the
 // graph.
 //
-// REQUIREMENTS.md §2.1: this helper is the single entry point that lets
-// callers express logical intent (e.g. "this task is now completed") without
-// having to spell out every intermediate state transition the requirements
-// mandate (running → verify_pending → completed).
+// This helper is the single entry point that lets callers express logical
+// intent (e.g. "this task is now completed") without having to spell out
+// every intermediate state transition (running → verify_pending → completed).
 func AdvanceTaskState(states map[string]Status, taskID string, target Status) error {
 	if states == nil {
 		return fmt.Errorf("AdvanceTaskState: states map is nil")

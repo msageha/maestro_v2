@@ -19,7 +19,7 @@ const (
 	// StatusDeadLetter indicates the item exceeded max attempts and was dead-lettered.
 	StatusDeadLetter Status = "dead_letter"
 
-	// REQUIREMENTS.md §2.1: Extended task lifecycle states
+	// Extended task lifecycle states.
 	// Note: These extended statuses are used in task state transitions (validTaskStateTransitions)
 	// only; they do NOT appear in queue entry transitions (validCommandTaskQueueTransitions).
 
@@ -247,7 +247,7 @@ var validTaskStateTransitions = map[Status]map[Status]bool{
 		// transition pipeline; verify_pending is the §2.1-mandated next step before completed/repair_pending.
 	},
 
-	// REQUIREMENTS.md §2.1: Extended task lifecycle transitions.
+	// Extended task lifecycle transitions.
 	// cancelled is allowed from every non-terminal extended state for command
 	// cancellation symmetry (a cancelled command must cancel all its tasks).
 	StatusPlanned: {

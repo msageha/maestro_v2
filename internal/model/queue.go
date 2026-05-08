@@ -44,7 +44,6 @@ type TaskQueue struct {
 }
 
 // DefinitionOfAbort はタスクの中断条件を定義する構造体。
-// REQUIREMENTS.md §2.2 で要求されるフィールド。
 type DefinitionOfAbort struct {
 	MaxRepairCount            int      `yaml:"max_repair_count"`
 	MaxWallClockSec           int      `yaml:"max_wall_clock_sec"`
@@ -109,7 +108,7 @@ type Task struct {
 	// resolution tasks that must operate directly on the integration branch to
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
-	// OperationType classifies the task for §S0-1 admission control. Permitted
+	// OperationType classifies the task for admission control. Permitted
 	// values are OperationTypeVerify / Repair, or empty for normal
 	// (unconstrained) tasks. Classification is deterministic and explicit:
 	// when this field is empty the admission controller treats the task as
