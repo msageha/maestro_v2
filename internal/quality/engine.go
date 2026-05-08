@@ -566,7 +566,7 @@ type FeatureGateRule struct {
 func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	var level FeatureProfileLevel
 
-	// §C-8 req-4: explicit complexity level override
+	// Explicit complexity level override.
 	if raw, ok := evalCtx.GetField("task.complexity_level"); ok {
 		if s, isStr := raw.(string); isStr && s != "" {
 			level = FeatureProfileLevel(s)
@@ -581,10 +581,10 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 	}
 
 	// Resolve the profile. If the configured FeatureGateEvaluator returns an
-	// empty profile for the chosen level (mis-configured tier), fall back to
-	// the Simple profile so callers always see a usable definition. The
-	// returned profile is not propagated through *RuleResult today; see the
-	// FeatureGateRule doc comment.
+	// empty profile for the chosen level (mis-configured tier), retry the
+	// lookup with ProfileLevelSimple. Both results are discarded — the gate
+	// is non-blocking and the resolved profile is not propagated through
+	// *RuleResult; see the FeatureGateRule doc comment.
 	if profile := r.evaluator.Evaluate(level); len(profile.EnabledFeatures) == 0 {
 		r.evaluator.Evaluate(ProfileLevelSimple)
 	}
