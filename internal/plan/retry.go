@@ -186,12 +186,12 @@ type RetryOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
-	ExpectedPaths     []string
-	DefinitionOfAbort *model.DefinitionOfAbort
-	MaestroDir        string
-	Config            model.Config
-	LockMap           *lock.MutexMap
-	ModelSelector     ModelSelector // optional: adaptive model selection
+	ExpectedPaths      []string
+	DefinitionOfAbort  *model.DefinitionOfAbort
+	MaestroDir         string
+	Config             model.Config
+	LockMap            *lock.MutexMap
+	ModelSelector      ModelSelector // optional: adaptive model selection
 }
 
 // RetryResult contains the outcome of a task retry including any cascade-recovered tasks.
@@ -713,12 +713,11 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 	var toolsHint []string
 	var personaHint string
 	var skillRefs []string
-	// REQUIREMENTS.md §S3-1: cascade-recovered tasks must also declare
-	// expected_paths / definition_of_abort. Inherit from the original task when
-	// available; fall back to the values supplied for the primary retry so the
-	// replacement passes schema validation. The originals already passed
-	// validation when they were submitted, so they are guaranteed to be
-	// well-formed.
+	// Cascade-recovered tasks inherit expected_paths / definition_of_abort
+	// from the original task when available; otherwise fall back to the
+	// values supplied for the primary retry so the replacement passes schema
+	// validation. The originals already passed validation when they were
+	// submitted, so they are guaranteed to be well-formed.
 	expectedPaths := opts.ExpectedPaths
 	definitionOfAbort := opts.DefinitionOfAbort
 
