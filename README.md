@@ -143,7 +143,10 @@ Daemon は以下のモジュールを備え、`feature_profiles` でタスク複
 
 Worker のタスク完了後に走らせる検証コマンドを `.maestro/verify.yaml`（または `maestro verify write --command-id <id> --config-file <path>`）で宣言する。`build / lint / test / typecheck` および任意の `security / performance` にカテゴリ分けする。
 
-- 直接 `exec` のみ。`;`, `&&`, `||`, バッククオート, `$(`, `${`, パイプ, リダイレクト, 改行は禁止（`sh -c` / `bash -c` も拒否）。必要ならスクリプトファイルを呼ぶ形にする。
+- 各コマンドは `bash -c` 経由で実行される。`&&` / `||` / `;` / `|` / リダイレクト / `$(...)` / env 代入 (`KEY=val cmd`) などの通常の shell 構文をそのまま書いてよい。複数手順を 1 つの category に並べたい場合も `cmd1 && cmd2` で連結できる。
+- 唯一の構文制約は「YAML スカラ 1 行に収まること」（改行 / キャリッジリターンのみ reject される）。
+- カテゴリは `build`, `lint`, `test`, `typecheck`, `security`, `performance` の 6 つ。これ以外のキー（例: `slow_lint`, `integration_test`）を書くと strict YAML decode で reject され "allowed categories: ..." エラーになる。
+- shell の論理否定 `!` は使わない。`! rg ...` は JSON/YAML 経由で `\!` にエスケープされ `bash -c` で `\!: command not found` (exit 127) を踏む。代わりに `if rg <pattern>; then exit 1; fi` や `rg -q <pattern> && exit 1 || exit 0` で書く。
 - 検証失敗時は repair タスクをスケジュールし、修復成功なら lineage-aware な `DeriveStatus` で plan 完了扱いになる。
 
 ---
