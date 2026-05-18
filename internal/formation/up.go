@@ -30,10 +30,10 @@ var errSessionExists = fmt.Errorf("maestro session already exists (use --force t
 
 // RunUp executes the 'maestro up' command.
 func RunUp(opts UpOptions) (err error) {
-	// Set tmux session name from project config. Include a hash of MaestroDir
-	// so different checkouts of the same project don't share a session slot
-	// (see tmux.BuildMaestroSessionName).
-	tmux.SetSessionName(tmux.BuildMaestroSessionName(opts.Config.Project.Name, opts.MaestroDir))
+	// Set tmux session name from project config. The session name is the
+	// human-readable "maestro-<projectName>"; per-checkout isolation comes
+	// from the per-instance socket below, not the session name.
+	tmux.SetSessionName(tmux.BuildMaestroSessionName(opts.Config.Project.Name))
 	// Configure a per-project tmux socket (`tmux -L <socket>`). Sharing
 	// the default socket lets concurrent maestro instances of different
 	// projects pile sessions onto the same tmux server, producing

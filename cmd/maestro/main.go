@@ -147,6 +147,8 @@ func (a *cliApp) run(args []string) int {
 		err = runSetup(args[1:])
 	case "up":
 		err = runUp(args[1:])
+	case "attach":
+		err = runAttach(args[1:])
 	case "down":
 		err = runDown(args[1:])
 	case "status":
@@ -257,6 +259,7 @@ Usage: maestro <command> [options]
 Formation:
   setup <dir> [name]  Initialize .maestro/ directory
   up [flags]        Start formation and attach (--detach|-d to skip)
+  attach            Attach to the running maestro tmux session
   down              Graceful shutdown
   status [--json]   Show formation status
 

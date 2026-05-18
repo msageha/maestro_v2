@@ -407,36 +407,18 @@ func tmuxArgs(args []string) []string {
 	return combined
 }
 
-// BuildMaestroSessionName returns a stable, collision-resistant tmux session
-// name for a maestro project. The name combines the human-readable project
-// name with an 8-hex-char hash of the absolute maestroDir, so two checkouts
-// of the same project (or two repos that share a project name) get distinct
-// sessions instead of colliding on a single global "maestro-<name>" slot.
+// BuildMaestroSessionName returns the human-readable tmux session name for a
+// maestro project, in the form "maestro-<projectName>".
 //
-// The hash is derived from the canonical absolute path of maestroDir
-// (filepath.Abs + filepath.Clean + filepath.EvalSymlinks when available).
-// Resolving symlinks keeps /tmp/... and /private/tmp/... on macOS pointed at
-// the same tmux session. If absolute or symlink resolution fails, the best
-// available cleaned path is hashed — the goal is stable per-checkout
-// differentiation, not security.
-//
-// If maestroDir is empty, the legacy "maestro-<projectName>" form is returned
-// for backward compatibility (e.g., test code that does not have a maestro
-// directory). Callers in production paths should always supply maestroDir.
-func BuildMaestroSessionName(projectName, maestroDir string) string {
-	base := "maestro-" + projectName
-	if maestroDir == "" {
-		return base
-	}
-	canonical := maestroDir
-	if abs, err := filepath.Abs(maestroDir); err == nil {
-		canonical = filepath.Clean(abs)
-		if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
-			canonical = filepath.Clean(resolved)
-		}
-	}
-	sum := sha256.Sum256([]byte(canonical))
-	return base + "-" + hex.EncodeToString(sum[:])[:8]
+// Cross-instance collision (two checkouts of the same project, or two repos
+// sharing a project name) is handled at the socket layer by
+// BuildMaestroSocketName: each maestro instance gets its own tmux server via
+// `tmux -L <socket>`, so within a given socket there is at most one session
+// per project. That makes the session name itself a pure UX surface — short
+// and predictable so operators can `tmux attach -t maestro-<projectName>`
+// once the right socket is selected (see `maestro attach`).
+func BuildMaestroSessionName(projectName string) string {
+	return "maestro-" + projectName
 }
 
 // SessionExists checks whether the maestro tmux session exists.
@@ -881,6 +863,13 @@ func AttachSession() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// SwitchClient switches the current tmux client (we must already be inside
+// tmux) to targetSession. Used when `maestro attach` is invoked from inside
+// an existing tmux client, where attach-session would be rejected.
+func SwitchClient(targetSession string) error {
+	return run("switch-client", "-t", "="+targetSession)
 }
 
 // ShellCommands is the canonical set of known shell command names.

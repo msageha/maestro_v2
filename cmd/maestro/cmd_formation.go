@@ -108,14 +108,86 @@ func runUp(args []string) error {
 		return fmt.Errorf("maestro up: %w", err)
 	}
 
+	printAttachHint(detach)
+
 	if !detach {
 		if os.Getenv("TMUX") != "" {
-			fmt.Printf("Already inside tmux. Attach with: tmux switch-client -t %s\n", tmux.GetSessionName())
 			return nil
 		}
 		if err := tmux.AttachSession(); err != nil {
 			return fmt.Errorf("maestro up: attach: %w", err)
 		}
+	}
+	return nil
+}
+
+// printAttachHint surfaces the attach commands so operators do not need to
+// remember the per-instance tmux socket. The maestro session lives on
+// `tmux -L <socket>`, not the default socket, so `tmux attach -t <session>`
+// alone will not find it. We print both `maestro attach` (the friendly
+// wrapper) and the raw tmux invocation in case the operator wants to script
+// something on top of it.
+func printAttachHint(detach bool) {
+	session := tmux.GetSessionName()
+	socket := tmux.GetTmuxSocket()
+	insideTmux := os.Getenv("TMUX") != ""
+
+	switch {
+	case insideTmux:
+		fmt.Printf("Already inside tmux. Switch with: maestro attach  (or: tmux switch-client -t %s)\n", session)
+	case detach:
+		if socket != "" {
+			fmt.Printf("Attach with: maestro attach  (or: tmux -L %s attach -t %s)\n", socket, session)
+		} else {
+			fmt.Printf("Attach with: maestro attach  (or: tmux attach -t %s)\n", session)
+		}
+	}
+}
+
+// runAttach attaches the current terminal to the maestro tmux session for the
+// project rooted at the discovered .maestro/ directory. Each maestro instance
+// runs on its own tmux server (per-instance socket), so a bare
+// `tmux attach -t maestro-<projectName>` from outside this command would miss
+// the session — this wrapper resolves the right `-L <socket>` automatically.
+func runAttach(args []string) error {
+	cmd := NewCommand("maestro attach", "maestro attach")
+	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+
+	maestroDir, err := requireMaestroDir("attach")
+	if err != nil {
+		return err
+	}
+
+	cfg, err := model.LoadConfig(maestroDir)
+	if err != nil {
+		return fmt.Errorf("maestro attach: load config: %w", err)
+	}
+	if err := setupTmuxSession("attach", maestroDir, cfg); err != nil {
+		return err
+	}
+
+	if !tmux.SessionExists() {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf(
+			"maestro attach: session %q not found on socket %q\n  hint: run `maestro up` first",
+			tmux.GetSessionName(), tmux.GetTmuxSocket(),
+		)}
+	}
+
+	// Inside an existing tmux client, attach-session is a no-op (tmux refuses
+	// to nest); use switch-client so the operator's window jumps to the
+	// maestro session instead.
+	if os.Getenv("TMUX") != "" {
+		fmt.Printf("Already inside tmux. Switching client to: %s\n", tmux.GetSessionName())
+		if err := tmux.SwitchClient(tmux.GetSessionName()); err != nil {
+			return fmt.Errorf("maestro attach: switch-client: %w", err)
+		}
+		return nil
+	}
+
+	if err := tmux.AttachSession(); err != nil {
+		return fmt.Errorf("maestro attach: %w", err)
 	}
 	return nil
 }

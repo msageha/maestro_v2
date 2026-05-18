@@ -90,7 +90,26 @@ func useTestSession(t *testing.T) string {
 	return capturedName
 }
 
-func TestBuildMaestroSessionNameResolvesSymlinks(t *testing.T) {
+// TestBuildMaestroSessionName_HumanReadable pins the attach-UX contract:
+// the session name is exactly "maestro-<projectName>" so operators can
+// `tmux attach -t maestro-<projectName>` once the per-instance socket is
+// selected (see `maestro attach`). Per-checkout collision is resolved at
+// the socket layer, not via a name suffix.
+func TestBuildMaestroSessionName_HumanReadable(t *testing.T) {
+	if got := BuildMaestroSessionName("proj"); got != "maestro-proj" {
+		t.Fatalf("session name = %q, want %q", got, "maestro-proj")
+	}
+	if got := BuildMaestroSessionName("maestro_v2"); got != "maestro-maestro_v2" {
+		t.Fatalf("session name = %q, want %q", got, "maestro-maestro_v2")
+	}
+}
+
+// TestBuildMaestroSocketNameResolvesSymlinks pins that the canonicalisation
+// step inside BuildMaestroSocketName resolves symlinks, so /tmp/... and
+// /private/tmp/... on macOS land on the same per-instance tmux server.
+// Without this, two `maestro` invocations from the same checkout via
+// different path forms would spawn two tmux servers and lose isolation.
+func TestBuildMaestroSocketNameResolvesSymlinks(t *testing.T) {
 	realDir := t.TempDir()
 	linkParent := t.TempDir()
 	linkDir := filepath.Join(linkParent, "maestro-link")
@@ -98,10 +117,10 @@ func TestBuildMaestroSessionNameResolvesSymlinks(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 
-	fromReal := BuildMaestroSessionName("proj", realDir)
-	fromLink := BuildMaestroSessionName("proj", linkDir)
+	fromReal := BuildMaestroSocketName("proj", realDir)
+	fromLink := BuildMaestroSocketName("proj", linkDir)
 	if fromReal != fromLink {
-		t.Fatalf("session name mismatch for real and symlink paths: real=%q link=%q", fromReal, fromLink)
+		t.Fatalf("socket name mismatch for real and symlink paths: real=%q link=%q", fromReal, fromLink)
 	}
 }
 
