@@ -358,6 +358,20 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 		return nil
 	}
 
+	// A phase's Failed/Cancelled transition is driven only by its REQUIRED
+	// tasks, mirroring DeriveStatus (which computes hasFailed/hasCancelled
+	// from state.RequiredTaskIDs alone). An optional task that failed or was
+	// cancelled is terminal but tolerated: forcing the whole phase to Failed
+	// on an optional failure contradicts CompletionPolicy.OnOptionalFailed
+	// (default "ignore") and used to cascade-cancel/block dependent phases for
+	// a plan the policy says should still succeed. The rare
+	// OnOptionalFailed="fail_command" still fails the *command* at the plan
+	// level via DeriveStatus, so leaving the phase non-failed here is safe.
+	requiredSet := make(map[string]bool, len(phase.RequiredTaskIDs))
+	for _, id := range phase.RequiredTaskIDs {
+		requiredSet[id] = true
+	}
+
 	allCompleted := true
 	hasFailed := false
 	hasCancelled := false
@@ -378,13 +392,22 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 			continue
 		}
 
+		// RequiredTaskIDs may be empty for an all-optional phase; in that case
+		// every task is optional and the phase still completes when its work is
+		// done (the historical "all-optional phase completes" behaviour).
+		isRequired := requiredSet[taskID]
+
 		switch status {
 		case model.StatusCompleted:
 			// ok
 		case model.StatusFailed:
-			hasFailed = true
+			if isRequired {
+				hasFailed = true
+			}
 		case model.StatusCancelled:
-			hasCancelled = true
+			if isRequired {
+				hasCancelled = true
+			}
 		default:
 			allCompleted = false
 		}

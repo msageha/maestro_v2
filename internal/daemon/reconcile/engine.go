@@ -37,6 +37,14 @@ func (e *Engine) SetClock(c core.Clock) {
 // the loop terminates and returns all accumulated results.
 const maxReconcilePasses = 3
 
+// cycleTicker is implemented by patterns that maintain per-Reconcile() state
+// such as exponential backoff (R4PlanStatus). Reconcile() invokes Tick()
+// exactly once per call — before the bounded fixpoint loop — so multi-pass
+// convergence does not advance such counters more than once per scan.
+type cycleTicker interface {
+	Tick()
+}
+
 // Reconcile runs all reconciliation patterns with bounded fixpoint iteration.
 // After the initial pass, if any repairs were generated, re-runs all patterns
 // up to maxReconcilePasses total. The loop terminates early when a pass produces
@@ -48,6 +56,14 @@ const maxReconcilePasses = 3
 func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 	var allRepairs []Repair
 	var allNotifications []DeferredNotification
+
+	// Advance per-cycle pattern state (e.g. R4 backoff) exactly once per
+	// Reconcile(), before the fixpoint loop re-runs patterns.
+	for _, p := range e.patterns {
+		if t, ok := p.(cycleTicker); ok {
+			t.Tick()
+		}
+	}
 
 	for pass := 0; pass < maxReconcilePasses; pass++ {
 		run := newRun(&e.deps)

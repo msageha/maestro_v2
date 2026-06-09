@@ -85,11 +85,27 @@ func CompleteDeferredPublish(opts CompleteOptions) (*CompleteResult, error) {
 		return nil, nil
 	}
 
-	// Remove the deferred intent before calling Complete to prevent infinite
-	// loops if Complete writes another deferred intent (which it won't, since
-	// publish is now done, but defense-in-depth).
-	RemoveDeferredComplete(opts.MaestroDir, opts.CommandID)
-
 	opts.Summary = dc.Summary
-	return Complete(opts)
+	res, err := Complete(opts)
+	if err != nil {
+		// Keep the intent file so the next scan tick retries. Removing it
+		// before a successful Complete() (the previous behaviour) stranded the
+		// command on any transient failure — a momentary result/state I/O error
+		// or a stale-results conflict dropped the deferred intent permanently,
+		// leaving plan_status non-terminal and the orchestrator un-notified
+		// (the exact P0 wedge stepFinalizeQuarantinedDeferredComplete exists to
+		// resolve, whose comment already assumes the intent survives on error).
+		return res, err
+	}
+
+	// Complete() can legitimately re-defer (publish still not finished): it
+	// writes a fresh deferred intent and returns Status="deferred_publish".
+	// Removing the intent in that case would delete the just-written one and
+	// strand completion, so only remove it once Complete has actually finalised
+	// the command. At that point publish is done, so Complete does not write a
+	// new intent and there is no infinite-loop risk.
+	if res == nil || res.Status != "deferred_publish" {
+		RemoveDeferredComplete(opts.MaestroDir, opts.CommandID)
+	}
+	return res, nil
 }

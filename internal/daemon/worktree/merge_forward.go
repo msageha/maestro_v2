@@ -57,6 +57,21 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 		// aborted because it had become stale) and a fresh attempt is safe.
 	}
 
+	// Ensure the integration worktree is actually on the integration branch
+	// before merging base into it. A prior crashed/aborted publish can leave
+	// the worktree on the `_publish` temp branch or detached: performPublishMerge
+	// checks out `_publish`, then is supposed to restore the integration branch,
+	// but a crash between those steps — or a restore failure that detaches HEAD
+	// (publish.go fallback) — bypasses the restore. Without this guard the
+	// `git merge baseBranch` below lands the forward-merge on the wrong ref
+	// while the real integration branch stays behind, losing forward-merge
+	// progress or producing a recurring publish-conflict loop. The in-flight
+	// merge case is handled by the re-entry block above (a worktree mid-merge on
+	// the integration branch is already on the right branch, so this is a no-op).
+	if err := wm.ensureIntegrationBranchCheckedOutLocked(state, commandID); err != nil {
+		return fmt.Errorf("forward-merge: ensure integration branch checked out: %w", err)
+	}
+
 	// Check if forward-merge is needed by comparing the integration branch's
 	// merge-base with baseBranch to the current baseBranch HEAD.
 	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)

@@ -978,6 +978,15 @@ func (wm *Manager) EnsureIntegrationBranchCheckedOut(commandID string) error {
 	if err != nil {
 		return fmt.Errorf("load worktree state: %w", err)
 	}
+	return wm.ensureIntegrationBranchCheckedOutLocked(state, commandID)
+}
+
+// ensureIntegrationBranchCheckedOutLocked is the lock-held core of
+// EnsureIntegrationBranchCheckedOut. Caller MUST hold wm.mu and pass the
+// already-loaded state. Split out so publish-path callers that already hold
+// the lock (forwardMergeBaseToIntegration via PublishToBase) can reuse the
+// check without re-entering the non-reentrant mutex.
+func (wm *Manager) ensureIntegrationBranchCheckedOutLocked(state *model.WorktreeCommandState, commandID string) error {
 	if state.Integration.Branch == "" {
 		return fmt.Errorf("no integration branch registered for command %s", commandID)
 	}
@@ -1067,27 +1076,33 @@ func (wm *Manager) findWorker(state *model.WorktreeCommandState, workerID string
 // reappear as "dirty residue" the next time the worker is reused and
 // stall the merge.
 //
+// Returns committed=true when a real commit was created (i.e. the worker
+// branch advanced). The caller uses this to move the worker out of any
+// post-merge Integrated status — otherwise mergeWorkerBranch short-circuits
+// an Integrated worker as "already merged" and the freshly committed work is
+// silently dropped from integration.
+//
 // Caller MUST hold wm.mu (invoked from RefreshWorkerWorktreeToIntegrationHead).
-func (wm *Manager) commitWorkerInlineForRefresh(ws *model.WorktreeState, commandID, workerID string) error {
+func (wm *Manager) commitWorkerInlineForRefresh(ws *model.WorktreeState, commandID, workerID string) (committed bool, err error) {
 	if err := wm.gitAddAllWithUnstattableFallback(ws.Path, commandID, workerID); err != nil {
-		return fmt.Errorf("git add -A: %w", err)
+		return false, fmt.Errorf("git add -A: %w", err)
 	}
 	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
-		return fmt.Errorf("git diff --cached: %w", err)
+		return false, fmt.Errorf("git diff --cached: %w", err)
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
 		// Only ignored content was dirty; nothing to commit.
-		return nil
+		return false, nil
 	}
 	message := fmt.Sprintf("[maestro] wave-crossing auto-commit: worker=%s command=%s", workerID, commandID)
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {
-		return fmt.Errorf("git commit: %w", err)
+		return false, fmt.Errorf("git commit: %w", err)
 	}
 	wm.Log(core.LogLevelInfo,
 		"worker_inline_committed_for_refresh command=%s worker=%s",
 		commandID, workerID)
-	return nil
+	return true, nil
 }
 
 // AutoCommit returns whether auto-commit is enabled in the worktree config.
@@ -1178,8 +1193,33 @@ func (wm *Manager) RefreshWorkerWorktreeToIntegrationHead(commandID, workerID st
 		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, statusErr)
 	}
 	if strings.TrimSpace(statusOut) != "" {
-		if err := wm.commitWorkerInlineForRefresh(ws, commandID, workerID); err != nil {
+		committed, err := wm.commitWorkerInlineForRefresh(ws, commandID, workerID)
+		if err != nil {
 			return fmt.Errorf("worker %s worktree has uncommitted changes that could not be auto-committed inline: %w", workerID, err)
+		}
+		if committed {
+			// The inline commit advanced the worker branch ahead of
+			// integration. A worker re-used across phases is still at
+			// WorktreeStatusIntegrated here; mergeWorkerBranch short-circuits
+			// an Integrated worker as "already merged" BEFORE checking for new
+			// commits, so without this transition the just-committed work is
+			// silently dropped from integration at the next phase boundary.
+			// Integrated/Active/Committed/Created → Committed are all valid
+			// transitions; for any unexpected (terminal) status we log and
+			// proceed rather than fail the dispatch.
+			now := wm.clock.Now().UTC().Format(time.RFC3339)
+			if tErr := model.ValidateWorktreeTransition(ws.Status, model.WorktreeStatusCommitted); tErr != nil {
+				wm.Log(core.LogLevelWarn,
+					"worker_inline_refresh_status_advance_skipped command=%s worker=%s from=%s error=%v",
+					commandID, workerID, ws.Status, tErr)
+			} else if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCommitted, now); tErr != nil {
+				return fmt.Errorf("worker %s: advance status after inline refresh commit: %w", workerID, tErr)
+			} else {
+				state.UpdatedAt = now
+				if sErr := wm.saveState(commandID, state); sErr != nil {
+					return fmt.Errorf("save state after inline refresh commit (worker=%s): %w", workerID, sErr)
+				}
+			}
 		}
 		statusOut, statusErr = wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 		if statusErr != nil {

@@ -95,13 +95,19 @@ func r4BackoffCycles(failures int) int {
 	return cycles
 }
 
+// Tick advances the exponential-backoff counters by one reconciliation cycle.
+// The engine calls this exactly once per Reconcile() (before the bounded
+// fixpoint loop), NOT inside Apply: Apply runs up to maxReconcilePasses times
+// per scan, so ticking there decremented every command's skipRemaining 2–3x
+// per scan and shortened the intended backoff window.
+func (r *R4PlanStatus) Tick() {
+	r.backoffs.tick()
+}
+
 // Apply detects non-terminal plan_status despite terminal planner result and updates or quarantines.
 func (r *R4PlanStatus) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification
-
-	// Tick backoff counters once per reconciliation cycle
-	r.backoffs.tick()
 
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
 	rf, err := run.loadCommandResultFile(resultPath)

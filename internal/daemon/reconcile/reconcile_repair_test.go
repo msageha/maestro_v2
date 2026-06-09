@@ -1362,8 +1362,15 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 	r4 := NewR4PlanStatus(nil)
 
+	// Each cycle mirrors one engine Reconcile(): Tick() advances the backoff
+	// counters exactly once, then Apply() evaluates. Tick was moved out of
+	// Apply so the engine's bounded fixpoint loop can re-run Apply within a
+	// single scan without over-decrementing the backoff (see Engine.Reconcile
+	// and R4PlanStatus.Tick).
+
 	// Cycle 1: should call CanComplete (fails), enters backoff skip=1
 	run1 := newRun(&deps)
+	r4.Tick()
 	r4.Apply(run1)
 	if callCount != 1 {
 		t.Fatalf("cycle 1: expected 1 call, got %d", callCount)
@@ -1374,6 +1381,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 	// Cycle 2: backoff ticks to 0, should call CanComplete again (fails), skip=2
 	run2 := newRun(&deps)
+	r4.Tick()
 	r4.Apply(run2)
 	if callCount != 2 {
 		t.Fatalf("cycle 2: expected 2 calls, got %d", callCount)
@@ -1383,6 +1391,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 	// Cycle 3: backoff ticks to 1, should skip
 	run3 := newRun(&deps)
+	r4.Tick()
 	r4.Apply(run3)
 	if callCount != 2 {
 		t.Fatalf("cycle 3: expected 2 calls (skipped), got %d", callCount)
@@ -1390,6 +1399,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 	// Cycle 4: backoff ticks to 0, should call CanComplete (fails), skip=4
 	run4 := newRun(&deps)
+	r4.Tick()
 	r4.Apply(run4)
 	if callCount != 3 {
 		t.Fatalf("cycle 4: expected 3 calls, got %d", callCount)
@@ -1400,6 +1410,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 	// Cycles 5-7: should all skip (skip=4 → 3 → 2 → 1)
 	for cycle := 5; cycle <= 7; cycle++ {
 		run := newRun(&deps)
+		r4.Tick()
 		r4.Apply(run)
 		if callCount != 3 {
 			t.Fatalf("cycle %d: expected 3 calls (skipped), got %d", cycle, callCount)
@@ -1408,6 +1419,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 	// Cycle 8: backoff ticks to 0, should call CanComplete
 	run8 := newRun(&deps)
+	r4.Tick()
 	r4.Apply(run8)
 	if callCount != 4 {
 		t.Fatalf("cycle 8: expected 4 calls, got %d", callCount)
@@ -1446,7 +1458,10 @@ func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 
 	r4 := NewR4PlanStatus(nil)
 
+	// Each cycle mirrors one engine Reconcile(): Tick() once, then Apply().
+
 	// Cycle 1: fails, enters backoff
+	r4.Tick()
 	r4.Apply(newRun(&deps))
 	if callCount != 1 {
 		t.Fatalf("expected 1 call, got %d", callCount)
@@ -1456,6 +1471,7 @@ func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 	shouldFail = false
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
+	r4.Tick()
 	r4.Apply(newRun(&deps))
 	if callCount != 2 {
 		t.Fatalf("expected 2 calls, got %d", callCount)
@@ -1465,6 +1481,7 @@ func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 	shouldFail = true
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
+	r4.Tick()
 	r4.Apply(newRun(&deps))
 	if callCount != 3 {
 		t.Fatalf("expected 3 calls, got %d", callCount)
@@ -1473,6 +1490,7 @@ func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 
 	// Next cycle should retry (skip=1 → tick to 0)
+	r4.Tick()
 	r4.Apply(newRun(&deps))
 	if callCount != 4 {
 		t.Fatalf("expected 4 calls (backoff reset to 1 cycle), got %d", callCount)

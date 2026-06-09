@@ -219,6 +219,21 @@ func (wm *Manager) GC() error {
 				remaining = append(remaining, se)
 				continue
 			}
+			// Failed integration is non-terminal but retryable. It is still
+			// GC-able after the TTL to avoid leaking worktrees of abandoned
+			// commands, but not while the conflict-resolution pipeline still
+			// owns a worker (Conflict/Resolving): cleanupCommandUnlocked runs
+			// `git worktree remove --force` without respawning the worker pane
+			// first (unlike the Phase B teardown path), so removing a worktree
+			// mid-resolution would corrupt an in-progress resume-merge. Defer
+			// to a later GC pass once the resolution settles.
+			if isFailed && hasInFlightWorker(se.state) {
+				wm.Log(core.LogLevelInfo,
+					"gc_ttl_skip_failed_inflight command=%s age=%s (failed integration but a worker is mid conflict-resolution)",
+					se.commandID, now.Sub(se.createdAt))
+				remaining = append(remaining, se)
+				continue
+			}
 			if isFailed {
 				wm.Log(core.LogLevelInfo, "gc_cleanup_failed_worktree command=%s age=%s", se.commandID, now.Sub(se.createdAt))
 			} else {
@@ -607,6 +622,24 @@ func (wm *Manager) CleanupTempPublishBranch(commandID string) {
 	wm.Log(core.LogLevelInfo,
 		"cleanup_temp_publish_branch_restored_and_deleted command=%s branch=%s",
 		commandID, publishBranch)
+}
+
+// hasInFlightWorker reports whether any worker in the command is owned by the
+// conflict-resolution pipeline (Conflict/Resolving). For those statuses the
+// daemon is actively driving an in-place resolution against the worktree, so
+// TTL GC must not force-remove it mid-resolution. Created/Active workers are
+// deliberately NOT treated as in-flight: a worker stuck in those states past
+// the GC TTL (default 24h) has long since been lease-recovered, so a Failed
+// command whose workers are all settled is safe to reclaim.
+func hasInFlightWorker(state *model.WorktreeCommandState) bool {
+	for i := range state.Workers {
+		switch state.Workers[i].Status {
+		case model.WorktreeStatusResolving,
+			model.WorktreeStatusConflict:
+			return true
+		}
+	}
+	return false
 }
 
 func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.WorktreeCommandState) error {

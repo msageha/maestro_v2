@@ -61,6 +61,18 @@ func advancePhasesInline(state *model.CommandState) {
 		return
 	}
 	now := nowUTC()
+	// A phase's Failed/Cancelled transition is driven only by its REQUIRED
+	// tasks, mirroring DeriveStatus (hasFailed/hasCancelled are computed from
+	// RequiredTaskIDs alone). An optional task that failed/was cancelled is
+	// terminal but tolerated under CompletionPolicy.OnOptionalFailed (default
+	// "ignore"); forcing the whole phase to Failed on an optional failure used
+	// to cascade-cancel/block dependent phases for a plan the policy says
+	// should still complete. The rare OnOptionalFailed="fail_command" still
+	// fails the command via DeriveStatus, so phase-level neutrality is safe.
+	requiredSet := make(map[string]bool, len(state.RequiredTaskIDs))
+	for _, id := range state.RequiredTaskIDs {
+		requiredSet[id] = true
+	}
 	for i := range state.Phases {
 		phase := &state.Phases[i]
 		if model.IsPhaseTerminal(phase.Status) {
@@ -79,11 +91,18 @@ func advancePhasesInline(state *model.CommandState) {
 				allTerminal = false
 				break
 			}
+			// RequiredTaskIDs may be empty for an all-optional phase; then every
+			// task is optional and the phase still completes when its work is done.
+			isRequired := requiredSet[tid]
 			switch ts {
 			case model.StatusFailed, model.StatusDeadLetter:
-				hasFailed = true
+				if isRequired {
+					hasFailed = true
+				}
 			case model.StatusCancelled:
-				hasCancelled = true
+				if isRequired {
+					hasCancelled = true
+				}
 			}
 		}
 		if !allTerminal {

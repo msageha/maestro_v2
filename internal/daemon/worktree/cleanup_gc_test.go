@@ -270,6 +270,54 @@ func TestGC_CleansFailedWorktree_TTLExpired(t *testing.T) {
 	}
 }
 
+// TestGC_SkipsFailedWorktree_WhenWorkerResolving verifies that TTL GC does NOT
+// reclaim a failed command while a worker is still owned by the conflict-
+// resolution pipeline (Resolving). Removing that worktree mid-resolution would
+// corrupt an in-progress resume-merge, so GC must defer until the worker
+// settles.
+func TestGC_SkipsFailedWorktree_WhenWorkerResolving(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	wm.config.GC.TTLHours = ptr.Int(0) // TTL=0 so age alone would make it collectable
+
+	commandID := "cmd_gc_failed_resolving"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Set integration status to "failed" and the worker to "resolving" directly.
+	wm.mu.Lock()
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("loadState: %v", err)
+	}
+	state.Integration.Status = model.IntegrationStatusFailed
+	state.Integration.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	if len(state.Workers) == 0 {
+		wm.mu.Unlock()
+		t.Fatalf("expected at least one worker in state")
+	}
+	state.Workers[0].Status = model.WorktreeStatusResolving
+	if err := wm.saveState(commandID, state); err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("saveState: %v", err)
+	}
+	wm.mu.Unlock()
+
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+
+	// State file must still exist: GC deferred because a worker is resolving.
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Errorf("failed worktree with a resolving worker must NOT be GC'd; stat err=%v", err)
+	}
+}
+
 // TestGC_RetainsFailedWorktree_TTLNotExpired verifies that GC preserves a
 // worktree whose integration status is "failed" when TTL has NOT expired,
 // allowing retry (failed → merging) to proceed.

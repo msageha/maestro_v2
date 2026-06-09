@@ -298,22 +298,18 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 				req.AgentID, req.TaskID, err)
 			return submitProbeResult{Status: submitProbeCaptureFailed, Attempts: attempt}, nil
 		}
-		// Activity-first ordering: if Claude is visibly processing
-		// ("Thinking", tool invocation, ⏺ status, …) the task has been
-		// received and the dispatcher's job is done — even if a stale
-		// "[Pasted text #1 +247 lines]" placeholder from the *previous*
-		// turn is still scrolled into the bottom-N-line search window.
-		// Without this short-circuit the probe would treat the lingering
-		// placeholder as "not yet submitted", fire an Enter retry, and
-		// flag the dispatch as exhausted/uncertain even though delivery
-		// already succeeded.
-		if submittedActivityVisible(content) {
-			status := submitProbeConfirmed
-			if retried {
-				status = submitProbeRetried
-			}
-			return submitProbeResult{Status: status, Attempts: attempt}, nil
-		}
+		// Placeholder-first ordering: a "[Pasted text #N +M lines]" placeholder
+		// on the bottom-most prompt line is a definitive "not yet submitted"
+		// signal — the freshly pasted message is still in the live input box.
+		// It MUST be checked before the activity-marker probe. Planner and
+		// Orchestrator panes are delivered without a preceding /clear, so the
+		// *previous* turn's activity markers ("⏺", "Running", "Bash(", …) linger
+		// in the captured viewport; checking activity first would short-circuit
+		// to "confirmed" on a stale marker even when a lost Enter left the new
+		// message unsubmitted, and the resend-Enter recovery here would never
+		// run — silently dropping the delivery. pastedTextPlaceholderAtPrompt is
+		// scoped to the bottom prompt line only, so a placeholder scrolled up
+		// into history cannot false-positive a retry.
 		if pastedTextPlaceholderAtPrompt(content) {
 			d.log(logLevelWarn, "submit_confirm pasted_text_still_at_prompt agent_id=%s task_id=%s attempt=%d/%d",
 				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
@@ -323,6 +319,16 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 			retried = true
 			haveChangeBaseline = false
 			continue
+		}
+		// No unsubmitted placeholder at the prompt: a visible activity marker
+		// ("Thinking", tool invocation, ⏺ status, …) means the message was
+		// received and the dispatcher's job is done.
+		if submittedActivityVisible(content) {
+			status := submitProbeConfirmed
+			if retried {
+				status = submitProbeRetried
+			}
+			return submitProbeResult{Status: status, Attempts: attempt}, nil
 		}
 		normalized := normalizeProbeSnapshot(content)
 		normalizedHash := contentHash(normalized)
