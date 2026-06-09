@@ -99,6 +99,14 @@ func runUp(args []string) error {
 	}
 
 	if err := formation.RunUp(opts); err != nil {
+		// "Session already exists" is returned BEFORE any resource is created,
+		// and the existing session/daemon belong to a healthy running formation.
+		// Running CleanupOnFailure here would kill that live session + daemon —
+		// i.e. a plain re-run of `maestro up` would destroy the formation this
+		// guard is meant to protect. Surface the guidance and leave it intact.
+		if errors.Is(err, formation.ErrSessionExists) {
+			return fmt.Errorf("maestro up: %w", err)
+		}
 		// Clean up any partially-created resources (tmux session, daemon)
 		fmt.Fprintln(os.Stderr, "Cleaning up after setup failure...")
 		if cleanupErr := formation.CleanupOnFailure(maestroDir); cleanupErr != nil {

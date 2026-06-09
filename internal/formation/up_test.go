@@ -1,6 +1,8 @@
 package formation
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -488,8 +490,25 @@ func TestProcessAlive_ZeroAndNegative(t *testing.T) {
 
 // NOTE: RunUp's session-exists guard depends on tmux.SessionExists which cannot
 // be mocked without a real tmux session or interface extraction. The guard logic
-// is covered by integration tests. errSessionExists is a simple sentinel error
-// that does not require a dedicated test.
+// is covered by integration tests.
+
+// TestErrSessionExists_IsMatchableSentinel pins the contract the CLI relies on:
+// ErrSessionExists must be a stable, exported sentinel that errors.Is can match.
+// cmd/maestro skips CleanupOnFailure for this error so a plain re-run of
+// `maestro up` does not tear down the already-running formation; if a refactor
+// wrapped or replaced the sentinel, that protection would silently break.
+func TestErrSessionExists_IsMatchableSentinel(t *testing.T) {
+	t.Parallel()
+	if ErrSessionExists == nil {
+		t.Fatal("ErrSessionExists must be a non-nil sentinel")
+	}
+	if !errors.Is(fmt.Errorf("maestro up: %w", ErrSessionExists), ErrSessionExists) {
+		t.Error("errors.Is must match ErrSessionExists through a %w wrap (CLI cleanup-skip depends on this)")
+	}
+	if errors.Is(fmt.Errorf("some other failure"), ErrSessionExists) {
+		t.Error("errors.Is must NOT match an unrelated error to ErrSessionExists")
+	}
+}
 
 // TestResetFormation_ArchivesInProgressCommands pins the
 // post-2026-05-06 Bug #2 fix: when `maestro up -f` runs while planner.yaml
