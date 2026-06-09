@@ -115,6 +115,22 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				}
 
 				if ws.ConflictResolutionAttempts >= maxConflictResolutionAttempts {
+					// One-shot guard: the conflict is unrecoverable and the
+					// worker status stays `conflict` until an operator/Planner
+					// recovery action changes it. Without this guard the
+					// escalation notification + repair re-fired on every
+					// reconcile scan (the branch sets no state), spamming the
+					// Planner pane and inflating repair counts. Emit exactly
+					// once per escalation, matching R8's StallSignaled pattern.
+					// The guard is cleared by setWorkerStatus when the worker
+					// re-enters conflict from a clean state (a fresh episode in
+					// a later phase), so a genuinely new conflict re-escalates.
+					if ws.ConflictEscalated {
+						run.Log(core.LogLevelDebug,
+							"R7 conflict_escalation_already_signaled command=%s worker=%s attempts=%d",
+							commandID, ws.WorkerID, ws.ConflictResolutionAttempts)
+						continue
+					}
 					run.Log(core.LogLevelWarn, "R7 conflict_escalation command=%s worker=%s attempts=%d",
 						commandID, ws.WorkerID, ws.ConflictResolutionAttempts)
 					commandNotifications = append(commandNotifications, DeferredNotification{
@@ -128,6 +144,8 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 						CommandID: commandID,
 						Detail:    fmt.Sprintf("worker %s conflict escalated (attempts=%d)", ws.WorkerID, ws.ConflictResolutionAttempts),
 					})
+					ws.ConflictEscalated = true
+					modified = true
 					continue
 				}
 

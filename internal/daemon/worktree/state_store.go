@@ -56,6 +56,23 @@ func (wm *Manager) setWorkerStatus(ws *model.WorktreeState, newStatus model.Work
 			ws.WorkerID, ws.Status, newStatus, err)
 		return fmt.Errorf("worker %s: %w", ws.WorkerID, err)
 	}
+	// Entering conflict from a clean (non-conflict, non-resolving) state marks a
+	// FRESH conflict episode — e.g. a later phase re-merge after a prior conflict
+	// was escalated and resolved. Reset the per-episode conflict bookkeeping:
+	//   - ConflictEscalated → false so R7 can escalate the new conflict (a stale
+	//     true would suppress it forever).
+	//   - ConflictResolutionAttempts → 0 so the new episode gets its own
+	//     resolution budget instead of inheriting an exhausted count and
+	//     escalating immediately without attempting resolution.
+	// Transitions WITHIN the conflict lifecycle (conflict<->resolving) keep both,
+	// so the SAME episode is neither re-escalated on every scan nor given a fresh
+	// budget on each Pass-1 stale-resolving reset.
+	if newStatus == model.WorktreeStatusConflict &&
+		ws.Status != model.WorktreeStatusConflict &&
+		ws.Status != model.WorktreeStatusResolving {
+		ws.ConflictEscalated = false
+		ws.ConflictResolutionAttempts = 0
+	}
 	ws.Status = newStatus
 	ws.UpdatedAt = now
 	return nil

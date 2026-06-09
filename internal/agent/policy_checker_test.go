@@ -429,7 +429,11 @@ func TestHookScript_S3_ContainsJqCheck(t *testing.T) {
 	}
 }
 
-func TestHookScript_WriteHookScript_EmbedsProjectRoot(t *testing.T) {
+// TestHookScript_NoProjectRootPlaceholder verifies the written hook script
+// contains no unresolved placeholder. The former __PROJECT_ROOT__ / project_root
+// embedding was dead (the .maestro/ and worktree checks use path globs and the
+// runtime `pwd -P`, never the embedded root) and has been removed.
+func TestHookScript_NoProjectRootPlaceholder(t *testing.T) {
 	dir := t.TempDir()
 	maestroDir := filepath.Join(dir, ".maestro")
 	pc := NewPolicyChecker(maestroDir)
@@ -442,84 +446,8 @@ func TestHookScript_WriteHookScript_EmbedsProjectRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read script: %v", err)
 	}
-	// The written script should have PROJECT_ROOT replaced with actual dir
 	if strings.Contains(string(content), "__PROJECT_ROOT__") {
 		t.Error("written script should not contain __PROJECT_ROOT__ placeholder")
-	}
-	if !strings.Contains(string(content), dir) {
-		t.Errorf("written script should contain project root %q", dir)
-	}
-}
-
-func TestShellQuote(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{"simple path", "/home/user/project", "'/home/user/project'"},
-		{"single quote", "/home/it's here", "'/home/it'\\''s here'"},
-		{"double quote", `/home/user/"project"`, `'/home/user/"project"'`},
-		{"backtick", "/home/user/`cmd`", "'/home/user/`cmd`'"},
-		{"dollar sign", "/home/user/$HOME", "'/home/user/$HOME'"},
-		{"semicolon", "/home/user;rm -rf /", "'/home/user;rm -rf /'"},
-		{"pipe", "/home/user|cat /etc/passwd", "'/home/user|cat /etc/passwd'"},
-		{"ampersand", "/home/user&&evil", "'/home/user&&evil'"},
-		{"space", "/home/my project", "'/home/my project'"},
-		{"newline", "/home/user\ninjected", "'/home/user\ninjected'"},
-		{"backslash", `/home/user\dir`, `'/home/user\dir'`},
-		{"multiple single quotes", "a'b'c", "a'b'c"},
-		{"empty", "", "''"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := shellQuote(tc.input)
-			if tc.name == "multiple single quotes" {
-				// Just verify it's properly escaped (contains no unescaped singles)
-				if got != "'a'\\''b'\\''c'" {
-					t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, "'a'\\''b'\\''c'")
-				}
-				return
-			}
-			if got != tc.want {
-				t.Errorf("shellQuote(%q) = %q, want %q", tc.input, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestShellQuote_SafeInBash(t *testing.T) {
-	// Verify that shellQuote produces strings that bash evaluates to the original value.
-	tests := []struct {
-		name  string
-		input string
-	}{
-		{"simple", "/home/user/project"},
-		{"single quote", "/home/it's here"},
-		{"double quote", `/home/"project"`},
-		{"backtick", "/home/`whoami`"},
-		{"dollar expansion", "/home/$USER/project"},
-		{"semicolon injection", "/tmp/foo;rm -rf /"},
-		{"pipe injection", "/tmp/foo|cat /etc/passwd"},
-		{"ampersand", "/tmp/foo&&echo pwned"},
-		{"space", "/tmp/my project"},
-		{"backslash", `/tmp/back\slash`},
-		{"subshell", "/tmp/$(whoami)"},
-		{"all special", `/tmp/a'b"c` + "`d$e;f|g&h i\nj"},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			quoted := shellQuote(tc.input)
-			// Use printf %s to avoid echo interpreting backslashes
-			cmd := exec.Command("bash", "-c", "printf '%s' "+quoted)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("bash eval failed: %v, output: %s", err, out)
-			}
-			if string(out) != tc.input {
-				t.Errorf("bash evaluated to %q, want %q", string(out), tc.input)
-			}
-		})
 	}
 }
 

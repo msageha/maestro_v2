@@ -317,6 +317,108 @@ func TestR0Dispatch_StuckCommand(t *testing.T) {
 	}
 }
 
+// TestR0Dispatch_PlannerBusy_DefersRevert verifies that an otherwise-stuck
+// dispatch (in_progress, no state file, stale UpdatedAt) is NOT reverted when
+// the Planner pane is confirmed busy — the Planner is alive and slow to produce
+// its first plan submit, so re-dispatch would be a spurious duplicate.
+func TestR0Dispatch_PlannerBusy_DefersRevert(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Planner pane probes as busy.
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	}
+
+	oldTime := now.Add(-20 * time.Minute).Format(time.RFC3339)
+	owner := "planner"
+	expiresAt := now.Add(-15 * time.Minute).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:             "cmd_dispatch_stuck_busy",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &expiresAt,
+				UpdatedAt:      oldTime,
+				CreatedAt:      oldTime,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+	// No state file — but the Planner is busy, so R0 must defer.
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs while planner busy, got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusInProgress {
+		t.Errorf("status: got %s, want in_progress (revert deferred)", updated.Commands[0].Status)
+	}
+	if updated.Commands[0].LeaseOwner == nil {
+		t.Error("lease_owner should be retained while revert is deferred")
+	}
+}
+
+// TestR0Dispatch_PlannerBusy_HardCapForcesRevert verifies that the busy-defer is
+// bounded: once the stuck command's age exceeds max_in_progress_min, R0 reverts
+// even if the Planner pane still probes busy (it is wedged, and the command-lease
+// path cannot rescue a no-state command).
+func TestR0Dispatch_PlannerBusy_HardCapForcesRevert(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir) // MaxInProgressMin unset → default 60m
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	}
+
+	// 90m old > default 60m hard cap → revert despite busy.
+	oldTime := now.Add(-90 * time.Minute).Format(time.RFC3339)
+	owner := "planner"
+	expiresAt := now.Add(-85 * time.Minute).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:             "cmd_dispatch_wedged_busy",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &expiresAt,
+				UpdatedAt:      oldTime,
+				CreatedAt:      oldTime,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair (hard cap exceeded forces revert despite busy), got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusPending {
+		t.Errorf("status: got %s, want pending (revert forced past hard cap)", updated.Commands[0].Status)
+	}
+}
+
 func TestR0Dispatch_StateFileExists_NoRepair(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)

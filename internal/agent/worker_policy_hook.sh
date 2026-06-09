@@ -45,7 +45,6 @@ fi
 
 input="$(cat)"
 tool_name="$(echo "$input" | jq -r '.tool_name // ""')"
-project_root=__PROJECT_ROOT__
 
 deny() {
   local reason="$1"

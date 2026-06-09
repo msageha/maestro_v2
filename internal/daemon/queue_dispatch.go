@@ -120,12 +120,16 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 			}
 		}
 
-		// Defer delivery to Phase B
+		// Defer delivery to Phase B. WorkerID + ConflictGeneration carry the
+		// per-worker dedup identity so Phase C can match the result back to the
+		// exact signal (see signalDeliveryItem / applySignalResults).
 		work.signals = append(work.signals, signalDeliveryItem{
-			CommandID: sig.CommandID,
-			PhaseID:   sig.PhaseID,
-			Kind:      sig.Kind,
-			Message:   sig.Message,
+			CommandID:          sig.CommandID,
+			PhaseID:            sig.PhaseID,
+			Kind:               sig.Kind,
+			WorkerID:           sig.WorkerID,
+			ConflictGeneration: sig.ConflictGeneration,
+			Message:            sig.Message,
 		})
 		retained = append(retained, *sig)
 	}

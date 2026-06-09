@@ -149,7 +149,9 @@ func TestR7MergeConflict_Escalation_WhenAttemptsExceeded(t *testing.T) {
 		t.Error("notification reason should not be empty for escalation")
 	}
 
-	// State file should NOT be modified for escalation (no status transition).
+	// Escalation does not change status or attempts, but it now persists the
+	// ConflictEscalated one-shot guard so the notification is not re-emitted on
+	// every scan.
 	statePath := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
 	reloaded, err := run.loadWorktreeState(statePath)
 	if err != nil {
@@ -161,6 +163,44 @@ func TestR7MergeConflict_Escalation_WhenAttemptsExceeded(t *testing.T) {
 	}
 	if ws.ConflictResolutionAttempts != maxConflictResolutionAttempts {
 		t.Errorf("attempts should remain %d, got %d", maxConflictResolutionAttempts, ws.ConflictResolutionAttempts)
+	}
+	if !ws.ConflictEscalated {
+		t.Error("ConflictEscalated should be set true after escalation (one-shot guard)")
+	}
+}
+
+// TestR7MergeConflict_Escalation_OnceGuard verifies that a persistent
+// unrecoverable conflict escalates exactly once across repeated reconcile
+// scans, instead of re-emitting the notification + repair on every scan.
+func TestR7MergeConflict_Escalation_OnceGuard(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+
+	commandID := "cmd_0000000099_r7once99"
+	state := newWorktreeCommandState(commandID, model.IntegrationStatusConflict, []model.WorktreeState{
+		newWorkerState(commandID, "worker1", model.WorktreeStatusConflict, maxConflictResolutionAttempts),
+	})
+	writeWorktreeState(t, maestroDir, commandID, state)
+
+	// First scan: escalates once.
+	first := R7MergeConflict{}.Apply(newRun(&deps))
+	if len(first.Notifications) != 1 || first.Notifications[0].Kind != NotifyConflictEscalation {
+		t.Fatalf("first scan: expected 1 escalation notification, got %+v", first.Notifications)
+	}
+	if len(first.Repairs) != 1 {
+		t.Fatalf("first scan: expected 1 repair, got %d", len(first.Repairs))
+	}
+
+	// Subsequent scans on the unchanged conflict must NOT re-fire.
+	for i := 0; i < 3; i++ {
+		again := R7MergeConflict{}.Apply(newRun(&deps))
+		if len(again.Notifications) != 0 {
+			t.Fatalf("scan %d: expected no re-escalation, got %+v", i+2, again.Notifications)
+		}
+		if len(again.Repairs) != 0 {
+			t.Fatalf("scan %d: expected no repair on re-scan, got %+v", i+2, again.Repairs)
+		}
 	}
 }
 

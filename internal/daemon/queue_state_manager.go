@@ -62,11 +62,21 @@ type cancelMarkItem struct {
 }
 
 // signalDeliveryItem captures a planner signal delivery for Phase B.
+//
+// WorkerID and ConflictGeneration mirror the signal's dedup identity
+// (see signalDedupKey): per-worker signals (merge_conflict, commit_failed,
+// conflict_resolution_*) share the same (CommandID, PhaseID, Kind) but differ
+// by WorkerID, so the delivery item — and the Phase C result-match key — must
+// carry them too. Without WorkerID, applySignalResults matched two per-worker
+// results under one key, dropping/duplicating deliveries and misattributing
+// retry/backoff state across workers.
 type signalDeliveryItem struct {
-	CommandID string
-	PhaseID   string
-	Kind      string
-	Message   string
+	CommandID          string
+	PhaseID            string
+	Kind               string
+	WorkerID           string
+	ConflictGeneration string
+	Message            string
 }
 
 // worktreeMergeItem captures a phase-boundary worktree merge for Phase B execution.

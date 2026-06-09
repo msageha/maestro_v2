@@ -414,23 +414,31 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 	now := qh.clock.Now().UTC()
 	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 
-	// Build O(1) lookup map from (CommandID, PhaseID, Kind) → result,
-	// replacing the previous O(n*m) nested loop with O(n+m) lookups.
+	// Build O(1) lookup map keyed by the FULL signal identity, including
+	// WorkerID + ConflictGeneration. Per-worker signals (merge_conflict,
+	// commit_failed, conflict_resolution_*) share (CommandID, PhaseID, Kind)
+	// and only differ by WorkerID; keying on the triple alone collapsed two
+	// per-worker results into one map entry, so the first matching signal
+	// consumed it and the second was wrongly retained as "not delivered"
+	// (duplicate re-delivery + misattributed retry/backoff). The key must
+	// mirror signalDedupKey.
 	type signalMatchKey struct {
-		CommandID string
-		PhaseID   string
-		Kind      string
+		CommandID          string
+		PhaseID            string
+		Kind               string
+		WorkerID           string
+		ConflictGeneration string
 	}
 	resultMap := make(map[signalMatchKey]signalDeliveryResult, len(results))
 	for _, r := range results {
-		key := signalMatchKey{r.Item.CommandID, r.Item.PhaseID, r.Item.Kind}
+		key := signalMatchKey{r.Item.CommandID, r.Item.PhaseID, r.Item.Kind, r.Item.WorkerID, r.Item.ConflictGeneration}
 		resultMap[key] = r
 	}
 
 	for _, sig := range sq.Signals {
 		var delivered bool
 		var dlErr error
-		key := signalMatchKey{sig.CommandID, sig.PhaseID, sig.Kind}
+		key := signalMatchKey{sig.CommandID, sig.PhaseID, sig.Kind, sig.WorkerID, sig.ConflictGeneration}
 		if r, ok := resultMap[key]; ok {
 			delivered = true
 			delete(resultMap, key)

@@ -108,6 +108,28 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
+	// Planner-liveness probe (run once outside the queue lock; the Planner is a
+	// singleton). R0 keys off cmd.UpdatedAt, which is frozen at dispatch time —
+	// lease auto-extension bumps only LeaseExpiresAt (see lease/manager.go
+	// extendLeaseExpiry), and the command state file is not created until the
+	// Planner's first `plan submit`. A Planner that is alive and still working
+	// toward that first submit (slow analysis, large command) would otherwise be
+	// reverted at the threshold even while the queue scan keeps extending its
+	// lease, re-delivering the command to the Planner pane (a confusing
+	// duplicate; in the worst case a duplicate plan submit that ErrDoubleSubmit
+	// only partially guards).
+	//
+	// When the probe CONFIRMS busy we DEFER the revert — but only up to a hard
+	// cap (max_in_progress_min). A confirmed-busy Planner that has produced no
+	// state file for that long is wedged (busy on unrelated work or a non-submit
+	// loop), and the command-lease max-timeout path cannot rescue a no-state
+	// command (commandHasActivePlannerWork treats GetCommandPhases'
+	// ErrStateNotFound as "active" and extends), so R0 must still be the
+	// backstop. Idle / undecided / probe-unavailable never defer, preserving the
+	// fast threshold-age recovery for a genuinely stuck or dead dispatch.
+	plannerBusy := plannerPaneActivelyProcessing(run)
+	busyDeferCap := time.Duration(run.Deps.Config.Watcher.EffectiveMaxInProgressMin()) * time.Minute
+
 	// Phase 3: apply repairs under queue lock, re-verifying each command.
 	run.Deps.LockMap.Lock(lockKey)
 	defer run.Deps.LockMap.Unlock(lockKey)
@@ -144,8 +166,18 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 				continue
 			}
 
-			run.Log(core.LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
-				cmd.ID, age.Seconds(), cmd.Attempts)
+			// Defer to a confirmed-busy Planner, bounded by busyDeferCap so a
+			// wedged Planner cannot suspend recovery indefinitely.
+			if plannerBusy && busyDeferCap > 0 && age < busyDeferCap {
+				run.Log(core.LogLevelInfo,
+					"R0-dispatch defer_planner_active command=%s age_sec=%.0f cap=%s "+
+						"(planner pane busy and within hard cap; deferring dispatch-stuck revert so a slow first plan-submit is not re-dispatched)",
+					cmd.ID, age.Seconds(), busyDeferCap)
+				continue
+			}
+
+			run.Log(core.LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file planner_busy=%t",
+				cmd.ID, age.Seconds(), cmd.Attempts, plannerBusy)
 
 			cmd.Status = model.StatusPending
 			cmd.LeaseOwner = nil
@@ -173,4 +205,35 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 	}
 
 	return Outcome{Repairs: repairs}
+}
+
+// plannerPaneActivelyProcessing returns true only when a busy probe of the
+// Planner pane CONFIRMS the agent is actively processing. R0 uses it to avoid
+// reverting a command whose Planner is alive and working but has not yet
+// produced a state file. Any non-confirmed outcome — idle, undecided, probe
+// error, or no executor factory wired (tests) — returns false so R0 keeps its
+// recovery behaviour for a genuinely stuck or dead dispatch. The probe is
+// read-only (capture-pane only; no message is sent) and runs outside the queue
+// lock.
+func plannerPaneActivelyProcessing(run *Run) bool {
+	if run.Deps.ExecutorFactory == nil {
+		return false
+	}
+	exec, err := run.Deps.ExecutorFactory(run.Deps.MaestroDir, run.Deps.Config.Watcher, run.Deps.Config.Logging.Level)
+	if err != nil || exec == nil {
+		return false
+	}
+	defer func() {
+		if cerr := exec.Close(); cerr != nil {
+			run.Log(core.LogLevelDebug, "R0-dispatch planner_busy_probe close_executor error=%v", cerr)
+		}
+	}()
+	result := exec.Execute(model.ExecRequest{
+		AgentID: "planner",
+		Mode:    model.ModeIsBusy,
+	})
+	// ModeIsBusy: Success==true means confirmed busy. Idle (Success==false)
+	// and undecided (Error set, e.g. ErrBusyUndecided) both yield false so the
+	// revert proceeds.
+	return result.Error == nil && result.Success
 }

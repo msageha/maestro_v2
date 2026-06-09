@@ -136,6 +136,57 @@ func TestSetWorkerStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("fresh_conflict_clears_escalation_guard", func(t *testing.T) {
+		t.Parallel()
+		// A worker that escalated a conflict in an earlier phase (ConflictEscalated=true)
+		// and was resolved back to `integrated` must have the guard cleared when it
+		// re-enters conflict in a later phase, so R7 can escalate the NEW conflict.
+		projectRoot := testutil.InitTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID:                   "worker1",
+			Status:                     model.WorktreeStatusIntegrated,
+			ConflictEscalated:          true,
+			ConflictResolutionAttempts: 2,
+		}
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected integrated → conflict to be allowed, got: %v", err)
+		}
+		if ws.ConflictEscalated {
+			t.Error("ConflictEscalated should be cleared on a fresh conflict entry (later-phase re-conflict)")
+		}
+		if ws.ConflictResolutionAttempts != 0 {
+			t.Errorf("ConflictResolutionAttempts = %d, want 0 (fresh episode gets a new resolution budget)", ws.ConflictResolutionAttempts)
+		}
+	})
+
+	t.Run("resolving_to_conflict_preserves_episode_state", func(t *testing.T) {
+		t.Parallel()
+		// resolving → conflict is the SAME conflict episode (e.g. R7 Pass 1 reset of
+		// a stale resolving worker). The guard AND the attempt count must be
+		// preserved so the unrecoverable conflict is not re-escalated on every scan
+		// nor handed a fresh resolution budget each cycle.
+		projectRoot := testutil.InitTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID:                   "worker1",
+			Status:                     model.WorktreeStatusResolving,
+			ConflictEscalated:          true,
+			ConflictResolutionAttempts: 2,
+		}
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected resolving → conflict to be allowed, got: %v", err)
+		}
+		if !ws.ConflictEscalated {
+			t.Error("ConflictEscalated should be preserved on resolving → conflict (same episode)")
+		}
+		if ws.ConflictResolutionAttempts != 2 {
+			t.Errorf("ConflictResolutionAttempts = %d, want 2 preserved (same episode)", ws.ConflictResolutionAttempts)
+		}
+	})
+
 	t.Run("self_transition_committed", func(t *testing.T) {
 		t.Parallel()
 		projectRoot := testutil.InitTestGitRepo(t)

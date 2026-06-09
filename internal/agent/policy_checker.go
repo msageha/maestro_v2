@@ -37,27 +37,16 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 		return "", fmt.Errorf("create hooks dir: %w", err)
 	}
 
-	// Resolve symlinks in maestroDir so all derived paths are canonical.
-	// On macOS, /tmp is a symlink to /private/tmp; without resolution,
-	// the hook script's runtime pwd -P and the embedded project root
-	// could mismatch, causing false WT001 rejections.
-	maestroDir := pc.maestroDir
-	if resolved, err := filepath.EvalSymlinks(maestroDir); err == nil {
-		maestroDir = resolved
-	}
-	projectRoot := filepath.Dir(maestroDir)
-	script := renderBashPolicyScript(projectRoot)
-
+	// The hook enforces .maestro/ control-plane and worktree boundaries via
+	// path globs and the runtime `pwd -P`, so it needs no embedded project
+	// root. (A former __PROJECT_ROOT__ placeholder / project_root shell var
+	// was dead — the glob-based checks superseded it — and has been removed.)
 	scriptPath := pc.hookScriptPath()
-	if err := os.WriteFile(scriptPath, []byte(script), 0750); err != nil { //nolint:gosec // hook script requires execute permission
+	if err := os.WriteFile(scriptPath, []byte(hookScript), 0750); err != nil { //nolint:gosec // hook script requires execute permission
 		return "", fmt.Errorf("write hook script: %w", err)
 	}
 
 	return scriptPath, nil
-}
-
-func renderBashPolicyScript(projectRoot string) string {
-	return strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
 }
 
 // hookSettingsJSON is the settings JSON structure used for hook
@@ -123,14 +112,6 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 		return "", fmt.Errorf("marshal hook settings: %w", err)
 	}
 	return string(b), nil
-}
-
-// shellQuote safely quotes a string for embedding in a shell script.
-// It wraps the string in single quotes, escaping internal single quotes
-// using the standard '\” technique (end quote, literal quote, start quote).
-// Inside single quotes all shell metacharacters ($, `, ", \, etc.) are literal.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // hookScriptRaw holds the verbatim PreToolUse policy hook source. The shell

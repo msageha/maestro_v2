@@ -134,12 +134,25 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	allPanes = append(allPanes, panes...)
 
 	// Wait for each pane's shell to be ready before sending commands.
-	// Orchestrator + planner are required; worker panes are best-effort
-	// with automatic cleanup on failure.
-	requiredPanes := allPanes[:2] // orchestrator + planner
-	optionalPanes := allPanes[2:] // workers
+	//
+	// All configured panes — orchestrator, planner, AND every worker — are
+	// REQUIRED. Worker panes were previously best-effort (failed ones were
+	// killed and formation continued with "partial workers"), but nothing
+	// reconciled cfg.Agents.Workers.Count down to the surviving pane set.
+	// The Planner assigns tasks to worker1..workerN purely from the config
+	// count, so a task pinned to a worker whose pane never became ready was
+	// leased, failed to dispatch (FindPaneByAgentID miss), and dead-lettered
+	// without ever executing — silently stranding work and often failing the
+	// whole command. Requiring every worker keeps the invariant
+	// "live worker panes == cfg.Agents.Workers.Count" true at startup: if any
+	// worker pane cannot become ready within the timeout, formation fails
+	// loudly (the rollback defer tears the session down) so the operator can
+	// re-run `maestro up` or raise watcher.shell_ready_timeout_sec, instead of
+	// running degraded. preparePanes keeps its optional-pane code path for its
+	// own unit tests and any future caller; this caller passes no optional
+	// panes.
 	timeout := shellReadyTimeout(cfg)
-	readyPanes, err := preparePanes(requiredPanes, optionalPanes, timeout, waitForShellReady, killPaneByTarget)
+	readyPanes, err := preparePanes(allPanes, nil, timeout, waitForShellReady, killPaneByTarget)
 	if err != nil {
 		return err
 	}
@@ -346,8 +359,11 @@ var killPaneByTarget = func(pane string) {
 }
 
 // preparePanes waits for panes to become ready with automatic cleanup of failed panes.
-// Required panes (orchestrator + planner) must all succeed; optional panes (workers)
-// are killed on failure and excluded from the result. Returns the list of ready panes.
+// The required/optional split is chosen by the caller: every pane in
+// requiredPanes must become ready or an error is returned (the caller is
+// expected to tear the session down); panes in optionalPanes are killed on
+// failure and excluded from the result. Returns the list of ready panes.
+// (createFormation now passes ALL panes as required — see its call site.)
 func preparePanes(
 	requiredPanes []string,
 	optionalPanes []string,

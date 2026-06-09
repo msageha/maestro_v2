@@ -86,8 +86,19 @@ type WorktreeState struct {
 	// past this snapshot, signalling that the merge can proceed instead of
 	// being deferred forever.
 	ConflictBranchHead string `yaml:"conflict_branch_head,omitempty"`
-	CreatedAt          string `yaml:"created_at"`
-	UpdatedAt          string `yaml:"updated_at"`
+	// ConflictEscalated guards one-shot emission of the conflict-escalation
+	// planner notification. R7 sets it true when it escalates a worker whose
+	// ConflictResolutionAttempts has reached the max, so the escalation
+	// notification + repair are emitted exactly once instead of on every
+	// reconcile scan while the (unrecoverable) conflict persists. Mirrors the
+	// IntegrationState.StallSignaled / PublishConflictSignaled one-shot guards.
+	// setWorkerStatus clears it (together with ConflictResolutionAttempts) when
+	// the worker re-enters conflict from a clean (non-conflict, non-resolving)
+	// state — a fresh conflict episode in a later phase — so a genuinely new
+	// conflict can escalate again.
+	ConflictEscalated bool   `yaml:"conflict_escalated,omitempty"`
+	CreatedAt         string `yaml:"created_at"`
+	UpdatedAt         string `yaml:"updated_at"`
 }
 
 // IntegrationState tracks the lifecycle of an integration branch for a command.

@@ -769,6 +769,72 @@ func TestApplySignalResults_NoResults(t *testing.T) {
 	}
 }
 
+// TestApplySignalResults_PerWorkerSameKind_MixedOutcome is the regression test
+// for the WorkerID-less match-key bug: two per-worker merge_conflict signals
+// sharing (CommandID, PhaseID, Kind) but differing by WorkerID must each be
+// matched to their OWN delivery result. worker1 delivered successfully (must be
+// removed); worker2 failed (must be retained with Attempts bumped + backoff).
+// Before the fix, the second result overwrote the first under one map key, so
+// worker2's signal was retained as "not delivered" (duplicate) and the surviving
+// result was misattributed across workers.
+func TestApplySignalResults_PerWorkerSameKind_MixedOutcome(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+
+	maestroDir := testutil.SetupDirFixPerms(t)
+	cfg := model.Config{
+		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 300, ScanIntervalSec: 10},
+		Retry:   model.RetryConfig{SignalDispatch: 5},
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.clock = &fixedClock{now: now}
+	qh.scanExecutor.scanCounters = metrics.ScanCounters{}
+
+	sq := &model.PlannerSignalQueue{
+		Signals: []model.PlannerSignal{
+			{Kind: "merge_conflict", CommandID: "cmd1", PhaseID: "p1", WorkerID: "worker1", CreatedAt: "2025-01-01T00:00:00Z", UpdatedAt: "2025-01-01T00:00:00Z"},
+			{Kind: "merge_conflict", CommandID: "cmd1", PhaseID: "p1", WorkerID: "worker2", CreatedAt: "2025-01-01T00:00:00Z", UpdatedAt: "2025-01-01T00:00:00Z"},
+		},
+	}
+	dirty := false
+
+	results := []signalDeliveryResult{
+		{
+			Item:    signalDeliveryItem{CommandID: "cmd1", PhaseID: "p1", Kind: "merge_conflict", WorkerID: "worker1"},
+			Success: true,
+		},
+		{
+			Item:    signalDeliveryItem{CommandID: "cmd1", PhaseID: "p1", Kind: "merge_conflict", WorkerID: "worker2"},
+			Success: false,
+			Error:   fmt.Errorf("planner unreachable"),
+		},
+	}
+
+	qh.applySignalResults(results, sq, &dirty)
+
+	// worker1 delivered → removed; worker2 failed → retained for retry.
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected exactly 1 signal retained (worker2), got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	got := sq.Signals[0]
+	if got.WorkerID != "worker2" {
+		t.Fatalf("retained signal worker = %s, want worker2 (worker1 was delivered)", got.WorkerID)
+	}
+	if got.Attempts != 1 {
+		t.Errorf("worker2 Attempts = %d, want 1 (its own failure result must apply)", got.Attempts)
+	}
+	if got.NextAttemptAt == nil {
+		t.Error("worker2 NextAttemptAt should be set for retry backoff")
+	}
+	if qh.scanExecutor.scanCounters.SignalDeliveries != 1 {
+		t.Errorf("SignalDeliveries = %d, want 1 (worker1)", qh.scanExecutor.scanCounters.SignalDeliveries)
+	}
+	if qh.scanExecutor.scanCounters.SignalRetries != 1 {
+		t.Errorf("SignalRetries = %d, want 1 (worker2)", qh.scanExecutor.scanCounters.SignalRetries)
+	}
+}
+
 // --- recoverExpiredNotificationLeases tests ---
 
 func TestRecoverExpiredNotificationLeases_ExpiresAndReleases(t *testing.T) {
