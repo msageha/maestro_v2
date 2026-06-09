@@ -420,6 +420,41 @@ func TestHookScript_S3_AllowsWhenJqAvailable(t *testing.T) {
 	}
 }
 
+// TestHookScript_ReturnsExplicitAllow pins the requirement that non-denied
+// Bash commands receive an explicit `allow` decision (not a silent pass). This
+// is what short-circuits Claude Code's hardcoded "expansion obfuscation"
+// classifier — which fires on a brace followed by a quote and CANNOT be
+// silenced by permissions.allow — so an unattended Worker does not stall on an
+// approval prompt for commands like `maestro result write --summary "...{...}"`.
+func TestHookScript_ReturnsExplicitAllow(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// A command containing a brace + quote (the obfuscation trigger) that does
+	// not violate any maestro rule must be explicitly allowed.
+	input := `{"tool_name":"Bash","tool_input":{"command":"echo \"{ab,cd}_x\""}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, `"permissionDecision":"allow"`) {
+		t.Errorf("expected explicit allow decision for brace+quote command, got: %s", output)
+	}
+	if strings.Contains(output, "deny") {
+		t.Errorf("brace+quote command must not be denied, got: %s", output)
+	}
+
+	// A denied command (control-plane) must still be denied — allow must not
+	// override maestro's own enforcement.
+	denied := `{"tool_name":"Bash","tool_input":{"command":"maestro plan submit --tasks-file x"}}`
+	dOut := runHookScript(t, scriptPath, denied)
+	if !strings.Contains(dOut, `"permissionDecision":"deny"`) {
+		t.Errorf("control-plane command must still be denied, got: %s", dOut)
+	}
+}
+
 func TestHookScript_S3_ContainsJqCheck(t *testing.T) {
 	if !strings.Contains(hookScript, "command -v jq") {
 		t.Error("hook script should contain jq availability check")
