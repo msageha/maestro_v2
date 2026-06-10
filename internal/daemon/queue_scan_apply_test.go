@@ -373,10 +373,13 @@ func TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning(t *
 }
 
 // A blanket publish guard (reject every pre-publish run_on_main dispatch)
-// was once retired because it produced a self-deadlocking dispatch loop.
-// validateRunOnMainPreflight reinstates the gate with the created/absent
-// integration states allowed — the states run_on_main-only verification
-// commands occupy. See internal/daemon/dispatch/validate_run_on_main.go.
+// was once retired because it produced a self-deadlocking dispatch loop
+// (rejections were retried while the publish gate waited for the task).
+// validateRunOnMainPreflight reinstates the gate safely: rejections are
+// non-retryable terminations the publish gate does not wait for, and
+// run_on_main-only verification commands pass via the absent-state path
+// (they never create worktree state).
+// See internal/daemon/dispatch/validate_run_on_main.go.
 
 func TestApplyTaskDispatchResult_EpochMismatch(t *testing.T) {
 	t.Parallel()

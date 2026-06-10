@@ -7,7 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
+
+	yaml "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -35,6 +39,11 @@ type SubmitResult struct {
 	CommandID string              `json:"command_id,omitempty"`
 	Tasks     []SubmitTaskResult  `json:"tasks,omitempty"`
 	Phases    []SubmitPhaseResult `json:"phases,omitempty"`
+	// Warnings carries advisory, non-blocking notices (e.g. a run_on_main
+	// verification command submitted while other commands still hold
+	// unpublished integration state). Rendered verbatim to the Planner via
+	// the CLI JSON response.
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // SubmitTaskResult describes a single task's assignment after submission.
@@ -292,8 +301,17 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 		return nil, verr
 	}
 
+	// Cross-command ordering advisory for run_on_main-only verification
+	// commands. The mechanical guards (isolation, add-task publish gate,
+	// dispatch pre-flight) only see THIS command's integration state; they
+	// cannot tell whether the verification targets another command whose
+	// outputs have not been published yet. Blocking here would
+	// false-positive on genuinely unrelated in-flight commands, so this is
+	// a warning the Planner must judge.
+	warnings := runOnMainCrossCommandWarnings(opts.MaestroDir, opts.CommandID, tasks)
+
 	if opts.DryRun {
-		return &SubmitResult{Valid: true}, nil
+		return &SubmitResult{Valid: true, Warnings: warnings}, nil
 	}
 
 	// Insert __system_commit when worktree mode is off, so the Worker
@@ -355,7 +373,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	}
 
 	// Build output
-	result := &SubmitResult{CommandID: opts.CommandID}
+	result := &SubmitResult{CommandID: opts.CommandID, Warnings: warnings}
 	for _, t := range tasks {
 		a, ok := assignMap[t.Name]
 		if !ok {
@@ -369,6 +387,61 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 		})
 	}
 	return result, nil
+}
+
+// runOnMainCrossCommandWarnings returns an advisory warning when a
+// run_on_main-only verification command is submitted while OTHER commands
+// still hold unpublished integration state. run_on_main tasks read the
+// current published main: if the verification actually targets one of those
+// in-flight commands' outputs, it will run against main without them and
+// fail spuriously. Cross-command ordering cannot be enforced mechanically
+// without false-positives on unrelated concurrent commands, so this stays a
+// warning (the Planner contract is to wait for the relevant
+// publish_completed notification). Best-effort: unreadable or unparsable
+// state files are skipped — this function must never block a submission.
+func runOnMainCrossCommandWarnings(maestroDir, commandID string, tasks []TaskInput) []string {
+	if maestroDir == "" || len(tasks) == 0 {
+		return nil
+	}
+	for _, t := range tasks {
+		if !t.RunOnMain {
+			return nil
+		}
+	}
+	entries, err := os.ReadDir(filepath.Join(maestroDir, "state", "worktrees"))
+	if err != nil {
+		return nil
+	}
+	var pending []string
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".yaml")
+		if id == commandID {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(maestroDir, "state", "worktrees", name)) //nolint:gosec // controlled application state dir
+		if err != nil {
+			continue
+		}
+		var ws model.WorktreeCommandState
+		if yaml.Unmarshal(data, &ws) != nil {
+			continue
+		}
+		if ws.Integration.Status != model.IntegrationStatusPublished {
+			pending = append(pending, fmt.Sprintf("%s (integration %s)", id, ws.Integration.Status))
+		}
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+	sort.Strings(pending)
+	return []string{fmt.Sprintf(
+		"run_on_main verification reads the CURRENT published main, but %d other command(s) still hold unpublished integration state: %s. "+
+			"If this verification targets their outputs, wait for their publish_completed notification and submit afterwards — running now would verify main without those changes.",
+		len(pending), strings.Join(pending, ", "))}
 }
 
 func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManager) (*SubmitResult, error) {

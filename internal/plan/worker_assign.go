@@ -197,10 +197,16 @@ func AssignWorkers(
 		requiredModel := GetModelForBloomLevel(task.BloomLevel, config.Boost)
 		// Honor a bandit / adaptive selector when it picks a model that at
 		// least one worker is configured for; otherwise keep the static
-		// bloom-derived model to preserve feasibility.
+		// bloom-derived model to preserve feasibility. Bandit arms are built
+		// from worker-configured models and may include codex/gemini; a
+		// RequireClaudeRuntime task must ignore such picks — honoring one
+		// would make the eligibility loop below skip every worker (claude
+		// workers fail the family match, non-claude workers fail the runtime
+		// check) and fail the assignment even with idle claude workers.
 		if ac.selector != nil {
 			if pick := ac.selector.SelectModel(task.BloomLevel, task.Name); pick != "" && pick != requiredModel {
-				if workerExistsForModel(stateMap, pick) {
+				if workerExistsForModel(stateMap, pick) &&
+					(!task.RequireClaudeRuntime || isClaudeRuntimeModel(pick)) {
 					requiredModel = pick
 				}
 			}
@@ -215,7 +221,7 @@ func AssignWorkers(
 		// handling an opus-level task) trigger an observability warning so
 		// operators can notice capability mismatches.
 		if !workerExistsForModel(stateMap, requiredModel) {
-			if fallback := chooseFallbackFamily(stateMap, requiredModel); fallback != "" {
+			if fallback := chooseFallbackFamily(stateMap, requiredModel, task.RequireClaudeRuntime); fallback != "" {
 				slog.Warn("worker_model_fallback",
 					"task", task.Name,
 					"bloom_level", task.BloomLevel,
@@ -396,7 +402,13 @@ var familyFallbackOrder = map[string][]string{
 // which never matches the provisioned workers. In that case the function falls
 // back to any model actually present in the fleet so that tasks can still be
 // assigned — a capability mismatch warning is emitted by the caller.
-func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) string {
+//
+// requireClaude restricts the last-resort scan to claude-runtime models.
+// Without it, a RequireClaudeRuntime task in a mixed fleet could receive a
+// codex/gemini family (map iteration order dependent), which the eligibility
+// loop then rejects wholesale and the assignment fails with a misleading
+// "at capacity" error even though a claude worker is available.
+func chooseFallbackFamily(stateMap map[string]*WorkerState, required string, requireClaude bool) string {
 	family := modelFamily(required)
 	prefs, ok := familyFallbackOrder[family]
 	if !ok {
@@ -415,6 +427,9 @@ func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) str
 	// to be assigned. Excluding the required family avoids a circular
 	// result where we "fallback" to a family that already has no workers.
 	for _, ws := range stateMap {
+		if requireClaude && !isClaudeRuntimeModel(ws.Model) {
+			continue
+		}
 		if ws.Model != "" && modelFamily(ws.Model) != family {
 			return ws.Model
 		}

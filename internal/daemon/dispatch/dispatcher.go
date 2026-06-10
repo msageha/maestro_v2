@@ -272,11 +272,13 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 	// same invariants at submit/inject time): the worker must run
 	// claude-code (only claude-code enforces the read-only main guard via
 	// the @run_on_main PreToolUse hook), and the command's integration must
-	// be published — or never have produced integration output — so the
-	// verification reads the merged result instead of stale main. The
-	// historical self-deadlock of a blanket "wait for publish" gate is
-	// avoided by allowing the created/absent states (run_on_main-only
-	// verification commands never advance integration past created).
+	// be published — or never have produced integration state — so the
+	// verification reads the merged result instead of stale main.
+	// run_on_main-only verification commands never create worktree state
+	// (EnsureWorkerWorktree only runs for normal worker tasks) and pass via
+	// the absent-state path. The historical self-deadlock of the retried
+	// blanket "wait for publish" gate does not recur because rejections are
+	// non-retryable terminations that the publish gate does not wait for.
 	if err := validateRunOnMainPreflight(task, workerID, disp.config.Agents.Workers, disp.getWorktreeManager()); err != nil {
 		disp.dl.Logf(core.LogLevelError,
 			"dispatch_task_run_on_main_preflight_blocked id=%s worker=%s run_on_main=%t error=%v",

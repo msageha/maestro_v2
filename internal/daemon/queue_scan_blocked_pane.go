@@ -333,7 +333,7 @@ func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, comm
 // writeSyntheticBlockedPaneResult appends a synthetic failed result entry
 // to the worker's result file when the daemon force-failed a task because
 // its pane was wedged on a runtime confirmation prompt. Mirrors
-// writeSyntheticDestructiveResult: same lock ordering, same
+// writeSyntheticPreflightResult: same lock ordering, same
 // "result:<workerID>" key, same downstream pipeline so R1/R2 reconcilers
 // propagate the terminal status without depending on the worker ever
 // writing its own result (it cannot — its pane is still wedged).

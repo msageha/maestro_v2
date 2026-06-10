@@ -42,15 +42,21 @@ type integrationStatusReader interface {
 //     deadlock (Report cmd_1777330979).
 //
 // Status semantics for the publish gate:
-//   - state file absent → allow: the command never created worktree state
-//     and there is nothing of this command's to wait for.
-//   - created → allow: integration exists but holds no merged worker output
-//     (run_on_main-only verification command); main already reflects every
-//     published predecessor.
+//   - state file absent → allow: worktree state is only ever created by
+//     EnsureWorkerWorktree, which runs solely for normal worker tasks.
+//     run_on_main-only verification commands therefore never have a state
+//     file, and main already reflects every published predecessor.
 //   - published → allow: the intended post-publish verification window.
-//   - anything else (merging/merged/conflict/partial_merge/publishing/
-//     publish_failed/quarantined/failed) → reject: worker output exists that
-//     has not reached main.
+//   - anything else (created/merging/merged/conflict/partial_merge/
+//     publishing/publish_failed/quarantined/failed) → reject: a state file
+//     existing at all means normal worker tasks dispatched for this
+//     command, and any pre-published status means their output has not
+//     reached main. In particular `created` is NOT a safe window — it is
+//     the pre-merge phase of a command with in-flight worker output, the
+//     exact stale-main setup of Report cmd_1777330979. Rejection is
+//     non-retryable and terminates the entry, so the publish gate is not
+//     blocked by it (no self-deadlock, unlike the retried blanket gate
+//     this design replaced).
 func validateRunOnMainPreflight(task *model.Task, workerID string, workerCfg model.WorkerConfig, wm integrationStatusReader) error {
 	if task == nil || !task.RunOnMain {
 		return nil
@@ -73,15 +79,15 @@ func validateRunOnMainPreflight(task *model.Task, workerID string, workerCfg mod
 			return nil
 		}
 		// Transient read failure: do not terminate the task over an IO blip.
-		// Returning a plain (non-sentinel) error keeps the lease, and the
-		// standard lease-expiry recovery re-attempts on a later scan.
+		// Returning a plain (non-sentinel) error routes through the generic
+		// dispatch-failure path, which releases the lease so the entry goes
+		// back to pending and a later scan re-attempts the dispatch. Nothing
+		// was delivered to the worker pane yet, so the release is race-free.
 		return fmt.Errorf("run_on_main pre-flight: read integration status for %s: %w", task.CommandID, err)
 	}
-	switch status {
-	case model.IntegrationStatusPublished, model.IntegrationStatusCreated:
+	if status == model.IntegrationStatusPublished {
 		return nil
-	default:
-		return fmt.Errorf("%w: integration status for command %s is %q, not published; run_on_main tasks verify the published main branch (submit them as a separate command after publish, or use run_on_integration for pre-publish verification)",
-			ErrRunOnMainPreflightRejected, task.CommandID, status)
 	}
+	return fmt.Errorf("%w: integration status for command %s is %q, not published; run_on_main tasks verify the published main branch (submit them as a separate command after publish, or use run_on_integration for pre-publish verification)",
+		ErrRunOnMainPreflightRejected, task.CommandID, status)
 }

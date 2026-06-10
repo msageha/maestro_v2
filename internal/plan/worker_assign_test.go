@@ -492,7 +492,7 @@ func TestChooseFallbackFamily(t *testing.T) {
 			for id, m := range tt.workers {
 				sm[id] = &WorkerState{WorkerID: id, Model: m}
 			}
-			if got := chooseFallbackFamily(sm, tt.required); got != tt.want {
+			if got := chooseFallbackFamily(sm, tt.required, false); got != tt.want {
 				t.Errorf("chooseFallbackFamily(%q) = %q, want %q", tt.required, got, tt.want)
 			}
 		})

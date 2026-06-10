@@ -45,7 +45,12 @@ func TestValidateRunOnMainPreflight_NonClaudeWorker_Rejected(t *testing.T) {
 func TestValidateRunOnMainPreflight_PrePublishIntegration_Rejected(t *testing.T) {
 	task := &model.Task{ID: "t1", CommandID: "cmd1", RunOnMain: true}
 
+	// `created` is rejected too: worktree state is only born when normal
+	// worker tasks dispatch (EnsureWorkerWorktree), so a state file at
+	// `created` means in-flight worker output that has not merged yet —
+	// running the verification now would read stale main.
 	for _, status := range []model.IntegrationStatus{
+		model.IntegrationStatusCreated,
 		model.IntegrationStatusMerging,
 		model.IntegrationStatusMerged,
 		model.IntegrationStatusConflict,
@@ -74,7 +79,9 @@ func TestValidateRunOnMainPreflight_AllowedStates(t *testing.T) {
 		wm   integrationStatusReader
 	}{
 		{"published", stubIntegrationStatus{status: model.IntegrationStatusPublished}},
-		{"created (run_on_main-only verification command)", stubIntegrationStatus{status: model.IntegrationStatusCreated}},
+		// run_on_main-only verification commands never create worktree
+		// state (EnsureWorkerWorktree only runs for normal worker tasks),
+		// so the absent-file path is what those commands exercise.
 		{"state file absent", stubIntegrationStatus{err: fmt.Errorf("read: %w", os.ErrNotExist)}},
 		{"worktree mode disabled", nil},
 	}

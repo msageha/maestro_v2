@@ -458,25 +458,25 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 		}
 		if opts.MaestroDir != "" && opts.CommandID != "" {
 			worktreeStatePath := filepath.Join(opts.MaestroDir, "state", "worktrees", opts.CommandID+".yaml")
-			if _, err := os.Stat(worktreeStatePath); err != nil {
-				if os.IsNotExist(err) {
-					// worktree state absent on a worktree-enabled formation
-					// can only mean cleanup ran after publish (the
-					// reconciler removes the file once integration is
-					// retired). Either way the dispatcher has nothing to
-					// run against — reject explicitly. hasIntegrationCleanedUp
-					// also catches the publish→completion window where
-					// plan_status is still sealed but every phase is terminal.
-					if model.IsPlanTerminal(state.PlanStatus) || hasIntegrationCleanedUp(state) {
-						return &planValidationError{Msg: fmt.Sprintf(
-							"cannot inject run_on_integration/run_on_main task into command %s: integration worktree has been cleaned up after publish. Submit a fresh command rather than extending a published plan.",
-							opts.CommandID)}
-					}
+			_, statErr := os.Stat(worktreeStatePath)
+			switch {
+			case statErr != nil && os.IsNotExist(statErr):
+				// worktree state absent on a worktree-enabled formation
+				// can only mean cleanup ran after publish (the
+				// reconciler removes the file once integration is
+				// retired). Either way the dispatcher has nothing to
+				// run against — reject explicitly. hasIntegrationCleanedUp
+				// also catches the publish→completion window where
+				// plan_status is still sealed but every phase is terminal.
+				if model.IsPlanTerminal(state.PlanStatus) || hasIntegrationCleanedUp(state) {
 					return &planValidationError{Msg: fmt.Sprintf(
-						"cannot inject run_on_integration/run_on_main task into command %s: integration worktree state file is missing. The integration worktree may have been cleaned up; submit a fresh command instead.",
+						"cannot inject run_on_integration/run_on_main task into command %s: integration worktree has been cleaned up after publish. Submit a fresh command rather than extending a published plan.",
 						opts.CommandID)}
 				}
-			} else if opts.RunOnMain {
+				return &planValidationError{Msg: fmt.Sprintf(
+					"cannot inject run_on_integration/run_on_main task into command %s: integration worktree state file is missing. The integration worktree may have been cleaned up; submit a fresh command instead.",
+					opts.CommandID)}
+			case opts.RunOnMain:
 				// run_on_main tasks inspect the published main branch. While
 				// the integration is still pre-publish, the merged outputs of
 				// this command are not on main yet: dispatching now would
@@ -485,6 +485,11 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 				// waits for every task to terminate) — a deadlock. Enforce
 				// the ordering mechanically instead of trusting the Planner
 				// to wait for the publish_completed notification.
+				//
+				// This case is also reached when os.Stat failed with a
+				// non-NotExist error (permissions, IO): the gate re-reads
+				// the file itself and fails closed on any read error, so a
+				// transient blip cannot silently skip the ordering check.
 				if err := validateRunOnMainPublishGate(worktreeStatePath, opts.CommandID); err != nil {
 					return err
 				}

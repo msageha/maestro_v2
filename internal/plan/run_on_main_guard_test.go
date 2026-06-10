@@ -147,6 +147,72 @@ func TestAssignWorkers_RequireClaudeRuntime_AutoAssignSkipsNonClaude(t *testing.
 	}
 }
 
+// fixedPickSelector always returns the same model, simulating a warmed-up
+// bandit whose UCB1 winner is a non-claude arm.
+type fixedPickSelector struct{ pick string }
+
+func (s fixedPickSelector) SelectModel(int, string) string { return s.pick }
+
+func TestAssignWorkers_RequireClaudeRuntime_NonClaudeSelectorPick_Ignored(t *testing.T) {
+	// Bandit arms are built from worker-configured models, so a mixed fleet
+	// can warm up a "codex" arm. Honoring that pick for a run_on_main task
+	// would make the eligibility loop skip every worker (codex fails the
+	// runtime check, sonnet fails the family match) and fail the assignment
+	// with a misleading "at capacity" error despite the idle claude worker.
+	states := []WorkerState{
+		{WorkerID: "worker1", Model: "codex", PendingCount: 0},
+		{WorkerID: "worker2", Model: "sonnet", PendingCount: 3},
+	}
+	reqs := []TaskAssignmentRequest{{
+		Name:                 "verify-main",
+		BloomLevel:           3,
+		RequireClaudeRuntime: true,
+	}}
+
+	assignments, err := AssignWorkers(model.WorkerConfig{Count: 2}, model.LimitsConfig{}, states, reqs,
+		WithModelSelector(fixedPickSelector{pick: "codex"}))
+	if err != nil {
+		t.Fatalf("AssignWorkers must ignore the non-claude selector pick: %v", err)
+	}
+	if assignments[0].WorkerID != "worker2" {
+		t.Errorf("assigned to %s, want worker2 (claude runtime)", assignments[0].WorkerID)
+	}
+}
+
+func TestAssignWorkers_NoClaudeRequirement_SelectorPickStillHonored(t *testing.T) {
+	states := []WorkerState{
+		{WorkerID: "worker1", Model: "codex", PendingCount: 0},
+		{WorkerID: "worker2", Model: "sonnet", PendingCount: 0},
+	}
+	reqs := []TaskAssignmentRequest{{Name: "impl", BloomLevel: 3}}
+
+	assignments, err := AssignWorkers(model.WorkerConfig{Count: 2}, model.LimitsConfig{}, states, reqs,
+		WithModelSelector(fixedPickSelector{pick: "codex"}))
+	if err != nil {
+		t.Fatalf("AssignWorkers: %v", err)
+	}
+	if assignments[0].WorkerID != "worker1" {
+		t.Errorf("assigned to %s, want worker1 (selector pick honored for normal tasks)", assignments[0].WorkerID)
+	}
+}
+
+func TestChooseFallbackFamily_RequireClaude_SkipsNonClaudeLastResort(t *testing.T) {
+	// Mixed fleet where the only claude worker uses a custom model name
+	// outside the known sonnet/opus/haiku families. The last-resort scan
+	// iterates a map, so without the requireClaude filter the result is
+	// nondeterministic and can hand a RequireClaudeRuntime task the codex
+	// family.
+	sm := map[string]*WorkerState{
+		"w1": {WorkerID: "w1", Model: "codex"},
+		"w2": {WorkerID: "w2", Model: "claude-custom-1"},
+	}
+	for range 20 {
+		if got := chooseFallbackFamily(sm, "sonnet", true); got != "claude-custom-1" {
+			t.Fatalf("chooseFallbackFamily(requireClaude) = %q, want claude-custom-1", got)
+		}
+	}
+}
+
 func TestAssignWorkers_RequireClaudeRuntime_NoClaudeWorkers_ClearError(t *testing.T) {
 	states := []WorkerState{
 		{WorkerID: "worker1", Model: "codex"},
@@ -167,7 +233,7 @@ func TestAssignWorkers_RequireClaudeRuntime_NoClaudeWorkers_ClearError(t *testin
 	}
 }
 
-// --- add-task publish gate ---
+// --- shared worktree-state fixture ---
 
 func writeRunOnMainGuardState(t *testing.T, dir, commandID string, status model.IntegrationStatus) string {
 	t.Helper()
@@ -182,6 +248,58 @@ func writeRunOnMainGuardState(t *testing.T, dir, commandID string, status model.
 	}
 	return path
 }
+
+// --- cross-command ordering advisory at submit ---
+
+func TestRunOnMainCrossCommandWarnings_OtherCommandUnpublished_Warns(t *testing.T) {
+	dir := t.TempDir()
+	writeRunOnMainGuardState(t, dir, "cmd_other", model.IntegrationStatusMerged)
+	verify := validTask("verify-main")
+	verify.RunOnMain = true
+
+	warnings := runOnMainCrossCommandWarnings(dir, "cmd_verify", []TaskInput{verify})
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want exactly one cross-command advisory", warnings)
+	}
+	if !strings.Contains(warnings[0], "cmd_other (integration merged)") {
+		t.Errorf("warning should name the unpublished command and status, got: %s", warnings[0])
+	}
+}
+
+func TestRunOnMainCrossCommandWarnings_NoWarningCases(t *testing.T) {
+	verify := validTask("verify-main")
+	verify.RunOnMain = true
+	normal := validTask("impl")
+
+	t.Run("other command already published", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRunOnMainGuardState(t, dir, "cmd_other", model.IntegrationStatusPublished)
+		if w := runOnMainCrossCommandWarnings(dir, "cmd_verify", []TaskInput{verify}); w != nil {
+			t.Errorf("published siblings must not warn, got: %v", w)
+		}
+	})
+	t.Run("own state file excluded", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRunOnMainGuardState(t, dir, "cmd_verify", model.IntegrationStatusMerged)
+		if w := runOnMainCrossCommandWarnings(dir, "cmd_verify", []TaskInput{verify}); w != nil {
+			t.Errorf("own command state must not warn (own ordering is enforced elsewhere), got: %v", w)
+		}
+	})
+	t.Run("normal command never warns", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRunOnMainGuardState(t, dir, "cmd_other", model.IntegrationStatusMerged)
+		if w := runOnMainCrossCommandWarnings(dir, "cmd_impl", []TaskInput{normal}); w != nil {
+			t.Errorf("non-run_on_main submissions must not warn, got: %v", w)
+		}
+	})
+	t.Run("missing state dir is silent", func(t *testing.T) {
+		if w := runOnMainCrossCommandWarnings(t.TempDir(), "cmd_verify", []TaskInput{verify}); w != nil {
+			t.Errorf("absent state dir must not warn, got: %v", w)
+		}
+	})
+}
+
+// --- add-task publish gate ---
 
 func TestValidateRunOnMainPublishGate_NotPublished_Rejected(t *testing.T) {
 	dir := t.TempDir()
