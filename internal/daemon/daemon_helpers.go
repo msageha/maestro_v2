@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
-	"fmt"
+	"io"
+	"log"
 	"os"
 	"runtime/debug"
-	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -120,19 +120,27 @@ func (d *Daemon) validateLearningsFile() {
 	}
 }
 
+// log emits a daemon-component log line in the unified slog text format
+// (time=... level=... msg=... component=daemon). Historically this printed a
+// bespoke "<RFC3339> [LEVEL] daemon: <msg>" line, which left daemon.log with
+// two interleaved formats — this one and the slog output of every other
+// component — so mechanical scans (grep level=ERROR, log shippers) silently
+// missed half the records. Every daemon-side legacy call funnels through
+// this method (api_factory logFn closures, phaseC/reviewCoord logFunc), so
+// bridging here unifies the whole file in one place.
 func (d *Daemon) log(level LogLevel, format string, args ...any) {
 	if level < d.logLevel {
 		return
 	}
-	levelStr := "[INFO]"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "[DEBUG]"
-	case LogLevelWarn:
-		levelStr = "[WARN]"
-	case LogLevelError:
-		levelStr = "[ERROR]"
-	}
-	msg := fmt.Sprintf(format, args...)
-	d.logger.Printf("%s %s daemon: %s", d.clock.Now().Format(time.RFC3339), levelStr, msg)
+	d.dlOnce.Do(func() {
+		logger := d.logger
+		if logger == nil {
+			// Bare Daemon literals (tests) may omit the logger; the legacy
+			// path would have panicked on Printf too, but a silent drop is
+			// the safer contract for a logging helper.
+			logger = log.New(io.Discard, "", 0)
+		}
+		d.dl = NewDaemonLoggerFromLegacy("daemon", logger, d.logLevel)
+	})
+	d.dl.Logf(level, format, args...)
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -40,7 +39,7 @@ func saveStateWithContext(ctx context.Context, saveFn func() error) error {
 	go func() {
 		err := saveFn()
 		if timedOut.Load() {
-			slog.Warn("state save completed after context timeout (late write)",
+			slogc().Warn("state save completed after context timeout (late write)",
 				"event", "state_save_late_completion",
 				"error", err,
 			)
@@ -157,14 +156,14 @@ func restoreStateOrLog(state *model.CommandState, origBytes []byte, op string) {
 	}
 	emit, suppressed := restoreLogSuppressor.allow(op)
 	if suppressed > 0 {
-		slog.Warn("suppressed repeated state restore errors",
+		slogc().Warn("suppressed repeated state restore errors",
 			"event", "state_restore_failed",
 			"op", op,
 			"suppressed_count", suppressed,
 		)
 	}
 	if emit {
-		slog.Error("state restore failed",
+		slogc().Error("state restore failed",
 			"event", "state_restore_failed",
 			"op", op,
 			"error", rsErr,
@@ -357,7 +356,7 @@ func writeAndCommitRetryQueue(
 	}
 	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
 		if restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
-			slog.Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
+			slogc().Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		restoreStateOrLog(state, origStateBytes, "save_state")
@@ -387,14 +386,14 @@ func scheduleRollbackResaveAfterLateStateSave(
 	go func() {
 		lateErr := timeoutErr.wait()
 		if outcome, err := resaveRollbackSnapshotIfCurrentMatches(sm, commandID, origStateBytes, attemptedStateBytes); err != nil {
-			slog.Error("state rollback resave after late completion failed",
+			slogc().Error("state rollback resave after late completion failed",
 				"event", "state_save_rollback_resave_failed",
 				"command_id", commandID,
 				"late_save_error", lateErr,
 				"error", err,
 			)
 		} else {
-			slog.Warn("state rollback resave after late completion finished",
+			slogc().Warn("state rollback resave after late completion finished",
 				"event", "state_save_rollback_resave_finished",
 				"command_id", commandID,
 				"late_save_error", lateErr,

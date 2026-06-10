@@ -62,6 +62,13 @@ type Daemon struct {
 	watcher  *fsnotify.Watcher
 	ticker   *time.Ticker
 
+	// dl renders Daemon.log output in the shared slog text format so
+	// daemon.log holds a single machine-parseable format. Lazily built on
+	// first log call (dlOnce) so tests constructing Daemon literals without
+	// the production constructor still get bridged output.
+	dl     *DaemonLogger
+	dlOnce sync.Once
+
 	handler               *QueueHandler
 	stateReader           StateManager
 	canComplete           CanCompleteFunc

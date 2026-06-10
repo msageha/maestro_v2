@@ -3,7 +3,6 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,7 +221,7 @@ func AssignWorkers(
 		// operators can notice capability mismatches.
 		if !workerExistsForModel(stateMap, requiredModel) {
 			if fallback := chooseFallbackFamily(stateMap, requiredModel, task.RequireClaudeRuntime); fallback != "" {
-				slog.Warn("worker_model_fallback",
+				slogc().Warn("worker_model_fallback",
 					"task", task.Name,
 					"bloom_level", task.BloomLevel,
 					"required", requiredModel,

@@ -3,7 +3,6 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -46,7 +45,7 @@ func replayCompleteIntent(opts CompleteOptions, sm *StateManager, intent *comple
 	// C-A2: Detect abandoned recovery — if ProcessingStartedAt is already set,
 	// a previous recovery attempt crashed before cleanup.
 	if intent.ProcessingStartedAt != "" {
-		slog.Warn("replayCompleteIntent: previous processing attempt detected",
+		slogc().Warn("replayCompleteIntent: previous processing attempt detected",
 			"command_id", intent.CommandID,
 			"previous_started_at", intent.ProcessingStartedAt)
 	}
@@ -69,7 +68,7 @@ func replayCompleteIntent(opts CompleteOptions, sm *StateManager, intent *comple
 	var staleErr *staleTaskResultsError
 	if errors.As(err, &staleErr) {
 		// H3 conflict path detected stale task results — refresh from disk and retry once.
-		slog.Info("replayCompleteIntent: stale task results detected, refreshing and retrying",
+		slogc().Info("replayCompleteIntent: stale task results detected, refreshing and retrying",
 			"command_id", intent.CommandID,
 			"intent_version", staleErr.IntentVersion,
 			"current_version", staleErr.CurrentVersion)

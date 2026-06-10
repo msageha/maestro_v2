@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -276,7 +275,7 @@ func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx in
 // logRollbackFailure logs a rollback failure with structured context about
 // system recovery state and recommended actions.
 func logRollbackFailure(commandID string, err error, op string, recoverable bool, suggestedAction, affectedResource string) {
-	slog.Error("rollback failed",
+	slogc().Error("rollback failed",
 		"op", op,
 		"command_id", commandID,
 		"error", err,

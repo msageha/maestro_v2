@@ -3,7 +3,6 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 	"syscall"
 
@@ -37,7 +36,7 @@ func plannerSignalQueuePath(maestroDir string) string {
 // error to the user; the signal is purely a best-effort recovery hint.
 func emitPausedForReplanSignal(maestroDir, commandID, phaseID, reason string, lockMap *lock.MutexMap) {
 	if lockMap == nil {
-		slog.Error("paused_for_replan_signal_skipped_no_lockmap",
+		slogc().Error("paused_for_replan_signal_skipped_no_lockmap",
 			"command_id", commandID, "phase_id", phaseID, "reason", reason)
 		return
 	}
@@ -47,7 +46,7 @@ func emitPausedForReplanSignal(maestroDir, commandID, phaseID, reason string, lo
 
 	flockFile, flockErr := acquireFlock(queueFlockPath(maestroDir, "planner_signals.yaml"), syscall.LOCK_EX)
 	if flockErr != nil {
-		slog.Error("paused_for_replan_signal_flock_failed",
+		slogc().Error("paused_for_replan_signal_flock_failed",
 			"command_id", commandID, "phase_id", phaseID, "reason", reason, "error", flockErr)
 		return
 	}
@@ -79,11 +78,11 @@ func emitPausedForReplanSignal(maestroDir, commandID, phaseID, reason string, lo
 		return nil
 	})
 	if err != nil && !errors.Is(err, yamlutil.ErrNoUpdate) {
-		slog.Error("paused_for_replan_signal_write_failed",
+		slogc().Error("paused_for_replan_signal_write_failed",
 			"command_id", commandID, "phase_id", phaseID, "reason", reason, "error", err)
 		return
 	}
-	slog.Warn("paused_for_replan_signal_queued",
+	slogc().Warn("paused_for_replan_signal_queued",
 		"command_id", commandID, "phase_id", phaseID, "reason", reason)
 }
 

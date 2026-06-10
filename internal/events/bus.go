@@ -4,7 +4,6 @@ package events
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -169,7 +168,7 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							slog.Error("event_bus: subscriber panic", "event_type", string(event.Type), "panic", r, "stack", string(debug.Stack()))
+							slogc().Error("event_bus: subscriber panic", "event_type", string(event.Type), "panic", r, "stack", string(debug.Stack()))
 						}
 					}()
 					fn(event)
@@ -232,7 +231,7 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							slog.Error("event_bus: coalesced subscriber panic", "event_type", string(eventType), "panic", r, "stack", string(debug.Stack()))
+							slogc().Error("event_bus: coalesced subscriber panic", "event_type", string(eventType), "panic", r, "stack", string(debug.Stack()))
 						}
 					}()
 					fn()
@@ -264,7 +263,7 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 	// Publish and Close.
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("event_bus: recovered from panic in Publish", "event_type", string(eventType), "panic", r)
+			slogc().Warn("event_bus: recovered from panic in Publish", "event_type", string(eventType), "panic", r)
 		}
 	}()
 
@@ -303,7 +302,7 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			// then at exponential intervals (powers of 2).
 			critical := criticalEventTypes[eventType]
 			if critical || typeCount == 1 || typeCount&(typeCount-1) == 0 {
-				slog.Warn("event_bus: event dropped",
+				slogc().Warn("event_bus: event dropped",
 					"event_type", string(eventType),
 					"critical", critical,
 					"type_dropped", typeCount,
@@ -331,7 +330,7 @@ func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
 	counter, ok := v.(*atomic.Int64)
 	if !ok {
-		slog.Error("event_bus: unexpected type in droppedByType map", "event_type", string(eventType), "actual_type", fmt.Sprintf("%T", v))
+		slogc().Error("event_bus: unexpected type in droppedByType map", "event_type", string(eventType), "actual_type", fmt.Sprintf("%T", v))
 		return 0
 	}
 	return counter.Add(1)

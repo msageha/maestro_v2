@@ -103,7 +103,13 @@ func classifyVerifyOutcome(outcome VerifyOutcome, err error) (next model.Status,
 		return model.StatusRepairPending, fmt.Sprintf("verify_runner_error: %v", err)
 	}
 	if outcome.Passed {
-		return model.StatusCompleted, ""
+		// Propagate the runner's reason on the pass path too: the skip
+		// runner reports "verify_skipped: verify.enabled=false" and dropping
+		// it left verify_outcome_applied logs with an unexplained reason=""
+		// (observed in the 2026-06-10 E2E run). Pass-path reason is only
+		// consumed by logging — repair registration triggers solely on
+		// RepairPending — so this is observability-only.
+		return model.StatusCompleted, outcome.Reason
 	}
 	reason = outcome.Reason
 	if reason == "" {

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -238,15 +237,15 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		// Corrupt/unreadable intent: log and quarantine by removing the broken
 		// file so it doesn't block future calls. The normal flow will re-derive
 		// the correct status from state.
-		slog.Warn("Complete: corrupt intent file, removing", "command_id", opts.CommandID, "error", intentErr)
+		slogc().Warn("Complete: corrupt intent file, removing", "command_id", opts.CommandID, "error", intentErr)
 		removeCompleteIntent(opts.MaestroDir, opts.CommandID)
 	} else if intent != nil {
 		// Validate intent matches the current command (defense against file corruption)
 		if intent.CommandID != opts.CommandID {
-			slog.Warn("Complete: intent command_id mismatch, removing corrupt intent", "intent_command_id", intent.CommandID, "opts_command_id", opts.CommandID)
+			slogc().Warn("Complete: intent command_id mismatch, removing corrupt intent", "intent_command_id", intent.CommandID, "opts_command_id", opts.CommandID)
 			removeCompleteIntent(opts.MaestroDir, opts.CommandID)
 		} else {
-			slog.Info("Complete: recovering stale intent", "command_id", opts.CommandID)
+			slogc().Info("Complete: recovering stale intent", "command_id", opts.CommandID)
 			actualStatus, err := replayCompleteIntent(opts, sm, intent)
 			if err != nil {
 				return nil, fmt.Errorf("intent recovery: %w", err)
@@ -299,7 +298,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		if err := sm.SaveState(state); err != nil {
 			return nil, fmt.Errorf("save state after auto-cancel paused_for_replan: %w", err)
 		}
-		slog.Info("Complete: auto-cancelled paused_for_replan tasks to unblock plan completion",
+		slogc().Info("Complete: auto-cancelled paused_for_replan tasks to unblock plan completion",
 			"command_id", opts.CommandID, "count", autoCancelled)
 	}
 
@@ -318,7 +317,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 			if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
 				return nil, fmt.Errorf("write deferred complete: %w", writeErr)
 			}
-			slog.Info("Complete: deferred until daemon resolves transient phase state",
+			slogc().Info("Complete: deferred until daemon resolves transient phase state",
 				"command_id", opts.CommandID, "reason", retErr.Error())
 			return &CompleteResult{
 				CommandID: opts.CommandID,
@@ -364,7 +363,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 			// publish (Report 2026-05-06 round-3 P0).
 			var termErr *worktreePublishTerminalError
 			if errors.As(err, &termErr) {
-				slog.Warn("Complete: worktree publish terminally failed; finalizing command as failed",
+				slogc().Warn("Complete: worktree publish terminally failed; finalizing command as failed",
 					"command_id", opts.CommandID,
 					"integration_status", termErr.IntegrationStatus,
 					"reason", termErr.Reason,
@@ -384,7 +383,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 					if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
 						return nil, fmt.Errorf("write deferred complete: %w", writeErr)
 					}
-					slog.Info("Complete: deferred until worktree publish",
+					slogc().Info("Complete: deferred until worktree publish",
 						"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
 					return &CompleteResult{
 						CommandID: opts.CommandID,
@@ -417,7 +416,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// view before comparing — see EffectiveStatusForCompletion / LatestDescendant.
 	logicalResultCount := lineageLatestResultCount(taskResults, state.RetryLineage)
 	if logicalResultCount != state.ExpectedTaskCount {
-		slog.Warn("Complete: task result count does not match expected_task_count",
+		slogc().Warn("Complete: task result count does not match expected_task_count",
 			"command_id", opts.CommandID,
 			"aggregated_results", len(taskResults),
 			"logical_result_count", logicalResultCount,
@@ -499,7 +498,7 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 			}
 			freshVersion := computeTaskResultsVersion(freshResults)
 			if freshVersion != intent.TaskResultsVersion {
-				slog.Warn("executeCompleteSteps: stale task results detected in H3 conflict path",
+				slogc().Warn("executeCompleteSteps: stale task results detected in H3 conflict path",
 					"command_id", intent.CommandID,
 					"intent_version", intent.TaskResultsVersion,
 					"current_version", freshVersion)
@@ -510,7 +509,7 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 			}
 		}
 
-		slog.Warn("executeCompleteSteps: conflict, reconciling result/queue to state", "state_status", string(state.PlanStatus), "intent_status", string(intent.PlanStatus), "command_id", intent.CommandID)
+		slogc().Warn("executeCompleteSteps: conflict, reconciling result/queue to state", "state_status", string(state.PlanStatus), "intent_status", string(intent.PlanStatus), "command_id", intent.CommandID)
 
 		opts.LockMap.Lock("result:planner")
 		rerr := reconcileCommandResultLocked(opts.MaestroDir, intent.CommandID, actualStatus, intent.Summary, intent.TaskResults)
@@ -628,7 +627,7 @@ func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, statu
 				return true
 			}
 		}
-		slog.Warn("reconcileCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
+		slogc().Warn("reconcileCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
 		return false
 	})
 }
@@ -818,7 +817,7 @@ func updateCommandQueueEntryLocked(maestroDir string, commandID string, status m
 		}
 		// Command may have been archived after a previous partial completion;
 		// treat as already handled (recovery safe).
-		slog.Warn("updateCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
+		slogc().Warn("updateCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
 		return false
 	})
 }

@@ -77,6 +77,16 @@ func TestClassifyVerifyOutcome(t *testing.T) {
 			wantReason: "",
 		},
 		{
+			// The skip runner reports why it passed without running anything
+			// ("verify_skipped: verify.enabled=false"); the reason must
+			// survive classification so verify_outcome_applied logs are
+			// self-explanatory instead of showing reason="".
+			name:       "pass_with_reason_propagated",
+			outcome:    VerifyOutcome{Passed: true, Reason: "verify_skipped: verify.enabled=false"},
+			wantStatus: model.StatusCompleted,
+			wantReason: "verify_skipped: verify.enabled=false",
+		},
+		{
 			name:       "fail_with_reason",
 			outcome:    VerifyOutcome{Passed: false, Reason: "test_failed"},
 			wantStatus: model.StatusRepairPending,

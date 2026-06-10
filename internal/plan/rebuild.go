@@ -2,7 +2,6 @@ package plan
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -48,7 +47,7 @@ func Rebuild(opts RebuildOptions) error {
 	// checks key off ghost task_ids and incorrectly drop legitimate writes.
 	for taskID := range state.AppliedResultIDs {
 		if _, ok := state.TaskStates[taskID]; !ok {
-			slog.Info("rebuild: pruning stale applied_result_id for unknown task", "task_id", taskID)
+			slogc().Info("rebuild: pruning stale applied_result_id for unknown task", "task_id", taskID)
 			delete(state.AppliedResultIDs, taskID)
 		}
 	}
@@ -80,14 +79,14 @@ func Rebuild(opts RebuildOptions) error {
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application results directory
 		if err != nil {
-			slog.Warn("rebuild: skipping unreadable result file", "file", name, "error", err)
+			slogc().Warn("rebuild: skipping unreadable result file", "file", name, "error", err)
 			skippedFiles++
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			slog.Warn("rebuild: skipping corrupt result file", "file", name, "error", err)
+			slogc().Warn("rebuild: skipping corrupt result file", "file", name, "error", err)
 			skippedFiles++
 			continue
 		}
@@ -124,7 +123,7 @@ func Rebuild(opts RebuildOptions) error {
 	}
 
 	if skippedFiles > 0 {
-		slog.Warn("rebuild: result files skipped due to read/parse errors", "skipped_count", skippedFiles)
+		slogc().Warn("rebuild: result files skipped due to read/parse errors", "skipped_count", skippedFiles)
 	}
 
 	// Apply the latest result for each task with transition validation.
@@ -133,7 +132,7 @@ func Rebuild(opts RebuildOptions) error {
 	for taskID, lr := range latestByTask {
 		currentStatus := state.TaskStates[taskID]
 		if model.IsTerminal(currentStatus) {
-			slog.Info("rebuild: skipping task with terminal status", "task_id", taskID, "current_status", string(currentStatus), "target_status", string(lr.status))
+			slogc().Info("rebuild: skipping task with terminal status", "task_id", taskID, "current_status", string(currentStatus), "target_status", string(lr.status))
 			continue
 		}
 		state.TaskStates[taskID] = lr.status
@@ -161,10 +160,10 @@ func Rebuild(opts RebuildOptions) error {
 		// hard error: the rebuild result-application work above is
 		// already valuable, and the operator can rerun rebuild after
 		// fixing the queue read issue.
-		slog.Warn("rebuild: phantom-task queue scan failed", "error", queueScanErr)
+		slogc().Warn("rebuild: phantom-task queue scan failed", "error", queueScanErr)
 	}
 	for _, taskID := range phantomFailures {
-		slog.Warn("rebuild: phantom task in state has no queue entry, marking failed",
+		slogc().Warn("rebuild: phantom task in state has no queue entry, marking failed",
 			"command_id", opts.CommandID, "task_id", taskID)
 		state.TaskStates[taskID] = model.StatusFailed
 		if state.CancelledReasons == nil {
@@ -204,12 +203,12 @@ func detectPhantomPlannedTasks(maestroDir, commandID string, taskStates map[stri
 		path := filepath.Join(queueDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application queue directory
 		if err != nil {
-			slog.Warn("rebuild: phantom scan skipping unreadable queue", "file", name, "error", err)
+			slogc().Warn("rebuild: phantom scan skipping unreadable queue", "file", name, "error", err)
 			continue
 		}
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			slog.Warn("rebuild: phantom scan skipping corrupt queue", "file", name, "error", err)
+			slogc().Warn("rebuild: phantom scan skipping corrupt queue", "file", name, "error", err)
 			continue
 		}
 		for _, t := range tq.Tasks {

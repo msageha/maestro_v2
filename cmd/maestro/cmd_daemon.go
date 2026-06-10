@@ -121,9 +121,15 @@ func runDaemon(args []string) error {
 	// fired on the daemon's structured logger but the corresponding
 	// slog.Warn from the tracker never reached daemon.log. Wiring
 	// slog.Default to the file produces a single observable surface.
+	//
+	// No baked-in component attribute: daemon-resident packages label their
+	// own lines via call-time `slog.Default().With("component", ...)`
+	// helpers (plan/paneactivity/events/formation-acceptor). A baked-in
+	// "default" label would duplicate the component key on those lines;
+	// records WITHOUT component= are exactly the not-yet-plumbed call sites.
 	slog.SetDefault(slog.New(slog.NewTextHandler(verifyLogFile, &slog.HandlerOptions{
 		Level: slog.LevelDebug,
-	})).With("component", "default"))
+	})))
 	if cfg.Verify.EffectiveEnabled() {
 		projectDir := cfg.Maestro.ProjectRoot
 		if projectDir == "" {

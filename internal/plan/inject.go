@@ -2,7 +2,6 @@ package plan
 
 import (
 	"fmt"
-	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -293,7 +292,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		if maxT > 0 && len(state.Phases[selectedPhaseIdx].TaskIDs) > maxT {
 			recoveryExempt := opts.RunOnMain || opts.RunOnIntegration
 			if recoveryExempt {
-				slog.Warn("add-task exceeds declared max_tasks (recovery exempt)",
+				slogc().Warn("add-task exceeds declared max_tasks (recovery exempt)",
 					"phase_id", state.Phases[selectedPhaseIdx].PhaseID,
 					"task_count_after_injection", len(state.Phases[selectedPhaseIdx].TaskIDs),
 					"max_tasks", maxT,
@@ -312,7 +311,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 				// rendered on.
 				existingCount := len(state.Phases[selectedPhaseIdx].TaskIDs) - 1
 				if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-					slog.Error("state restore failed during max_tasks rejection", "error", rsErr)
+					slogc().Error("state restore failed during max_tasks rejection", "error", rsErr)
 				}
 				return nil, &planValidationError{Msg: fmt.Sprintf(
 					"phase %q has constraints.max_tasks=%d and already contains %d task(s); injecting another would exceed the cap. Either replace an existing task via add-retry-task, target a different phase via --target-phase, or submit a fresh command with a revised plan.",
@@ -377,7 +376,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, nil); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
+			slogc().Error("state restore failed", "error", rsErr)
 		}
 		return nil, fmt.Errorf("write queue entry: %w", err)
 	}
@@ -387,7 +386,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		// Rollback queue entry
 		rollbackRetryQueueEntries(opts.MaestroDir, []retryQueueTask{task}, opts.LockMap)
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
+			slogc().Error("state restore failed", "error", rsErr)
 		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}

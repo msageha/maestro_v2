@@ -446,6 +446,16 @@ const trustDialogSendInterval = 3 * time.Second
 // therefore only receive keys when a known startup dialog marker is visible:
 // "2" + Enter for Bypass Permissions, or Enter for workspace trust. This avoids
 // buffered Enter keystrokes choosing "No, exit" before detection.
+// acceptorSlog returns the process default slog logger labeled for the
+// trust-dialog acceptor. Unlike the rest of this package (which runs in the
+// `maestro up` CLI where slog goes to stderr), StartTrustDialogAcceptor and
+// autoAcceptTrustDialog also run inside the daemon, where slog.Default() is
+// routed to daemon.log — the component label keeps those lines attributable.
+// Resolved at call time because the daemon wires slog.Default() after startup.
+func acceptorSlog() *slog.Logger {
+	return slog.Default().With("component", "formation")
+}
+
 func autoAcceptTrustDialog(panes []string) {
 	go func() {
 		deadline := time.Now().Add(trustDialogWindow)
@@ -453,12 +463,12 @@ func autoAcceptTrustDialog(panes []string) {
 			time.Sleep(trustDialogSendInterval)
 			for _, pane := range panes {
 				if err := sendStartupDialogKeys(pane); err != nil {
-					slog.Debug("autoAcceptTrustDialog: send startup dialog keys failed",
+					acceptorSlog().Debug("autoAcceptTrustDialog: send startup dialog keys failed",
 						"pane", pane, "error", err)
 				}
 			}
 		}
-		slog.Debug("autoAcceptTrustDialog: window closed",
+		acceptorSlog().Debug("autoAcceptTrustDialog: window closed",
 			"panes_count", len(panes), "window", trustDialogWindow)
 	}()
 }
@@ -581,7 +591,7 @@ func StartTrustDialogAcceptor(maestroDir string) {
 	// len(panes) is an int derived from filtered slog input; there is no
 	// tainted string here, so gosec G706's log-injection warning does not
 	// apply.
-	slog.Info("daemon: starting trust dialog acceptor", "panes_count", len(panes)) //nolint:gosec // panes_count is an int, not a tainted string
+	acceptorSlog().Info("daemon: starting trust dialog acceptor", "panes_count", len(panes)) //nolint:gosec // panes_count is an int, not a tainted string
 	autoAcceptTrustDialog(panes)
 }
 

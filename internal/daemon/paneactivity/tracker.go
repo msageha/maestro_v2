@@ -24,7 +24,6 @@ package paneactivity
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"log/slog"
 	"os"
 	"regexp"
 	"strings"
@@ -739,7 +738,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 		if paneTailWarnOptedIn() {
 			attrs = append(attrs, "tail", trimForLog(tailLines(content), 512))
 		}
-		slog.Warn("pane_terminal_error_detected", attrs...)
+		slogc().Warn("pane_terminal_error_detected", attrs...)
 		_ = t.RecordObservation(agentID, content, now)
 		return VerdictTerminalError
 	}
@@ -767,7 +766,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 		if paneTailWarnOptedIn() {
 			attrs = append(attrs, "tail", trimForLog(tailForBudget, 256))
 		}
-		slog.Warn("pane_context_budget_exhausted", attrs...)
+		slogc().Warn("pane_context_budget_exhausted", attrs...)
 		_ = t.RecordObservation(agentID, content, now)
 		return VerdictTerminalError
 	}
@@ -830,7 +829,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 		if paneTailWarnOptedIn() {
 			attrs = append(attrs, "tail", trimForLog(tailForBlocked, 512))
 		}
-		slog.Warn("pane_blocked_prompt_detected", attrs...)
+		slogc().Warn("pane_blocked_prompt_detected", attrs...)
 		_ = t.RecordObservation(agentID, content, now)
 		return VerdictBlocked
 	}
@@ -865,7 +864,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 			if paneTailWarnOptedIn() {
 				attrs = append(attrs, "tail", trimForLog(tail, 512), "head", trimForLogHead(content, 512))
 			}
-			slog.Debug("pane_blocked_prompt_hint_unmatched", attrs...)
+			slogc().Debug("pane_blocked_prompt_hint_unmatched", attrs...)
 		}
 	}
 

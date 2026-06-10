@@ -63,9 +63,13 @@ PLAN
 
 **検証（副作用なし）**: `maestro plan submit --dry-run --command-id <id> --tasks-file - <<'PLAN'`
 
-### verify.yaml の生成・更新（Phase 0 必須）
+### verify.yaml の生成・更新（Phase 0 — `verify.enabled: true` のとき必須）
 
-各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
+**前提条件**: この Phase 0 は `config.yaml` の `verify.enabled: true` の場合のみ実施する。`verify.enabled: false`（テンプレートデフォルト）の場合は `maestro verify write` を **スキップして直接 plan submit に進む** — daemon の検証ランナーは no-op（NewSkipVerifyRunner）で、snapshot は run_on_integration / run_on_main タスクを含めどこからも参照されず、書いても `verify_write_with_runner_disabled` の WARN が出るだけである。この場合の機械的検証は、**最終 phase の `run_on_integration` タスクの content / definition_of_done に build・test 等の検証コマンド実行を明示し、Worker 自身に実行させる**ことで担保する。
+
+> **mid-flight での有効化**: command 投入後にオペレーターが `verify.enabled` を true に切り替えた場合、その command には snapshot が存在しない。検証対象タスクが完了する前に `maestro verify write` で snapshot を書くか、新しい command として投入し直すこと。
+
+`verify.enabled: true` の場合、各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
 
 > **言語非依存**: 本ドキュメントのコード例は具体性のため Go コマンドで書かれているが、Maestro は対象リポジトリの言語に依存しない。Node なら `tsc --noEmit` / `npm test`、Python なら `ruff check` / `pytest -q`、Rust なら `cargo build` / `cargo test`、Ruby なら `rspec` 等を同じ category に置けばよい (下表「カテゴリ振り分けの目安」参照)。Daemon は marker file (go.mod, package.json, pyproject.toml, ...) からプロジェクト言語を自動判定する。polyglot リポジトリで誤判定される場合は環境変数 `MAESTRO_PROJECT_LANGUAGE` でオーバーライドできる。
 
@@ -100,7 +104,7 @@ VERIFY
 - **Node 系の落とし穴**: `tsc --noEmit` / `eslint .` / `vitest` などは `node_modules/.bin/` 配下にしかない。`bash -c` 経由でも `$PATH` には乗らないので、`npx --no-install <cmd>` を前置するか、`npm run <script>` 形式 (例: `npm run build`, `npm run typecheck`) で叩く。`--no-install` は誤って公開レジストリに fetch しに行くのを防ぐガード
 - **shell negation (`!`) は使わない**: `! rg ...` のような bash の論理否定は、JSON / YAML 経由で daemon に渡る過程で `\!` にエスケープされやすく、`bash -c` で `\!: command not found` (exit 127) を踏む。同じ意味は **`if rg <pattern> <paths>; then exit 1; fi`** や **`rg -q <pattern> <paths> && exit 1 || exit 0`** で書き、negation を if/&&/|| パターンに展開する。secret スキャン例: `if rg -n 'AKIA|password\s*=' lib test; then exit 1; fi`
 
-**重要 — ユーザ指示の検証要求は省略禁止**: コマンドメッセージに「`go vet ./...` を通すこと」等の具体的な検証コマンドが書かれている場合、それらは **すべて** `verify.yaml` の該当 category に列挙する。「Worker タスク内で実行すれば十分」と判断して外してはならない。**Why**: `verify.yaml` は daemon が実機実行する唯一の Strong Signal。`acceptance_criteria` / `content` 内の表記は LLM Worker への指示でしかなく、daemon は実行も検知もしない。
+**重要 — ユーザ指示の検証要求は省略禁止**: コマンドメッセージに「`go vet ./...` を通すこと」等の具体的な検証コマンドが書かれている場合、それらは **すべて** `verify.yaml` の該当 category に列挙する。「Worker タスク内で実行すれば十分」と判断して外してはならない。**Why**: `verify.yaml` は daemon が実機実行する唯一の Strong Signal。`acceptance_criteria` / `content` 内の表記は LLM Worker への指示でしかなく、daemon は実行も検知もしない。**`verify.enabled: false` の場合**は verify.yaml の代わりに、最終 phase の `run_on_integration` タスクの content / definition_of_done にユーザ指示の検証コマンドをすべて列挙する（daemon は実行しないため、Worker への明示指示が唯一の担保になる）。
 
 カテゴリ振り分けの目安:
 
@@ -115,7 +119,7 @@ VERIFY
 
 判断に迷う場合（例: `go vet` を build に入れるか lint に入れるか）は **lint** に寄せる。Daemon は category 順を保たないが、ユーザ指示と紐付くカテゴリに置けば後追いで対応関係を確認できる。
 
-**重要 — verify config の scope**: 通常 worker タスクの完了直後に daemon が verify.yaml を実行することは **ない**。Worker 自身が task 内で self-verification を行い、daemon は **`run_on_integration: true` / `run_on_main: true` のタスクでのみ verify.yaml を実行**する。**Why**: worker worktree は gitignored な依存キャッシュ（node_modules 等）を持たず言語ツールが動かないため。Pre-publish の機械的 verify は **最終 phase に `run_on_integration: true` の dedicated task を配置する** ことで実現する。
+**重要 — verify config の scope**（`verify.enabled: true` の場合）: 通常 worker タスクの完了直後に daemon が verify.yaml を実行することは **ない**。Worker 自身が task 内で self-verification を行い、daemon は **`run_on_integration: true` / `run_on_main: true` のタスクでのみ verify.yaml を実行**する（`verify.enabled: false` ではこれらのタスクでも実行されない）。**Why**: worker worktree は gitignored な依存キャッシュ（node_modules 等）を持たず言語ツールが動かないため。Pre-publish の機械的 verify は **最終 phase に `run_on_integration: true` の dedicated task を配置する** ことで実現する。
 
 `verify.yaml` には repository-wide な build / lint / test / typecheck / security / performance を書く:
 

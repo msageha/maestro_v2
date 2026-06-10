@@ -2,7 +2,6 @@ package plan
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -60,7 +59,7 @@ func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string)
 		// drives EffectiveStatus is what downstream callers consult; missing
 		// slot membership is a purely structural artefact of the prior
 		// replace.
-		slog.Debug("cascade replace skipped: task already replaced or absent from membership slots",
+		slogc().Debug("cascade replace skipped: task already replaced or absent from membership slots",
 			"task_id", oldID, "new_id", newID)
 	}
 }
@@ -99,7 +98,7 @@ func cascadeRecover(
 	if err != nil {
 		// Restore state to pre-cascade snapshot (all-or-nothing).
 		if rsErr := restoreState(state, stateSnapshot); rsErr != nil {
-			slog.Error("cascade recovery rollback failed", "error", rsErr)
+			slogc().Error("cascade recovery rollback failed", "error", rsErr)
 		}
 		return nil, err
 	}
@@ -292,11 +291,11 @@ func getLatestDescendant(taskID string, reverseLineage map[string]string) (strin
 	current := taskID
 	for {
 		if visited[current] {
-			slog.Warn("lineage cycle detected", "start_task_id", taskID, "revisited_task_id", current)
+			slogc().Warn("lineage cycle detected", "start_task_id", taskID, "revisited_task_id", current)
 			return "", fmt.Errorf("lineage cycle detected: task %s revisited while resolving lineage from %s", current, taskID)
 		}
 		if len(visited) >= maxLineageDepth {
-			slog.Warn("lineage depth exceeded", "max_depth", maxLineageDepth, "start_task_id", taskID)
+			slogc().Warn("lineage depth exceeded", "max_depth", maxLineageDepth, "start_task_id", taskID)
 			return "", fmt.Errorf("lineage depth exceeded maximum %d starting from task %s", maxLineageDepth, taskID)
 		}
 		visited[current] = true
