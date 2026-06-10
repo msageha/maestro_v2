@@ -442,10 +442,12 @@ const trustDialogSendInterval = 3 * time.Second
 //     speeds and terminal rendering behaviors.
 //
 // Bypass Permissions changes that tradeoff: the confirmation's default
-// selection is "No, exit", so Enter alone terminates the agent. Managed panes
+// selection is "No, exit", so Enter alone terminates the agent. Panes
 // therefore only receive keys when a known startup dialog marker is visible:
 // "2" + Enter for Bypass Permissions, or Enter for workspace trust. This avoids
-// buffered Enter keystrokes choosing "No, exit" before detection.
+// buffered Enter keystrokes choosing "No, exit" before detection. When the
+// pane content cannot be captured at all, the acceptor sends nothing for that
+// tick (fail closed) rather than falling back to a blind Enter.
 // acceptorSlog returns the process default slog logger labeled for the
 // trust-dialog acceptor. Unlike the rest of this package (which runs in the
 // `maestro up` CLI where slog goes to stderr), StartTrustDialogAcceptor and
@@ -477,25 +479,30 @@ const bypassPermissionsDialogMarker = "Bypass Permissions mode"
 const workspaceTrustDialogMarker = "project you created or one you trust"
 
 func sendStartupDialogKeys(pane string) error {
-	role, err := tmux.GetUserVar(pane, "role")
-	if err != nil {
-		role = ""
-	}
 	content, err := captureStartupDialogContent(pane)
 	if err != nil {
-		if isManagedAgentRole(role) {
-			return nil
-		}
-		return tmux.SendKeys(pane, "Enter")
+		// Fail closed: without pane content we cannot tell which dialog
+		// (if any) is showing, and a blind Enter can select the Bypass
+		// Permissions confirmation's default "No, exit" and terminate the
+		// agent. Every pane in the acceptor list is a formation-managed
+		// pane, so skipping a tick is always safe — the loop retries
+		// within trustDialogSendInterval.
+		return nil
 	}
-	keys := startupDialogKeys(role, content)
+	keys := startupDialogKeys(content)
 	if len(keys) == 0 {
 		return nil
 	}
 	return tmux.SendKeys(pane, keys...)
 }
 
-func startupDialogKeys(role, content string) []string {
+// startupDialogKeys is purely content-driven: keys are sent only when a
+// known startup dialog marker is visible. There is no role-based blind
+// Enter fallback — the acceptor only ever receives formation-managed
+// panes, and a periodic Enter without a visible marker submits empty
+// input to a running agent or, worse, picks the Bypass Permissions
+// confirmation's default "No, exit" (fail closed; the loop retries).
+func startupDialogKeys(content string) []string {
 	normalized := normalizeStartupDialogContent(content)
 	if startupDialogContentReady(normalized) {
 		return nil
@@ -506,16 +513,7 @@ func startupDialogKeys(role, content string) []string {
 	if strings.Contains(normalized, workspaceTrustDialogMarker) {
 		return []string{"Enter"}
 	}
-	if isManagedAgentRole(role) {
-		return nil
-	}
-	// Unknown legacy panes are not expected to use Bypass Permissions, so
-	// periodic Enter preserves the previous best-effort trust-dialog behavior.
-	return []string{"Enter"}
-}
-
-func isManagedAgentRole(role string) bool {
-	return role == "orchestrator" || role == "planner" || role == "worker"
+	return nil
 }
 
 func startupDialogVisible(content string) bool {

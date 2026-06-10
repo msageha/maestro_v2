@@ -105,6 +105,8 @@ Agent 間の通信はすべて **Daemon 経由の CLI コマンド（Unix Domain
 
 `.maestro/` の制御面（state/queue/results/locks/logs/config.yaml）は Worker から書き換えられない。
 
+> **信頼境界に関する注意**: ロール識別（`MAESTRO_AGENT_ROLE` / tmux pane の `@role`）は **advisory hint であり認証ではない**。UDS ソケットは mode 0600 のため接続できるのは同一 UNIX ユーザーのプロセスのみで、その境界内でのロール分離は best-effort（誠実なエージェントの誤操作防止が目的）である。同一ユーザーの敵対的プロセスに対する防御は提供しない。マルチユーザー環境では OS レベルのユーザー分離を併用すること（詳細: `internal/uds/protocol.go` の SECURITY NOTE）。
+
 ---
 
 ## Worktree による並列作業の分離
@@ -120,7 +122,7 @@ Agent 間の通信はすべて **Daemon 経由の CLI コマンド（Unix Domain
   → worktree クリーンアップ
 ```
 
-Worker は git 操作（commit/push/merge 等）を一切行わない。すべて Daemon が管理する。
+Worker は変更系の git 操作（commit/push/merge 等）を一切行わない。すべて Daemon が管理する（`git status` / `git diff` / `git show` 等の読み取り専用コマンドは確認用途で許可される）。
 
 ---
 
@@ -141,8 +143,9 @@ Daemon は以下のモジュールを備え、`feature_profiles` でタスク複
 
 ### コマンド単位の検証設定（verify write）
 
-Worker のタスク完了後に走らせる検証コマンドを `.maestro/verify.yaml`（または `maestro verify write --command-id <id> --config-file <path>`）で宣言する。`build / lint / test / typecheck` および任意の `security / performance` にカテゴリ分けする。
+コマンド単位の検証コマンドを `.maestro/verify.yaml`（または `maestro verify write --command-id <id> --config-file <path>`）で宣言する。`build / lint / test / typecheck` および任意の `security / performance` にカテゴリ分けする。
 
+- Daemon が verify.yaml を実行するのは **`run_on_integration: true` / `run_on_main: true` のタスク完了時のみ**。通常の worker タスク完了直後には実行されない（worker worktree は gitignored な依存キャッシュを持たず言語ツールが動かないため。Worker はタスク内で self-verification を行う）。pre-publish の機械的検証は、最終 phase に `run_on_integration: true` の検証専用タスクを配置して実現する。
 - 各コマンドは `bash -c` 経由で実行される。`&&` / `||` / `;` / `|` / リダイレクト / `$(...)` / env 代入 (`KEY=val cmd`) などの通常の shell 構文をそのまま書いてよい。複数手順を 1 つの category に並べたい場合も `cmd1 && cmd2` で連結できる。
 - 唯一の構文制約は「YAML スカラ 1 行に収まること」（改行 / キャリッジリターンのみ reject される）。
 - カテゴリは `build`, `lint`, `test`, `typecheck`, `security`, `performance` の 6 つ。これ以外のキー（例: `slow_lint`, `integration_test`）を書くと strict YAML decode で reject され "allowed categories: ..." エラーになる。

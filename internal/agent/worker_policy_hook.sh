@@ -132,6 +132,9 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+verify\s+write(\s|$)'; then
     deny "maestro verify write is Planner-owned"
   fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+agent\s+(exec|launch)(\s|$)'; then
+    deny "maestro agent exec/launch is operator-only (direct pane messaging bypasses the daemon dispatch path: no lease, fencing, or dedupe)"
+  fi
 
   # 1b. Block environment tampering that aims to bypass the daemon's
   #     role check before invoking maestro. The daemon distinguishes

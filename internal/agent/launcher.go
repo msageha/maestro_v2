@@ -737,6 +737,15 @@ var workerDisallowedTools = []string{
 	// router but blocked here too as defense-in-depth in case `content`
 	// reintroduces the historical spelling.
 	"Bash(maestro resolve-conflict:*)",
+	// `maestro agent exec` pastes a message directly into any agent pane
+	// via the local tmux executor, bypassing the daemon dispatch path
+	// (lease / fencing / dispatch_id dedupe) and enabling agent
+	// impersonation; `maestro agent launch` re-execs an agent CLI in
+	// place. Both are operator/formation surfaces — a Worker never needs
+	// them, so the whole subcommand family is blocked. The CLI itself
+	// also rejects non-CLI callers (cmd_agent.go guardAgentExecCaller)
+	// and worker_policy_hook.sh denies it at L2.
+	"Bash(maestro agent:*)",
 	"Read(.maestro/state/**)",
 	"Read(.maestro/queue/**)",
 	"Read(.maestro/results/**)",

@@ -748,6 +748,12 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 			t.Errorf("worker disallowedTools should contain %q", sub)
 		}
 	}
+
+	// `maestro agent` (exec / launch) bypasses the daemon dispatch path and
+	// must be operator-only; the whole subcommand family is blocked at L1.
+	if !strings.Contains(joined, "Bash(maestro agent:*)") {
+		t.Error("worker disallowedTools should contain Bash(maestro agent:*)")
+	}
 }
 
 func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {

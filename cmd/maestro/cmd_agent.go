@@ -6,6 +6,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 // mapAgentExecError maps an agent.Executor result into the CLI error
@@ -74,6 +75,33 @@ func runAgentLaunch(args []string) error {
 	return nil
 }
 
+// guardAgentExecCaller rejects `maestro agent exec` invocations that
+// originate from managed agent panes (orchestrator / planner / worker).
+// The command pastes a message directly into a tmux pane via
+// agent.Executor, bypassing the daemon's UDS dispatch path entirely —
+// no lease check, no fencing, no dispatch_id dedupe. From an operator
+// terminal that is an intentional debug affordance, but from an agent
+// it breaks the "agents communicate only via the daemon" invariant and
+// allows one agent to impersonate another. Workers are additionally
+// blocked at L1 (workerDisallowedTools) and L2 (worker_policy_hook.sh);
+// this CLI-layer check is the daemon-side leg of that multi-layer
+// defense, mirroring the operator-only guard in cmd_plan_ops.go.
+func guardAgentExecCaller(resolveRole func() (string, error)) error {
+	role, err := resolveRole()
+	if err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent exec: cannot resolve caller role: %v", err)}
+	}
+	if role != uds.RoleCLI {
+		return &CLIError{
+			Code: 1,
+			Msg: fmt.Sprintf(
+				"maestro agent exec: restricted to operator (CLI) role; caller role %q is not permitted — agents must communicate via the daemon dispatch path",
+				role),
+		}
+	}
+	return nil
+}
+
 // runAgentExec sends a message to a running agent via the executor.
 func runAgentExec(args []string) error {
 	cmd := NewCommand("maestro agent exec", "maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]")
@@ -88,6 +116,10 @@ func runAgentExec(args []string) error {
 	cmd.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "Set mode to clear")
 
 	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+
+	if err := guardAgentExecCaller(uds.ResolveCallerRole); err != nil {
 		return err
 	}
 

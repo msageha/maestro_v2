@@ -635,7 +635,7 @@ feature_profiles:
     cross_agent_review: false
     exploratory_optimization: false
     evolutionary_quality: false
-    adaptive_model_selection: false
+    adaptive_model_selection: true
     self_improvement: false
     adaptive_depth: false
   complex:

@@ -129,6 +129,7 @@ func TestHookScript_ContainsMaestroSpecificChecks(t *testing.T) {
 		{"maestro plan resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
 		{"maestro queue write", "maestro queue write is Orchestrator/operator-owned"},
 		{"maestro verify write", "maestro verify write is Planner-owned"},
+		{"maestro agent exec/launch", "maestro agent exec/launch is operator-only"},
 		{"role env manipulation", "role-environment manipulation"},
 		{"git push", "git push blocked for Worker"},
 		{".maestro/ control plane", ".maestro/"},
@@ -619,6 +620,51 @@ func TestHookScript_D009_BlocksMaestroRoleEnvironmentBypass(t *testing.T) {
 				strings.Contains(output, "Planner-owned")
 			if !roleHit && !planHit {
 				t.Errorf("expected role-env or maestro-plan deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_BlocksMaestroAgentSubcommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	denyCases := []struct {
+		name string
+		cmd  string
+	}{
+		{"agent exec direct", "maestro agent exec --agent-id planner --message hi"},
+		{"agent exec impersonation", "maestro agent exec --agent-id worker2 --message 'do something'"},
+		{"agent launch", "maestro agent launch"},
+		{"chained agent exec", "cd /tmp && maestro agent exec --agent-id orchestrator --message x"},
+		{"piped agent exec", "echo hi | maestro agent exec --agent-id planner --message y"},
+	}
+	for _, tc := range denyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := runHookScriptInDir(t, scriptPath, makeBashInput(tc.cmd), dir)
+			if !strings.Contains(output, "deny") || !strings.Contains(output, "operator-only") {
+				t.Errorf("expected agent exec/launch deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+
+	allowCases := []struct {
+		name string
+		cmd  string
+	}{
+		{"result write", "maestro result write --task-id t1 --status completed --summary done"},
+		{"summary mentioning agent exec", `maestro result write --task-id t1 --status completed --summary "documented maestro agent exec"`},
+	}
+	for _, tc := range allowCases {
+		t.Run(tc.name, func(t *testing.T) {
+			output := runHookScriptInDir(t, scriptPath, makeBashInput(tc.cmd), dir)
+			if strings.Contains(output, "deny") {
+				t.Errorf("expected allow for %q, got: %s", tc.cmd, output)
 			}
 		})
 	}

@@ -3,15 +3,18 @@ package setup
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/templates"
 )
 
 func TestRun_CreatesDirectoryStructure(t *testing.T) {
@@ -834,4 +837,56 @@ func TestRun_PersonaTemplatesCopied(t *testing.T) {
 	if len(entries) == 0 {
 		t.Error("persona directory is empty, expected template files")
 	}
+}
+
+// TestTemplateConfigFeatureProfilesMatchCodeDefaults locks the
+// feature_profiles block in templates/config.yaml to the SSOT
+// (model.DefaultFeatureProfiles). The template header declares that its
+// values mirror the code defaults, and README documents the same values;
+// drift between them (Report 2026-06-10 P1-3:
+// standard.adaptive_model_selection diverged) makes code / template /
+// README disagree about what a profile enables.
+func TestTemplateConfigFeatureProfilesMatchCodeDefaults(t *testing.T) {
+	data, err := fs.ReadFile(templates.FS, "config.yaml")
+	if err != nil {
+		t.Fatalf("read embedded config.yaml: %v", err)
+	}
+
+	var cfg struct {
+		FeatureProfiles map[string]model.FeatureProfile `yaml:"feature_profiles"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("unmarshal config.yaml: %v", err)
+	}
+
+	want := model.DefaultFeatureProfiles()
+	for level, wantProfile := range want {
+		got, ok := cfg.FeatureProfiles[level]
+		if !ok {
+			t.Errorf("templates/config.yaml feature_profiles missing level %q", level)
+			continue
+		}
+		if !reflect.DeepEqual(got, wantProfile) {
+			t.Errorf("templates/config.yaml feature_profiles[%q] = %s, want %s (sync with model.DefaultFeatureProfiles)",
+				level, featureProfileString(got), featureProfileString(wantProfile))
+		}
+	}
+	for level := range cfg.FeatureProfiles {
+		if _, ok := want[level]; !ok {
+			t.Errorf("templates/config.yaml feature_profiles has unknown level %q", level)
+		}
+	}
+}
+
+func featureProfileString(p model.FeatureProfile) string {
+	b := func(v *bool) string {
+		if v == nil {
+			return "<nil>"
+		}
+		return fmt.Sprintf("%t", *v)
+	}
+	return fmt.Sprintf(
+		"{cross_agent_review:%s exploratory_optimization:%s evolutionary_quality:%s adaptive_model_selection:%s self_improvement:%s adaptive_depth:%s}",
+		b(p.CrossAgentReview), b(p.ExploratoryOptimization), b(p.EvolutionaryQuality),
+		b(p.AdaptiveModelSelection), b(p.SelfImprovement), b(p.AdaptiveDepth))
 }

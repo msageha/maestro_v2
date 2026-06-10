@@ -1408,3 +1408,131 @@ func TestEnsureClaudeRunning_GetCmdError_ReturnsError(t *testing.T) {
 		t.Error("should not re-launch on GetPaneCurrentCommand error")
 	}
 }
+
+// === P0-2 (Report 2026-06-10): @run_on_main stamp must fail closed ===
+
+func TestStampRunOnMainVar(t *testing.T) {
+	t.Parallel()
+
+	t.Run("stamps 1 for run_on_main and reads back", func(t *testing.T) {
+		mock := newMockPaneIO()
+		exec, _ := newCovExecutor(mock)
+		if err := exec.stampRunOnMainVar("%0", true); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := mock.userVars["run_on_main"]; got != "1" {
+			t.Errorf("expected @run_on_main=1, got %q", got)
+		}
+	})
+
+	t.Run("clears stale flag on normal dispatch", func(t *testing.T) {
+		mock := newMockPaneIO()
+		mock.userVars["run_on_main"] = "1" // stale from a previous run_on_main task
+		exec, _ := newCovExecutor(mock)
+		if err := exec.stampRunOnMainVar("%0", false); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got := mock.userVars["run_on_main"]; got != "" {
+			t.Errorf("expected @run_on_main cleared, got %q", got)
+		}
+	})
+
+	t.Run("set failure is an error", func(t *testing.T) {
+		mock := newMockPaneIO()
+		mock.SetUserVarFn = func(_, name, _ string) error {
+			return fmt.Errorf("tmux set-option failed")
+		}
+		exec, _ := newCovExecutor(mock)
+		if err := exec.stampRunOnMainVar("%0", true); err == nil {
+			t.Fatal("expected error when SetUserVar fails")
+		}
+	})
+
+	t.Run("read-back failure is an error", func(t *testing.T) {
+		mock := newMockPaneIO()
+		mock.GetUserVarFn = func(_, _ string) (string, error) {
+			return "", fmt.Errorf("tmux display-message failed")
+		}
+		exec, _ := newCovExecutor(mock)
+		if err := exec.stampRunOnMainVar("%0", true); err == nil {
+			t.Fatal("expected error when GetUserVar fails")
+		}
+	})
+
+	t.Run("read-back mismatch is an error", func(t *testing.T) {
+		mock := newMockPaneIO()
+		// Write is silently lost: read returns empty although Set succeeded.
+		mock.GetUserVarFn = func(_, _ string) (string, error) { return "", nil }
+		exec, _ := newCovExecutor(mock)
+		if err := exec.stampRunOnMainVar("%0", true); err == nil {
+			t.Fatal("expected error when read-back does not match")
+		}
+	})
+}
+
+func TestExecWithClear_RunOnMainStampFails_AbortsRetryableBeforeDelivery(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.SetUserVarFn = func(_, name, _ string) error {
+		if name == "run_on_main" {
+			return fmt.Errorf("tmux set-option failed")
+		}
+		return nil
+	}
+
+	exec, _ := newCovExecutor(mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result := exec.execWithClear(ctx, ExecRequest{
+		Context:   ctx,
+		AgentID:   "worker1",
+		Message:   "read-only verification task",
+		TaskID:    "task_rom",
+		RunOnMain: true,
+	}, "%0")
+
+	if result.Error == nil {
+		t.Fatal("expected error when @run_on_main stamp fails")
+	}
+	if !result.Retryable {
+		t.Error("stamp failure must be retryable (dispatch abort, not dead-letter)")
+	}
+	// Fail-closed: the message must never reach a pane whose guard flag
+	// could not be stamped — the Worker would sit on the main checkout
+	// with no mutation protection.
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("message must not be delivered after stamp failure, sent: %v", mock.sentTexts)
+	}
+}
+
+func TestExecWithClear_RunOnMainReadBackEmpty_AbortsRetryable(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	// Set succeeds but the value never lands (silent loss): read-back sees "".
+	mock.GetUserVarFn = func(_, name string) (string, error) {
+		return "", nil
+	}
+
+	exec, _ := newCovExecutor(mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	result := exec.execWithClear(ctx, ExecRequest{
+		Context:   ctx,
+		AgentID:   "worker1",
+		Message:   "read-only verification task",
+		TaskID:    "task_rom2",
+		RunOnMain: true,
+	}, "%0")
+
+	if result.Error == nil {
+		t.Fatal("expected error when read-back does not confirm @run_on_main=1")
+	}
+	if !result.Retryable {
+		t.Error("read-back mismatch must be retryable")
+	}
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("message must not be delivered, sent: %v", mock.sentTexts)
+	}
+}

@@ -132,6 +132,40 @@ func TestMapAgentExecError_Nil(t *testing.T) {
 	}
 }
 
+func TestGuardAgentExecCaller(t *testing.T) {
+	tests := []struct {
+		name    string
+		role    string
+		err     error
+		wantErr bool
+	}{
+		{"cli role allowed", "cli", nil, false},
+		{"worker rejected", "worker", nil, true},
+		{"planner rejected", "planner", nil, true},
+		{"orchestrator rejected", "orchestrator", nil, true},
+		{"resolve error rejected", "", errors.New("invalid caller role"), true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolve := func() (string, error) { return tt.role, tt.err }
+			err := guardAgentExecCaller(resolve)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				var ce *CLIError
+				if !errors.As(err, &ce) {
+					t.Fatalf("expected CLIError, got %T: %v", err, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 func TestRunAgentExec_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name    string

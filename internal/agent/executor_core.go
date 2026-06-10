@@ -468,6 +468,31 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	return ExecResult{Success: true}
 }
 
+// stampRunOnMainVar writes the @run_on_main pane variable ("1" for
+// RunOnMain dispatches, "" otherwise) and reads it back to confirm the
+// value landed. The read-back matters because worker_policy_hook.sh
+// only fails closed when its *read* of the flag fails — a write that
+// silently did not land reads back as empty and disables the guard
+// entirely, leaving a RunOnMain Worker on the main checkout with no
+// mutation protection.
+func (e *Executor) stampRunOnMainVar(paneTarget string, runOnMain bool) error {
+	want := ""
+	if runOnMain {
+		want = "1"
+	}
+	if err := e.paneIO.SetUserVar(paneTarget, "run_on_main", want); err != nil {
+		return fmt.Errorf("set @run_on_main=%q: %w", want, err)
+	}
+	got, err := e.paneIO.GetUserVar(paneTarget, "run_on_main")
+	if err != nil {
+		return fmt.Errorf("read back @run_on_main: %w", err)
+	}
+	if got != want {
+		return fmt.Errorf("read back @run_on_main: got %q, want %q", got, want)
+	}
+	return nil
+}
+
 // execWithClear delivers a message with prior /clear (Worker mode).
 func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Orchestrator: never /clear, fall through to deliver mode
@@ -485,18 +510,18 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 	// run_on_main hard guard: stamp the pane with @run_on_main so the
 	// PreToolUse policy hook can deny Write/Edit while the Worker is
-	// pointed at the main worktree (read-only verification mode). The
-	// var must also be cleared on non-run_on_main dispatches because the
-	// same pane is reused across tasks; a stale "1" would lock out the
-	// next task. Failures here are logged but non-fatal — the hook is
-	// defense-in-depth, not a hard pre-condition for delivery.
-	runOnMainVal := ""
-	if req.RunOnMain {
-		runOnMainVal = "1"
-	}
-	if err := e.paneIO.SetUserVar(paneTarget, "run_on_main", runOnMainVal); err != nil {
-		e.log(logLevelWarn, "set_run_on_main_var_failed agent_id=%s value=%q error=%v",
-			req.AgentID, runOnMainVal, err)
+	// pointed at the main worktree (read-only verification mode). For a
+	// RunOnMain dispatch this flag is the ONLY mechanical mutation guard
+	// (the pane already points at the main checkout), so a stamp failure
+	// must abort the dispatch as retryable instead of degrading to
+	// fail-open. The var must also be cleared on non-run_on_main
+	// dispatches because the same pane is reused across tasks; a stale
+	// "1" would lock the next task into read-only mode, so clear
+	// failures abort too (availability rather than safety).
+	if err := e.stampRunOnMainVar(paneTarget, req.RunOnMain); err != nil {
+		e.log(logLevelError, "set_run_on_main_var_failed agent_id=%s run_on_main=%t error=%v",
+			req.AgentID, req.RunOnMain, err)
+		return ExecResult{Error: fmt.Errorf("stamp @run_on_main: %w", err), Retryable: true}
 	}
 
 	// Ensure Claude is actually running (not crashed back to shell).

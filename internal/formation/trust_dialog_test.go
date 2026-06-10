@@ -47,7 +47,7 @@ func TestTrustDialogSendIntervalCatchesDialogQuickly(t *testing.T) {
 	}
 }
 
-func TestStartupDialogKeys_BypassPermissionsSelectsAcceptForManagedRoles(t *testing.T) {
+func TestStartupDialogKeys_BypassPermissionsSelectsAccept(t *testing.T) {
 	t.Parallel()
 	content := `
   WARNING: Claude Code running in
@@ -56,40 +56,38 @@ func TestStartupDialogKeys_BypassPermissionsSelectsAcceptForManagedRoles(t *test
 	  ❯ 1. No, exit
 	    2. Yes, I accept
 	`
-	for _, role := range []string{"orchestrator", "planner", "worker"} {
-		role := role
-		t.Run(role, func(t *testing.T) {
-			t.Parallel()
-			got := startupDialogKeys(role, content)
-			want := []string{"2", "Enter"}
-			if !reflect.DeepEqual(got, want) {
-				t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
-			}
-		})
+	got := startupDialogKeys(content)
+	want := []string{"2", "Enter"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
 	}
 }
 
 func TestStartupDialogKeys_DefaultTrustDialogEnterOnly(t *testing.T) {
 	t.Parallel()
 	content := `Is this a project you created or one you trust?`
-	got := startupDialogKeys("orchestrator", content)
+	got := startupDialogKeys(content)
 	want := []string{"Enter"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
 	}
 }
 
-func TestStartupDialogKeys_ManagedRoleWithoutKnownDialogSendsNothing(t *testing.T) {
+// TestStartupDialogKeys_NoKnownDialogSendsNothing locks in the fail-closed
+// behavior (Report 2026-06-10 P0-3): when no known dialog marker is visible
+// there is NO blind Enter fallback. A periodic Enter against a running agent
+// submits empty input, and against the Bypass Permissions confirmation it
+// selects the default "No, exit" and terminates the agent.
+func TestStartupDialogKeys_NoKnownDialogSendsNothing(t *testing.T) {
 	t.Parallel()
-	for _, role := range []string{"orchestrator", "planner", "worker"} {
-		role := role
-		t.Run(role, func(t *testing.T) {
-			t.Parallel()
-			got := startupDialogKeys(role, `Claude prompt is ready`)
-			if got != nil {
-				t.Fatalf("startupDialogKeys() = %#v, want nil", got)
-			}
-		})
+	for _, content := range []string{
+		`Claude prompt is ready`,
+		``,
+		`some unrelated shell output`,
+	} {
+		if got := startupDialogKeys(content); got != nil {
+			t.Fatalf("startupDialogKeys(%q) = %#v, want nil (fail closed)", content, got)
+		}
 	}
 }
 
@@ -105,7 +103,7 @@ func TestStartupDialogKeys_ReadyPromptSuppressesStaleDialogScrollback(t *testing
   ❯
   ⏵⏵ bypass permissions on (shift+tab to cycle)
 `
-	if got := startupDialogKeys("worker", content); got != nil {
+	if got := startupDialogKeys(content); got != nil {
 		t.Fatalf("startupDialogKeys() = %#v, want nil once prompt is ready", got)
 	}
 	if startupDialogVisible(content) {
@@ -113,20 +111,10 @@ func TestStartupDialogKeys_ReadyPromptSuppressesStaleDialogScrollback(t *testing
 	}
 }
 
-func TestStartupDialogKeys_WorkerTrustDialogEnterOnly(t *testing.T) {
-	t.Parallel()
-	content := `Is this a project you created or one you trust?`
-	got := startupDialogKeys("worker", content)
-	want := []string{"Enter"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
-	}
-}
-
-func TestStartupDialogKeys_WorkerTrustDialogWrappedText(t *testing.T) {
+func TestStartupDialogKeys_TrustDialogWrappedText(t *testing.T) {
 	t.Parallel()
 	content := "Is this a project\n       you created or one you trust?"
-	got := startupDialogKeys("worker", content)
+	got := startupDialogKeys(content)
 	want := []string{"Enter"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
