@@ -64,6 +64,11 @@ type TaskAssignmentRequest struct {
 	Name           string
 	BloomLevel     int
 	PinnedWorkerID string
+	// RequireClaudeRuntime restricts assignment to workers whose configured
+	// model maps to the claude-code runtime. Set for run_on_main tasks: the
+	// read-only guard on the main working directory is enforced by the
+	// claude-code PreToolUse policy hook, which codex / gemini workers lack.
+	RequireClaudeRuntime bool
 }
 
 // GetModelForBloomLevel returns the model family name appropriate for the
@@ -112,16 +117,18 @@ func modelFamily(name string) string {
 
 // GetWorkerModel returns the model configured for the given worker, falling back to the default.
 func GetWorkerModel(workerID string, config model.WorkerConfig) string {
-	if config.Boost {
-		return "opus"
-	}
-	if m, ok := config.Models[workerID]; ok {
-		return m
-	}
-	if config.DefaultModel != "" {
-		return config.DefaultModel
-	}
-	return "sonnet"
+	return config.ModelFor(workerID)
+}
+
+// isClaudeRuntimeModel reports whether the given worker model maps to the
+// claude-code runtime. run_on_main tasks require claude-code because the
+// read-only enforcement on the main working directory (the @run_on_main
+// pane variable consumed by the PreToolUse policy hook) only exists for
+// claude-code; codex / gemini workers run with sandbox bypass flags and
+// would have no technical barrier against mutating main.
+func isClaudeRuntimeModel(modelName string) bool {
+	runtime, _ := model.ParseRuntimeFromModel(modelName)
+	return runtime == model.RuntimeClaudeCode
 }
 
 // AssignWorkers distributes tasks across available workers using least-loaded selection per model.
@@ -169,6 +176,10 @@ func AssignWorkers(
 			if !ok {
 				return nil, fmt.Errorf("%w for task %q: pinned worker %q not configured (workers.count=%d)",
 					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, config.Count)
+			}
+			if task.RequireClaudeRuntime && !isClaudeRuntimeModel(ws.Model) {
+				return nil, fmt.Errorf("%w for task %q: pinned worker %q runs model %q (non-claude runtime); run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
+					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, ws.Model)
 			}
 			if ws.PendingCount >= maxPending {
 				return nil, fmt.Errorf("%w for task %q: pinned worker %q at capacity (max_pending_tasks_per_worker=%d)",
@@ -225,6 +236,9 @@ func AssignWorkers(
 			if modelFamily(ws.Model) != requiredFamily {
 				continue
 			}
+			if task.RequireClaudeRuntime && !isClaudeRuntimeModel(ws.Model) {
+				continue
+			}
 			if ws.PendingCount >= maxPending {
 				continue
 			}
@@ -236,6 +250,19 @@ func AssignWorkers(
 		}
 
 		if bestWorker == nil {
+			if task.RequireClaudeRuntime {
+				hasClaudeWorker := false
+				for _, ws := range stateMap {
+					if isClaudeRuntimeModel(ws.Model) {
+						hasClaudeWorker = true
+						break
+					}
+				}
+				if !hasClaudeWorker {
+					return nil, fmt.Errorf("%w for task %q: no claude-code workers configured; run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
+						ErrNoAvailableWorker, task.Name)
+				}
+			}
 			// Distinguish "no workers with matching family" from "matching workers at capacity"
 			hasMatchingModel := false
 			for _, ws := range stateMap {

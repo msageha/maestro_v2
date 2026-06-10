@@ -198,8 +198,8 @@ func TestFallbackToDefault_AlwaysClaudeCode(t *testing.T) {
 // TestLaunchAlternativeRuntimeRejectsOrchestratorAndPlanner pins the
 // orchestrator / planner restriction: codex / gemini must never be allowed
 // for those roles because they operate directly on the project root with
-// maestro-CLI access, and the validate_run_on_main pre-flight is not
-// enough to bound their blast radius.
+// maestro-CLI access, and no mechanical guard bounds their blast radius
+// outside claude-code's tool flags and hooks.
 func TestLaunchAlternativeRuntimeRejectsOrchestratorAndPlanner(t *testing.T) {
 	tests := []struct {
 		role    string

@@ -268,30 +268,20 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string) error {
-	// Defense-in-depth pre-flight check that rejects destructive shell
-	// snippets in tasks targeting the main branch or integration worktree.
-	// The Bash policy hook (internal/agent/policy_checker) covers Claude
-	// Code workers, but Codex/Gemini bypass that hook entirely; this check
-	// applies to every worker regardless of agent type.
-	if err := validateRunOnMainContent(task); err != nil {
+	// run_on_main pre-flight (defense-in-depth; the plan API enforces the
+	// same invariants at submit/inject time): the worker must run
+	// claude-code (only claude-code enforces the read-only main guard via
+	// the @run_on_main PreToolUse hook), and the command's integration must
+	// be published — or never have produced integration output — so the
+	// verification reads the merged result instead of stale main. The
+	// historical self-deadlock of a blanket "wait for publish" gate is
+	// avoided by allowing the created/absent states (run_on_main-only
+	// verification commands never advance integration past created).
+	if err := validateRunOnMainPreflight(task, workerID, disp.config.Agents.Workers, disp.getWorktreeManager()); err != nil {
 		disp.dl.Logf(core.LogLevelError,
-			"dispatch_task_destructive_content_blocked id=%s worker=%s run_on_main=%t run_on_integration=%t error=%v",
-			task.ID, workerID, task.RunOnMain, task.RunOnIntegration, err)
+			"dispatch_task_run_on_main_preflight_blocked id=%s worker=%s run_on_main=%t error=%v",
+			task.ID, workerID, task.RunOnMain, err)
 		return err
-	}
-
-	// run_on_main timing observation: RunOnMain dispatch is intentionally
-	// not gated on integration→base publish. Gating here would self-deadlock
-	// (run_on_main tasks need publish; publish needs every phase task to
-	// terminate; a phase containing the run_on_main task therefore never
-	// completes). The worker is responsible for refreshing main itself
-	// (`git fetch + git checkout main`) if it needs newer base state.
-	// Logged as INFO so operators can still spot the pattern.
-	if task != nil && task.RunOnMain {
-		disp.dl.Logf(core.LogLevelInfo,
-			"dispatch_run_on_main_pre_publish_observation id=%s worker=%s command=%s "+
-				"(no longer blocking dispatch; worker is responsible for refreshing main if needed)",
-			task.ID, workerID, task.CommandID)
 	}
 
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {

@@ -146,12 +146,17 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		}
 		assignedWorkerID = opts.TargetWorkerID
 		assignedModel = GetWorkerModel(opts.TargetWorkerID, opts.Config.Agents.Workers)
+		if opts.RunOnMain && !isClaudeRuntimeModel(assignedModel) {
+			return nil, &planValidationError{Msg: fmt.Sprintf(
+				"worker %q runs model %q (non-claude runtime); run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
+				opts.TargetWorkerID, assignedModel)}
+		}
 	} else {
 		workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
 		if err != nil {
 			return nil, fmt.Errorf("build worker states: %w", err)
 		}
-		assignReqs := []TaskAssignmentRequest{{Name: "__inject", BloomLevel: opts.BloomLevel}}
+		assignReqs := []TaskAssignmentRequest{{Name: "__inject", BloomLevel: opts.BloomLevel, RequireClaudeRuntime: opts.RunOnMain}}
 		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 		if err != nil {
 			return nil, fmt.Errorf("worker assignment: %w", err)
@@ -394,6 +399,35 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	}, nil
 }
 
+// validateRunOnMainPublishGate reads the worktree state file and rejects a
+// run_on_main injection unless the integration branch has been published to
+// base. Fail-closed: an unreadable or unparsable state file rejects the
+// injection (the Planner can retry; dispatching against unknown publish
+// state risks verifying stale main).
+func validateRunOnMainPublishGate(worktreeStatePath, commandID string) error {
+	data, err := os.ReadFile(worktreeStatePath) //nolint:gosec // controlled application state path
+	if err != nil {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"cannot inject run_on_main task into command %s: worktree state is unreadable (%v). Retry once the daemon has settled the integration state.",
+			commandID, err)}
+	}
+	var ws model.WorktreeCommandState
+	if err := yaml.Unmarshal(data, &ws); err != nil {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"cannot inject run_on_main task into command %s: worktree state is unparsable (%v). Retry once the daemon has settled the integration state.",
+			commandID, err)}
+	}
+	if ws.Integration.Status != model.IntegrationStatusPublished {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"cannot inject run_on_main task into command %s: integration status is %q, not published. "+
+				"run_on_main tasks verify the published main branch — wait for the publish_completed notification, "+
+				"or submit a fresh verification command after publish. "+
+				"For pre-publish verification of the merged integration branch use --run-on-integration instead.",
+			commandID, ws.Integration.Status)}
+	}
+	return nil
+}
+
 // validateInjectRequest checks preconditions for task injection.
 func validateInjectRequest(state *model.CommandState, opts InjectOptions) error {
 	if state.PlanStatus != model.PlanStatusSealed {
@@ -441,6 +475,18 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 					return &planValidationError{Msg: fmt.Sprintf(
 						"cannot inject run_on_integration/run_on_main task into command %s: integration worktree state file is missing. The integration worktree may have been cleaned up; submit a fresh command instead.",
 						opts.CommandID)}
+				}
+			} else if opts.RunOnMain {
+				// run_on_main tasks inspect the published main branch. While
+				// the integration is still pre-publish, the merged outputs of
+				// this command are not on main yet: dispatching now would
+				// verify stale main and fail spuriously, and the new pending
+				// task would simultaneously block the publish gate (which
+				// waits for every task to terminate) — a deadlock. Enforce
+				// the ordering mechanically instead of trusting the Planner
+				// to wait for the publish_completed notification.
+				if err := validateRunOnMainPublishGate(worktreeStatePath, opts.CommandID); err != nil {
+					return err
 				}
 			}
 		}

@@ -159,10 +159,14 @@ func Launch(maestroDir string) error {
 
 // launchAlternativeRuntime dispatches non-claude-code runtimes for managed
 // roles. Orchestrator and planner remain hard-rejected: those roles operate
-// directly on the project root with maestro-CLI access, and the existing
-// validate_run_on_main pre-flight is not enough to bound their blast radius.
-// Workers may run codex / gemini freely; the validate_run_on_main pre-flight
-// is the cross-runtime safety net that backstops them.
+// directly on the project root with maestro-CLI access, and no mechanical
+// guard bounds their blast radius outside claude-code's tool flags and
+// hooks. Workers may run codex / gemini: their writes are contained by the
+// per-worker git worktree, and the daemon mechanically keeps run_on_main
+// tasks (which execute on the real main checkout) off non-claude workers
+// via plan.AssignWorkers RequireClaudeRuntime and
+// dispatch.validateRunOnMainPreflight. Destructive-command defense beyond
+// that is operator-side (host sandboxing / shell policy), not in-tree.
 func launchAlternativeRuntime(agentRuntime, agentModel, role, systemPrompt string) error {
 	if role == "orchestrator" || role == "planner" {
 		return fmt.Errorf(

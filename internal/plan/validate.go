@@ -141,6 +141,38 @@ func validateTaskSetCommon(tasks []TaskInput, fieldPrefix string, errs *Validati
 	}
 }
 
+// validateRunOnMainIsolation rejects plans that mix run_on_main tasks with
+// any other task in the same command. run_on_main tasks execute against the
+// published main branch; publish only happens after every task in the command
+// has terminated, so a mixed command either deadlocks (publish waits for the
+// run_on_main task, which waits for publish) or runs the verification against
+// stale pre-publish main and fails spuriously. The supported patterns are:
+//   - a dedicated run_on_main-only command submitted after the implementation
+//     command has published, or
+//   - `plan add-task --run-on-main` after the publish_completed notification
+//     (validated separately against the live integration status), or
+//   - run_on_integration tasks for pre-publish verification of the merged
+//     integration branch.
+func validateRunOnMainIsolation(tasks []TaskInput, fieldPrefix string, errs *ValidationErrors) {
+	hasRunOnMain := false
+	hasOther := false
+	for _, t := range tasks {
+		if t.RunOnMain {
+			hasRunOnMain = true
+		} else {
+			hasOther = true
+		}
+	}
+	if hasRunOnMain && hasOther {
+		errs.Add(fieldPrefix,
+			"run_on_main tasks cannot be mixed with other tasks in one command: "+
+				"they run on the published main branch, which only exists after every other task and the publish pipeline finish "+
+				"(mixing would either deadlock publish or verify stale main). "+
+				"Submit run_on_main verification as a separate command after publish, "+
+				"or use run_on_integration for pre-publish verification of the merged integration branch")
+	}
+}
+
 // ValidateTasksInput validates a slice of task inputs for field integrity, uniqueness, and DAG constraints.
 func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 	errs := &ValidationErrors{}
@@ -151,6 +183,7 @@ func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 	}
 
 	validateTaskSetCommon(tasks, "tasks", errs)
+	validateRunOnMainIsolation(tasks, "tasks", errs)
 
 	if errs.HasErrors() {
 		return errs
@@ -242,6 +275,18 @@ func validateConcretePhase(phase PhaseInput, prefix string, errs *ValidationErro
 		errs.Add(prefix+".tasks", "concrete phases must have at least one task")
 	} else {
 		validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
+		// Phased plans publish only after every phase has terminated, so a
+		// run_on_main task inside any phase would run before this command's
+		// publish — against stale main — or deadlock the publish gate.
+		for i, t := range phase.Tasks {
+			if t.RunOnMain {
+				errs.Add(fmt.Sprintf("%s.tasks[%d].run_on_main", prefix, i),
+					"run_on_main tasks are not allowed in phased plans: publish happens only after all phases terminate, "+
+						"so the task would run against pre-publish main. "+
+						"Submit run_on_main verification as a separate command after publish, "+
+						"or use run_on_integration in a final phase for pre-publish verification")
+			}
+		}
 	}
 }
 
@@ -288,6 +333,20 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 
 	// Validate task fields, uniqueness, references, and DAG
 	validateTaskSetCommon(tasks, "tasks", errs)
+
+	// Phase fills happen strictly before this command publishes (the publish
+	// gate waits for every phase to terminate), so run_on_main tasks here
+	// would run against pre-publish main. Same rationale as the phased-plan
+	// rejection in validateConcretePhase.
+	for i, t := range tasks {
+		if t.RunOnMain {
+			errs.Add(fmt.Sprintf("tasks[%d].run_on_main", i),
+				"run_on_main tasks are not allowed in phase fills: publish happens only after all phases terminate, "+
+					"so the task would run against pre-publish main. "+
+					"Submit run_on_main verification as a separate command after publish, "+
+					"or use run_on_integration for pre-publish verification")
+		}
+	}
 
 	if errs.HasErrors() {
 		return errs

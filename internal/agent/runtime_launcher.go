@@ -65,8 +65,14 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 	//     short-circuits per-command approvals.
 	//
 	// codex has no .maestro/state read deny, no maestro-CLI escape-hatch
-	// deny, and no PreToolUse interception. The validate_run_on_main
-	// pre-flight is the cross-runtime safety net for destructive content.
+	// deny, and no PreToolUse interception. There is NO in-tree mechanical
+	// defense against destructive shell commands for codex workers — that
+	// responsibility sits with operator-side controls (host sandboxing,
+	// repo-level shell policy). What the daemon does enforce mechanically:
+	// run_on_main tasks are never assigned or dispatched to codex/gemini
+	// workers (plan.AssignWorkers RequireClaudeRuntime +
+	// dispatch.validateRunOnMainPreflight), so codex blast radius stays
+	// inside its isolated git worktree.
 	rl.runtimes[model.RuntimeCodex] = RuntimeDef{
 		Command: "codex",
 		Args:    []string{"--dangerously-bypass-approvals-and-sandbox"},
@@ -74,10 +80,11 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 	// gemini (interactive REPL). `--yolo` (a.k.a. `--approval-mode yolo`)
 	// auto-approves every WriteFile/Edit/Shell tool call. Without it gemini
 	// pauses on every tool action waiting for an interactive Allow click,
-	// and the maestro worker pane has no human at the keyboard. gemini-cli
-	// has no equivalent of codex's bypass flag, so the validate_run_on_main
-	// pre-flight is the only cross-runtime safety net for destructive
-	// content.
+	// and the maestro worker pane has no human at the keyboard. As with
+	// codex above, there is NO in-tree mechanical defense against
+	// destructive shell commands for gemini workers (operator-side controls
+	// own that); the daemon mechanically keeps gemini off run_on_main tasks
+	// so its blast radius stays inside its isolated git worktree.
 	rl.runtimes[model.RuntimeGemini] = RuntimeDef{
 		Command: "gemini",
 		Args:    []string{"--yolo"},

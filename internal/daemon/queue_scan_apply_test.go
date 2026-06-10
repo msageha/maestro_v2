@@ -372,9 +372,11 @@ func TestApplyTaskDispatchResult_SubmitUncertain_RetainsLeaseAndMarksRunning(t *
 	}
 }
 
-// The publish guard ErrRunOnMainBeforePublish was retired because it
-// produced a self-deadlocking dispatch loop. See
-// internal/daemon/dispatch/validate_run_on_main.go for the rationale.
+// A blanket publish guard (reject every pre-publish run_on_main dispatch)
+// was once retired because it produced a self-deadlocking dispatch loop.
+// validateRunOnMainPreflight reinstates the gate with the created/absent
+// integration states allowed — the states run_on_main-only verification
+// commands occupy. See internal/daemon/dispatch/validate_run_on_main.go.
 
 func TestApplyTaskDispatchResult_EpochMismatch(t *testing.T) {
 	t.Parallel()
@@ -429,15 +431,15 @@ func TestApplyTaskDispatchResult_EpochMismatch(t *testing.T) {
 	}
 }
 
-// TestApplyTaskDispatchResult_DestructiveContent_Terminates pins down the
-// non-retryable termination path. validateRunOnMainContent on the dispatch
-// side returns ErrDestructiveContentRejected for run_on_main/integration
-// tasks containing destructive shell snippets (`git push`, `rm -rf`, etc.);
+// TestApplyTaskDispatchResult_RunOnMainPreflight_Terminates pins down the
+// non-retryable termination path. validateRunOnMainPreflight on the dispatch
+// side returns ErrRunOnMainPreflightRejected for run_on_main tasks assigned
+// to non-claude workers or dispatched before the integration published;
 // without the special-case below, the queue's lease-release fallback would
 // flip the task back to pending and the next scan cycle would re-dispatch
 // it forever. The terminal Failed transition stops the loop and surfaces
 // the violation in operator logs.
-func TestApplyTaskDispatchResult_DestructiveContent_Terminates(t *testing.T) {
+func TestApplyTaskDispatchResult_RunOnMainPreflight_Terminates(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
 	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
@@ -481,7 +483,7 @@ func TestApplyTaskDispatchResult_DestructiveContent_Terminates(t *testing.T) {
 			ExpiresAt: expiresAt,
 		},
 		Success: false,
-		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrDestructiveContentRejected),
+		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrRunOnMainPreflightRejected),
 	}
 
 	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
@@ -505,13 +507,13 @@ func TestApplyTaskDispatchResult_DestructiveContent_Terminates(t *testing.T) {
 	}
 }
 
-// TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult ensures
+// TestApplyTaskDispatchResult_RunOnMainPreflight_WritesSyntheticResult ensures
 // the synthetic failed result file write closes the queue→result→state loop
-// for run_on_main / run_on_integration destructive-content rejections.
+// for run_on_main pre-flight rejections.
 // Without it, queue is failed but result file is empty, so R2ResultState
 // (which only syncs from results) cannot move TaskStates off in_progress —
 // leaving the command state file permanently out of sync with the queue.
-func TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult(t *testing.T) {
+func TestApplyTaskDispatchResult_RunOnMainPreflight_WritesSyntheticResult(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
 	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
@@ -557,7 +559,7 @@ func TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult(t *tes
 			ExpiresAt: expiresAt,
 		},
 		Success: false,
-		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrDestructiveContentRejected),
+		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrRunOnMainPreflightRejected),
 	}
 
 	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
@@ -586,7 +588,7 @@ func TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult(t *tes
 		t.Errorf("Status = %s, want failed", got.Status)
 	}
 	if got.PartialChangesPossible {
-		t.Errorf("PartialChangesPossible = true; destructive rejection never started a Worker so no partial changes are possible")
+		t.Errorf("PartialChangesPossible = true; pre-flight rejection never started a Worker so no partial changes are possible")
 	}
 	if got.RetrySafe {
 		t.Errorf("RetrySafe = true; policy violation must not be auto-retried")

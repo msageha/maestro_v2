@@ -33,6 +33,30 @@ func leaseInvalidReason(status model.Status, leaseEpoch, expectedEpoch int) stri
 // by comparing lease epoch, status, and expiry. Used by Phase C apply methods
 // for both dispatch results and busy-check results.
 //
+// The expiry component is intentionally a STRICT string equality, even though
+// lease extensions (worker heartbeat, grace TTL) change the expiry without
+// bumping the epoch. That is the point: an expiry that moved between the
+// Phase A snapshot and the Phase C apply means some concurrent actor touched
+// the lease while Phase B ran without the scan lock. The only such actor at
+// a matching epoch is the heartbeat handler — and a current-epoch heartbeat
+// is positive evidence that the worker holds this dispatch and is alive.
+// Dropping the snapshot-based result then defers to that fresher evidence:
+//
+//   - busy-check "non-busy → release" verdict: releasing a lease the worker
+//     just heartbeat-extended would re-dispatch a live task. Dropping the
+//     verdict is the safe outcome.
+//   - dispatch failure verdict: a genuine delivery failure means the worker
+//     never received the envelope and cannot heartbeat at this epoch, so a
+//     concurrent extension contradicts the verdict; keep the lease and let
+//     lease-expiry recovery decide on a later scan.
+//   - dispatch success verdict: the queue entry is already in_progress and
+//     persisted from Phase A; the only loss is a lagging state-side
+//     lifecycle marker, which result_write / reconcilers catch up.
+//
+// Do NOT "fix" this by allowing forward-extended expiries to pass the fence —
+// that would reintroduce the release-after-heartbeat race on the busy-check
+// path.
+//
 //nolint:unused // exercised from queue_scan_helpers_test.go (golangci-lint runs with tests:false)
 func isFenceStale(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) bool {
 	if leaseInvalidReason(status, leaseEpoch, expectedEpoch) != "" {
@@ -60,7 +84,8 @@ func (fr FenceRejection) String() string {
 
 // checkResultFencing performs the same fence check as isFenceStale but returns
 // a FenceRejection that indicates the specific reason for rejection. This
-// allows callers to produce more actionable log messages.
+// allows callers to produce more actionable log messages. See the isFenceStale
+// comment for why the expiry comparison is a strict equality and must stay so.
 func checkResultFencing(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) FenceRejection {
 	if reason := leaseInvalidReason(status, leaseEpoch, expectedEpoch); reason != "" {
 		return FenceRejection{Reason: reason}

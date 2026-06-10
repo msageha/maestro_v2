@@ -157,6 +157,22 @@ func (w WorkerConfig) EffectiveBasePromptMode() string {
 	return effectiveBasePromptMode(w.BasePromptMode)
 }
 
+// ModelFor returns the model configured for the given worker, applying the
+// same precedence as task assignment: boost forces opus, then the per-worker
+// Models override, then DefaultModel, then "sonnet".
+func (w WorkerConfig) ModelFor(workerID string) string {
+	if w.Boost {
+		return "opus"
+	}
+	if m, ok := w.Models[workerID]; ok {
+		return m
+	}
+	if w.DefaultModel != "" {
+		return w.DefaultModel
+	}
+	return "sonnet"
+}
+
 // --- ContinuousConfig ---
 
 // ContinuousConfig holds configuration for continuous mode operation.

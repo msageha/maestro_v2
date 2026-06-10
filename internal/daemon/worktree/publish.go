@@ -53,13 +53,22 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	// because the status is no longer "publishing" when they return.
 	defer func() {
 		if returnErr != nil && state.Integration.Status == model.IntegrationStatusPublishing {
-			// Deterministic dirty-root aborts are non-retryable: skip backoff
-			// and quarantine immediately so R8 surfaces the blocker to the
-			// Planner on the next reconcile pass.
+			// Deterministic operator-required aborts are non-retryable: skip
+			// backoff and quarantine immediately so R8 surfaces the blocker
+			// to the Planner on the next reconcile pass.
+			//   - dirty root: projectRoot has uncommitted changes.
+			//   - ref-advanced sync failure: base ref already holds the
+			//     publish merge but the projectRoot checkout could not be
+			//     synced and the CAS rollback failed; a generic retry would
+			//     re-enter publish, trip the dirty-root guard against the
+			//     half-synced root, and quarantine with a misleading reason.
 			var tErr error
-			if errors.Is(returnErr, errPublishDirtyRoot) {
+			switch {
+			case errors.Is(returnErr, errPublishDirtyRoot):
 				tErr = wm.recordPublishTerminalFailure(state, "publish_dirty_root", now)
-			} else {
+			case errors.Is(returnErr, errPublishRefAdvancedSyncFailed):
+				tErr = wm.recordPublishTerminalFailure(state, "publish_ref_advanced_root_sync_failed", now)
+			default:
 				tErr = wm.recordPublishFailure(state, returnErr.Error(), now)
 			}
 			if tErr != nil {
@@ -332,8 +341,12 @@ func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, m
 		refSpec := fmt.Sprintf("refs/heads/%s", baseBranch)
 		rollbackErr := wm.gitRun("update-ref", refSpec, baseSHA, mergeSHA)
 		if rollbackErr != nil {
-			wm.Log(core.LogLevelError, "publish_ref_rollback_failed command=%s error=%v", commandID, rollbackErr)
+			wm.Log(core.LogLevelError,
+				"publish_ref_rollback_failed command=%s base=%s merge_sha=%s error=%v "+
+					"(base ref keeps the publish merge; projectRoot checkout is stale — quarantining with accurate reason)",
+				commandID, baseBranch, mergeSHA, rollbackErr)
 			return errors.Join(
+				errPublishRefAdvancedSyncFailed,
 				fmt.Errorf("working tree sync failed: %w", resetErr),
 				fmt.Errorf("CAS rollback of update-ref also failed: %w", rollbackErr),
 			)

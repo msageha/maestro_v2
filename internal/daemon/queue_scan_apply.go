@@ -33,8 +33,21 @@ type dispatchApplyOps struct {
 // dispatch results.
 func (qh *QueueHandler) applyDispatchCore(dr dispatchResult, ops dispatchApplyOps) {
 	if rej := checkResultFencing(ops.status, ops.leaseEpoch, ops.leaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt); rej.Stale() {
-		qh.log(LogLevelDebug, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
-			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch, rej.Reason)
+		// "expiry" at a matching epoch means a concurrent lease extension
+		// (worker heartbeat) landed while Phase B ran — i.e. the worker is
+		// alive and holds this dispatch. Dropping the snapshot-based result
+		// defers to that fresher evidence (see isFenceStale). Surface at
+		// INFO so operators reading a dropped dispatch result can tell
+		// "deferred to live heartbeat" apart from epoch/status staleness.
+		level := LogLevelDebug
+		detail := ""
+		if rej.Reason == "expiry" {
+			level = LogLevelInfo
+			detail = " (lease extended concurrently — likely worker heartbeat; result dropped in favor of live lease, success=" +
+				fmt.Sprintf("%t", dr.Success) + ")"
+		}
+		qh.log(level, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d reason=%s%s",
+			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch, rej.Reason, detail)
 		return
 	}
 	if !dr.Success {
@@ -121,16 +134,19 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 				leaseEpoch:     task.LeaseEpoch,
 				leaseExpiresAt: task.LeaseExpiresAt,
 				onFailure: func(dr dispatchResult) {
-					// Destructive run_on_main/run_on_integration content is a
-					// non-retryable policy violation: re-dispatching after a lease
-					// release would hit the same validate failure on every scan
-					// cycle, causing an infinite retry loop. Terminate the queue
-					// entry directly so it stays out of subsequent scans, and log
-					// at ERROR for operator review (the matched pattern is already
-					// embedded in dr.Error).
-					if errors.Is(dr.Error, dispatch.ErrDestructiveContentRejected) {
+					// run_on_main pre-flight rejections (non-claude worker
+					// runtime, or integration not yet published) are
+					// non-retryable policy violations: re-dispatching after a
+					// lease release would hit the same validate failure on
+					// every scan cycle, causing an infinite retry loop —
+					// and a pending run_on_main task itself blocks the
+					// publish gate, so the condition can never self-heal.
+					// Terminate the queue entry directly so it stays out of
+					// subsequent scans, and log at ERROR for operator review
+					// (the reason is already embedded in dr.Error).
+					if errors.Is(dr.Error, dispatch.ErrRunOnMainPreflightRejected) {
 						qh.log(LogLevelError,
-							"dispatch_blocked_destructive_content type=task id=%s command=%s reason=%v",
+							"dispatch_blocked_run_on_main_preflight type=task id=%s command=%s reason=%v",
 							task.ID, task.CommandID, dr.Error)
 						err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusFailed)
 						if err == nil {
@@ -151,7 +167,7 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							// the loop using the same downstream pipeline as
 							// real worker results.
 							workerID := strings.TrimSuffix(filepath.Base(queueFile), ".yaml")
-							qh.writeSyntheticDestructiveResult(workerID, task.ID, task.CommandID, dr.Error.Error())
+							qh.writeSyntheticPreflightResult(workerID, task.ID, task.CommandID, dr.Error.Error())
 							return
 						}
 						// Defensive: in_progress → failed is allowed by the queue
@@ -159,7 +175,7 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 						// fall through to lease release so the scanner does not get
 						// permanently stuck on the entry.
 						qh.log(LogLevelError,
-							"destructive_content_terminate_invalid task=%s from=%s to=failed reason=%v",
+							"run_on_main_preflight_terminate_invalid task=%s from=%s to=failed reason=%v",
 							task.ID, task.Status, err)
 					}
 
@@ -525,10 +541,11 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 	sq.Signals = retained
 }
 
-// writeSyntheticDestructiveResult appends a synthetic failed result entry to
-// the worker's result file when a task is rejected by the run_on_main /
-// run_on_integration destructive-content pre-flight (see
-// dispatch.ErrDestructiveContentRejected). The Worker is never started for
+// writeSyntheticPreflightResult appends a synthetic failed result entry to
+// the worker's result file when a task is rejected by the run_on_main
+// dispatch pre-flight (see dispatch.ErrRunOnMainPreflightRejected:
+// non-claude worker runtime, or integration not yet published). The Worker
+// is never started for
 // such tasks, so without a synthetic entry the result file stays empty and
 // the R2ResultState reconciler — which keys off result files alone — cannot
 // move TaskStates[<task>] off its prior pending/in_progress value, leaving
@@ -538,10 +555,10 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 // mutated the in-memory task queue and will flush via FlushQueues; the queue
 // lock is acquired by FlushQueues, never simultaneously with the result lock,
 // matching the pattern in CancelHandler.WriteSyntheticResults.
-func (qh *QueueHandler) writeSyntheticDestructiveResult(workerID, taskID, commandID, reason string) {
+func (qh *QueueHandler) writeSyntheticPreflightResult(workerID, taskID, commandID, reason string) {
 	if workerID == "" {
 		qh.log(LogLevelError,
-			"synthetic_destructive_result_skipped task=%s command=%s reason=missing_worker_id",
+			"synthetic_preflight_result_skipped task=%s command=%s reason=missing_worker_id",
 			taskID, commandID)
 		return
 	}
@@ -565,7 +582,7 @@ func (qh *QueueHandler) writeSyntheticDestructiveResult(workerID, taskID, comman
 			TaskID:                 taskID,
 			CommandID:              commandID,
 			Status:                 model.StatusFailed,
-			Summary:                fmt.Sprintf("dispatch_blocked_destructive_content: %s", reason),
+			Summary:                fmt.Sprintf("dispatch_blocked_run_on_main_preflight: %s", reason),
 			PartialChangesPossible: false,
 			RetrySafe:              false,
 			CreatedAt:              qh.clock.Now().UTC().Format(time.RFC3339),
@@ -573,7 +590,7 @@ func (qh *QueueHandler) writeSyntheticDestructiveResult(workerID, taskID, comman
 		return nil
 	}); err != nil {
 		qh.log(LogLevelError,
-			"synthetic_destructive_result_write task=%s command=%s worker=%s error=%v "+
+			"synthetic_preflight_result_write task=%s command=%s worker=%s error=%v "+
 				"(queue terminal but state will lag until reconciler retries)",
 			taskID, commandID, workerID, err)
 	}

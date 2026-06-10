@@ -47,6 +47,21 @@ var errIntegrationQuarantined = errors.New("integration is quarantined; manual i
 // invoke retry-publish to unblock.
 var errPublishDirtyRoot = errors.New("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
 
+// errPublishRefAdvancedSyncFailed is returned when the base branch ref was
+// already advanced to the publish merge SHA (update-ref CAS succeeded), but
+// syncing the projectRoot working tree failed AND the CAS rollback of the ref
+// also failed. The publish content is on the base branch; only the projectRoot
+// checkout is stale. This is deterministic and operator-required: a generic
+// retry would re-enter the publish pipeline, hit the dirty-root guard against
+// the half-synced root, and quarantine with a misleading "uncommitted changes"
+// reason. Quarantine immediately with an accurate reason instead. Recovery:
+// fix the projectRoot checkout (e.g. `git reset --hard <base branch>` after
+// confirming no genuine work is present — a pre-publish stash ref is saved
+// under refs/maestro/pre-publish-stash/<commandID> when changes existed),
+// then `maestro plan unquarantine` + `retry-publish`; the retry converges as
+// a no-op merge because base already contains the integration content.
+var errPublishRefAdvancedSyncFailed = errors.New("publish ref advanced but projectRoot sync and ref rollback both failed; base branch already contains the publish merge, projectRoot checkout is stale")
+
 // recordMergeFailure increments the merge failure counter and either persists
 // IntegrationStatusFailed (when below threshold) or transitions to
 // IntegrationStatusQuarantined (when at/above threshold). Callers should still
