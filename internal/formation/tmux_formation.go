@@ -503,42 +503,99 @@ func sendStartupDialogKeys(pane string) error {
 // input to a running agent or, worse, picks the Bypass Permissions
 // confirmation's default "No, exit" (fail closed; the loop retries).
 func startupDialogKeys(content string) []string {
-	normalized := normalizeStartupDialogContent(content)
-	if startupDialogContentReady(normalized) {
+	ready, keys := startupDialogDecision(content)
+	if ready {
 		return nil
 	}
-	if strings.Contains(normalized, bypassPermissionsDialogMarker) {
-		return []string{"2", "Enter"}
-	}
-	if strings.Contains(normalized, workspaceTrustDialogMarker) {
-		return []string{"Enter"}
-	}
-	return nil
+	return keys
 }
 
 func startupDialogVisible(content string) bool {
-	normalized := normalizeStartupDialogContent(content)
-	if startupDialogContentReady(normalized) {
-		return false
+	ready, keys := startupDialogDecision(content)
+	return !ready && len(keys) > 0
+}
+
+// startupDialogDecision classifies the captured pane content into one of
+// three states: ready (interactive TUI footer visible, no pending dialog),
+// dialog pending (keys to send), or unknown (ready=false, keys=nil —
+// fail closed, send nothing).
+//
+// Both a ready marker and a dialog marker can be visible at the same time:
+//   - a stale dialog frame above the footer of the now-running TUI, or
+//   - a stale footer from a previous agent instance above the dialog of a
+//     freshly relaunched agent (the launch does not clear the screen).
+//
+// Position disambiguates: terminal output flows downward, so whichever
+// marker appears LAST in the capture reflects the current state. A running
+// TUI always renders its footer below any quoted/stale dialog text, and a
+// fresh dialog always renders below any stale footer.
+func startupDialogDecision(content string) (ready bool, keys []string) {
+	normalized := strings.ToLower(normalizeStartupDialogContent(content))
+
+	readyIdx := -1
+	for _, marker := range startupDialogReadyMarkers {
+		if i := strings.LastIndex(normalized, marker); i > readyIdx {
+			readyIdx = i
+		}
 	}
-	return strings.Contains(normalized, bypassPermissionsDialogMarker) ||
-		strings.Contains(normalized, workspaceTrustDialogMarker)
+	bypassIdx := strings.LastIndex(normalized, strings.ToLower(bypassPermissionsDialogMarker))
+	trustIdx := strings.LastIndex(normalized, strings.ToLower(workspaceTrustDialogMarker))
+	dialogIdx := max(bypassIdx, trustIdx)
+
+	switch {
+	case dialogIdx < 0:
+		return readyIdx >= 0, nil
+	case readyIdx >= dialogIdx:
+		// >= (not >): the "bypass permissions mode was disabled" ready
+		// notice starts at the same index as the "bypass permissions mode"
+		// dialog marker it textually contains — equal positions mean the
+		// ready marker is the longer, more specific match.
+		return true, nil
+	case bypassIdx >= trustIdx:
+		return false, []string{"2", "Enter"}
+	default:
+		return false, []string{"Enter"}
+	}
 }
 
 func normalizeStartupDialogContent(content string) string {
 	return strings.Join(strings.Fields(content), " ")
 }
 
-func startupDialogContentReady(normalized string) bool {
-	return strings.Contains(strings.ToLower(normalized), "bypass permissions on")
+// startupDialogReadyMarkers are footer fragments Claude Code renders once the
+// interactive TUI is up (all startup dialogs passed). "bypass permissions on"
+// is the footer for --dangerously-skip-permissions launches, but enterprise
+// managed settings can disable bypass mode entirely ("Bypass permissions mode
+// was disabled by settings"), downgrading the session to a regular permission
+// mode whose footer reads "accept edits on" / "plan mode on" with the
+// "(shift+tab to cycle)" hint. Matching only the bypass footer made readiness
+// unreachable in such environments: checkAgentsLaunched then judged panes
+// solely by the dialog markers, and any dialog text lingering in the capture
+// kept the pane "stuck at startup dialog" until formation rollback
+// (observed in the 2026-06-10 E2E run).
+var startupDialogReadyMarkers = []string{
+	"bypass permissions on",
+	"bypass permissions mode was disabled",
+	"accept edits on",
+	"plan mode on",
+	"shift+tab to cycle",
 }
 
+// captureStartupDialogContent captures the VISIBLE pane content (primary +
+// alternate screen), intentionally excluding scrollback history. Startup
+// dialogs are interactive overlays: while pending they are always on the
+// visible screen, and once accepted their text scrolls into history where it
+// can linger for the entire startup window. Including history (the previous
+// `-S -80` behavior) made startupDialogVisible return true long after the
+// dialog was accepted, which — combined with a readiness footer that never
+// matches under enterprise-managed settings — caused checkAgentsLaunched to
+// roll back healthy formations.
 func captureStartupDialogContent(pane string) (string, error) {
-	content, err := tmux.CapturePaneJoined(pane, 80)
+	content, err := tmux.CapturePaneJoined(pane, 0)
 	if err != nil {
 		return "", err
 	}
-	if alternate, altErr := tmux.CapturePaneAlternateJoined(pane, 80); altErr == nil && alternate != "" {
+	if alternate, altErr := tmux.CapturePaneAlternateJoined(pane, 0); altErr == nil && alternate != "" {
 		content += "\n" + alternate
 	}
 	return content, nil

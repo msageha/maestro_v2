@@ -98,6 +98,39 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 	return true, ""
 }
 
+// IsFutileIntegrationScopedRetry reports whether retrying a failed
+// integration-scoped verification task identically has no chance of a
+// different outcome.
+//
+// Tasks with run_on_integration / run_on_main observe the shared merged state
+// instead of producing new work in an isolated worktree. When a task
+// classified as OperationTypeVerify reports a semantic failure (exit code 1:
+// "the task ran and its verdict is FAIL") *without having changed anything*
+// (no files changed, no partial changes possible), an identical replacement
+// re-observes the same unchanged state and necessarily reaches the same
+// verdict. Skipping the retry routes the failure to paused_for_replan
+// immediately (see applyTaskStateProgression's non-retryable branch) so the
+// Planner can schedule a repair task or escalate, instead of burning the
+// retry budget on identical re-runs that only delay the replan signal.
+//
+// The OperationTypeVerify gate matters: run_on_integration tasks default to
+// OperationTypeRepair at queue write (publish_conflict resolution is their
+// canonical use), and a write-intent repair task that happens to fail before
+// editing anything still benefits from the normal retry budget. Only tasks
+// explicitly classified as verification — run_on_main defaults to verify;
+// run_on_integration verification tasks must set operation_type verify
+// (plan submit tasks-file `operation_type:` / `plan add-task
+// --operation-type verify`) — are treated as futile to retry. Abnormal
+// terminations (timeout 124, SIGKILL 137, ...) are transient process
+// failures, not verdicts, and also keep the normal retryable_exit_codes path.
+func IsFutileIntegrationScopedRetry(task *model.Task, exitCode int, filesChanged []string, partialChangesPossible bool) bool {
+	return task.OperationType == model.OperationTypeVerify &&
+		(task.RunOnIntegration || task.RunOnMain) &&
+		exitCode == 1 &&
+		len(filesChanged) == 0 &&
+		!partialChangesPossible
+}
+
 // ShouldRepairTask determines whether a verification failure should create an
 // automatic repair task. Verification failures are semantic failures, not
 // worker process exits, so retryable_exit_codes is intentionally not consulted.

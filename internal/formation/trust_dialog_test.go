@@ -132,3 +132,86 @@ func TestStartupDialogVisibleDetectsWrappedMarkers(t *testing.T) {
 		}
 	}
 }
+
+// TestStartupDialogKeys_EnterpriseManagedReadyMarkers locks in readiness
+// detection for environments where managed settings disable bypass
+// permissions mode: the footer never reads "bypass permissions on" (it shows
+// "accept edits on" plus a "Bypass permissions mode was disabled by settings"
+// notice instead). Before this fix, readiness was unreachable in such
+// environments and any dialog text lingering in the capture kept healthy
+// panes classified as "stuck at startup dialog" until formation rollback
+// (2026-06-10 E2E finding).
+func TestStartupDialogKeys_EnterpriseManagedReadyMarkers(t *testing.T) {
+	t.Parallel()
+	contents := map[string]string{
+		"accept edits footer": `
+  ╭─── Claude Code v2.1.153 ─╮
+  │ Welcome back mzk!        │
+  ╰──────────────────────────╯
+  ❯
+  ⏵⏵ accept edits on (shift+tab to cycle)
+`,
+		"bypass disabled notice": `
+  ❯
+  Bypass permissions mode was disabled by settings
+`,
+		"plan mode footer": `
+  ❯
+  ⏸ plan mode on (shift+tab to cycle)
+`,
+		"stale trust dialog above ready footer": `
+  Is this a project you created or one you trust?
+  ❯ 1. Yes, I trust this folder
+  ╭─── Claude Code v2.1.153 ─╮
+  │ Welcome back mzk!        │
+  ╰──────────────────────────╯
+  ❯
+  ⏵⏵ accept edits on (shift+tab to cycle)
+`,
+	}
+	for name, content := range contents {
+		if got := startupDialogKeys(content); got != nil {
+			t.Errorf("%s: startupDialogKeys() = %#v, want nil (ready)", name, got)
+		}
+		if startupDialogVisible(content) {
+			t.Errorf("%s: startupDialogVisible() = true, want false (ready)", name)
+		}
+	}
+}
+
+// TestStartupDialogKeys_StaleReadyFooterAboveActiveDialog locks in the
+// position-based disambiguation: when an agent is relaunched in a pane whose
+// visible screen still shows the PREVIOUS instance's ready footer, the fresh
+// startup dialog renders BELOW that stale footer. The dialog marker appearing
+// after the ready marker must win — the dialog is the current state and needs
+// its keys, otherwise auto-accept never fires and checkAgentsLaunched cannot
+// classify the pane as waiting (codex review P1, 2026-06-10).
+func TestStartupDialogKeys_StaleReadyFooterAboveActiveDialog(t *testing.T) {
+	t.Parallel()
+	bypassBelow := `
+  ❯
+  ⏵⏵ accept edits on (shift+tab to cycle)
+  WARNING: Claude Code running in
+  Bypass Permissions mode
+  ❯ 1. No, exit
+    2. Yes, I accept
+`
+	if got, want := startupDialogKeys(bypassBelow), []string{"2", "Enter"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("bypass below stale footer: startupDialogKeys() = %#v, want %#v", got, want)
+	}
+	if !startupDialogVisible(bypassBelow) {
+		t.Error("bypass below stale footer: startupDialogVisible() = false, want true")
+	}
+
+	trustBelow := `
+  ⏵⏵ bypass permissions on (shift+tab to cycle)
+  Is this a project you created or one you trust?
+  ❯ 1. Yes, I trust this folder
+`
+	if got, want := startupDialogKeys(trustBelow), []string{"Enter"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("trust below stale footer: startupDialogKeys() = %#v, want %#v", got, want)
+	}
+	if !startupDialogVisible(trustBelow) {
+		t.Error("trust below stale footer: startupDialogVisible() = false, want true")
+	}
+}

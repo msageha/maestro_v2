@@ -174,6 +174,7 @@ type injectParams struct {
 	IdempotencyKey     string                   `json:"idempotency_key,omitempty"`
 	RunOnMain          bool                     `json:"run_on_main,omitempty"`
 	RunOnIntegration   bool                     `json:"run_on_integration,omitempty"`
+	OperationType      string                   `json:"operation_type,omitempty"`
 }
 
 // AddTask implements core.PlanExecutor by parsing params and calling plan.AddTask.
@@ -199,6 +200,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			IdempotencyKey:     p.IdempotencyKey,
 			RunOnMain:          p.RunOnMain,
 			RunOnIntegration:   p.RunOnIntegration,
+			OperationType:      p.OperationType,
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,

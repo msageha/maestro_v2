@@ -97,7 +97,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> (--purpose <text>|--purpose-file <path>) (--content <text>|--content-file <path>) (--acceptance-criteria <text>|--acceptance-criteria-file <path>) --bloom-level <n> --expected-paths <path>... [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]... [--required] [--run-on-main]")
-	var commandID, purpose, purposeFile, content, contentFile, acceptanceCriteria, acceptanceCriteriaFile, personaHint, workerID, targetPhase, idempotencyKey string
+	var commandID, purpose, purposeFile, content, contentFile, acceptanceCriteria, acceptanceCriteriaFile, personaHint, workerID, targetPhase, idempotencyKey, operationType string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var required, runOnMain, runOnIntegration bool
 	var blockedBy, toolsHint, constraints, skillRefs, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
@@ -113,6 +113,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
 	cmd.BoolVar(&runOnMain, "run-on-main", false, "Run task in main branch directory instead of worker worktree (for read-only verification tasks)")
 	cmd.BoolVar(&runOnIntegration, "run-on-integration", false, "Run task in integration worktree instead of worker worktree (for publish_conflict resolution tasks)")
+	cmd.StringVar(&operationType, "operation-type", "", "Explicit operation classification: 'verify' (read-only verification) or 'repair' (write recovery). Defaults: --run-on-main → verify, --run-on-integration → repair. Set 'verify' on run-on-integration verification tasks so a FAIL verdict replans immediately instead of burning identical retries")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
 	cmd.Var(&constraints, "constraints", "Constraint (repeatable)")
 	cmd.Var(&toolsHint, "tools-hint", "Recommended tool (repeatable)")
@@ -157,6 +158,11 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			return cmd.Errorf("invalid --target-phase: %v", err)
 		}
 	}
+	switch operationType {
+	case "", model.OperationTypeVerify, model.OperationTypeRepair:
+	default:
+		return cmd.Errorf("invalid --operation-type %q: allowed values are %q, %q", operationType, model.OperationTypeVerify, model.OperationTypeRepair)
+	}
 	doa, err := buildDefinitionOfAbort(maxRepairCount, maxWallClockSec, explicitFailureConditions)
 	if err != nil {
 		return cmd.Errorf("%v", err)
@@ -189,6 +195,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"idempotency_key":     idempotencyKey,
 			"run_on_main":         runOnMain,
 			"run_on_integration":  runOnIntegration,
+			"operation_type":      operationType,
 		},
 	}
 

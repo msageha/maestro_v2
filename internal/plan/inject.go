@@ -72,10 +72,18 @@ type InjectOptions struct {
 	IdempotencyKey     string
 	RunOnMain          bool // run task in main branch dir instead of worker worktree
 	RunOnIntegration   bool // run task in integration worktree (for publish_conflict resolution)
-	MaestroDir         string
-	Config             model.Config
-	LockMap            *lock.MutexMap
-	ModelSelector      ModelSelector // optional: adaptive model selection
+	// OperationType explicitly classifies the task for admission control and
+	// retry policy (model.OperationTypeVerify / OperationTypeRepair). When
+	// empty, the RunOnMain/RunOnIntegration defaults below apply. Planners
+	// should set "verify" on run_on_integration verification tasks so the
+	// retry policy can distinguish them from publish_conflict repair tasks
+	// (a read-only verification FAIL replans immediately instead of burning
+	// identical retries).
+	OperationType string
+	MaestroDir    string
+	Config        model.Config
+	LockMap       *lock.MutexMap
+	ModelSelector ModelSelector // optional: adaptive model selection
 }
 
 // InjectResult contains the outcome of a task injection.
@@ -341,18 +349,22 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	state.PlanVersion++
 	state.UpdatedAt = now
 
-	// Write queue entry. RunOnIntegration タスクは publish/merge 競合解決を
+	// Write queue entry. 明示的な OperationType が指定されていればそれを優先する
+	// (run_on_integration の検証タスクを verify と分類するために必要)。未指定の
+	// 場合のデフォルト: RunOnIntegration タスクは publish/merge 競合解決を
 	// integration worktree 上で行うため repair バケットに分類する。RunOnMain は
 	// input.go godoc で "read-only verification tasks that must evaluate the
 	// merged state on the main branch" と定義されているため verify バケットに
 	// 分類する。両方 false のオペレータ手動注入タスクは未分類のまま
 	// (OpUnknown = 常時 admit)。
-	opType := ""
-	switch {
-	case opts.RunOnMain:
-		opType = model.OperationTypeVerify
-	case opts.RunOnIntegration:
-		opType = model.OperationTypeRepair
+	opType := opts.OperationType
+	if opType == "" {
+		switch {
+		case opts.RunOnMain:
+			opType = model.OperationTypeVerify
+		case opts.RunOnIntegration:
+			opType = model.OperationTypeRepair
+		}
 	}
 	task := retryQueueTask{
 		taskID:             newTaskID,
@@ -431,6 +443,16 @@ func validateRunOnMainPublishGate(worktreeStatePath, commandID string) error {
 func validateInjectRequest(state *model.CommandState, opts InjectOptions) error {
 	if state.PlanStatus != model.PlanStatusSealed {
 		return &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
+	}
+
+	// Defense in depth: the CLI validates --operation-type, but plan.AddTask
+	// is also reachable via the UDS bridge with arbitrary params.
+	switch opts.OperationType {
+	case "", model.OperationTypeVerify, model.OperationTypeRepair:
+	default:
+		return &planValidationError{Msg: fmt.Sprintf(
+			"invalid operation_type %q: allowed values are %q, %q (or empty for the run_on_main/run_on_integration default)",
+			opts.OperationType, model.OperationTypeVerify, model.OperationTypeRepair)}
 	}
 
 	// RunOnIntegration / RunOnMain tasks dispatch against the integration

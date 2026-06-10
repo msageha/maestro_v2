@@ -551,6 +551,12 @@ func (wm *Manager) handleWorkerMergeConflict(
 	// worktree clean). Without it, self-commit Workers would loop forever
 	// on the deferred branch.
 	ws.ConflictBranchHead = mc.TheirsRef
+	// Pin the integration HEAD ("ours") the resolver will reconcile against.
+	// ResumeMerge's lost-update guard compares this snapshot with the
+	// integration HEAD at merge time: if another worker's resolution landed
+	// in between, this worker's resolution is stale and must not be merged
+	// with `-X theirs` (it would overwrite the newer integration content).
+	ws.ConflictIntegrationHead = mc.OursRef
 	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
 		wm.Log(core.LogLevelWarn, "merge_conflict_transition command=%s worker=%s error=%v",
 			commandID, workerID, tErr)

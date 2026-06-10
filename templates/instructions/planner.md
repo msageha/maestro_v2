@@ -156,6 +156,7 @@ phases:
     tasks:
       - name: full_test
         run_on_integration: true
+        operation_type: verify   # 検証タスクは必ず verify を明示（デフォルトは repair）
         purpose: "全 worker 成果統合後の repository-wide test"
         content: "integration worktree 上で `go test ./... -count=1` を実行"
         acceptance_criteria: "全テストが PASS する"
@@ -618,7 +619,7 @@ phases:
 - **回帰検証**: 既存機能の破壊がないか（`go test ./...` 等）
 - **仕様適合**: 目的・要件を満たしているか
 
-**実行ロケーション**: verification タスクは原則として統合ブランチを評価対象にするので、`run_on_integration: true` を必ず付与する（`run_on_main` は同一 command 内では使えない — daemon が拒否する。publish 済み main の最終確認は §「`run_on_main` の投入ルール」に従い別 command で行う）。`run_on_integration` を付けないと worker worktree 上で実行され、対象 worker が auto-assignment 次第で変わるため、task content に「worker3 の worktree を検証」のような worker 固有記述があるとずれが生じる。worker 個別の worktree を見たい場合のみ `worker_id` で固定し、その場合も task content の言及と `worker_id` を必ず一致させる。
+**実行ロケーション**: verification タスクは原則として統合ブランチを評価対象にするので、`run_on_integration: true` を必ず付与する（`run_on_main` は同一 command 内では使えない — daemon が拒否する。publish 済み main の最終確認は §「`run_on_main` の投入ルール」に従い別 command で行う）。あわせて **`operation_type: verify`（add-task の場合 `--operation-type verify`）を必ず付与する** — `run_on_integration` のデフォルト分類は repair（publish_conflict 解決用途）であり、verify を明示しないと検証 FAIL 時に同一タスクの無意味な自動リトライが走り replan が遅れる。`run_on_integration` を付けないと worker worktree 上で実行され、対象 worker が auto-assignment 次第で変わるため、task content に「worker3 の worktree を検証」のような worker 固有記述があるとずれが生じる。worker 個別の worktree を見たい場合のみ `worker_id` で固定し、その場合も task content の言及と `worker_id` を必ず一致させる。
 
 **`worker_id` は `plan submit --phase` 経由の YAML でも有効**: `plan submit --tasks-file -` で渡す YAML 各タスクに `worker_id: workerN` を書けば、その worker に pin される（`internal/plan/submit.go:resolveAndAssignTasks` → `AssignWorkers` の `PinnedWorkerID` パス）。「YAML では worker_id を受けない」という認識は誤り。`plan add-task --worker-id` と同じ pinning 経路を共有する。
 
@@ -641,6 +642,7 @@ verification が `failed` の場合:
 - daemon の VerifyRunner が task を `repair_pending` に遷移させ、`retry.task_execution.enabled: true` かつ修復上限内であれば repair task を自動投入する
 - Planner は同じ失敗に対して即座に `add-retry-task` を重ねて投入しない。まず自動 repair task の有無と上限到達状態を確認する
 - `paused_for_replan` に到達した場合のみ、原因を要約して再計画するか `plan complete` で failed 報告する
+- **`operation_type: verify` の `run_on_integration` / `run_on_main` 検証タスクが exit 1 で failed した場合（ファイル変更なし）、daemon は同一タスクの自動リトライを行わず即座に `paused_for_replan` に遷移させる**（観測対象の統合状態が変わらない限り再実行しても判定は変わらないため）。Planner はこの replan で **同一の検証タスクを再発行してはならない**。検証 summary が指摘する欠落・不具合を修復する implementation タスク（通常 worker 向け）を発行し、その完了後に再検証タスクを発行する（修復 → 再検証のペア構成）。修復方針が立たない場合は `plan complete` で failed 報告しユーザー判断を仰ぐ
 
 **ループ上限（ハード制約）**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は **必ず** `plan complete` で failed 報告を行い、**これ以上 `add-task` / `add-retry-task` を呼ばない**。
 
@@ -1037,6 +1039,7 @@ tasks:
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
 | `run_on_main` | 任意 | `true` の場合、タスクを worker worktree ではなく main 作業ディレクトリで実行。**publish 後の main 上での検証タスク専用**。通常タスクとの同一 command 内混在・phase への投入は daemon が拒否する（詳細は下記「`run_on_main` の投入ルール」参照）。`run_on_integration` と排他 |
 | `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**用途**: ① 統合済み成果物を全 worker 横断で検証する read-only な final-verify タスク (post-2026-05-05 P0-A: per-task daemon verify は normal worker task で skip され、verify.yaml は run_on_integration task でのみ走る)。② publish_conflict の解決タスク (write-side; integration worktree 上で競合ファイルを編集)。`run_on_main` と排他 |
+| `operation_type` | 任意 | タスクの明示分類: `verify`（read-only 検証）/ `repair`（write 系復旧）。省略時のデフォルト: `run_on_main` → verify、`run_on_integration` → repair、両方 false → 未分類。**`run_on_integration` の検証タスクには必ず `verify` を明示する**（デフォルトの repair のままだと、検証 FAIL (exit 1) 時に同一タスクの自動リトライが走り replan が遅れる。verify 分類なら即 `paused_for_replan` で修復タスク発行に移れる）。`plan add-task` では `--operation-type verify` |
 | `worker_id` | 任意 | 特定 worker（例: `worker3`）にタスクを固定する。省略時は bloom_level / load balancer による自動割当。`plan submit` / `plan submit --phase` の YAML と `plan add-task --worker-id` のいずれでも有効（同じ pinning 経路に流れる）。conflict 解決タスクや、特定 worker の worktree を検証対象とする場合に使用する。設定済みの workers にない ID を指定すると VALIDATION_ERROR で拒否される |
 
 #### verification タスクと `run_on_main`

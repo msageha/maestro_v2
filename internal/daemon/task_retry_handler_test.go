@@ -2571,3 +2571,55 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestIsFutileIntegrationScopedRetry verifies that read-only
+// run_on_integration / run_on_main tasks reporting a semantic failure
+// (exit code 1, no files changed) are classified as futile to retry: the
+// observed merged state cannot change between identical runs, so the failure
+// must be routed to paused_for_replan immediately for the Planner to schedule
+// a repair task. Abnormal terminations (timeout 124 / SIGKILL 137) and
+// integration-scoped tasks that wrote changes (e.g. publish_conflict
+// resolution) keep the normal retry path. Regression test for the 2026-06-10
+// E2E finding where an integration-verify task was retried twice with
+// identical content before the replan signal fired.
+func TestIsFutileIntegrationScopedRetry(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name             string
+		runOnIntegration bool
+		runOnMain        bool
+		operationType    string
+		exitCode         int
+		filesChanged     []string
+		partialPossible  bool
+		expectedFutile   bool
+	}{
+		{"run_on_integration verify exit 1 is futile", true, false, model.OperationTypeVerify, 1, nil, false, true},
+		{"run_on_main verify exit 1 is futile", false, true, model.OperationTypeVerify, 1, nil, false, true},
+		{"run_on_integration verify timeout 124 not futile", true, false, model.OperationTypeVerify, 124, nil, false, false},
+		{"run_on_integration verify SIGKILL 137 not futile", true, false, model.OperationTypeVerify, 137, nil, false, false},
+		{"verify task with changes not futile", true, false, model.OperationTypeVerify, 1, []string{"main.go"}, false, false},
+		{"verify task partial changes possible not futile", true, false, model.OperationTypeVerify, 1, nil, true, false},
+		{"publish_conflict repair before edits not futile", true, false, model.OperationTypeRepair, 1, nil, false, false},
+		{"run_on_integration default (repair) exit 1 not futile", true, false, model.OperationTypeRepair, 1, nil, false, false},
+		{"unclassified integration task not futile", true, false, "", 1, nil, false, false},
+		{"verify without RunOn flags not futile", false, false, model.OperationTypeVerify, 1, nil, false, false},
+		{"normal worker task exit 1 not futile", false, false, "", 1, nil, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			task := &model.Task{
+				ID:               "task_intscope",
+				RunOnIntegration: tt.runOnIntegration,
+				RunOnMain:        tt.runOnMain,
+				OperationType:    tt.operationType,
+			}
+			got := IsFutileIntegrationScopedRetry(task, tt.exitCode, tt.filesChanged, tt.partialPossible)
+			if got != tt.expectedFutile {
+				t.Errorf("IsFutileIntegrationScopedRetry: got %v, want %v", got, tt.expectedFutile)
+			}
+		})
+	}
+}

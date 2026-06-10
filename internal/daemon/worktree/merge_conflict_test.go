@@ -1226,3 +1226,216 @@ func TestResumeMerge_NormalMergeUnaffected(t *testing.T) {
 		}
 	}
 }
+
+// TestResumeMerge_StaleResolutionDoesNotClobberIntegration reproduces the
+// parallel-conflict lost-update scenario found in the 2026-06-10 E2E run:
+//
+//  1. worker1 merges cleanly into integration.
+//  2. worker2 and worker3 both conflict against the SAME integration HEAD and
+//     resolve in parallel — each resolution incorporates only the integration
+//     content visible at the conflict snapshot.
+//  3. ResumeMerge merges worker2's resolution first (integration advances),
+//     then worker3's resolution. Before the fix, worker3's merge ran with
+//     -X theirs and silently dropped worker2's resolved content.
+//
+// With the lost-update guard, worker3's stale resolution must NOT be merged:
+// the worker is reset to active so the standard merge pipeline re-detects the
+// conflict against the current integration HEAD (fresh ours ref), and the
+// second resolution round converges with no content loss.
+func TestResumeMerge_StaleResolutionDoesNotClobberIntegration(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_stale_resolution"
+	workers := []string{"worker1", "worker2", "worker3"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wt1, _ := wm.GetWorkerPath(commandID, "worker1")
+	wt2, _ := wm.GetWorkerPath(commandID, "worker2")
+	wt3, _ := wm.GetWorkerPath(commandID, "worker3")
+
+	// All three workers create the same file with different content so that
+	// worker1 merges cleanly and worker2/worker3 conflict against the same
+	// integration HEAD (the one containing worker1's content).
+	if err := os.WriteFile(filepath.Join(wt1, "FEATURE.txt"), []byte("one\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 adds one"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "FEATURE.txt"), []byte("two\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 adds two"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt3, "FEATURE.txt"), []byte("three\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker3", "worker3 adds three"); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 2 {
+		t.Fatalf("expected 2 conflicts (worker2, worker3), got %d: %v", len(conflicts), conflicts)
+	}
+
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	headOut, err := exec.Command("git", "-C", integrationPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse integration HEAD: %v", err)
+	}
+	conflictSnapshot := strings.TrimSpace(string(headOut))
+
+	// Both conflicted workers must have pinned the integration HEAD they were
+	// asked to resolve against.
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	for _, ws := range state.Workers {
+		if ws.WorkerID == "worker1" {
+			continue
+		}
+		if ws.Status != model.WorktreeStatusConflict {
+			t.Fatalf("worker %s status = %q, want conflict", ws.WorkerID, ws.Status)
+		}
+		if ws.ConflictIntegrationHead != conflictSnapshot {
+			t.Fatalf("worker %s ConflictIntegrationHead = %q, want %q",
+				ws.WorkerID, ws.ConflictIntegrationHead, conflictSnapshot)
+		}
+	}
+
+	// Simulate the resolver dispatching both workers in parallel, each
+	// resolving against the SAME conflict snapshot (integration content "one").
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		for _, wid := range []string{"worker2", "worker3"} {
+			ws := wm.findWorker(st, wid)
+			_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		}
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+
+	// worker2's resolution: integration content at snapshot + own content.
+	if err := os.WriteFile(filepath.Join(wt2, "FEATURE.txt"), []byte("one\ntwo\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// worker3's resolution: ALSO computed against the snapshot — it has never
+	// seen worker2's content. Pre-fix, -X theirs made this the final content.
+	if err := os.WriteFile(filepath.Join(wt3, "FEATURE.txt"), []byte("one\nthree\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge: %v", err)
+	}
+
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState after resume: %v", err)
+	}
+	var w2, w3 *model.WorktreeState
+	for i := range state.Workers {
+		switch state.Workers[i].WorkerID {
+		case "worker2":
+			w2 = &state.Workers[i]
+		case "worker3":
+			w3 = &state.Workers[i]
+		}
+	}
+	if w2.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("worker2 status = %q, want integrated", w2.Status)
+	}
+	// worker3's resolution was stale — it must NOT be integrated via -X theirs.
+	if w3.Status != model.WorktreeStatusActive {
+		t.Errorf("worker3 status = %q, want active (stale resolution reset)", w3.Status)
+	}
+
+	// worker2's resolved content must survive on integration.
+	showOut, err := exec.Command("git", "-C", integrationPath, "show", "HEAD:FEATURE.txt").Output()
+	if err != nil {
+		t.Fatalf("git show FEATURE.txt: %v", err)
+	}
+	if got := string(showOut); got != "one\ntwo\n" {
+		t.Fatalf("integration FEATURE.txt after stale guard = %q, want %q (worker2 content clobbered)", got, "one\ntwo\n")
+	}
+
+	// Round 2: the standard merge pipeline re-merges the active worker3 (its
+	// branch carries the committed stale resolution) and must re-detect the
+	// conflict against the CURRENT integration HEAD, repinning the snapshot.
+	conflicts, err = wm.MergeToIntegration(context.Background(), commandID, []string{"worker3"}, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration round2: %v", err)
+	}
+	if len(conflicts) != 1 || conflicts[0].WorkerID != "worker3" {
+		t.Fatalf("round2: expected fresh conflict on worker3, got %v", conflicts)
+	}
+
+	newHeadOut, err := exec.Command("git", "-C", integrationPath, "rev-parse", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("rev-parse integration HEAD round2: %v", err)
+	}
+	newSnapshot := strings.TrimSpace(string(newHeadOut))
+	if newSnapshot == conflictSnapshot {
+		t.Fatal("integration HEAD should have advanced past the original conflict snapshot")
+	}
+
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState round2: %v", err)
+	}
+	w3 = wm.findWorker(state, "worker3")
+	if w3.ConflictIntegrationHead != newSnapshot {
+		t.Fatalf("round2: worker3 ConflictIntegrationHead = %q, want refreshed %q",
+			w3.ConflictIntegrationHead, newSnapshot)
+	}
+
+	// Round-2 resolution now sees the up-to-date integration content.
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		ws := wm.findWorker(st, "worker3")
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+	if err := os.WriteFile(filepath.Join(wt3, "FEATURE.txt"), []byte("one\ntwo\nthree\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge round2: %v", err)
+	}
+
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState final: %v", err)
+	}
+	w3 = wm.findWorker(state, "worker3")
+	if w3.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("final: worker3 status = %q, want integrated", w3.Status)
+	}
+	if state.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("final: integration status = %q, want merged", state.Integration.Status)
+	}
+	showOut, err = exec.Command("git", "-C", integrationPath, "show", "HEAD:FEATURE.txt").Output()
+	if err != nil {
+		t.Fatalf("git show FEATURE.txt final: %v", err)
+	}
+	if got := string(showOut); got != "one\ntwo\nthree\n" {
+		t.Fatalf("final integration FEATURE.txt = %q, want %q (lost update)", got, "one\ntwo\nthree\n")
+	}
+}

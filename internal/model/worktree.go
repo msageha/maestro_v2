@@ -86,6 +86,18 @@ type WorktreeState struct {
 	// past this snapshot, signalling that the merge can proceed instead of
 	// being deferred forever.
 	ConflictBranchHead string `yaml:"conflict_branch_head,omitempty"`
+	// ConflictIntegrationHead records the integration branch's HEAD SHA at the
+	// moment the merge into integration first detected a conflict (the "ours"
+	// side the resolver was asked to reconcile against). It is set by
+	// MergeToIntegration alongside ConflictBranchHead and consulted by
+	// ResumeMerge's lost-update guard: if the integration HEAD has advanced
+	// past this snapshot by the time the worker's resolution is merged (e.g.
+	// another conflicted worker's resolution landed first), the resolution is
+	// stale — merging it with `-X theirs` would silently overwrite content
+	// integrated after the snapshot. The guard instead resets the worker to
+	// active so the standard merge pipeline re-detects the conflict against
+	// the current integration HEAD and dispatches a fresh resolution.
+	ConflictIntegrationHead string `yaml:"conflict_integration_head,omitempty"`
 	// ConflictEscalated guards one-shot emission of the conflict-escalation
 	// planner notification. R7 sets it true when it escalates a worker whose
 	// ConflictResolutionAttempts has reached the max, so the escalation

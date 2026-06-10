@@ -424,6 +424,19 @@ func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWrite
 	if resultStatus != model.StatusFailed || params.ExitCode == nil {
 		return nil, false
 	}
+
+	// Read-only integration-scoped failure (typically a verification task
+	// whose verdict is FAIL): an identical retry re-observes the same merged
+	// state and cannot change the outcome. Skip retry so the failure routes
+	// to paused_for_replan and the Planner can schedule a repair task
+	// immediately instead of after the retry budget is exhausted.
+	if IsFutileIntegrationScopedRetry(queueTask, *params.ExitCode, params.FilesChanged, params.PartialChangesPossible) {
+		h.logFn(LogLevelInfo,
+			"task_retry_skipped task=%s reason=%s", params.TaskID,
+			"integration-scoped read-only failure (exit 1, no files changed); identical retry cannot change the verdict — routing to replan")
+		return nil, false
+	}
+
 	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 	shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
 

@@ -473,6 +473,32 @@ func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, w
 	}
 
 	if mergeErr := wm.mergeResolvedWorker(ctx, integrationPath, ws, commandID); mergeErr != nil {
+		if errors.Is(mergeErr, errStaleResolution) {
+			// Lost-update guard: the integration HEAD advanced past the
+			// snapshot this worker's resolution was computed against
+			// (typically because another conflicted worker's resolution
+			// merged first). Merging with -X theirs now would silently
+			// overwrite the newer integration content with this worker's
+			// stale view. Reset the worker to active instead: the standard
+			// merge pipeline re-merges the branch (which carries the
+			// committed resolution), either cleanly (no overlap with the
+			// newer content) or by re-detecting the conflict against the
+			// CURRENT integration HEAD — emitting a fresh merge_conflict
+			// signal (new ConflictGeneration, fresh ours ref) so the next
+			// resolution round sees the up-to-date integration content.
+			// Unlike the generic failure branch below, active does NOT loop:
+			// the re-merge produces a different outcome because the
+			// integration HEAD (and thus the conflict refs) changed.
+			wm.Log(core.LogLevelWarn,
+				"resume_merge_stale_resolution command=%s worker=%s conflict_integration_head=%s error=%v "+
+					"(integration advanced since conflict snapshot; resetting worker to active for re-merge against current HEAD)",
+				commandID, ws.WorkerID, ws.ConflictIntegrationHead, mergeErr)
+			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusActive, now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "resume_merge_stale_resolution_transition command=%s worker=%s error=%v",
+					commandID, ws.WorkerID, tErr)
+			}
+			return
+		}
 		// Set the worker back to conflict (not active) to prevent an
 		// infinite loop: MergeToIntegration skips conflict workers, so
 		// the next scan will not re-merge this worker. Setting to active
@@ -583,6 +609,14 @@ func (wm *Manager) resetWorkersToActive(workers []*model.WorktreeState, now, com
 	}
 }
 
+// errStaleResolution is returned by mergeResolvedWorker when the integration
+// HEAD has advanced past the ConflictIntegrationHead snapshot the worker's
+// resolution was computed against. tryMergeWorker translates it into an
+// active reset so the standard merge pipeline re-detects the conflict against
+// the current integration HEAD instead of letting -X theirs clobber content
+// merged after the snapshot.
+var errStaleResolution = errors.New("stale conflict resolution: integration HEAD advanced past conflict snapshot")
+
 // mergeResolvedWorker attempts to merge a conflict-resolved worker's branch
 // into the integration branch using -X theirs so that git automatically
 // prefers the worker's committed resolution for any conflicting hunks. This
@@ -592,6 +626,16 @@ func (wm *Manager) resetWorkersToActive(workers []*model.WorktreeState, now, com
 // If -X theirs alone does not resolve all conflicts (e.g., binary rename/rename
 // edge cases), a secondary fallback checks out each conflicting file from the
 // worker branch and commits the merge.
+//
+// Lost-update guard: -X theirs is only safe when the integration branch is
+// still at the exact HEAD the resolution was computed against
+// (ws.ConflictIntegrationHead). If it advanced — e.g. several workers
+// conflicted against the same snapshot and another worker's resolution merged
+// first — preferring this worker's hunks would silently drop the content that
+// landed in between. In that case errStaleResolution is returned without
+// touching the integration branch. An empty ConflictIntegrationHead (legacy
+// state written before the field existed, or conflict paths that do not
+// populate it) preserves the historical -X theirs behavior.
 //
 // Returns nil on success. On failure, the integration worktree is restored to
 // its pre-merge state.
@@ -622,6 +666,11 @@ func (wm *Manager) mergeResolvedWorker(
 		// Worker branch is already fully reachable from integration HEAD.
 		wm.Log(core.LogLevelDebug, "resolved_worker_already_merged command=%s worker=%s", commandID, ws.WorkerID)
 		return nil
+	}
+
+	if ws.ConflictIntegrationHead != "" && preMergeHEAD != ws.ConflictIntegrationHead {
+		return fmt.Errorf("%w: integration HEAD %s != conflict snapshot %s (worker %s)",
+			errStaleResolution, preMergeHEAD, ws.ConflictIntegrationHead, ws.WorkerID)
 	}
 
 	strategy := wm.config.EffectiveMergeStrategy()
