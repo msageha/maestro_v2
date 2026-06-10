@@ -58,8 +58,10 @@ var errPublishDirtyRoot = errors.New("publish aborted: projectRoot has uncommitt
 // fix the projectRoot checkout (e.g. `git reset --hard <base branch>` after
 // confirming no genuine work is present — a pre-publish stash ref is saved
 // under refs/maestro/pre-publish-stash/<commandID> when changes existed),
-// then `maestro plan unquarantine` + `retry-publish`; the retry converges as
-// a no-op merge because base already contains the integration content.
+// then `maestro plan retry-publish` (it accepts publish-sourced quarantines
+// directly; `unquarantine` also works since it restores publish_failed for
+// publish-sourced quarantines). The retry converges as a no-op merge because
+// base already contains the integration content.
 var errPublishRefAdvancedSyncFailed = errors.New("publish ref advanced but projectRoot sync and ref rollback both failed; base branch already contains the publish merge, projectRoot checkout is stale")
 
 // recordMergeFailure increments the merge failure counter and either persists

@@ -27,14 +27,26 @@ var (
 )
 
 // Unquarantine clears the quarantine state of an integration branch and
-// returns it to IntegrationStatusFailed so the next Phase A queue scan can
-// re-enqueue merge attempts. Counters (MergeFailureCount, QuarantinedAt,
+// returns it to the recovery entry point matching the quarantine's origin:
+//
+//   - QuarantineSource=publish → IntegrationStatusPublishFailed with the
+//     publish retry budget reset. The merge already succeeded for these
+//     quarantines; dropping to Failed instead would strand the integration
+//     in a state no recovery op accepts (retry-publish requires
+//     publish_failed, resume-merge refuses "no pending failures and no
+//     conflict workers", AutoRecover has no rule) — a dead end where the
+//     merged content can never reach base. From publish_failed both
+//     retry-publish and AutoRecover converge on a re-publish.
+//   - anything else (merge-side) → IntegrationStatusFailed so the next
+//     Phase A queue scan can re-enqueue merge attempts.
+//
+// Counters (MergeFailureCount / PublishFailureCount, QuarantinedAt,
 // QuarantineReason) are reset.
 //
 // This is the explicit operator escape hatch from the otherwise-terminal
-// Quarantined state. Because Quarantined→Failed is intentionally absent from
-// validIntegrationTransitions, the field is assigned directly rather than
-// going through setIntegrationStatus.
+// Quarantined state. Because Quarantined→Failed/PublishFailed transitions are
+// intentionally absent from validIntegrationTransitions, the field is
+// assigned directly rather than going through setIntegrationStatus.
 //
 // Idempotency: a second call when the integration is no longer quarantined
 // returns ErrAlreadyResolved without touching the state file.
@@ -57,7 +69,13 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 	}
 
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
-	state.Integration.Status = model.IntegrationStatusFailed
+	restored := model.IntegrationStatusFailed
+	if state.Integration.QuarantineSource == model.QuarantineSourcePublish {
+		restored = model.IntegrationStatusPublishFailed
+		state.Integration.PublishFailureCount = 0
+		state.Integration.NextPublishRetryAt = ""
+	}
+	state.Integration.Status = restored
 	state.Integration.UpdatedAt = now
 	state.Integration.MergeFailureCount = 0
 	state.Integration.QuarantinedAt = ""
@@ -66,7 +84,7 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 	state.Integration.StallSignaled = false
 	state.UpdatedAt = now
 
-	wm.Log(core.LogLevelInfo, "unquarantine command=%s reason=%q", commandID, reason)
+	wm.Log(core.LogLevelInfo, "unquarantine command=%s restored_status=%s reason=%q", commandID, restored, reason)
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}

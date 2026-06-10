@@ -106,6 +106,59 @@ func TestUnquarantine_Success(t *testing.T) {
 	}
 }
 
+// TestUnquarantine_PublishSource_RestoresPublishFailed pins the publish-side
+// recovery contract: unquarantining a QuarantineSource=publish quarantine must
+// restore publish_failed (with the retry budget reset), NOT failed. Dropping
+// to failed strands the integration in a dead end no recovery op accepts:
+// retry-publish requires publish_failed, resume-merge refuses "no pending
+// failures and no conflict workers", and AutoRecover has no rule for it —
+// observed live on 2026-06-10 (publish_dirty_root quarantine → unquarantine →
+// unrecoverable failed).
+func TestUnquarantine_PublishSource_RestoresPublishFailed(t *testing.T) {
+	t.Parallel()
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_test_pub_001"
+	st := quarantinedState(cmdID)
+	st.Integration.QuarantineSource = model.QuarantineSourcePublish
+	st.Integration.PublishFailureCount = 1
+	st.Integration.NextPublishRetryAt = "2026-01-01T00:10:00Z"
+	writeWorktreeState(t, wm, st)
+
+	if err := wm.Unquarantine(cmdID, "operator unblock"); err != nil {
+		t.Fatalf("Unquarantine: %v", err)
+	}
+
+	got, err := wm.GetCommandState(cmdID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if got.Integration.Status != model.IntegrationStatusPublishFailed {
+		t.Errorf("status = %s, want publish_failed", got.Integration.Status)
+	}
+	if got.Integration.PublishFailureCount != 0 {
+		t.Errorf("PublishFailureCount = %d, want 0", got.Integration.PublishFailureCount)
+	}
+	if got.Integration.NextPublishRetryAt != "" {
+		t.Errorf("NextPublishRetryAt = %q, want empty (immediately retry-eligible)", got.Integration.NextPublishRetryAt)
+	}
+	if got.Integration.QuarantineSource != "" {
+		t.Errorf("QuarantineSource = %q, want empty", got.Integration.QuarantineSource)
+	}
+
+	// The restored state must be accepted by RetryPublish (the documented
+	// follow-up), transitioning to merged for the next publish attempt.
+	if err := wm.RetryPublish(cmdID); err != nil {
+		t.Fatalf("RetryPublish after unquarantine must succeed: %v", err)
+	}
+	got, err = wm.GetCommandState(cmdID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if got.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("status after retry-publish = %s, want merged", got.Integration.Status)
+	}
+}
+
 func TestUnquarantine_Idempotent(t *testing.T) {
 	t.Parallel()
 	wm, maestroDir := newRecoveryTestManager(t)
