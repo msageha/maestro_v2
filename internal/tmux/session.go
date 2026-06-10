@@ -77,12 +77,37 @@ const defaultCmdTimeout = 5 * time.Second
 // exhaustion from extremely large payloads being loaded into tmux buffers.
 const maxMessageSize = 1 << 20 // 1 MB
 
-// bracketedPasteDelay is the pause between pasting content into a pane and
-// sending Enter to submit it. Claude Code's Ink-based TUI needs time to
+// bracketedPasteDelay is the base pause between pasting content into a pane
+// and sending Enter to submit it. Claude Code's Ink-based TUI needs time to
 // process the bracketed paste into its input field; 100ms was empirically
 // too short under load, causing intermittent delivery failures. 500ms was
-// chosen as a safe margin through production testing.
+// chosen as a safe margin through production testing for typical message
+// sizes. Large pastes scale beyond this base — see pasteDelayFor.
 const bracketedPasteDelay = 500 * time.Millisecond
+
+// pasteDelayExtraPerKB and pasteDelayMax tune pasteDelayFor: each KB of
+// payload adds processing headroom on top of bracketedPasteDelay, capped so
+// a worst-case envelope (128 KB task content) cannot stall delivery for an
+// unbounded time.
+const (
+	pasteDelayExtraPerKB = 15 * time.Millisecond
+	pasteDelayMax        = 3 * time.Second
+)
+
+// pasteDelayFor returns the pre-Enter pause for a paste of size n bytes:
+// the empirically-validated base for typical messages, plus size-scaled
+// headroom for large envelopes. The TUI ingests a 128 KB bracketed paste
+// noticeably slower than a one-liner; a fixed base risks sending Enter
+// mid-ingestion, which the downstream submit-confirmation probe then has to
+// repair (assumed-running with lease-TTL fallback). Scaling the delay keeps
+// the probe a safety net instead of a routine path.
+func pasteDelayFor(n int) time.Duration {
+	d := bracketedPasteDelay + time.Duration(n/1024)*pasteDelayExtraPerKB
+	if d > pasteDelayMax {
+		return pasteDelayMax
+	}
+	return d
+}
 
 // validUserVarName matches safe tmux user variable names (alphanumeric + underscore).
 // This prevents tmux format injection via names containing #( or #[.
@@ -272,9 +297,10 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	needCleanup = false
 
 	// Delay to let the target application finish processing the bracketed
-	// paste before we send Enter to submit. Uses context-aware sleep so
-	// cancellation is respected. See bracketedPasteDelay for rationale.
-	if err := sleepCtx(ctx, bracketedPasteDelay); err != nil {
+	// paste before we send Enter to submit. Size-scaled so large envelopes
+	// get proportionally more ingestion time. Uses context-aware sleep so
+	// cancellation is respected. See pasteDelayFor for rationale.
+	if err := sleepCtx(ctx, pasteDelayFor(len(text))); err != nil {
 		return &Error{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
 	}
 

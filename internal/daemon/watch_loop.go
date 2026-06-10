@@ -104,6 +104,14 @@ func (w *WatchLoop) tickerLoop() {
 
 			// Session health check: detect if tmux session disappeared
 			w.checkSessionHealth()
+
+			// Continuous stall watchdog: advisory nudge when the
+			// Orchestrator misses a command_completed notification and the
+			// continuous loop silently stops advancing. Nil unless
+			// continuous mode is enabled.
+			if ch := d.continuousHandler; ch != nil {
+				ch.CheckStall()
+			}
 		}
 	}
 }

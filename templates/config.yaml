@@ -117,6 +117,13 @@ continuous:
   # 既存 config (このキー追加前) は 0 (無効) にデシリアライズされる。
   # type: int | default: 0 | range: >= 0 (enabled 時)
   max_consecutive_failures: 3
+  # stall_notification_sec: continuous stall watchdog のしきい値（秒）。
+  # running のまま、最後の iteration の結果処理後にこの秒数を超えて
+  # 次の command が投入されない（かつキューに未終了 command が無い）場合、
+  # daemon が continuous_stalled 通知を Orchestrator に送る。
+  # Orchestrator が command_completed 通知を取り逃した際の無音停止対策。
+  # type: int | default: 600 (0=デフォルト適用) | range: 負値で watchdog 無効
+  stall_notification_sec: 600
 
 # --- Watcher ---
 # タスクディスパッチ Watcher のタイミング・ポーリング設定。

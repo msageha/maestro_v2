@@ -156,6 +156,30 @@ func isPromptReady(content string) bool {
 	return false
 }
 
+// promptInputText extracts the user-visible text that follows the Claude Code
+// prompt glyph (❯) on the prompt line, scanning bottom-up like isPromptReady.
+// Returns found=false when no prompt line is visible within the search window.
+// Box-drawing border characters and surrounding whitespace are stripped, so an
+// empty input box yields ("", true). Used by the orchestrator user-composing
+// guard to tell "prompt idle and empty" apart from "prompt idle but a human is
+// mid-draft".
+func promptInputText(content string) (string, bool) {
+	lines := strings.Split(content, "\n")
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
+		if trimmed == "" {
+			continue
+		}
+		if idx := strings.Index(trimmed, "❯"); idx >= 0 {
+			text := trimmed[idx+len("❯"):]
+			return strings.Trim(text, "│ \t"), true
+		}
+		checked++
+	}
+	return "", false
+}
+
 // clearTextVisible checks whether "/clear" text is visible near the bottom of the pane content
 // as a command (not as part of agent output prose).
 // This is the primary signal for detecting that /clear was NOT processed as a command

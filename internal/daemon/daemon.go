@@ -74,6 +74,7 @@ type Daemon struct {
 	admissionCtrl         *admission.Controller
 	fallbackMgr           *fallback.Manager
 	worktreeManager       *WorktreeManager
+	continuousHandler     *ContinuousHandler
 
 	// Phase C components (grouped in PhaseCManager)
 	phaseC *PhaseCManager

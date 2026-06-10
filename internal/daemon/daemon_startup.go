@@ -181,6 +181,9 @@ func (d *Daemon) initComponents() {
 	if d.config.Continuous.Enabled {
 		ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 		d.handler.SetContinuousHandler(ch)
+		// Retained on the daemon so the ticker loop can run the continuous
+		// stall watchdog (CheckStall) alongside periodic scans.
+		d.continuousHandler = ch
 	}
 
 	if d.config.QualityGates.Enabled {

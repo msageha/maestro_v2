@@ -113,6 +113,12 @@ const (
 	// mode transitions to Stopped (max iterations / max consecutive failures reached).
 	// The Orchestrator uses this signal to finalize the run and report to the user.
 	NotificationTypeContinuousStopped NotificationType = "continuous_stopped"
+	// NotificationTypeContinuousStalled is emitted by the continuous stall
+	// watchdog when continuous mode is running but no next-iteration command
+	// has been submitted for continuous.stall_notification_sec. The
+	// Orchestrator uses this nudge to re-run its Decide step (or pause/stop
+	// continuous mode) after a missed command_completed notification.
+	NotificationTypeContinuousStalled NotificationType = "continuous_stalled"
 )
 
 var terminalStatuses = map[Status]bool{
@@ -153,6 +159,7 @@ var validNotificationTypes = map[NotificationType]bool{
 	NotificationTypeCommandCancelled:  true,
 	NotificationTypeContinuousPaused:  true,
 	NotificationTypeContinuousStopped: true,
+	NotificationTypeContinuousStalled: true,
 }
 
 // Queue entry status transitions for command/task: pending ↔ in_progress → terminal.

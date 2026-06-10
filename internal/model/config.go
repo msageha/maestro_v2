@@ -192,6 +192,34 @@ type ContinuousConfig struct {
 	// default is synthesized at load time so that "0" always means "disabled"
 	// with no surprising hidden defaults.
 	MaxConsecutiveFailures int `yaml:"max_consecutive_failures"`
+	// StallNotificationSec sets the continuous stall watchdog threshold: when
+	// continuous mode is running, the last iteration's result has already
+	// been processed, no non-terminal command remains in the planner queue,
+	// and this many seconds elapse without a next command, the daemon emits a
+	// continuous_stalled notification to the Orchestrator. The Orchestrator
+	// owns next-iteration generation, so a missed command_completed
+	// notification (compaction, lost paste) otherwise stalls the loop with
+	// every component nominally healthy.
+	//
+	// 0 (key absent) applies the 600s default — unlike
+	// max_consecutive_failures this watchdog is advisory-only (a
+	// notification, no state change), so a hidden default is safe. Negative
+	// values disable the watchdog.
+	StallNotificationSec int `yaml:"stall_notification_sec"`
+}
+
+// EffectiveStallNotificationSec returns the continuous stall watchdog
+// threshold in seconds: 600 when unset (0), 0 when explicitly disabled
+// (negative), otherwise the configured value.
+func (c ContinuousConfig) EffectiveStallNotificationSec() int {
+	switch {
+	case c.StallNotificationSec < 0:
+		return 0
+	case c.StallNotificationSec == 0:
+		return 600
+	default:
+		return c.StallNotificationSec
+	}
 }
 
 // --- WatcherConfig ---

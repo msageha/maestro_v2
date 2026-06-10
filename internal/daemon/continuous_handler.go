@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -24,6 +25,14 @@ type ContinuousHandler struct {
 	logger     *log.Logger
 	logLevel   LogLevel
 	clock      Clock
+
+	// stallMu guards stallNotifiedKey, the once-per-stall marker for
+	// CheckStall. Delivered notifications are archived out of the queue
+	// file, so queue-side dedup cannot prevent re-notification across
+	// scans — this in-memory key does. A daemon restart re-notifies once,
+	// which is acceptable for an advisory nudge.
+	stallMu          sync.Mutex
+	stallNotifiedKey string
 }
 
 // NewContinuousHandler creates a new ContinuousHandler.
@@ -256,6 +265,145 @@ func (ch *ContinuousHandler) writeContinuousTransitionNotification(
 			ID:             id,
 			CommandID:      commandID,
 			Type:           notifType,
+			SourceResultID: sourceID,
+			Content:        content,
+			Priority:       defaultNotificationPriority,
+			Status:         model.StatusPending,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+		return nil
+	})
+}
+
+// CheckStall detects a silent continuous-mode stall: status=running, the last
+// iteration's result was already processed (LastCommandID set), no
+// non-terminal command remains in the planner queue, and more than
+// continuous.stall_notification_sec has elapsed since the state last
+// advanced. The Orchestrator owns next-iteration generation (the daemon never
+// auto-submits), so a missed command_completed notification — compaction,
+// crashed pane, lost paste — stalls the loop while every component looks
+// nominally healthy. This watchdog re-surfaces the stall as a
+// continuous_stalled notification. Called from the daemon ticker loop;
+// notified once per stalled iteration via stallNotifiedKey.
+func (ch *ContinuousHandler) CheckStall() {
+	if !ch.config.Continuous.Enabled {
+		return
+	}
+	thresholdSec := ch.config.Continuous.EffectiveStallNotificationSec()
+	if thresholdSec <= 0 {
+		return
+	}
+
+	ch.lockMap.Lock("state:continuous")
+	state, err := ch.loadContinuousState()
+	ch.lockMap.Unlock("state:continuous")
+	if err != nil {
+		ch.log(LogLevelDebug, "continuous_stall_check load_state error=%v", err)
+		return
+	}
+	if state.Status != model.ContinuousStatusRunning || state.LastCommandID == nil {
+		return
+	}
+	advancedAt, err := time.Parse(time.RFC3339, state.UpdatedAt)
+	if err != nil {
+		ch.log(LogLevelDebug, "continuous_stall_check parse_updated_at error=%v", err)
+		return
+	}
+	stalledFor := ch.clock.Now().UTC().Sub(advancedAt)
+	if stalledFor < time.Duration(thresholdSec)*time.Second {
+		return
+	}
+
+	active, err := ch.hasNonTerminalCommands()
+	if err != nil {
+		ch.log(LogLevelDebug, "continuous_stall_check load_queue error=%v", err)
+		return
+	}
+	if active {
+		return
+	}
+
+	key := fmt.Sprintf("%d:%s:%s", state.CurrentIteration, *state.LastCommandID, state.UpdatedAt)
+	ch.stallMu.Lock()
+	alreadyNotified := ch.stallNotifiedKey == key
+	ch.stallMu.Unlock()
+	if alreadyNotified {
+		return
+	}
+
+	if err := ch.writeContinuousStallNotification(state, stalledFor); err != nil {
+		ch.log(LogLevelWarn, "continuous_stall_notification_failed iteration=%d err=%v",
+			state.CurrentIteration, err)
+		return
+	}
+	ch.stallMu.Lock()
+	ch.stallNotifiedKey = key
+	ch.stallMu.Unlock()
+	ch.log(LogLevelInfo, "continuous_stall_notified iteration=%d last_command=%s stalled_for=%s",
+		state.CurrentIteration, *state.LastCommandID, stalledFor.Truncate(time.Second))
+}
+
+// hasNonTerminalCommands reports whether the planner command queue holds any
+// command that has not reached a terminal status — i.e. work is still queued
+// or in flight and the continuous loop is not stalled.
+func (ch *ContinuousHandler) hasNonTerminalCommands() (bool, error) {
+	ch.lockMap.Lock("queue:planner")
+	defer ch.lockMap.Unlock("queue:planner")
+	data, err := os.ReadFile(commandQueuePath(ch.maestroDir)) //nolint:gosec // controlled application queue path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		return false, err
+	}
+	for i := range cq.Commands {
+		if !model.IsTerminal(cq.Commands[i].Status) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// writeContinuousStallNotification appends (or dedups) a continuous_stalled
+// notification into queue/orchestrator.yaml. The queue-side dedup only covers
+// the window where a previous stall notification is still pending; long-term
+// once-per-stall control lives in stallNotifiedKey (see CheckStall).
+func (ch *ContinuousHandler) writeContinuousStallNotification(state *model.Continuous, stalledFor time.Duration) error {
+	sourceID := fmt.Sprintf("continuous:stalled:%d:%s", state.CurrentIteration, *state.LastCommandID)
+	queuePath := filepath.Join(ch.maestroDir, "queue", "orchestrator.yaml")
+
+	ch.lockMap.Lock("queue:orchestrator")
+	defer ch.lockMap.Unlock("queue:orchestrator")
+
+	return updateYAMLFile(queuePath, func(nq *model.NotificationQueue) error {
+		if nq.SchemaVersion == 0 {
+			nq.SchemaVersion = 1
+			nq.FileType = "queue_notification"
+		}
+		for i := range nq.Notifications {
+			if nq.Notifications[i].SourceResultID == sourceID &&
+				nq.Notifications[i].Type == model.NotificationTypeContinuousStalled {
+				return errNoUpdate
+			}
+		}
+		id, err := model.GenerateID(model.IDTypeNotification)
+		if err != nil {
+			return fmt.Errorf("generate notification ID: %w", err)
+		}
+		now := ch.clock.Now().UTC().Format(time.RFC3339)
+		content := fmt.Sprintf(
+			"continuous stalled iteration=%d last_command=%s stalled_for=%s "+
+				"(running but no next command submitted — run the Decide step for the next iteration, or pause/stop continuous mode)",
+			state.CurrentIteration, *state.LastCommandID, stalledFor.Truncate(time.Second))
+		nq.Notifications = append(nq.Notifications, model.Notification{
+			ID:             id,
+			CommandID:      *state.LastCommandID,
+			Type:           model.NotificationTypeContinuousStalled,
 			SourceResultID: sourceID,
 			Content:        content,
 			Priority:       defaultNotificationPriority,

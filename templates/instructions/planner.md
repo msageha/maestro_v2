@@ -231,72 +231,24 @@ phases:
 
 いずれの場合も Daemon は publish 成功時点で自動的に `plan_status` を terminal に確定する。Planner はターン終了で OK。詳細は §「Publish 完了通知」を参照。
 
-**失敗タスクのリトライ**:
+**失敗タスクのリトライ**: `maestro plan add-retry-task --command-id <id> --retry-of <failed_task_id> ...`
 
-```
-maestro plan add-retry-task \
-  --command-id <command_id> \
-  --retry-of <failed_task_id> \
-  --purpose "<目的>" \
-  --content "<作業内容>" \
-  --acceptance-criteria "<完了条件>" \
-  --bloom-level <1-6> \
-  --expected-paths <path> [--expected-paths <path> ...] \
-  [--max-repair-count <n>] \
-  [--max-wall-clock-sec <n>] \
-  [--explicit-failure-condition "<text>" ...] \
-  [--blocked-by <task_id> ...]
-```
+フラグ一覧と書式は `maestro plan add-retry-task --help` を参照。挙動上の要点のみ:
 
-`--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承。依存先でキャンセルされた後続タスクも自動復旧する。
+- `--expected-paths` は必須（1 つ以上、繰り返し指定）。元タスクと同じパスが基本。リポジトリ全体に触れる場合のみ `.`
+- `--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承し、依存先でキャンセルされた後続タスクも自動復旧する
+- `--max-repair-count` / `--max-wall-clock-sec` 省略時は default（max_repair_count=3, max_wall_clock_sec=1800）が適用される
+- `--required` / `--constraints` / `--persona-hint` / `--tools-hint` / `--skill-refs` / `--worker-id` は **サポートされず**、元タスクから自動継承される。これらを変更したい場合は `add-retry-task` ではなく `add-task` を使う
 
-**`--expected-paths` / `--max-repair-count` / `--max-wall-clock-sec` / `--explicit-failure-condition`**（REQUIREMENTS.md §S3-1）:
+**既存プランへのタスク追加**（conflict recovery 等で sealed プランに新規タスクを注入する場合）: `maestro plan add-task --command-id <id> ...`
 
-- **`--expected-paths`**: 必須。リトライタスクが触る予定の相対パスを 1 つ以上指定する（複数指定は繰り返し）。`plan submit` の `tasks[].expected_paths` と同じ意味。元タスクと同じパスを指定するのが基本。リポジトリ全体に触れる場合は `.` を渡す
-- **`--max-repair-count` / `--max-wall-clock-sec`**: definition_of_abort の上限値。省略時は `model.DefaultDefinitionOfAbort()`（max_repair_count=3, max_wall_clock_sec=1800）を使用
-- **`--explicit-failure-condition`**: 失敗判定条件を文字列で指定（複数指定は繰り返し）。省略可
+フラグ一覧と書式は `maestro plan add-task --help` を参照。挙動上の要点のみ:
 
-**`add-retry-task` の制限事項**: 以下のフラグは `add-retry-task` ではサポートされない。これらの値は元タスク（`--retry-of` で指定した失敗タスク）から自動的に継承される。
-
-| サポートしないフラグ | 説明 |
-|---|---|
-| `--required` | 必須タスクフラグ |
-| `--constraints` | 制約条件 |
-| `--persona-hint` | ペルソナヒント |
-| `--tools-hint` | 推奨ツール |
-| `--skill-refs` | スキル参照 |
-| `--worker-id` | Worker 指定 |
-
-リトライタスクで上記の値を変更する必要がある場合は、`add-retry-task` ではなく `add-task` を使用する。
-
-**既存プランへのタスク追加**（conflict recovery 等で sealed プランに新規タスクを注入する場合）:
-
-```
-maestro plan add-task \
-  --command-id <command_id> \
-  --purpose "<目的>" \
-  --content "<作業内容>" \
-  --acceptance-criteria "<完了条件>" \
-  --bloom-level <1-6> \
-  --expected-paths <path> [--expected-paths <path> ...] \
-  [--max-repair-count <n>] \
-  [--max-wall-clock-sec <n>] \
-  [--explicit-failure-condition "<text>" ...] \
-  [--blocked-by <task_id> ...] \
-  [--required] \
-  [--constraints "<制約>" ...] \
-  [--persona-hint "<persona>"] \
-  [--tools-hint "<tool>" ...] \
-  [--skill-refs "<skill>" ...] \
-  [--worker-id <worker_id>] \
-  [--target-phase <phase_id>] \
-  [--idempotency-key <key>] \
-  [--run-on-main]
-```
-
-`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。`--target-phase` はタスクを配置するフェーズ ID を指定する（省略時はデフォルトのフェーズ選択ロジックに従う。`validate.PhaseID` でバリデーション）。`--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）。`--run-on-main` はタスクを worker の worktree ではなく main ブランチのディレクトリで実行させる（final-verification タスク等、マージ済み状態を評価する read-only タスクに使用する。これを付けないと worktree 内で実行され、main の実態と乖離した結果が返る）。
-
-**`--expected-paths` / definition_of_abort 系フラグ**（REQUIREMENTS.md §S3-1）: `plan submit` で投入するタスクと同じく、`add-task` で注入するタスクも `expected_paths` と `definition_of_abort` を必ず宣言しなければならない。`--expected-paths` は必須（1 つ以上）。`--max-repair-count` / `--max-wall-clock-sec` を省略した場合は `model.DefaultDefinitionOfAbort()`（max_repair_count=3, max_wall_clock_sec=1800）が適用される。`--explicit-failure-condition` は省略可。
+- `--expected-paths` は必須（1 つ以上、繰り返し指定）。`--max-repair-count` / `--max-wall-clock-sec` 省略時は default（max_repair_count=3, max_wall_clock_sec=1800）が適用される
+- `--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`--worker-id` 省略時は最も負荷の低い worker に自動割当
+- `--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）
+- `--run-on-main` は **publish 済み main の read-only 検証専用**（integration が `published` のときのみ受理。pre-publish のマージ済み統合状態の検証には `--run-on-integration` を使う。詳細は §「`run_on_main` の投入ルール」）
+- `add-retry-task` と異なり既存タスクの置換ではなく新規タスクの追加で、state が存在する sealed コマンドに投入できる
 
 **conflict resolution など触る範囲が広いタスクの注意**: 触れるパスが本当に広い場合は `--expected-paths .` を渡してリポジトリ全体を許可してよいが、可能な限りディレクトリ単位で絞ること（worker policy のサンドボックスが弱まるため）。
 

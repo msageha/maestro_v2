@@ -60,6 +60,13 @@ var (
 	// ErrAgentBusy is returned when the agent is confirmed busy (actively processing).
 	// This is a normal operational state, not a failure. The caller should retry later.
 	ErrAgentBusy = errors.New("agent busy")
+
+	// ErrUserComposing is returned when the orchestrator pane's input box
+	// holds actively-changing user text. Pasting now would interleave the
+	// notification with the human's draft and the trailing Enter would
+	// submit it half-written. Transient; the notification queue retries on
+	// a later scan.
+	ErrUserComposing = errors.New("user composing in pane")
 )
 
 // ExecutorConfig holds tunable constants for Executor behavior.
@@ -76,16 +83,22 @@ type ExecutorConfig struct {
 	DefaultExecTimeout time.Duration
 	// ClaudeLaunchTimeout is the timeout for waiting after re-launching Claude.
 	ClaudeLaunchTimeout time.Duration
+	// UserComposingProbeInterval is the gap between the two prompt-input
+	// captures in detectActiveUserInput (orchestrator user-composing guard).
+	// Long enough for a typing human to change the input text, short enough
+	// not to delay notification delivery noticeably.
+	UserComposingProbeInterval time.Duration
 }
 
 // DefaultExecutorConfig returns production-safe defaults.
 func DefaultExecutorConfig() ExecutorConfig {
 	return ExecutorConfig{
-		PromptReadyLines:    12, // 12 lines to accommodate status bars
-		BusyHintLines:       5,
-		StableCheckRounds:   1,
-		DefaultExecTimeout:  5 * time.Minute,
-		ClaudeLaunchTimeout: 60 * time.Second,
+		PromptReadyLines:           12, // 12 lines to accommodate status bars
+		BusyHintLines:              5,
+		StableCheckRounds:          1,
+		DefaultExecTimeout:         5 * time.Minute,
+		ClaudeLaunchTimeout:        60 * time.Second,
+		UserComposingProbeInterval: 2 * time.Second,
 	}
 }
 
@@ -592,6 +605,40 @@ func (e *Executor) handleClearFailure(req ExecRequest, paneTarget string, clearE
 	return ExecResult{Error: fmt.Errorf("with_clear: %w", clearErr), Retryable: true}
 }
 
+// detectActiveUserInput reports whether a human appears to be actively typing
+// in the pane's input box: the prompt line carries non-empty text AND that
+// text changes across a short interval. Static non-empty text is NOT treated
+// as composing — it may be a placeholder hint or an abandoned draft, and
+// deferring on it would block delivery indefinitely; proceeding matches the
+// pre-guard behavior. Capture failures fail open (deliver) for the same
+// reason.
+func (e *Executor) detectActiveUserInput(ctx context.Context, paneTarget string) bool {
+	first, ok := e.capturePromptInput(paneTarget)
+	if !ok || first == "" {
+		return false
+	}
+	if err := sleepCtx(ctx, e.execCfg.UserComposingProbeInterval); err != nil {
+		// Delivery context expired mid-probe with known non-empty input:
+		// defer conservatively rather than pasting into a possible draft.
+		return true
+	}
+	second, ok := e.capturePromptInput(paneTarget)
+	if !ok {
+		return false
+	}
+	return second != "" && second != first
+}
+
+// capturePromptInput captures the pane and extracts the prompt-line input
+// text. ok=false on capture failure or when no prompt line is visible.
+func (e *Executor) capturePromptInput(paneTarget string) (string, bool) {
+	content, err := e.paneIO.CapturePane(paneTarget, e.execCfg.PromptReadyLines)
+	if err != nil {
+		return "", false
+	}
+	return promptInputText(content)
+}
+
 // handleBusyVerdict converts a non-idle busy verdict to an ExecResult.
 func (e *Executor) handleBusyVerdict(req ExecRequest, verdict busyVerdict) ExecResult {
 	e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
@@ -635,6 +682,22 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 			e.log(logLevelInfo, "agent_busy_retryable agent_id=orchestrator verdict=%s", verdict)
 			return ExecResult{
 				Error:     fmt.Errorf("orchestrator busy: %w", ErrAgentBusy),
+				Retryable: true,
+			}
+		}
+		// User-composing guard. The busy detector's claude fast-path declares
+		// idle whenever the prompt glyph is visible — which is also true
+		// while a human is typing in the orchestrator pane, the one pane a
+		// user actually works in. Pasting now would inject the notification
+		// into their draft and the trailing Enter would submit it
+		// half-written. Defer only on ACTIVE composition (input text that
+		// changes between two captures); static text (abandoned draft,
+		// placeholder hint) proceeds as before, so a stale draft can never
+		// block notifications indefinitely.
+		if e.detectActiveUserInput(ctx, paneTarget) {
+			e.log(logLevelInfo, "delivery_deferred_user_composing agent_id=orchestrator")
+			return ExecResult{
+				Error:     fmt.Errorf("orchestrator busy: %w", ErrUserComposing),
 				Retryable: true,
 			}
 		}
