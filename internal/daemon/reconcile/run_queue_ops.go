@@ -125,11 +125,15 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 // progressed after the caller's snapshot — removing it would strand a live
 // worker whose result_write then fails with task-not-found. Returns:
 //
-//   - removed:    IDs whose queue entries were deleted
+//   - removed:    deleted entries by task ID, with their full task struct
+//     and owning worker so callers can re-insert them as compensation when
+//     a sibling veto invalidates the removal (a phase's pre-dispatch rows
+//     may already be gone by the time a later row of the same phase turns
+//     out to be active)
 //   - keptActive: IDs found but left in place because their status had
 //     advanced past pre-dispatch (callers must not strip these from state)
-func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed, keptActive map[string]bool, err error) {
-	removed = make(map[string]bool)
+func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed map[string]removedQueueEntry, keptActive map[string]bool, err error) {
+	removed = make(map[string]removedQueueEntry)
 	keptActive = make(map[string]bool)
 	if len(taskIDs) == 0 {
 		return removed, keptActive, nil
@@ -183,7 +187,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed, keptActiv
 			for _, task := range tq.Tasks {
 				if _, remove := removeSet[task.ID]; remove {
 					if removable(task.Status) {
-						removed[task.ID] = true
+						removed[task.ID] = removedQueueEntry{workerID: workerID, task: task}
 						continue
 					}
 					keptActive[task.ID] = true
@@ -212,4 +216,60 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed, keptActiv
 		return removed, keptActive, errors.Join(writeErrs...)
 	}
 	return removed, keptActive, nil
+}
+
+// removedQueueEntry captures a queue row deleted by
+// batchRemoveTaskIDsFromQueues so a caller can re-insert it (compensation)
+// when a later veto invalidates the removal.
+type removedQueueEntry struct {
+	workerID string
+	task     model.Task
+}
+
+// restoreQueueEntries re-inserts previously removed queue rows into their
+// original worker queues. Idempotent: an entry whose ID already exists in
+// the queue is skipped (someone re-registered it in the meantime).
+func (r *Run) restoreQueueEntries(entries []removedQueueEntry) {
+	byWorker := make(map[string][]model.Task)
+	for _, e := range entries {
+		byWorker[e.workerID] = append(byWorker[e.workerID], e.task)
+	}
+	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
+	for workerID, tasks := range byWorker {
+		r.Deps.LockMap.WithLock("queue:"+workerID, func() {
+			queuePath := filepath.Join(queueDir, workerID+".yaml")
+			data, err := os.ReadFile(queuePath) //nolint:gosec // controlled queue directory
+			if err != nil && !os.IsNotExist(err) {
+				r.Log(core.LogLevelWarn, "R0b queue_restore_read_failed worker=%s error=%v", workerID, err)
+				return
+			}
+			var tq model.TaskQueue
+			if len(data) > 0 {
+				if err := yamlv3.Unmarshal(data, &tq); err != nil {
+					r.Log(core.LogLevelWarn, "R0b queue_restore_parse_failed worker=%s error=%v", workerID, err)
+					return
+				}
+			}
+			existing := make(map[string]bool, len(tq.Tasks))
+			for i := range tq.Tasks {
+				existing[tq.Tasks[i].ID] = true
+			}
+			restored := 0
+			for _, task := range tasks {
+				if existing[task.ID] {
+					continue
+				}
+				tq.Tasks = append(tq.Tasks, task)
+				restored++
+			}
+			if restored == 0 {
+				return
+			}
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				r.Log(core.LogLevelWarn, "R0b queue_restore_write_failed worker=%s error=%v", workerID, err)
+				return
+			}
+			r.Log(core.LogLevelInfo, "R0b queue_entries_restored worker=%s count=%d (phase veto compensation)", workerID, restored)
+		})
+	}
 }

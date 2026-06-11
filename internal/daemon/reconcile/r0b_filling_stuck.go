@@ -153,9 +153,10 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		// re-check above and the removal) veto their whole phase in Phase 3:
 		// a phase with a live dispatched task is no longer stuck-filling.
 		keptActive := map[string]bool{}
+		removedEntries := map[string]removedQueueEntry{}
 		if len(allTaskIDsToRemove) > 0 {
 			var batchErr error
-			_, keptActive, batchErr = run.batchRemoveTaskIDsFromQueues(allTaskIDsToRemove)
+			removedEntries, keptActive, batchErr = run.batchRemoveTaskIDsFromQueues(allTaskIDsToRemove)
 			if batchErr != nil {
 				run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v, skipping state update", commandID, batchErr)
 				continue
@@ -164,6 +165,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 
 		// Phase 3: re-acquire state lock, re-read state, apply changes, write.
 		var modified bool
+		var vetoRestores []removedQueueEntry
 		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
@@ -191,6 +193,10 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				}
 				// Veto: a task of this phase advanced past pre-dispatch
 				// during Phase 2 — the fill is live, leave the phase alone.
+				// Pre-dispatch siblings of the SAME phase may already have
+				// been deleted before the active row was encountered, so
+				// queue the deleted rows for compensation re-insert (after
+				// the state lock is released; queue→state order).
 				phaseHasActive := false
 				for _, taskID := range sp.taskIDs {
 					if keptActive[taskID] {
@@ -199,9 +205,14 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 					}
 				}
 				if phaseHasActive {
+					for _, taskID := range sp.taskIDs {
+						if e, ok := removedEntries[taskID]; ok {
+							vetoRestores = append(vetoRestores, e)
+						}
+					}
 					run.Log(core.LogLevelInfo,
-						"R0b skip_phase_with_active_task command=%s phase=%s (queue entry advanced past pre-dispatch during removal)",
-						state.CommandID, sp.phaseName)
+						"R0b skip_phase_with_active_task command=%s phase=%s (queue entry advanced past pre-dispatch during removal; re-inserting %d sibling rows)",
+						state.CommandID, sp.phaseName, len(vetoRestores))
 					continue
 				}
 
@@ -237,6 +248,12 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 
 			modified = localModified
 		})
+
+		// Compensation (state lock released): re-insert pre-dispatch rows
+		// that Phase 2 deleted for phases whose reset was vetoed.
+		if len(vetoRestores) > 0 {
+			run.restoreQueueEntries(vetoRestores)
+		}
 
 		if modified && run.Deps.ExecutorFactory != nil {
 			notifications = append(notifications, DeferredNotification{
