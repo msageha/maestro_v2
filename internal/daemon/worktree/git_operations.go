@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -377,7 +378,7 @@ func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID str
 			// on something we cannot identify. Surface the error.
 			return err
 		}
-		if appendErr := appendToGitInfoExclude(dir, fresh); appendErr != nil {
+		if appendErr := appendToGitInfoExclude(dir, commandID, fresh); appendErr != nil {
 			wm.Log(core.LogLevelWarn,
 				"git_add_unstattable_exclude_failed command=%s worker=%s paths=%v error=%v",
 				commandID, workerID, fresh, appendErr)
@@ -386,7 +387,7 @@ func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID str
 		wm.Log(core.LogLevelWarn,
 			"git_add_unstattable_excluded command=%s worker=%s paths=%v attempt=%d "+
 				"(file unreadable to git — typical cause: ~/.claude rules or OS sandbox denying access; "+
-				"appended to worktree-local .git/info/exclude and retrying)",
+				"appended to repo-shared .git/info/exclude as a command-tagged block and retrying)",
 			commandID, workerID, fresh, attempt)
 	}
 	return fmt.Errorf("git add -A: exceeded %d unstattable-fallback attempts: %w",
@@ -577,7 +578,7 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 				commandID, p, uErr)
 		}
 	}
-	if appendErr := appendToGitInfoExclude(worktreePath, denied); appendErr != nil {
+	if appendErr := appendToGitInfoExclude(worktreePath, commandID, denied); appendErr != nil {
 		wm.Log(core.LogLevelDebug,
 			"worktree_add_exclude_append_failed command=%s error=%v",
 			commandID, appendErr)
@@ -595,7 +596,7 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 			for _, p := range extra {
 				_ = wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p)
 			}
-			_ = appendToGitInfoExclude(worktreePath, extra)
+			_ = appendToGitInfoExclude(worktreePath, commandID, extra)
 			if retryErr := wm.gitRunInDir(worktreePath, "checkout-index", "-a", "-f"); retryErr != nil {
 				wm.Log(core.LogLevelWarn,
 					"worktree_add_checkout_index_retry_failed command=%s path=%s error=%v "+
@@ -647,46 +648,125 @@ func worktreePathFromArgs(args []string) string {
 	return ""
 }
 
-// appendToGitInfoExclude writes one line per path to `<dir>/.git/info/exclude`,
-// creating the file if missing. Worktree-local — never touches the repo's
-// committed .gitignore. The exclude file is gitignore-syntax; a leading `/`
-// anchors to the worktree root, which is what we want for the literal paths
-// git reported.
-func appendToGitInfoExclude(worktreePath string, paths []string) error {
+// gitSharedExcludeMu serialises read-modify-write access to the repo-shared
+// `.git/info/exclude` across commands: unstattable-fallback appends and the
+// per-command marker-block GC run from different scan phases / commands.
+var gitSharedExcludeMu sync.Mutex
+
+func maestroExcludeBeginMarker(commandID string) string {
+	return "# maestro-exclude-begin " + commandID
+}
+
+func maestroExcludeEndMarker(commandID string) string {
+	return "# maestro-exclude-end " + commandID
+}
+
+// appendToGitInfoExclude writes one anchored pattern per path to the repo's
+// SHARED `.git/info/exclude` (the common-dir copy), wrapped in a marker
+// block tagged with commandID so command cleanup can GC the entries
+// (removeMaestroExcludeBlocks). Never touches the repo's committed
+// .gitignore.
+//
+// Why the shared file: git does NOT read a linked worktree's per-worktree
+// `info/exclude` — `info/` resolves to the common dir for every worktree
+// (the only per-worktree exception is info/sparse-checkout), so writing the
+// per-worktree copy silently does nothing for worker worktrees. Unstattable
+// paths come from process-global sandbox deny rules (e.g. `/**/.env`), so
+// the same path is unstattable in every worktree and a repo-wide exclude is
+// semantically correct; the marker block bounds the pollution to the
+// command's lifetime.
+func appendToGitInfoExclude(worktreePath, commandID string, paths []string) error {
 	if len(paths) == 0 {
 		return nil
 	}
-	excludePath, err := resolveGitInfoExcludePath(worktreePath)
+	excludePath, err := resolveGitSharedExcludePath(worktreePath)
 	if err != nil {
-		return fmt.Errorf("resolve .git/info/exclude: %w", err)
+		return fmt.Errorf("resolve shared .git/info/exclude: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0o750); err != nil {
 		return fmt.Errorf("mkdir .git/info: %w", err)
 	}
+
+	gitSharedExcludeMu.Lock()
+	defer gitSharedExcludeMu.Unlock()
+
 	// #nosec G304 -- excludePath is derived from a Maestro-managed worktree
-	// path (resolveGitInfoExcludePath follows the .git pointer of a worktree
-	// the daemon itself created); not user-controlled at the call site.
+	// path (resolveGitSharedExcludePath follows the .git pointer of a
+	// worktree the daemon itself created); not user-controlled.
 	f, err := os.OpenFile(excludePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open .git/info/exclude: %w", err)
 	}
 	defer func() { _ = f.Close() }()
+	var b strings.Builder
+	b.WriteString(maestroExcludeBeginMarker(commandID) + "\n")
 	for _, p := range paths {
 		// Anchor with leading '/' so the pattern matches the exact path
 		// from worktree root, not any directory of that name.
-		line := "/" + strings.TrimPrefix(p, "/") + "\n"
-		if _, werr := f.WriteString(line); werr != nil {
-			return fmt.Errorf("write .git/info/exclude: %w", werr)
-		}
+		b.WriteString("/" + strings.TrimPrefix(p, "/") + "\n")
+	}
+	b.WriteString(maestroExcludeEndMarker(commandID) + "\n")
+	if _, werr := f.WriteString(b.String()); werr != nil {
+		return fmt.Errorf("write .git/info/exclude: %w", werr)
 	}
 	return nil
 }
 
-// resolveGitInfoExcludePath returns the absolute path to the worktree's
-// `.git/info/exclude`. For a linked worktree (which our worker worktrees
-// are), `.git` is a file containing `gitdir: <abs path to commondir/...>`;
-// we follow it to find the real info directory.
-func resolveGitInfoExcludePath(worktreePath string) (string, error) {
+// removeMaestroExcludeBlocks deletes every marker block tagged with
+// commandID from the repo-shared `.git/info/exclude`. Best-effort: failures
+// are logged, not returned — leftover exclude entries only hide untracked
+// paths from status and must never block command cleanup.
+func (wm *Manager) removeMaestroExcludeBlocks(commandID string) {
+	excludePath, err := resolveGitSharedExcludePath(wm.projectRoot)
+	if err != nil {
+		wm.Log(core.LogLevelDebug, "exclude_block_gc_resolve_failed command=%s error=%v", commandID, err)
+		return
+	}
+
+	gitSharedExcludeMu.Lock()
+	defer gitSharedExcludeMu.Unlock()
+
+	// #nosec G304 -- excludePath derives from the daemon's own projectRoot.
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			wm.Log(core.LogLevelDebug, "exclude_block_gc_read_failed command=%s error=%v", commandID, err)
+		}
+		return
+	}
+	begin := maestroExcludeBeginMarker(commandID)
+	end := maestroExcludeEndMarker(commandID)
+	lines := strings.Split(string(data), "\n")
+	kept := make([]string, 0, len(lines))
+	inBlock := false
+	removed := false
+	for _, line := range lines {
+		switch {
+		case line == begin:
+			inBlock = true
+			removed = true
+		case line == end:
+			inBlock = false
+		case !inBlock:
+			kept = append(kept, line)
+		}
+	}
+	if !removed {
+		return
+	}
+	if err := os.WriteFile(excludePath, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
+		wm.Log(core.LogLevelWarn, "exclude_block_gc_write_failed command=%s error=%v", commandID, err)
+		return
+	}
+	wm.Log(core.LogLevelInfo, "exclude_block_gc command=%s path=%s", commandID, excludePath)
+}
+
+// resolveGitSharedExcludePath returns the absolute path to the repo-shared
+// `.git/info/exclude` — the only exclude file git actually reads for both
+// the main worktree and all linked worktrees. For a linked worktree, `.git`
+// is a file pointing at `<repo>/.git/worktrees/<name>`, whose `commondir`
+// file leads back to the shared `.git`.
+func resolveGitSharedExcludePath(worktreePath string) (string, error) {
 	gitMarker := filepath.Join(worktreePath, ".git")
 	info, err := os.Stat(gitMarker)
 	if err != nil {
@@ -712,7 +792,19 @@ func resolveGitInfoExcludePath(worktreePath string) (string, error) {
 		if !filepath.IsAbs(gitDir) {
 			gitDir = filepath.Join(worktreePath, gitDir)
 		}
-		return filepath.Join(gitDir, "info", "exclude"), nil
+		// gitDir is the per-worktree dir `<repo>/.git/worktrees/<name>`;
+		// its `commondir` file points at the shared `.git`.
+		commonDirFile := filepath.Join(gitDir, "commondir")
+		// #nosec G304 -- path derived from the daemon-managed gitdir above.
+		cdData, err := os.ReadFile(commonDirFile)
+		if err != nil {
+			return "", fmt.Errorf("read commondir: %w", err)
+		}
+		commonDir := strings.TrimSpace(string(cdData))
+		if !filepath.IsAbs(commonDir) {
+			commonDir = filepath.Join(gitDir, commonDir)
+		}
+		return filepath.Join(commonDir, "info", "exclude"), nil
 	}
 	return "", fmt.Errorf(".git pointer file did not contain `gitdir:` line")
 }

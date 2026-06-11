@@ -745,11 +745,24 @@ func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVe
 		outcome, vErr = runner.Run(ctx, params.TaskID, params.CommandID, workingDir, expectedPaths)
 	}
 	nextStatus, reason := classifyVerifyOutcome(outcome, vErr)
-	if applyErr := h.applyVerifyOutcome(params, nextStatus, reason); applyErr != nil {
+	applied, applyErr := h.applyVerifyOutcome(params, nextStatus, reason)
+	if applyErr != nil {
 		h.logFn(LogLevelWarn,
 			"verify_outcome_apply_failed task=%s command=%s next=%s reason=%q error=%v "+
 				"(task remains at verify_pending; reconcile/operator can re-drive)",
 			params.TaskID, params.CommandID, nextStatus, reason, applyErr)
+		return model.StatusVerifyPending
+	}
+	if !applied {
+		// The task left verify_pending while verify ran (cancel, R9
+		// takeover, operator override). The outcome is stale — skip every
+		// dependent side effect: no applied stamp, no repair registration,
+		// no queue status sync (which would overwrite the newer owner's
+		// terminal status, e.g. cancelled→completed), no auto-recover.
+		h.logFn(LogLevelInfo,
+			"verify_outcome_discarded task=%s command=%s next=%s reason=%q "+
+				"(task no longer at verify_pending; side effects skipped)",
+			params.TaskID, params.CommandID, nextStatus, reason)
 		return model.StatusVerifyPending
 	}
 

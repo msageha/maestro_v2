@@ -41,12 +41,18 @@ func (h *ResultWriteAPI) runResultVerification(
 	if phaseA != nil && phaseA.sourceTask != nil {
 		st := phaseA.sourceTask
 		if !st.RunOnIntegration && !st.RunOnMain {
-			if applyErr := h.applyVerifyOutcome(params, model.StatusCompleted,
-				"verify_skipped_normal_worker_task: worker self-verification covers the per-task signal; daemon verify runs only on RunOnIntegration / RunOnMain"); applyErr != nil {
+			applied, applyErr := h.applyVerifyOutcome(params, model.StatusCompleted,
+				"verify_skipped_normal_worker_task: worker self-verification covers the per-task signal; daemon verify runs only on RunOnIntegration / RunOnMain")
+			if applyErr != nil {
 				h.logFn(LogLevelWarn,
 					"verify_outcome_apply_failed_skip task=%s command=%s error=%v "+
 						"(task remains at verify_pending; reconcile/operator can re-drive)",
 					params.TaskID, params.CommandID, applyErr)
+				return model.StatusVerifyPending, false
+			}
+			if !applied {
+				// Task moved off verify_pending concurrently; the newer
+				// owner's status stands.
 				return model.StatusVerifyPending, false
 			}
 			return model.StatusCompleted, false

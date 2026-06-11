@@ -247,15 +247,22 @@ func (d *Daemon) closeExecutors() {
 // cleanup releases resources. Safe to call multiple times via cleanupOnce.
 func (d *Daemon) cleanup() {
 	d.cleanupOnce.Do(func() {
-		for _, socketPath := range uds.SocketCleanupPaths(d.maestroDir) {
-			if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-				d.log(LogLevelError, "cleanup remove_socket path=%s error=%v", socketPath, err)
+		// Socket / PID removal is gated on lock ownership: Run()'s deferred
+		// Shutdown also fires when prepareStartup failed at TryLock because
+		// ANOTHER daemon is already running — removing the socket/PID there
+		// would unlink the live daemon's listener and sever every CLI/agent
+		// UDS connection while that daemon keeps serving the dead inode.
+		if d.fileLock.IsHeld() {
+			for _, socketPath := range uds.SocketCleanupPaths(d.maestroDir) {
+				if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+					d.log(LogLevelError, "cleanup remove_socket path=%s error=%v", socketPath, err)
+				}
 			}
-		}
-		// Remove PID file while lock is still held so no concurrent starter
-		// reads a stale PID between lock release and PID file removal.
-		if err := os.Remove(filepath.Join(d.maestroDir, "daemon.pid")); err != nil && !os.IsNotExist(err) {
-			d.log(LogLevelError, "cleanup remove_pid error=%v", err)
+			// Remove PID file while lock is still held so no concurrent starter
+			// reads a stale PID between lock release and PID file removal.
+			if err := os.Remove(filepath.Join(d.maestroDir, "daemon.pid")); err != nil && !os.IsNotExist(err) {
+				d.log(LogLevelError, "cleanup remove_pid error=%v", err)
+			}
 		}
 		if err := d.fileLock.Unlock(); err != nil {
 			d.log(LogLevelError, "cleanup file_unlock error=%v", err)

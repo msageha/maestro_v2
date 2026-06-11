@@ -1273,6 +1273,120 @@ func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 	}
 }
 
+// Regression: when R2 completes a RunOnIntegration/RunOnMain task whose
+// verify pipeline never ran (daemon crashed between Phase A and Phase B),
+// it must stamp VerifyOutcomeAppliedAt on the result entry — otherwise the
+// notify gate defers the Planner notification forever without counting
+// attempts (no dead-letter either).
+func TestR2ResultState_StampsVerifyOutcomeForVerifyPipelineEntries(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted,
+				RunOnIntegration: true, CreatedAt: now},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatal(err)
+	}
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatal(err)
+	}
+	if len(updated.Results) != 1 {
+		t.Fatalf("results = %d, want 1", len(updated.Results))
+	}
+	got := updated.Results[0].VerifyOutcomeAppliedAt
+	if got == nil || *got == "" {
+		t.Error("VerifyOutcomeAppliedAt should be stamped after R2 completed the state without verify")
+	}
+}
+
+// Regression: applyVerifyOutcome advanced the state to completed but its
+// best-effort markVerifyOutcomeAppliedOnResult write failed. The notify
+// gate checks only the result entry's stamp, so R2 must retry the stamp
+// for already-terminal completed verify-pipeline entries.
+func TestR2ResultState_StampsVerifyOutcomeWhenStateAlreadyTerminal(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted,
+				RunOnMain: true, CreatedAt: now},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatal(err)
+	}
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusCompleted},
+			AppliedResultIDs: map[string]string{"task1": "res1"},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state); err != nil {
+		t.Fatal(err)
+	}
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs (state already terminal), got %d", len(outcome.Repairs))
+	}
+
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var updated model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatal(err)
+	}
+	got := updated.Results[0].VerifyOutcomeAppliedAt
+	if got == nil || *got == "" {
+		t.Error("VerifyOutcomeAppliedAt should be stamped for an already-completed state with a missing stamp")
+	}
+}
+
 func TestR2ResultState_Idempotent(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)

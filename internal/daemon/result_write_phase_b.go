@@ -269,7 +269,14 @@ func (h *ResultWriteAPI) advanceOrForce(state *model.CommandState, params Result
 // Phase A. Without it, Phase A could publish a worktree (queue task
 // already terminal) one scan tick after the state still showed
 // verify_pending, racing the verify outcome.
-func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus model.Status, reason string) error {
+// Returns applied=false (with nil error) when the outcome was discarded
+// because the task had already left verify_pending — callers must then skip
+// every dependent side effect (result stamp, queue status sync, repair
+// registration, auto-recover): the newer owner (cancel, R9 takeover,
+// operator override) has authority over the task and stamping/syncing on
+// top of it would, e.g., overwrite a cancelled queue entry with completed
+// or enqueue a duplicate repair.
+func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus model.Status, reason string) (bool, error) {
 	h.acquireFileLock()
 	defer h.releaseFileLock()
 
@@ -277,6 +284,7 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 	h.lockMap.Lock(cmdLockKey)
 	defer h.lockMap.Unlock(cmdLockKey)
 
+	applied := false
 	statePath := commandStatePath(h.maestroDir, params.CommandID)
 	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.TaskStates == nil {
@@ -307,9 +315,13 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 		h.logFn(LogLevelInfo,
 			"verify_outcome_applied task=%s command=%s next=%s reason=%q",
 			params.TaskID, params.CommandID, nextStatus, reason)
+		applied = true
 		return nil
 	}); err != nil {
-		return err
+		return false, err
+	}
+	if !applied {
+		return false, nil
 	}
 
 	// Stamp VerifyOutcomeAppliedAt on the verify-pipeline result entry so
@@ -318,7 +330,7 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 	// RunOnIntegration / RunOnMain && Status=completed remains gated until
 	// this stamp is written, regardless of any race in state file writes.
 	h.markVerifyOutcomeAppliedOnResult(params.Reporter, params.TaskID, params.CommandID)
-	return nil
+	return true, nil
 }
 
 // markVerifyOutcomeAppliedOnResult stamps VerifyOutcomeAppliedAt on the

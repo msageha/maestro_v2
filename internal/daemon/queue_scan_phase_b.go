@@ -99,6 +99,12 @@ func (qh *QueueHandler) stepRunOnIntegrationPreMerge(ctx context.Context, pa *ph
 		}
 		conflicts, err := qh.worktreeManager.MergeToIntegration(ctx, item.CommandID, committed, item.WorkerPurposes)
 		if err != nil {
+			if errors.Is(err, worktree.ErrIntegrationBusyForwardMerge) {
+				qh.log(LogLevelInfo,
+					"pre_merge_deferred command=%s workers=%v for_task=%s (publish conflict resolution in flight)",
+					item.CommandID, committed, item.BlockedTaskID)
+				return
+			}
 			qh.log(LogLevelWarn,
 				"pre_merge_merge_failed command=%s workers=%v for_task=%s error=%v",
 				item.CommandID, committed, item.BlockedTaskID, err)

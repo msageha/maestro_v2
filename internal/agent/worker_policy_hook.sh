@@ -200,9 +200,12 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 fi
 
-# --- Write/Edit path checks ---
-if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
-  file_path="$(echo "$input" | jq -r '.tool_input.file_path // ""')"
+# --- Write/Edit/MultiEdit/NotebookEdit path checks ---
+# MultiEdit shares Edit's file_path input shape; NotebookEdit uses
+# notebook_path. All four mutate files and must obey the same
+# run_on_main / control-plane / worktree-boundary rules.
+if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ] || [ "$tool_name" = "MultiEdit" ] || [ "$tool_name" = "NotebookEdit" ]; then
+  file_path="$(echo "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""')"
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
   # 1. RUN_ON_MAIN: read-only verification mode forbids all Write/Edit.

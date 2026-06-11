@@ -241,17 +241,55 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 	return evalResult, nil
 }
 
+// evaluationBaseBudget bounds the in-memory portion of a gate evaluation
+// (field validation, logical operators, gate iteration). Script conditions
+// add their configured timeout_seconds on top — see evaluationBudget.
+const evaluationBaseBudget = 100 * time.Millisecond
+
+// evaluationBudget returns the evaluation timeout for a set of gates: the
+// in-memory base plus every script condition's configured timeout. A fixed
+// 100ms context used to starve script gates of their timeout_seconds
+// (default 30s, loader-applied), so any real-work script gate fail-closed
+// with ActionBlock on every evaluation.
+func evaluationBudget(gates []*compiledGate) time.Duration {
+	budget := evaluationBaseBudget
+	for _, gate := range gates {
+		for _, rule := range gate.compiledRules {
+			budget += scriptBudget(rule.compiledCondition)
+		}
+	}
+	return budget
+}
+
+// scriptBudget sums the configured script timeouts of a condition tree.
+func scriptBudget(cond *compiledCondition) time.Duration {
+	if cond == nil {
+		return 0
+	}
+	var total time.Duration
+	if cond.Type == ConditionScript {
+		seconds := cond.TimeoutSeconds
+		if seconds <= 0 {
+			seconds = int(defaultScriptTimeout / time.Second)
+		}
+		total += time.Duration(seconds) * time.Second
+	}
+	for _, sub := range cond.subConditions {
+		total += scriptBudget(sub)
+	}
+	return total
+}
+
 // evaluateUncached performs the actual gate evaluation
 func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCtx EvaluationContext) (*EvaluationResult, error) {
 	start := time.Now()
 
-	// Set evaluation timeout (100ms budget)
-	timeoutCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
-	defer cancel()
-
 	e.mu.RLock()
 	gates := e.gates[gateType]
 	e.mu.RUnlock()
+
+	timeoutCtx, cancel := context.WithTimeout(ctx, evaluationBudget(gates))
+	defer cancel()
 
 	result := &EvaluationResult{
 		GateType:    gateType,

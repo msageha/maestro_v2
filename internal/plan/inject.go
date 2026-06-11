@@ -395,8 +395,12 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 
 	// Persist state
 	if err := sm.SaveState(state); err != nil {
-		// Rollback queue entry
-		rollbackRetryQueueEntries(opts.MaestroDir, []retryQueueTask{task}, opts.LockMap)
+		// Rollback queue entry. LockMap must be nil: this goroutine already
+		// holds `queue:<worker>` (lockWorkerQueues defer above) and
+		// lock.MutexMap is non-reentrant — passing opts.LockMap here would
+		// self-deadlock while also holding `state:<command>`. Same pattern
+		// as AddRetryTask (retry.go).
+		rollbackRetryQueueEntries(opts.MaestroDir, []retryQueueTask{task}, nil)
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
 			slogc().Error("state restore failed", "error", rsErr)
 		}

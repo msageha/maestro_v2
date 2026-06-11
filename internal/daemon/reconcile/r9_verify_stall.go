@@ -190,7 +190,7 @@ func r9ScheduleVerifyRepairs(run *Run, statePath, commandID string, repairs []Re
 			sourceTask.Content,
 		)
 
-		if err := r9RegisterRepairTask(run, statePath, commandID, workerID, &repairTask); err != nil {
+		if err := r9RegisterRepairTask(run, statePath, commandID, workerID, repair.TaskID, &repairTask); err != nil {
 			run.Log(core.LogLevelError,
 				"R9 verify_repair_schedule_failed command=%s task=%s repair_id=%s error=%v -> paused_for_replan",
 				commandID, repair.TaskID, repairTask.ID, err)
@@ -289,12 +289,12 @@ func r9EffectiveVerifyStallThreshold(run *Run, commandID string, configured time
 	return configured
 }
 
-func r9RegisterRepairTask(run *Run, statePath, commandID, workerID string, task *model.Task) error {
-	if err := r9RegisterRepairTaskInState(run, statePath, commandID, task.ID); err != nil {
+func r9RegisterRepairTask(run *Run, statePath, commandID, workerID, predecessorTaskID string, task *model.Task) error {
+	if err := r9RegisterRepairTaskInState(run, statePath, commandID, predecessorTaskID, task.ID); err != nil {
 		return err
 	}
 	if err := r1AddTaskToQueue(run, workerID, task); err != nil {
-		if rollbackErr := r9RollbackRepairTaskState(run, statePath, commandID, task.ID); rollbackErr != nil {
+		if rollbackErr := r9RollbackRepairTaskState(run, statePath, commandID, predecessorTaskID, task.ID); rollbackErr != nil {
 			if markErr := r9MarkRetryEnqueueFailed(run, statePath, commandID, workerID, task.ID); markErr != nil {
 				return errors.Join(
 					fmt.Errorf("queue add failed: %w", err),
@@ -312,7 +312,14 @@ func r9RegisterRepairTask(run *Run, statePath, commandID, workerID string, task 
 	return nil
 }
 
-func r9RegisterRepairTaskInState(run *Run, statePath, commandID, taskID string) error {
+// r9RegisterRepairTaskInState wires the repair task into the command state
+// via the shared model.WireRetryTaskIntoState — the same wiring the daemon
+// retry pipeline uses (lineage, membership replacement, phase reopen,
+// dependency inheritance). Registering only TaskStates here used to leave
+// the stalled predecessor in RequiredTaskIDs without lineage, so its
+// cancelled marker after the repair completed read as a hard cancel and
+// cascaded the phase to Cancelled even though the repair succeeded.
+func r9RegisterRepairTaskInState(run *Run, statePath, commandID, predecessorTaskID, taskID string) error {
 	var writeErr error
 	run.Deps.LockMap.WithLock("state:"+commandID, func() {
 		state, err := run.loadState(statePath)
@@ -320,18 +327,18 @@ func r9RegisterRepairTaskInState(run *Run, statePath, commandID, taskID string) 
 			writeErr = err
 			return
 		}
-		if state.TaskStates == nil {
-			state.TaskStates = make(map[string]model.Status)
-		}
-		state.TaskStates[taskID] = model.StatusPlanned
 		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
-		state.UpdatedAt = nowStr
+		if !model.WireRetryTaskIntoState(state, taskID, predecessorTaskID, nowStr) {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_repair_predecessor_unmembered command=%s repair_id=%s predecessor=%s (added to optional_task_ids as fallback)",
+				commandID, taskID, predecessorTaskID)
+		}
 		writeErr = yamlutil.AtomicWrite(statePath, state)
 	})
 	return writeErr
 }
 
-func r9RollbackRepairTaskState(run *Run, statePath, commandID, taskID string) error {
+func r9RollbackRepairTaskState(run *Run, statePath, commandID, predecessorTaskID, taskID string) error {
 	var rollbackErr error
 	run.Deps.LockMap.WithLock("state:"+commandID, func() {
 		state, err := run.loadState(statePath)
@@ -339,12 +346,8 @@ func r9RollbackRepairTaskState(run *Run, statePath, commandID, taskID string) er
 			rollbackErr = err
 			return
 		}
-		if state.TaskStates == nil {
-			rollbackErr = fmt.Errorf("task_states missing")
-			return
-		}
-		delete(state.TaskStates, taskID)
-		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		model.UnwireRetryTaskFromState(state, taskID, predecessorTaskID,
+			run.Deps.Clock.Now().UTC().Format(time.RFC3339))
 		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 			rollbackErr = err
 			run.Log(core.LogLevelError,

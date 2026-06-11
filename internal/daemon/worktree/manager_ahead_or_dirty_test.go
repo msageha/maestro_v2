@@ -347,8 +347,12 @@ func TestWorktreePathFromArgs(t *testing.T) {
 	}
 }
 
-// TestAppendToGitInfoExclude_LinkedWorktree verifies the helper resolves
-// the gitdir pointer of a linked worktree and writes the exclude file.
+// TestAppendToGitInfoExclude_LinkedWorktree verifies the exclude entries
+// land in the SHARED .git/info/exclude — the only exclude file git reads
+// for a linked worktree (the per-worktree info/exclude is silently
+// ignored) — and that the pattern actually hides the path from
+// `git status` inside the worker worktree. removeMaestroExcludeBlocks
+// must then GC exactly the command's marker block.
 func TestAppendToGitInfoExclude_LinkedWorktree(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -361,22 +365,72 @@ func TestAppendToGitInfoExclude_LinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := appendToGitInfoExclude(wt, []string{".env.example", "build/output.bin"}); err != nil {
+
+	gitStatus := func() string {
+		out, sErr := wm.gitOutputInDir(wt, "status", "--porcelain")
+		if sErr != nil {
+			t.Fatalf("git status: %v", sErr)
+		}
+		return out
+	}
+
+	// An untracked file inside the worker worktree is visible before the
+	// exclude is written.
+	if err := os.WriteFile(filepath.Join(wt, "blocked.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(gitStatus(), "blocked.txt") {
+		t.Fatal("untracked file should be visible before exclude")
+	}
+
+	if err := appendToGitInfoExclude(wt, commandID, []string{"blocked.txt", "build/output.bin"}); err != nil {
 		t.Fatalf("appendToGitInfoExclude: %v", err)
 	}
-	excludePath, err := resolveGitInfoExcludePath(wt)
+
+	// Effective: git no longer reports the excluded path in the worktree.
+	if strings.Contains(gitStatus(), "blocked.txt") {
+		t.Error("excluded file still visible to git status — exclude not effective for linked worktree")
+	}
+
+	// The entries live in the shared exclude with the command marker block.
+	excludePath, err := resolveGitSharedExcludePath(wt)
 	if err != nil {
-		t.Fatalf("resolveGitInfoExcludePath: %v", err)
+		t.Fatalf("resolveGitSharedExcludePath: %v", err)
+	}
+	wantShared := filepath.Join(projectRoot, ".git", "info", "exclude")
+	gotResolved, _ := filepath.EvalSymlinks(excludePath)
+	wantResolved, _ := filepath.EvalSymlinks(wantShared)
+	if gotResolved != wantResolved {
+		t.Errorf("exclude path = %q, want shared %q", excludePath, wantShared)
 	}
 	data, err := os.ReadFile(excludePath)
 	if err != nil {
 		t.Fatalf("read exclude: %v", err)
 	}
 	body := string(data)
-	for _, want := range []string{"/.env.example", "/build/output.bin"} {
+	for _, want := range []string{
+		maestroExcludeBeginMarker(commandID),
+		"/blocked.txt",
+		"/build/output.bin",
+		maestroExcludeEndMarker(commandID),
+	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("exclude file missing %q; got:\n%s", want, body)
 		}
+	}
+
+	// GC removes the block (and only the block); the file becomes visible
+	// to git again.
+	wm.removeMaestroExcludeBlocks(commandID)
+	data, err = os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("read exclude after GC: %v", err)
+	}
+	if strings.Contains(string(data), "blocked.txt") || strings.Contains(string(data), "maestro-exclude") {
+		t.Errorf("exclude block should be removed by GC; got:\n%s", string(data))
+	}
+	if !strings.Contains(gitStatus(), "blocked.txt") {
+		t.Error("file should be visible again after exclude block GC")
 	}
 }
 

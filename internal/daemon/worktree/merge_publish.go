@@ -32,6 +32,16 @@ const (
 	publishRetryMultiplier     = 2
 )
 
+// ErrIntegrationBusyForwardMerge is returned when MergeToIntegration is
+// called while the integration worktree still has MERGE_HEAD from an
+// in-flight base→integration forward merge (publish conflict resolution
+// pending). The uncommitted resolution edits in that worktree are staged
+// and finalized by reuseInFlightForwardMerge on the next publish retry;
+// the pre-merge `reset --hard` + `clean -fd` would destroy them and
+// restart the conflict loop. Callers should treat this as "defer to next
+// scan", not as a merge failure.
+var ErrIntegrationBusyForwardMerge = errors.New("integration worktree has an in-flight forward merge; deferring worker merge until publish settles")
+
 // errIntegrationQuarantined is returned when MergeToIntegration is called on an
 // integration that has been quarantined due to repeated unrecoverable failures.
 // Callers must surface this to operators rather than retrying.
@@ -192,6 +202,18 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
 		wm.Log(core.LogLevelError, "merge_integration_path_guard command=%s error=%v", commandID, err)
 		return nil, fmt.Errorf("merge to integration refused: %w", err)
+	}
+
+	// In-flight publish forward merge: MERGE_HEAD (and the uncommitted
+	// conflict-resolution edits) must survive until PublishToBase re-enters
+	// via reuseInFlightForwardMerge. prepareIntegrationForMerge would wipe
+	// both, so defer this merge cycle; workers stay in their pre-merge
+	// states and the merge item is re-collected on a later scan.
+	if wm.integrationHasMergeHead(integrationPath) {
+		wm.Log(core.LogLevelInfo,
+			"merge_deferred_inflight_forward_merge command=%s (integration has MERGE_HEAD; publish conflict resolution in flight)",
+			commandID)
+		return nil, fmt.Errorf("%w: command=%s", ErrIntegrationBusyForwardMerge, commandID)
 	}
 
 	// Force-clean the integration worktree before merging. The orchestrator

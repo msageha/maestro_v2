@@ -507,3 +507,37 @@ func TestWorktreeIntegration_GCHealthCheck(t *testing.T) {
 		t.Error("managed worktree state should be intact after GC")
 	}
 }
+
+// A state file that fails to load (corrupted YAML, transient I/O error)
+// leaves that command's worktrees out of knownPaths. The orphan-removal
+// pass must then be skipped entirely: force-removing a live worktree
+// destroys uncommitted worker output.
+func TestReconcile_StateLoadFailureSkipsOrphanRemoval(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepoResolved(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := createForCommand(wm, "cmd_corrupt_state", []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+	ws, err := getState(wm, "cmd_corrupt_state", "worker1")
+	if err != nil {
+		t.Fatalf("getState: %v", err)
+	}
+	wtPath := ws.Path
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Fatalf("worktree should exist before reconcile: %v", err)
+	}
+
+	// Corrupt the command's state file so loadStateUnlocked fails.
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", "cmd_corrupt_state.yaml")
+	if err := os.WriteFile(statePath, []byte("{invalid yaml: ["), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	wm.Reconcile()
+
+	if _, err := os.Stat(wtPath); err != nil {
+		t.Errorf("live worktree %s must survive reconcile when its state file is unreadable: %v", wtPath, err)
+	}
+}

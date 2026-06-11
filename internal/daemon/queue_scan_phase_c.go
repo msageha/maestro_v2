@@ -211,8 +211,17 @@ func (qh *QueueHandler) applyMergeResultSignals(
 			}, signalIndex)
 		}
 		if mr.Error != nil {
-			qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
-				mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
+			if errors.Is(mr.Error, worktree.ErrIntegrationBusyForwardMerge) {
+				// Deferred, not failed: a publish-conflict resolution is in
+				// flight (MERGE_HEAD present) and the merge will be
+				// re-collected once publish settles. mr.Error stays non-nil
+				// so the MergedPhases gate below does not record the phase.
+				qh.log(LogLevelInfo, "worktree_merge_deferred command=%s phase=%s (in-flight forward merge)",
+					mr.Item.CommandID, mr.Item.PhaseID)
+			} else {
+				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
+			}
 		}
 		for _, conflict := range mr.Conflicts {
 			// Append base/ours/theirs refs to the legacy message format so

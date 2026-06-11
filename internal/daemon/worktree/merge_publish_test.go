@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -960,5 +961,70 @@ func TestBytesContainConflictMarkers(t *testing.T) {
 				t.Errorf("bytesContainConflictMarkers(%q) = %v, want %v", tc.data, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestMergeToIntegration_DefersWhenForwardMergeInFlight: while the
+// integration worktree has MERGE_HEAD from an in-flight base→integration
+// forward merge (publish conflict resolution pending), MergeToIntegration
+// must defer — NOT run its pre-merge reset --hard + clean -fd, which would
+// destroy MERGE_HEAD and the uncommitted resolution edits that
+// reuseInFlightForwardMerge stages on the next publish retry.
+func TestMergeToIntegration_DefersWhenForwardMergeInFlight(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_fwd_busy"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+	ip := wm.integrationWorktreePath(commandID)
+
+	mustGit := func(dir string, args ...string) {
+		t.Helper()
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	// Manufacture an in-flight merge: a side branch and the integration
+	// branch each gain a commit, then `merge --no-commit --no-ff` leaves
+	// MERGE_HEAD in the integration worktree.
+	mustGit(ip, "branch", "side")
+	if err := os.WriteFile(filepath.Join(ip, "integration.txt"), []byte("integration\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(ip, "add", "-A")
+	mustGit(ip, "commit", "-m", "integration side")
+	mustGit(ip, "checkout", "side")
+	if err := os.WriteFile(filepath.Join(ip, "side.txt"), []byte("side\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit(ip, "add", "-A")
+	mustGit(ip, "commit", "-m", "side branch")
+	mustGit(ip, "checkout", "-")
+	mustGit(ip, "merge", "--no-commit", "--no-ff", "side")
+	if !runGitOK(t, ip, "rev-parse", "--verify", "-q", "MERGE_HEAD") {
+		t.Fatal("setup: MERGE_HEAD should exist after merge --no-commit")
+	}
+
+	// Uncommitted "resolution edit" that must survive.
+	resolutionFile := filepath.Join(ip, "resolution.txt")
+	if err := os.WriteFile(resolutionFile, []byte("resolved\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil)
+	if !errors.Is(err, ErrIntegrationBusyForwardMerge) {
+		t.Fatalf("MergeToIntegration error = %v, want ErrIntegrationBusyForwardMerge", err)
+	}
+
+	if !runGitOK(t, ip, "rev-parse", "--verify", "-q", "MERGE_HEAD") {
+		t.Error("MERGE_HEAD must survive a deferred MergeToIntegration")
+	}
+	if data, rErr := os.ReadFile(resolutionFile); rErr != nil || string(data) != "resolved\n" {
+		t.Errorf("uncommitted resolution edit must survive (data=%q err=%v)", data, rErr)
 	}
 }

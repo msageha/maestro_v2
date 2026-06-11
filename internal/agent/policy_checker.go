@@ -95,9 +95,14 @@ type hookEntry struct {
 // the /sandbox command from working. See launcher.go buildLaunchArgs for details.
 func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 	settings := hookSettingsJSON{}
+	// Anchored alternation: Claude Code matchers are regexes, and an
+	// unanchored "Edit" also matches MultiEdit/NotebookEdit — tools the
+	// hook script must handle explicitly (it allow()s any tool_name it
+	// does not recognize, so a matched-but-unhandled tool bypasses the
+	// run_on_main / WT001 path checks entirely).
 	settings.Hooks.PreToolUse = []hookMatcherGroup{
 		{
-			Matcher: "Bash|Write|Edit",
+			Matcher: "^(Bash|Write|Edit|MultiEdit|NotebookEdit)$",
 			Hooks: []hookEntry{
 				{
 					Type:    "command",

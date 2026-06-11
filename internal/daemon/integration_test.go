@@ -1479,10 +1479,15 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 	sockPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
 	os.WriteFile(sockPath, []byte("test"), 0600)
 
-	// Create lock file
+	// Acquire the daemon lock like a real running daemon: cleanup only
+	// removes socket/PID when this process owns the lock (a failed second
+	// `maestro daemon` must not unlink the live daemon's socket).
 	lockDir := filepath.Join(d.maestroDir, "locks")
 	if err := os.MkdirAll(lockDir, 0755); err != nil {
 		t.Fatalf("create locks dir: %v", err)
+	}
+	if err := d.fileLock.TryLock(); err != nil {
+		t.Fatalf("acquire daemon lock: %v", err)
 	}
 
 	d.Shutdown()

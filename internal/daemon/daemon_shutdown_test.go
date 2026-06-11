@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/uds"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -628,5 +630,70 @@ func TestDoExit_UsesExitFn(t *testing.T) {
 
 	if called != 42 {
 		t.Errorf("expected exitFn called with 42, got %d", called)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// cleanup: socket/PID removal is gated on daemon lock ownership
+// ---------------------------------------------------------------------------
+
+// A failed second `maestro daemon` invocation (TryLock refused because
+// another daemon is running) must NOT unlink the live daemon's socket and
+// PID file on its deferred Shutdown.
+func TestCleanup_LockNotHeld_PreservesSocketAndPID(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf)
+
+	if err := os.MkdirAll(d.maestroDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
+	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
+	for _, p := range []string{socketPath, pidPath} {
+		if err := os.WriteFile(p, []byte("live"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Lock is NOT held (TryLock never called) — simulates the double-start
+	// failure path where another process owns the daemon lock.
+	d.Shutdown()
+
+	for _, p := range []string{socketPath, pidPath} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("file %s should survive cleanup when lock is not held: %v", p, err)
+		}
+	}
+}
+
+func TestCleanup_LockHeld_RemovesSocketAndPID(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf)
+
+	if err := os.MkdirAll(filepath.Join(d.maestroDir, "locks"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.fileLock.TryLock(); err != nil {
+		t.Fatalf("TryLock: %v", err)
+	}
+
+	socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
+	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
+	for _, p := range []string{socketPath, pidPath} {
+		if err := os.WriteFile(p, []byte("live"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	d.Shutdown()
+
+	for _, p := range []string{socketPath, pidPath} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("file %s should be removed by cleanup when lock is held (err=%v)", p, err)
+		}
 	}
 }

@@ -368,16 +368,14 @@ func TestEvaluateGate_Priority(t *testing.T) {
 	assert.Contains(t, result.FailedGates, "test_dangerous_commands")
 }
 
-func TestEvaluateGate_Timeout(t *testing.T) {
+// TestEvaluateGate_ScriptHonorsConfiguredTimeout: regression for the fixed
+// 100ms evaluation context that starved every script gate of its
+// timeout_seconds — a 1s script with a 5s budget used to fail-close with
+// TimedOut/ActionBlock on every evaluation.
+func TestEvaluateGate_ScriptHonorsConfiguredTimeout(t *testing.T) {
 	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
-	// Override the evaluation timeout for this test
-	origTimeout := qg.evaluationTimeout
-	qg.evaluationTimeout = 10 * time.Millisecond
-	defer func() { qg.evaluationTimeout = origTimeout }()
-
-	// Add a slow script gate definition directly to the YAML file
 	gatesDir := filepath.Join(filepath.Dir(qg.maestroDir), ".maestro", "quality_gates")
 	slowGateYAML := `
 schema_version: "1.0.0"
@@ -411,13 +409,11 @@ gates:
 		},
 	}
 
-	start := time.Now()
 	result, err := qg.evaluateGateWithResult("pre_task", context)
-	duration := time.Since(start)
 
 	require.NoError(t, err)
-	assert.True(t, result.TimedOut)
-	assert.Less(t, duration, 50*time.Millisecond, "Should timeout quickly")
+	assert.False(t, result.TimedOut, "a 1s script within its 5s timeout_seconds must not time out")
+	assert.True(t, result.Passed, "script exiting 0 should pass")
 }
 
 func TestQualityGateMetrics(t *testing.T) {

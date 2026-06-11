@@ -324,6 +324,7 @@ func (wm *Manager) detectAndRemoveOrphanWorktrees() {
 	}
 
 	knownPaths := make(map[string]bool)
+	stateLoadFailures := 0
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -331,12 +332,25 @@ func (wm *Manager) detectAndRemoveOrphanWorktrees() {
 		cmdID := strings.TrimSuffix(entry.Name(), ".yaml")
 		st, loadErr := wm.loadStateUnlocked(cmdID)
 		if loadErr != nil {
+			stateLoadFailures++
+			wm.Log(core.LogLevelWarn, "orphan_detection_state_load_failed command=%s error=%v", cmdID, loadErr)
 			continue
 		}
 		for _, ws := range st.Workers {
 			knownPaths[ws.Path] = true
 		}
 		knownPaths[wm.integrationWorktreePath(cmdID)] = true
+	}
+	// Fail-safe: if any state file failed to load (corrupted YAML, transient
+	// I/O error), its worktrees are missing from knownPaths and would be
+	// misclassified as orphans. `worktree remove --force` destroys
+	// uncommitted worker output, so skip the entire removal pass rather
+	// than risk deleting live work; the next GC cycle retries.
+	if stateLoadFailures > 0 {
+		wm.Log(core.LogLevelError,
+			"orphan_detection_skipped state_load_failures=%d (refusing to force-remove worktrees with incomplete state knowledge)",
+			stateLoadFailures)
+		return
 	}
 
 	pathPrefix := wm.config.EffectivePathPrefix()
@@ -503,6 +517,10 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 	if err := os.RemoveAll(wtDir); err != nil {
 		wm.Log(core.LogLevelWarn, "failed to remove worktree directory %s: %v", wtDir, err)
 	}
+
+	// GC the command's unstattable-fallback entries from the repo-shared
+	// .git/info/exclude so they do not outlive the command.
+	wm.removeMaestroExcludeBlocks(commandID)
 
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 	if err := os.Remove(statePath); err != nil {

@@ -94,8 +94,8 @@ func TestPolicyChecker_HookSettings_ValidJSON(t *testing.T) {
 
 	// Check matcher
 	group := preToolUse[0].(map[string]interface{})
-	if group["matcher"] != "Bash|Write|Edit" {
-		t.Errorf("matcher = %q, want %q", group["matcher"], "Bash|Write|Edit")
+	if group["matcher"] != "^(Bash|Write|Edit|MultiEdit|NotebookEdit)$" {
+		t.Errorf("matcher = %q, want %q", group["matcher"], "^(Bash|Write|Edit|MultiEdit|NotebookEdit)$")
 	}
 }
 
@@ -1441,6 +1441,58 @@ func TestHookScript_RunOnMain_DeniesWriteWhenFlagged(t *testing.T) {
 	}
 	if !strings.Contains(string(out), "RUN_ON_MAIN") {
 		t.Errorf("expected RUN_ON_MAIN reason in deny output, got: %s", out)
+	}
+}
+
+// TestHookScript_RunOnMain_DeniesMultiEditAndNotebookEdit covers the
+// matched-but-unhandled regression: the hook matcher also fires for
+// MultiEdit/NotebookEdit, and the script used to fall through to the
+// final allow() for any tool_name other than the exact strings
+// Bash/Write/Edit — bypassing the run_on_main read-only mode entirely.
+func TestHookScript_RunOnMain_DeniesMultiEditAndNotebookEdit(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "tmux")
+	shim := "#!/usr/bin/env bash\n" +
+		`if [ "$1" = "display-message" ]; then echo 1; exit 0; fi` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0755); err != nil { //nolint:gosec
+		t.Fatalf("write tmux shim: %v", err)
+	}
+
+	jqPath, _ := exec.LookPath("jq")
+	pathEnv := shimDir
+	if jqPath != "" {
+		pathEnv += ":" + filepath.Dir(jqPath)
+	}
+	pathEnv += ":/bin:/usr/bin"
+
+	inputs := map[string]string{
+		"MultiEdit":    `{"tool_name":"MultiEdit","tool_input":{"file_path":"/tmp/foo.txt","edits":[{"old_string":"a","new_string":"b"}]}}`,
+		"NotebookEdit": `{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"/tmp/foo.ipynb","new_source":"x"}}`,
+	}
+	for toolName, input := range inputs {
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Stdin = strings.NewReader(input)
+		cmd.Env = []string{
+			"PATH=" + pathEnv,
+			"HOME=" + os.Getenv("HOME"),
+			"TMUX_PANE=%0",
+		}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: hook script failed: %v, output: %s", toolName, err, out)
+		}
+		if !strings.Contains(string(out), "deny") || !strings.Contains(string(out), "RUN_ON_MAIN") {
+			t.Errorf("%s: expected RUN_ON_MAIN deny when @run_on_main=1, got: %s", toolName, out)
+		}
 	}
 }
 

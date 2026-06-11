@@ -13,10 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/quality"
 )
 
-const (
-	qualityGateEventBufferSize = 100                    // eventChan buffer size
-	defaultEvaluationTimeout   = 100 * time.Millisecond // gate evaluation timeout
-)
+const qualityGateEventBufferSize = 100 // eventChan buffer size
 
 // QualityGateEvent represents an event that triggers quality gate evaluation.
 type QualityGateEvent interface {
@@ -111,9 +108,8 @@ type QualityGateDaemon struct {
 	eventChan         chan QualityGateEvent
 	metrics           *QualityGateMetrics
 	stopped           atomic.Bool // Prevents EmitEvent after Stop to avoid panic
-	stopOnce          sync.Once   // Makes Stop() idempotent
-	engine            *quality.Engine
-	evaluationTimeout time.Duration
+	stopOnce sync.Once // Makes Stop() idempotent
+	engine   *quality.Engine
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -144,7 +140,6 @@ func NewQualityGateDaemon(
 		eventChan:         make(chan QualityGateEvent, qualityGateEventBufferSize),
 		metrics:           &QualityGateMetrics{},
 		engine:            quality.NewEngine(),
-		evaluationTimeout: defaultEvaluationTimeout,
 		ctx:               ctx,
 		cancel:            cancel,
 	}
@@ -374,12 +369,11 @@ func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[strin
 		return err
 	}
 
-	// Create evaluation context with timeout
-	ctx, cancel := context.WithTimeout(qg.ctx, qg.evaluationTimeout)
-	defer cancel()
-
-	// Evaluate using the engine
-	result, err := qg.engine.Evaluate(ctx, qualityGateType, evalContext)
+	// No daemon-side deadline: the engine derives the evaluation budget
+	// from the gate definitions (base + per-script timeout_seconds). A
+	// daemon-side 100ms cap used to override that and fail-close every
+	// real-work script gate.
+	result, err := qg.engine.Evaluate(qg.ctx, qualityGateType, evalContext)
 	if err != nil {
 		return fmt.Errorf("evaluation failed: %w", err)
 	}
@@ -414,12 +408,8 @@ func (qg *QualityGateDaemon) evaluateGateWithResult(gateType string, evalContext
 		return nil, err
 	}
 
-	// Create evaluation context with timeout
-	ctx, cancel := context.WithTimeout(qg.ctx, qg.evaluationTimeout)
-	defer cancel()
-
-	// Evaluate using the engine
-	return qg.engine.Evaluate(ctx, qualityGateType, evalContext)
+	// Engine-owned budget; see evaluateGate for rationale.
+	return qg.engine.Evaluate(qg.ctx, qualityGateType, evalContext)
 }
 
 // loadGateDefinitions loads gate definitions from the maestro directory

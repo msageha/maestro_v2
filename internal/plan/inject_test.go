@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -311,6 +312,72 @@ func TestAddTask_NilLockMap(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected error for nil LockMap")
+	}
+}
+
+// SaveState failure must roll back the queue entry WITHOUT re-acquiring the
+// already-held queue lock: lock.MutexMap is non-reentrant, so passing
+// opts.LockMap into rollbackRetryQueueEntries while AddTask still holds
+// `queue:<worker>` (and `state:<command>`) self-deadlocked the daemon.
+func TestAddTask_SaveStateFailureRollsBackWithoutDeadlock(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Make the state directory read-only so SaveState (AtomicWrite of the
+	// command state) fails after the queue entry has been written.
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(stateDir, 0o755) })
+
+	type outcome struct {
+		result *InjectResult
+		err    error
+	}
+	done := make(chan outcome, 1)
+	go func() {
+		res, err := addTaskTest(InjectOptions{
+			CommandID:          commandID,
+			Purpose:            "savestate failure rollback",
+			Content:            "should be rolled back",
+			AcceptanceCriteria: "n/a",
+			BloomLevel:         3,
+			Required:           true,
+			BlockedBy:          []string{completedTaskID},
+			MaestroDir:         maestroDir,
+			Config:             cfg,
+			LockMap:            lm,
+		})
+		done <- outcome{res, err}
+	}()
+
+	select {
+	case out := <-done:
+		if out.err == nil {
+			t.Fatalf("expected SaveState failure, got success: %+v", out.result)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("AddTask deadlocked in SaveState-failure rollback (queue lock re-acquired while already held)")
+	}
+
+	// The queue entry written before SaveState must have been rolled back.
+	for i := 1; i <= 2; i++ {
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			t.Fatalf("parse queue %s: %v", queueFile, err)
+		}
+		for _, task := range tq.Tasks {
+			if task.Purpose == "savestate failure rollback" {
+				t.Errorf("queue entry for failed AddTask should have been rolled back (worker%d)", i)
+			}
+		}
 	}
 }
 

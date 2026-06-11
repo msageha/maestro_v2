@@ -141,6 +141,29 @@ func TestR9VerifyStall_SchedulesRepairWhenRetryEnabled(t *testing.T) {
 
 	writeR9Fixture(t, maestroDir, commandID, taskID, workerID,
 		resultAt.Format(time.RFC3339), model.StatusVerifyPending)
+
+	// Make the stalled task a required member of an active phase so the
+	// repair-wiring assertions below exercise membership replacement and
+	// phase tracking (the bug fixed here: R9 used to register only
+	// TaskStates, leaving the predecessor required without lineage).
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	{
+		st, err := newRun(&deps).loadState(statePath)
+		if err != nil {
+			t.Fatalf("read fixture state: %v", err)
+		}
+		st.RequiredTaskIDs = []string{taskID}
+		st.Phases = []model.Phase{{
+			PhaseID: "phase_001",
+			Name:    "impl",
+			Status:  model.PhaseStatusActive,
+			TaskIDs: []string{taskID},
+		}}
+		if err := yamlutil.AtomicWrite(statePath, st); err != nil {
+			t.Fatalf("rewrite fixture state: %v", err)
+		}
+	}
+
 	writeR9QueueTask(t, maestroDir, workerID, model.Task{
 		ID:                 taskID,
 		CommandID:          commandID,
@@ -159,7 +182,6 @@ func TestR9VerifyStall_SchedulesRepairWhenRetryEnabled(t *testing.T) {
 		t.Fatalf("expected 1 R9 repair, got %d", len(outcome.Repairs))
 	}
 
-	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	state, err := run.loadState(statePath)
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
@@ -189,6 +211,28 @@ func TestR9VerifyStall_SchedulesRepairWhenRetryEnabled(t *testing.T) {
 	}
 	if state.TaskStates[repair.ID] != model.StatusPlanned {
 		t.Errorf("repair state = %q, want %q", state.TaskStates[repair.ID], model.StatusPlanned)
+	}
+
+	// Full retry wiring (regression: R9 used to register TaskStates only,
+	// so the repair's success could not supersede the stalled predecessor
+	// and the phase cascaded to Cancelled).
+	if got := state.RetryLineage[repair.ID]; got != taskID {
+		t.Errorf("RetryLineage[%s] = %q, want %q", repair.ID, got, taskID)
+	}
+	if len(state.RequiredTaskIDs) != 1 || state.RequiredTaskIDs[0] != repair.ID {
+		t.Errorf("RequiredTaskIDs = %v, want [%s] (predecessor replaced)", state.RequiredTaskIDs, repair.ID)
+	}
+	if len(state.Phases) != 1 {
+		t.Fatalf("phases = %d, want 1", len(state.Phases))
+	}
+	foundInPhase := false
+	for _, id := range state.Phases[0].TaskIDs {
+		if id == repair.ID {
+			foundInPhase = true
+		}
+	}
+	if !foundInPhase {
+		t.Errorf("phase TaskIDs = %v, missing repair %s", state.Phases[0].TaskIDs, repair.ID)
 	}
 }
 

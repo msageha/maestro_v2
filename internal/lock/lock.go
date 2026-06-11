@@ -227,6 +227,12 @@ func (fl *FileLock) TryLock() error {
 	return nil
 }
 
+// IsHeld reports whether this process currently holds the lock (TryLock
+// succeeded and Unlock has not been called).
+func (fl *FileLock) IsHeld() bool {
+	return fl.file != nil
+}
+
 // Unlock releases the flock and closes the lock file. It is a no-op if the lock is not held.
 func (fl *FileLock) Unlock() error {
 	if fl.file == nil {
