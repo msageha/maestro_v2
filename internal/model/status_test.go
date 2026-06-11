@@ -421,7 +421,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 	}{
 		{WorktreeStatusCreated, WorktreeStatusActive},
 		{WorktreeStatusCreated, WorktreeStatusCommitted},
-		{WorktreeStatusCreated, WorktreeStatusIntegrated},    // no-op merge (worker had no commits)
+		{WorktreeStatusCreated, WorktreeStatusIntegrated}, // no-op merge (worker had no commits)
 		{WorktreeStatusCreated, WorktreeStatusFailed},
 		{WorktreeStatusCreated, WorktreeStatusPublished},     // bulk publish
 		{WorktreeStatusCreated, WorktreeStatusCleanupDone},   // cleanup

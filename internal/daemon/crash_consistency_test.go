@@ -9,13 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	"github.com/msageha/maestro_v2/internal/yaml"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // CrashPoint represents a point in the system where a crash can be simulated

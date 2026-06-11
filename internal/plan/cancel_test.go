@@ -5,9 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func TestValidateNotCancelled(t *testing.T) {

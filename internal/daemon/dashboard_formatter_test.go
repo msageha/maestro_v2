@@ -8,10 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/events"
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // TestDashboardFormatter_WorktreeWarningsVisible asserts that the dashboard

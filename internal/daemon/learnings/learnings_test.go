@@ -7,9 +7,10 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func writeLearningsFile(t *testing.T, dir string, lf model.LearningsFile) {

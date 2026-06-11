@@ -11,10 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/lock"
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // Test fixtures for quality gate definitions

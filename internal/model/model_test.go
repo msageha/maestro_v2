@@ -4,8 +4,9 @@ import (
 	"os"
 	"testing"
 
-	"github.com/msageha/maestro_v2/internal/ptr"
 	"gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestConfigMarshalUnmarshal(t *testing.T) {
