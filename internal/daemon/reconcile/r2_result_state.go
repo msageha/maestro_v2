@@ -18,6 +18,11 @@ import (
 // Action: update task_states + applied_result_ids in state file.
 type R2ResultState struct{}
 
+// r2FreshResultGrace is how old a terminal result entry must be before R2
+// treats the result/state mismatch as a crash artefact rather than the
+// normal Phase A → Phase B in-flight window of result_write.
+const r2FreshResultGrace = 30 * time.Second
+
 // Apply detects worker result/state mismatches and updates task states in the command state file.
 func (R2ResultState) Apply(run *Run) Outcome {
 	var repairs []Repair
@@ -66,17 +71,35 @@ func (R2ResultState) Apply(run *Run) Outcome {
 
 		worker := strings.TrimSuffix(name, ".yaml")
 		for _, result := range rf.Results {
-			if model.IsTerminal(result.Status) {
-				commandResults[result.CommandID] = append(commandResults[result.CommandID], resultEntry{
-					TaskID:   result.TaskID,
-					ResultID: result.ID,
-					Status:   result.Status,
-					Worker:   worker,
-					NeedsVerifyStamp: (result.RunOnIntegration || result.RunOnMain) &&
-						result.Status == model.StatusCompleted &&
-						(result.VerifyOutcomeAppliedAt == nil || *result.VerifyOutcomeAppliedAt == ""),
-				})
+			if !model.IsTerminal(result.Status) {
+				continue
 			}
+			// Freshness grace: "result terminal + state non-terminal" is a
+			// NORMAL transient between result_write Phase A (result file
+			// write) and Phase B (state transition) — they run under
+			// different lock scopes. R2 acting inside that gap would apply
+			// the worker-reported terminal status (and stamp the verify
+			// marker) while Phase B is about to route the task through the
+			// verify pipeline, silently skipping verification. Crash
+			// recovery does not need sub-30s reaction time, so young
+			// results are left for the next scan.
+			if createdAt, err := time.Parse(time.RFC3339, result.CreatedAt); err == nil {
+				if run.Deps.Clock.Now().Sub(createdAt) < r2FreshResultGrace {
+					run.Log(core.LogLevelDebug,
+						"R2 skip_fresh_result task=%s result=%s age<%s (Phase B may still be in flight)",
+						result.TaskID, result.ID, r2FreshResultGrace)
+					continue
+				}
+			}
+			commandResults[result.CommandID] = append(commandResults[result.CommandID], resultEntry{
+				TaskID:   result.TaskID,
+				ResultID: result.ID,
+				Status:   result.Status,
+				Worker:   worker,
+				NeedsVerifyStamp: (result.RunOnIntegration || result.RunOnMain) &&
+					result.Status == model.StatusCompleted &&
+					(result.VerifyOutcomeAppliedAt == nil || *result.VerifyOutcomeAppliedAt == ""),
+			})
 		}
 	}
 

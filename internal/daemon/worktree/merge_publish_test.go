@@ -931,10 +931,11 @@ func TestPublishToBase_NoFalsePositiveStash(t *testing.T) {
 	}
 }
 
-// TestBytesContainConflictMarkers: only the ordered triple
-// (<<<<<<< … ======= … >>>>>>>) counts as an unresolved conflict. Lone
-// marker-lookalike lines (setext heading underlines, separators in docs)
-// are legitimate content and must not block staging.
+// TestBytesContainConflictMarkers: any line starting with `<<<<<<<` or
+// `>>>>>>>` is an unresolved conflict (partial resolutions stay
+// fail-closed). A lone `=======` line is legitimate content (setext
+// heading underline) and must not block staging — every real conflict
+// block carries the outer markers, so this loses no real conflicts.
 func TestBytesContainConflictMarkers(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -947,14 +948,14 @@ func TestBytesContainConflictMarkers(t *testing.T) {
 		{"full conflict block", []byte("a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch\nb\n"), true},
 		{"conflict block at file head", []byte("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch\n"), true},
 		{"conflict block CRLF", []byte("<<<<<<< HEAD\r\nx\r\n=======\r\ny\r\n>>>>>>> branch\r\n"), true},
-		// Lone markers / lookalikes are NOT conflicts.
-		{"opening marker only", []byte("a\n<<<<<<< HEAD\nx\n"), false},
+		// Partial resolutions that still carry an outer marker stay blocked.
+		{"opening marker only", []byte("a\n<<<<<<< HEAD\nx\n"), true},
+		{"closing marker only", []byte("a\n>>>>>>> branch\n"), true},
+		{"reversed order", []byte(">>>>>>> b\n=======\n<<<<<<< a\n"), true},
+		// Divider lookalikes are legitimate content.
 		{"setext heading underline", []byte("Title\n=======\nbody\n"), false},
-		{"closing marker only", []byte("a\n>>>>>>> branch\n"), false},
 		{"divider at file head", []byte("=======\nrest\n"), false},
 		{"divider mid-line no newline", []byte("foo=======bar"), false},
-		// Out-of-order markers are not a conflict either.
-		{"reversed order", []byte(">>>>>>> b\n=======\n<<<<<<< a\n"), false},
 	}
 	for _, tc := range cases {
 		tc := tc

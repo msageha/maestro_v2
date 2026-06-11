@@ -296,34 +296,28 @@ func (wm *Manager) stageResolvedForwardMergeFiles(integrationPath string, confli
 }
 
 // bytesContainConflictMarkers reports whether data still contains an
-// UNRESOLVED git conflict: a `<<<<<<<` line followed (in order, at line
-// start) by a `=======` line and then a `>>>>>>>` line. Requiring the
-// ordered triple avoids false positives on legitimate content — most
-// notably Markdown setext heading underlines (`=======`), which previously
-// made publish-conflict resolutions containing such files permanently
-// unstageable (every retry refused to stage → attempt budget exhausted →
-// quarantine, with no path for the worker to fix it).
+// UNRESOLVED git conflict. Detection rules:
+//
+//   - any line starting with `<<<<<<<` or `>>>>>>>` → conflict. These
+//     never appear at line start in normal content, and a partially
+//     resolved file that still carries one of them must stay
+//     fail-closed (staging it would publish broken content to base).
+//   - a `=======` line on its own is treated as legitimate content — most
+//     notably Markdown setext heading underlines, which previously made
+//     publish-conflict resolutions containing such files permanently
+//     unstageable (every retry refused to stage → attempt budget
+//     exhausted → quarantine, with no path for the worker to fix it).
+//     Every real conflict block contains `<<<<<<<` and `>>>>>>>` lines,
+//     so dropping the divider from the detector loses no real conflicts.
+//
+// Residual fail-open: a partial resolution that removed BOTH outer
+// markers but left the inner `=======` is indistinguishable from a setext
+// heading and passes; the resolution task's verify pipeline is the
+// backstop for that case.
 func bytesContainConflictMarkers(data []byte) bool {
-	const (
-		seekStart = iota
-		seekDivider
-		seekEnd
-	)
-	state := seekStart
 	for _, line := range bytes.Split(data, []byte("\n")) {
-		switch state {
-		case seekStart:
-			if bytes.HasPrefix(line, []byte("<<<<<<<")) {
-				state = seekDivider
-			}
-		case seekDivider:
-			if bytes.HasPrefix(line, []byte("=======")) {
-				state = seekEnd
-			}
-		case seekEnd:
-			if bytes.HasPrefix(line, []byte(">>>>>>>")) {
-				return true
-			}
+		if bytes.HasPrefix(line, []byte("<<<<<<<")) || bytes.HasPrefix(line, []byte(">>>>>>>")) {
+			return true
 		}
 	}
 	return false

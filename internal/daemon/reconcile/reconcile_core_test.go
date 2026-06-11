@@ -928,7 +928,7 @@ func TestR1ResultQueue_TaskNotInProgress_Ignored(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -956,7 +956,7 @@ func TestR1ResultQueue_HappyPath_RepairsInProgressTask(t *testing.T) {
 	// Result is terminal (completed)
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1007,7 +1007,7 @@ func TestR1ResultQueue_Idempotent(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1046,7 +1046,7 @@ func TestR1ResultQueue_FailedResult(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1084,7 +1084,7 @@ func TestR1ResultQueue_MultipleWorkers(t *testing.T) {
 	// Worker1 has terminal result
 	rf1 := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf1)
@@ -1098,7 +1098,7 @@ func TestR1ResultQueue_MultipleWorkers(t *testing.T) {
 	// Worker2 has terminal result
 	rf2 := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker2.yaml"), rf2)
@@ -1123,11 +1123,10 @@ func TestR1ResultQueue_NoQueueFile_NoRepair(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	now := time.Now().UTC().Format(time.RFC3339)
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1150,7 +1149,7 @@ func TestR2ResultState_UnknownTask_Skipped(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task_unknown", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task_unknown", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1182,7 +1181,7 @@ func TestR2ResultState_NilTaskStates_InitializedAndSkipped(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1208,11 +1207,10 @@ func TestR2ResultState_NonTerminalResult_Ignored(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	now := time.Now().UTC().Format(time.RFC3339)
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1224,6 +1222,12 @@ func TestR2ResultState_NonTerminalResult_Ignored(t *testing.T) {
 	}
 }
 
+// agedResultTime returns an RFC3339 timestamp older than r2FreshResultGrace
+// so result fixtures are not skipped by R2's Phase A/B freshness window.
+func agedResultTime() string {
+	return time.Now().Add(-2 * r2FreshResultGrace).UTC().Format(time.RFC3339)
+}
+
 func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
@@ -1232,7 +1236,7 @@ func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1287,7 +1291,7 @@ func TestR2ResultState_StampsVerifyOutcomeForVerifyPipelineEntries(t *testing.T)
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
 			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted,
-				RunOnIntegration: true, CreatedAt: now},
+				RunOnIntegration: true, CreatedAt: agedResultTime()},
 		},
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
@@ -1345,7 +1349,7 @@ func TestR2ResultState_StampsVerifyOutcomeWhenStateAlreadyTerminal(t *testing.T)
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
 			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted,
-				RunOnMain: true, CreatedAt: now},
+				RunOnMain: true, CreatedAt: agedResultTime()},
 		},
 	}
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
@@ -1395,7 +1399,7 @@ func TestR2ResultState_Idempotent(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1435,7 +1439,7 @@ func TestR2ResultState_AlreadyTerminal_NoRepair(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1467,8 +1471,8 @@ func TestR2ResultState_MultipleTasks(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
-			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1520,7 +1524,7 @@ func TestR2ResultState_VerifyPending_NotOverwritten(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1568,7 +1572,7 @@ func TestR2ResultState_RepairPending_NotOverwritten(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1613,7 +1617,7 @@ func TestR2ResultState_PausedForReplan_NotOverwritten(t *testing.T) {
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1651,11 +1655,10 @@ func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	now := time.Now().UTC().Format(time.RFC3339)
 
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd_missing", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd_missing", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1791,8 +1794,8 @@ func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
 	// Results: task1=completed (terminal), task2=in_progress (non-terminal in result)
 	rf := model.TaskResultFile{
 		Results: []model.TaskResult{
-			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
-			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now},
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
@@ -1983,7 +1986,7 @@ func TestR5Notification_OrchestratorQueueLock(t *testing.T) {
 	// Result file: terminal + notified result
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -2021,7 +2024,7 @@ func TestR3PlannerQueue_PendingCommand_QueueInProgress_Repaired(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -2065,7 +2068,7 @@ func TestR3PlannerQueue_CancelledResult(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -2109,7 +2112,7 @@ func TestR5Notification_FailedStatus_CorrectNotificationType(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -2148,7 +2151,7 @@ func TestR5Notification_CancelledStatus_NoExistingNotification(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: agedResultTime()},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)

@@ -338,7 +338,9 @@ func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
 				TaskID:    "task_0000000001_11111111",
 				CommandID: "cmd_0000000001_dddddddd",
 				Status:    model.StatusCompleted,
-				CreatedAt: now,
+				// Aged past R2's freshness grace so the reconciler treats
+				// the mismatch as a crash artefact, not an in-flight write.
+				CreatedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -482,7 +484,7 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	rf1 := model.TaskResultFile{
 		SchemaVersion: 1, FileType: "result_task",
 		Results: []model.TaskResult{
-			{ID: "res_r1", TaskID: "task_r1", CommandID: "cmd_r1", Status: model.StatusFailed, CreatedAt: now},
+			{ID: "res_r1", TaskID: "task_r1", CommandID: "cmd_r1", Status: model.StatusFailed, CreatedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(resultsDir, "worker1.yaml"), rf1)
@@ -498,7 +500,7 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	rf2 := model.TaskResultFile{
 		SchemaVersion: 1, FileType: "result_task",
 		Results: []model.TaskResult{
-			{ID: "res_r2", TaskID: "task_r2", CommandID: "cmd_r2", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res_r2", TaskID: "task_r2", CommandID: "cmd_r2", Status: model.StatusCompleted, CreatedAt: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339)},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(resultsDir, "worker2.yaml"), rf2)
