@@ -130,12 +130,19 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 
 	// Final shell guard: reject delivery if pane has fallen back to a shell.
 	// This closes the timing window between ensureClaudeRunning and here.
-	if cmd, err := d.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {
-		if d.paneIO.IsShellCommand(cmd) {
-			d.log(logLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
-				req.AgentID, req.TaskID, cmd)
-			return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
-		}
+	// Fail-closed on probe error: pasting a multi-line task envelope into a
+	// bare shell executes every line as a command, so an unverifiable pane
+	// defers delivery (retryable) instead of proceeding blind.
+	cmd, err := d.paneIO.GetPaneCurrentCommand(paneTarget)
+	if err != nil {
+		d.log(logLevelWarn, "delivery_deferred agent_id=%s task_id=%s reason=pane_probe_failed error=%v",
+			req.AgentID, req.TaskID, err)
+		return ExecResult{Error: fmt.Errorf("pane state unverifiable before delivery: %w", err), Retryable: true}
+	}
+	if d.paneIO.IsShellCommand(cmd) {
+		d.log(logLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
+			req.AgentID, req.TaskID, cmd)
+		return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
 	}
 
 	// Send message via paste-buffer + Enter for reliable multi-line delivery

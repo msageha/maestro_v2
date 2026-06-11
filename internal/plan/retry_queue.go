@@ -186,14 +186,20 @@ func restoreState(state *model.CommandState, data []byte) error {
 // task's status. Used both for cancelling the original task during retry
 // (preventing checkCommandTasksTerminal from treating it as a failure) and
 // for restoring the original status on rollback.
-func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID string, status model.Status, now string, lockMap *lock.MutexMap) error {
+//
+// Returns the status the task had BEFORE the overwrite (empty when the task
+// was not found in any queue) so callers can restore the exact prior value
+// on rollback instead of guessing — an unconditional `failed` restore used
+// to desynchronise queue and state when the retried task's queue entry was
+// completed (repair_pending / paused_for_replan lifecycles).
+func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID string, status model.Status, now string, lockMap *lock.MutexMap) (model.Status, error) {
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil
+			return "", nil
 		}
-		return fmt.Errorf("read queue directory: %w", err)
+		return "", fmt.Errorf("read queue directory: %w", err)
 	}
 	for _, entry := range entries {
 		name := entry.Name()
@@ -206,9 +212,11 @@ func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID strin
 			lockMap.Lock("queue:" + workerID)
 		}
 		found := false
+		var prevStatus model.Status
 		err := readModifyWriteQueue(maestroDir, workerID, func(tq *model.TaskQueue) {
 			for i := range tq.Tasks {
 				if tq.Tasks[i].ID == taskID && tq.Tasks[i].CommandID == commandID {
+					prevStatus = tq.Tasks[i].Status
 					tq.Tasks[i].Status = status
 					tq.Tasks[i].UpdatedAt = now
 					found = true
@@ -220,11 +228,11 @@ func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID strin
 			lockMap.Unlock("queue:" + workerID)
 		}
 		if err != nil {
-			return fmt.Errorf("update task %s status to %s in queue %s: %w", taskID, status, workerID, err)
+			return "", fmt.Errorf("update task %s status to %s in queue %s: %w", taskID, status, workerID, err)
 		}
 		if found {
-			return nil
+			return prevStatus, nil
 		}
 	}
-	return nil // task not found — may have been archived or cleaned up
+	return "", nil // task not found — may have been archived or cleaned up
 }

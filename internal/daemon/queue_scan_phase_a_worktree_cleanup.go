@@ -1,7 +1,12 @@
 package daemon
 
 import (
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
@@ -299,6 +304,39 @@ func (qh *QueueHandler) tryClearPhantomTasks(cmd *model.Command, tasks map[strin
 		if queueIDs[taskID] {
 			continue
 		}
+		// Live re-check veto: nonTerminal states were read LIVE above while
+		// queueIDs came from the scan snapshot. A task the Planner
+		// registered after the snapshot was taken (e.g. a retry/resolution
+		// task added right as the stall threshold elapsed) exists in both
+		// live state and live queue but not in the snapshot — cancelling
+		// it would split state from queue and the worker's result_write
+		// would be rejected as task-not-found. Destruction requires the
+		// task to be absent from the LIVE queues as well.
+		suspectKey := cmd.ID + "/" + taskID
+		if qh.liveQueueHasTask(cmd.ID, taskID) {
+			delete(qh.phantomSuspects, suspectKey)
+			qh.log(LogLevelInfo,
+				"phantom_task_skip_live_queue command=%s task=%s (present in live queue; registered after scan snapshot)",
+				cmd.ID, taskID)
+			continue
+		}
+		// Two-scan confirmation: daemon-side retry registration
+		// (RetryTaskAtomically, R9) writes state BEFORE the queue, so a
+		// single probe can land inside that window and misread a
+		// registering task as phantom. Require queue absence on two
+		// consecutive scans — the registration window is milliseconds,
+		// a scan interval apart it cannot persist.
+		if qh.phantomSuspects == nil {
+			qh.phantomSuspects = make(map[string]int)
+		}
+		qh.phantomSuspects[suspectKey]++
+		if qh.phantomSuspects[suspectKey] < 2 {
+			qh.log(LogLevelInfo,
+				"phantom_task_suspected command=%s task=%s (awaiting confirmation on next scan)",
+				cmd.ID, taskID)
+			continue
+		}
+		delete(qh.phantomSuspects, suspectKey)
 		// State has a non-terminal entry the queue knows nothing about —
 		// terminate it so phase progression can resume. The transition target
 		// depends on the source status because validTaskStateTransitions
@@ -416,4 +454,40 @@ func (qh *QueueHandler) stepForceFailStuckPhases(commandID string, stuck []Phase
 		applied++
 	}
 	return applied
+}
+
+// liveQueueHasTask re-reads the worker queue files from disk (under their
+// queue locks) and reports whether taskID for commandID exists in any of
+// them. Used as a destruction veto by tryClearPhantomTasks. Read or parse
+// failures count as "might exist": when queue contents cannot be confirmed,
+// the safe answer for a destructive caller is to skip.
+func (qh *QueueHandler) liveQueueHasTask(commandID, taskID string) bool {
+	queueDir := filepath.Join(qh.maestroDir, "queue")
+	entries, err := os.ReadDir(queueDir)
+	if err != nil {
+		return !os.IsNotExist(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		workerID := strings.TrimSuffix(name, ".yaml")
+		qh.lockMap.Lock("queue:" + workerID)
+		data, readErr := os.ReadFile(filepath.Join(queueDir, name)) //nolint:gosec // controlled queue directory
+		qh.lockMap.Unlock("queue:" + workerID)
+		if readErr != nil {
+			return true
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			return true
+		}
+		for i := range tq.Tasks {
+			if tq.Tasks[i].CommandID == commandID && tq.Tasks[i].ID == taskID {
+				return true
+			}
+		}
+	}
+	return false
 }

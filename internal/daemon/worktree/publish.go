@@ -271,14 +271,93 @@ func (wm *Manager) fastForwardBaseBranchRef(
 			return false, fmt.Errorf("publish dirty check failed: %w", err)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			return false, errPublishDirtyRoot
+			// A "dirty" root may be the crash signature of a prior publish
+			// that died between update-ref and the project-root sync; in
+			// that case complete the interrupted sync instead of
+			// quarantining with a misleading "commit or stash" reason.
+			if !wm.tryCompleteInterruptedPublishSync(commandID) {
+				return false, errPublishDirtyRoot
+			}
+		}
+		// Durable marker BEFORE the ref move: if the daemon dies between
+		// the update-ref below and syncProjectRootAfterPublish, the next
+		// retry uses this marker (value = pre-publish baseSHA) to
+		// recognise the stale-root crash signature.
+		if err := wm.gitRun("update-ref", publishSyncPendingRef(commandID), baseSHA); err != nil {
+			return false, fmt.Errorf("record publish sync-pending marker: %w", err)
 		}
 	}
 
 	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
+		if baseBranchCheckedOut {
+			wm.deletePublishSyncPendingRef(commandID)
+		}
 		return false, fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
 	}
 	return baseBranchCheckedOut, nil
+}
+
+// publishSyncPendingRef is the durable marker recording an in-flight base-ref
+// advancement for commandID: created immediately before the base update-ref
+// (value = pre-publish baseSHA, only when baseBranch is checked out in
+// projectRoot) and deleted once the project-root sync — or its CAS rollback —
+// completes. Survives daemon crashes because it lives in the git ref store.
+func publishSyncPendingRef(commandID string) string {
+	return fmt.Sprintf("refs/maestro/publish-sync-pending/%s", commandID)
+}
+
+func (wm *Manager) deletePublishSyncPendingRef(commandID string) {
+	if err := wm.gitRun("update-ref", "-d", publishSyncPendingRef(commandID)); err != nil {
+		wm.Log(core.LogLevelDebug, "publish_sync_marker_delete_skipped command=%s error=%v", commandID, err)
+	}
+}
+
+// tryCompleteInterruptedPublishSync detects and repairs the crash window
+// between the base update-ref and the project-root sync of a PRIOR publish
+// attempt. Signature (all must hold):
+//
+//  1. the sync-pending marker ref exists (set just before that update-ref),
+//  2. the working tree matches the index (`git diff --quiet`),
+//  3. the index still matches the pre-publish base tree recorded in the
+//     marker (`git diff --quiet --cached <preBaseSHA>`).
+//
+// Then the only divergence is HEAD having advanced to the published merge,
+// so finishing the interrupted read-tree + reset --hard is exactly what the
+// crashed publish would have done and provably discards no local edits.
+// Anything else — genuine unstaged or staged operator changes — returns
+// false and the caller surfaces errPublishDirtyRoot. Without this repair,
+// the retry's dirty-root guard misread the entire published delta as
+// "uncommitted changes" and quarantined with an instruction ("commit or
+// stash them first") that would lead an operator to commit a full revert of
+// the published content.
+func (wm *Manager) tryCompleteInterruptedPublishSync(commandID string) bool {
+	markerOut, err := wm.gitOutput("rev-parse", "--verify", "-q", publishSyncPendingRef(commandID))
+	if err != nil {
+		return false
+	}
+	preBaseSHA := strings.TrimSpace(markerOut)
+	if wm.gitRun("diff", "--quiet") != nil {
+		return false // working tree has unstaged edits — genuinely dirty
+	}
+	if wm.gitRun("diff", "--quiet", "--cached", preBaseSHA) != nil {
+		return false // index moved past the pre-publish tree — staged edits
+	}
+	if guardErr := ensureWithinProjectRoot(wm.projectRoot, wm.projectRoot); guardErr != nil {
+		wm.Log(core.LogLevelError, "publish_resync_path_guard command=%s error=%v", commandID, guardErr)
+		return false
+	}
+	wm.Log(core.LogLevelWarn,
+		"publish_root_resync command=%s pre_base=%s (completing project-root sync interrupted by daemon crash after update-ref)",
+		commandID, preBaseSHA)
+	if err := wm.gitRun("read-tree", "--reset", "-u", "HEAD"); err != nil {
+		wm.Log(core.LogLevelWarn, "publish_resync_read_tree command=%s error=%v (falling back to reset)", commandID, err)
+	}
+	if err := wm.gitRun("reset", "--hard", "HEAD"); err != nil {
+		wm.Log(core.LogLevelError, "publish_resync_reset_failed command=%s error=%v", commandID, err)
+		return false
+	}
+	wm.deletePublishSyncPendingRef(commandID)
+	return true
 }
 
 // syncProjectRootAfterPublish syncs the projectRoot working tree and index to
@@ -353,8 +432,11 @@ func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, m
 		}
 		wm.Log(core.LogLevelInfo, "publish_ref_rollback_success command=%s branch=%s restored_to=%s",
 			commandID, baseBranch, baseSHA)
+		// Ref restored to the pre-publish base — no sync is pending anymore.
+		wm.deletePublishSyncPendingRef(commandID)
 		return fmt.Errorf("working tree sync failed (ref rolled back to %s): %w", baseSHA, resetErr)
 	}
+	wm.deletePublishSyncPendingRef(commandID)
 	return nil
 }
 

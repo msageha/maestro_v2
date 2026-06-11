@@ -150,10 +150,14 @@ func NewQualityGateDaemon(
 func (qg *QualityGateDaemon) Start() error {
 	qg.log(LogLevelInfo, "quality_gate_daemon starting")
 
-	// Load gate definitions on startup
+	// Load gate definitions on startup. This daemon only exists when
+	// quality_gates.enabled=true, so a definitions load failure (corrupt
+	// YAML, unsafe permissions) must fail startup: continuing with zero
+	// gates would silently disable an enforcement mechanism the operator
+	// explicitly turned on. A missing quality_gates/ directory is not an
+	// error (LoadConfiguration returns an empty set).
 	if err := qg.loadGateDefinitions(); err != nil {
-		// Log error but don't fail - we can run without gates
-		qg.log(LogLevelWarn, "quality_gate_daemon failed to load definitions: %v", err)
+		return fmt.Errorf("quality gates enabled but definitions failed to load: %w", err)
 	}
 
 	qg.wg.Add(1)

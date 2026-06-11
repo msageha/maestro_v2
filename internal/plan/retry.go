@@ -340,7 +340,8 @@ func writeAndCommitRetryQueue(
 		writtenTasks = append(writtenTasks, crTask)
 	}
 
-	if err := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusCancelled, now, opts.LockMap); err != nil {
+	prevQueueStatus, err := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusCancelled, now, opts.LockMap)
+	if err != nil {
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		restoreStateOrLog(state, origStateBytes, "cancel_original_task")
 		return fmt.Errorf("cancel original task in queue: %w", err)
@@ -355,8 +356,14 @@ func writeAndCommitRetryQueue(
 		return fmt.Errorf("copy attempted state for rollback guard: %w", copyErr)
 	}
 	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
-		if restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
-			slogc().Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
+		// Restore the exact pre-cancel queue status (captured above), not a
+		// blanket `failed`: the retried task's queue entry may have been
+		// completed (repair_pending / paused_for_replan lifecycles) and a
+		// guessed restore desynchronises queue and state.
+		if prevQueueStatus != "" {
+			if _, restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, prevQueueStatus, now, opts.LockMap); restoreErr != nil {
+				slogc().Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
+			}
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		restoreStateOrLog(state, origStateBytes, "save_state")
@@ -528,13 +535,26 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	// invalid_state_transition planned → completed` when the second
 	// retry's worker reported in (Report 2026-05-06 P1-2).
 	//
-	// Walk RetryLineage looking for any descendant whose predecessor is
-	// opts.RetryOf and whose state is non-terminal (planned, ready,
-	// dispatched, running, verify_pending, repair_pending). If one
-	// exists, refuse the new retry — the operator should let the
-	// existing retry run to completion or cancel it explicitly first.
-	for descendantID, predecessor := range state.RetryLineage {
-		if predecessor != opts.RetryOf {
+	// Walk the FULL transitive descendant chain of opts.RetryOf in
+	// RetryLineage and refuse the new retry while ANY member is
+	// non-terminal (planned, ready, dispatched, running, verify_pending,
+	// repair_pending). Checking only direct children was insufficient:
+	// with A→B(terminal)→C(running), a `--retry-of A` slipped past the
+	// guard and forked the lineage — C and the new retry executed the
+	// same logical slot concurrently, and LatestDescendant's reverse-map
+	// resolution of A became last-write-wins map-order nondeterminism.
+	chain := map[string]bool{opts.RetryOf: true}
+	for changed := true; changed; {
+		changed = false
+		for descendantID, predecessor := range state.RetryLineage {
+			if chain[predecessor] && !chain[descendantID] {
+				chain[descendantID] = true
+				changed = true
+			}
+		}
+	}
+	for descendantID := range chain {
+		if descendantID == opts.RetryOf {
 			continue
 		}
 		descendantStatus, ok := state.TaskStates[descendantID]
@@ -542,15 +562,15 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 			continue
 		}
 		if model.IsTerminal(descendantStatus) {
-			// A terminal descendant means the prior retry chain has
-			// resolved (failed / cancelled / completed) — chaining a
-			// new retry off the original is acceptable. RetryLineage
-			// keeps the historical record; the new entry simply joins
-			// the chain at opts.RetryOf again.
+			// A terminal descendant means that link of the chain has
+			// resolved (failed / cancelled / completed) — it does not
+			// block a new retry. RetryLineage keeps the historical
+			// record; the new entry simply joins the chain at
+			// opts.RetryOf again.
 			continue
 		}
 		return nil, &planValidationError{Msg: fmt.Sprintf(
-			"retry-of task %s already has an active retry %s (status=%s); only one outstanding retry per predecessor is allowed — wait for it to terminate or cancel it explicitly first",
+			"retry-of task %s already has an active retry %s (status=%s) in its lineage; only one outstanding retry chain per predecessor is allowed — wait for it to terminate or cancel it explicitly first",
 			opts.RetryOf, descendantID, descendantStatus)}
 	}
 

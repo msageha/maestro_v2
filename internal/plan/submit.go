@@ -247,23 +247,62 @@ func rollbackPhaseFillToAwaiting(sm stateStore, state *model.CommandState, phase
 	return nil
 }
 
-// rollbackFullPhaseFill reverts queue entries, phase state, and task state additions,
-// then persists the rolled-back state.
-func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) error {
+// rollbackFullPhaseFill reverts queue entries, phase state, and task state
+// additions, then persists the rolled-back state.
+//
+// Lock-order contract: the caller must NOT hold the state lock when calling
+// this function — the queue rollback acquires `queue:<worker>` locks, and
+// the canonical order is queue → state (lock.go). Holding state while
+// taking queue locks here used to ABBA-deadlock against AddRetryTask
+// (which locks every worker queue before the state). This function takes
+// the state lock itself for the state-revert half.
+func rollbackFullPhaseFill(sm *StateManager, state *model.CommandState, phaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) error {
 	var errs []error
 	if queueErr := rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap); queueErr != nil {
 		errs = append(errs, fmt.Errorf("rollback: queue entries for command %s: %w", opts.CommandID, queueErr))
 	}
-	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
-	// Restart the awaiting-fill watchdog clock — see rollbackPhaseFillToAwaiting
-	// for the same rationale (failed full fill returns the phase to the
-	// pre-filling awaiting state, so a stalled Planner remains observable).
+	phaseID := state.Phases[phaseIdx].PhaseID
+
+	sm.LockCommand(opts.CommandID)
+	defer sm.UnlockCommand(opts.CommandID)
+
+	// Reload from disk: the caller released the state lock before invoking
+	// this rollback, so saving the caller's in-memory snapshot would
+	// clobber any state mutation that landed in between. Revert the fill
+	// against the CURRENT on-disk state instead.
+	fresh, loadErr := sm.LoadState(opts.CommandID)
+	if loadErr != nil {
+		errs = append(errs, fmt.Errorf("rollback: reload state for command %s: %w", opts.CommandID, loadErr))
+		return errors.Join(errs...)
+	}
+	freshIdx := -1
+	for i := range fresh.Phases {
+		if fresh.Phases[i].PhaseID == phaseID {
+			freshIdx = i
+			break
+		}
+	}
+	if freshIdx == -1 {
+		errs = append(errs, fmt.Errorf("rollback: phase %s missing from reloaded state for command %s", phaseID, opts.CommandID))
+		return errors.Join(errs...)
+	}
 	now := nowUTC()
-	state.Phases[phaseIdx].AwaitingFillSince = &now
-	state.Phases[phaseIdx].AwaitingFillStallNotifiedAt = nil
-	rollbackPhaseFillState(state, phaseIdx, tasks, nameToID)
-	state.UpdatedAt = now
-	if saveErr := sm.SaveState(state); saveErr != nil {
+	// Only revert the phase status when this fill still owns it: a status
+	// other than filling means another producer has since acted on the
+	// phase and reverting would clobber that decision. The added task IDs
+	// are stripped regardless — their queue entries are gone (never
+	// written, or rolled back above), so leaving them in the state would
+	// strand phantom entries.
+	if fresh.Phases[freshIdx].Status == model.PhaseStatusFilling {
+		fresh.Phases[freshIdx].Status = model.PhaseStatusAwaitingFill
+		// Restart the awaiting-fill watchdog clock — see
+		// rollbackPhaseFillToAwaiting for the rationale.
+		fresh.Phases[freshIdx].AwaitingFillSince = &now
+		fresh.Phases[freshIdx].AwaitingFillStallNotifiedAt = nil
+	}
+	rollbackPhaseFillState(fresh, freshIdx, tasks, nameToID)
+	fresh.UpdatedAt = now
+	if saveErr := sm.SaveState(fresh); saveErr != nil {
 		errs = append(errs, fmt.Errorf("rollback: save state for command %s: %w", opts.CommandID, saveErr))
 	}
 	if len(errs) > 0 {
@@ -662,13 +701,14 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	sm.LockCommand(opts.CommandID)
 	stateLocked = true
 	if queueErr != nil {
+		// Drop the state lock BEFORE the rollback: rollbackFullPhaseFill
+		// acquires queue locks first (canonical order queue → state), and
+		// holding state:{command} here would ABBA-deadlock against
+		// AddRetryTask (all queue locks → state).
+		sm.UnlockCommand(opts.CommandID)
+		stateLocked = false
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_queue_write", false, "manual_intervention", "phase_state+queue_entries")
-			// Rollback itself failed — disk state is now ambiguous. Drop the
-			// state lock before emit_paused_for_replan_signal so canonical
-			// lock order (queue → state → result) is preserved.
-			sm.UnlockCommand(opts.CommandID)
-			stateLocked = false
 			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
 				phaseSignalID(opts.PhaseName),
 				"phase_fill_queue_write_rollback_failed", opts.LockMap)
@@ -678,10 +718,12 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	state, targetPhaseIdx, err = reloadPhaseFillState(sm, opts, targetPhaseIdx, nowStr)
 	if err != nil {
+		// Queue rollback takes queue locks — release state first
+		// (canonical order queue → state; see rollbackFullPhaseFill).
+		sm.UnlockCommand(opts.CommandID)
+		stateLocked = false
 		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_reload_queue_rollback", false, "manual_intervention", "queue_entries")
-			sm.UnlockCommand(opts.CommandID)
-			stateLocked = false
 			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
 				phaseSignalID(opts.PhaseName),
 				"phase_fill_reload_queue_rollback_failed", opts.LockMap)
@@ -689,10 +731,10 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		return nil, err
 	}
 	if err := applyPhaseFillTasks(state, targetPhaseIdx, opts, input.Tasks, nameToID); err != nil {
+		sm.UnlockCommand(opts.CommandID)
+		stateLocked = false
 		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_apply_queue_rollback", false, "manual_intervention", "queue_entries")
-			sm.UnlockCommand(opts.CommandID)
-			stateLocked = false
 			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
 				phaseSignalID(opts.PhaseName),
 				"phase_fill_apply_queue_rollback_failed", opts.LockMap)
@@ -707,10 +749,12 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.UpdatedAt = now
 
 	if err := sm.SaveState(state); err != nil {
+		// Release state before the rollback's queue-lock acquisition
+		// (canonical order queue → state; see rollbackFullPhaseFill).
+		sm.UnlockCommand(opts.CommandID)
+		stateLocked = false
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_save_state", false, "manual_intervention", "phase_state+queue_entries")
-			sm.UnlockCommand(opts.CommandID)
-			stateLocked = false
 			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
 				phaseSignalID(opts.PhaseName),
 				"phase_fill_save_state_rollback_failed", opts.LockMap)

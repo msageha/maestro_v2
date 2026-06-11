@@ -696,9 +696,15 @@ func ListAllPanes(format string) ([]string, error) {
 	return strings.Split(out, "\n"), nil
 }
 
-// FindPaneByAgentID finds the pane target (session:window.pane) for a given agent_id.
+// FindPaneByAgentID finds the pane target for a given agent_id. The target
+// is the immutable pane ID (%N), NOT the session:window.pane_index form:
+// pane indices are renumbered when an operator closes a pane mid-delivery,
+// which would silently retarget the multi-second send sequence (clear
+// confirmation, busy retries, paste, Enter) at a different agent's pane.
+// Every tmux command accepts %N targets, and downstream consumers treat the
+// target as an opaque key.
 func FindPaneByAgentID(agentID string) (string, error) {
-	lines, err := ListAllPanes("#{session_name}:#{window_index}.#{pane_index}\t#{@agent_id}")
+	lines, err := ListAllPanes("#{pane_id}\t#{@agent_id}")
 	if err != nil {
 		return "", fmt.Errorf("list panes: %w", err)
 	}

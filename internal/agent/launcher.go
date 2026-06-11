@@ -219,20 +219,35 @@ func launchAlternativeWorker(agentRuntime, agentModel, systemPrompt string) erro
 // directory. For other runtimes it falls back to the inherited environment.
 // Callers handle a non-nil error by logging and reverting to os.Environ().
 func buildAlternativeWorkerEnv(agentRuntime string) ([]string, error) {
+	// MAESTRO_AGENT_ROLE keeps role attribution working when TMUX_PANE is
+	// stripped (e.g. sandboxed subshells): without it, ResolveCallerRole
+	// falls back to "cli" for daemon API calls originating from the worker.
+	// The claude-code path sets this in buildLaunchEnv; codex/gemini must
+	// match. Strip any inherited value first — duplicate env entries are
+	// resolved inconsistently across platforms (libc getenv returns the
+	// first match, most runtimes the last).
+	env := os.Environ()
+	base := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		if strings.HasPrefix(kv, uds.CallerRoleEnv+"=") {
+			continue
+		}
+		base = append(base, kv)
+	}
+	base = append(base, uds.CallerRoleEnv+"=worker")
 	if agentRuntime != model.RuntimeCodex {
-		return os.Environ(), nil
+		return base, nil
 	}
 	codexHome, err := prepareCodexHomeForCurrentWorker()
 	if err != nil {
 		return nil, err
 	}
 	if codexHome == "" {
-		return os.Environ(), nil
+		return base, nil
 	}
-	env := os.Environ()
 	// Replace any inherited CODEX_HOME so this worker's overrides win.
-	out := make([]string, 0, len(env)+1)
-	for _, kv := range env {
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
 		if strings.HasPrefix(kv, "CODEX_HOME=") {
 			continue
 		}

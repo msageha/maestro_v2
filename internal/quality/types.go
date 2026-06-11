@@ -144,7 +144,7 @@ type RuleCondition struct {
 	Field          string          `yaml:"field"`
 	Operator       FieldOperator   `yaml:"operator"`
 	Value          interface{}     `yaml:"value"`
-	CaseSensitive  bool            `yaml:"case_sensitive"`
+	CaseSensitive  *bool           `yaml:"case_sensitive"`
 	Conditions     []RuleCondition `yaml:"conditions"`
 	Language       string          `yaml:"language"`
 	Script         string          `yaml:"script"`
@@ -154,6 +154,16 @@ type RuleCondition struct {
 	CompiledRegex  *regexp.Regexp `yaml:"-"`
 	CompiledScript interface{}    `yaml:"-"` // Compiled script function
 	SourceFile     string         `yaml:"-"` // Source config file path for permission re-verification
+}
+
+// IsCaseSensitive returns the effective case sensitivity for field
+// validation: true unless the gate author explicitly wrote
+// `case_sensitive: false`. The field is a *bool because a plain bool
+// cannot distinguish "absent" from "false" — the old defaulting forced
+// every gate to case-sensitive matching and made `case_sensitive: false`
+// impossible to configure.
+func (c *RuleCondition) IsCaseSensitive() bool {
+	return c.CaseSensitive == nil || *c.CaseSensitive
 }
 
 // ActionDefinition defines actions based on rule evaluation

@@ -468,10 +468,20 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 			}
 		}
 
-		// Delete worker branch
+		// Delete worker branch. A real deletion failure must block state
+		// removal (errs non-empty keeps the state file so GC retries):
+		// deleting the state while the branch survives leaves unpublished
+		// commits dangling with nothing tracking them. "not found" means a
+		// prior attempt already deleted it — idempotent success.
 		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
-			wm.Log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
-				commandID, ws.WorkerID, ws.Branch, err)
+			if strings.Contains(err.Error(), "not found") {
+				wm.Log(core.LogLevelDebug, "delete_worker_branch_already_gone command=%s worker=%s branch=%s",
+					commandID, ws.WorkerID, ws.Branch)
+			} else {
+				wm.Log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
+					commandID, ws.WorkerID, ws.Branch, err)
+				errs = append(errs, fmt.Sprintf("delete worker branch %s: %v", ws.Branch, err))
+			}
 		}
 	}
 
@@ -486,10 +496,16 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 		}
 	}
 
-	// Delete integration branch
+	// Delete integration branch (same retry semantics as worker branches).
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
-		wm.Log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
-			commandID, state.Integration.Branch, err)
+		if strings.Contains(err.Error(), "not found") {
+			wm.Log(core.LogLevelDebug, "delete_integration_branch_already_gone command=%s branch=%s",
+				commandID, state.Integration.Branch)
+		} else {
+			wm.Log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
+				commandID, state.Integration.Branch, err)
+			errs = append(errs, fmt.Sprintf("delete integration branch %s: %v", state.Integration.Branch, err))
+		}
 	}
 
 	// Delete _publish temp branch if it leaked (e.g. crash after update-ref in PublishToBase)
@@ -498,6 +514,10 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 		wm.Log(core.LogLevelDebug, "delete_publish_branch_skipped command=%s branch=%s error=%v",
 			commandID, publishBranch, err)
 	}
+
+	// Delete a leaked publish sync-pending marker (crash between update-ref
+	// and project-root sync followed by command cleanup without a retry).
+	wm.deletePublishSyncPendingRef(commandID)
 
 	// Delete pre-publish-stash durable ref created by syncProjectRootAfterPublish
 	prePublishStashRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)

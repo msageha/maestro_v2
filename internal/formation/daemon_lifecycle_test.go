@@ -138,12 +138,15 @@ func TestTerminateProcess(t *testing.T) {
 			wantResult:  terminateNotTarget,
 		},
 		{
+			// A SIGKILL survivor must NOT report terminateStopped: callers
+			// delete daemon.pid on terminateStopped, which would orphan a
+			// live daemon with no way to find it again.
 			name:        "survives SIGKILL",
 			alive:       func(int) bool { return true },
 			signal:      func(int, syscall.Signal) error { return nil },
 			sameProcess: func(int) bool { return true },
 			termTimeout: 50 * time.Millisecond,
-			wantResult:  terminateStopped,
+			wantResult:  terminateSurvived,
 			wantErr:     true,
 		},
 	}

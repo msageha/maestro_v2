@@ -176,7 +176,17 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 			if modified {
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
+					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v "+
+						"(suppressing this scan's notifications/repairs — the unsaved "+
+						"ConflictResolutionAttempts/ConflictEscalated would make the next scan "+
+						"re-count and re-notify, duplicating resolution tasks)", commandID, err)
+					// State (attempt counters, escalation flags, resolving
+					// transitions) did not persist: the next scan will
+					// re-derive the same decisions and re-emit. Sending the
+					// notifications now would double-dispatch.
+					r = nil
+					n = nil
+					return
 				}
 			}
 

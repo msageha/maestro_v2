@@ -119,9 +119,20 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 }
 
 // batchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
-func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
+// batchRemoveTaskIDsFromQueues removes the given task IDs from every worker
+// queue, but ONLY entries still in a pre-dispatch status (pending / planned
+// / ready). A dispatched / running / terminal entry means the fill
+// progressed after the caller's snapshot — removing it would strand a live
+// worker whose result_write then fails with task-not-found. Returns:
+//
+//   - removed:    IDs whose queue entries were deleted
+//   - keptActive: IDs found but left in place because their status had
+//     advanced past pre-dispatch (callers must not strip these from state)
+func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed, keptActive map[string]bool, err error) {
+	removed = make(map[string]bool)
+	keptActive = make(map[string]bool)
 	if len(taskIDs) == 0 {
-		return nil
+		return removed, keptActive, nil
 	}
 
 	removeSet := make(map[string]struct{}, len(taskIDs))
@@ -129,10 +140,18 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 		removeSet[id] = struct{}{}
 	}
 
+	removable := func(s model.Status) bool {
+		switch s {
+		case model.StatusPending, model.StatusPlanned, model.StatusReady:
+			return true
+		}
+		return false
+	}
+
 	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
-	entries, err := os.ReadDir(queueDir)
-	if err != nil {
-		return fmt.Errorf("read queue dir: %w", err)
+	entries, dirErr := os.ReadDir(queueDir)
+	if dirErr != nil {
+		return removed, keptActive, fmt.Errorf("read queue dir: %w", dirErr)
 	}
 
 	var writeErrs []error
@@ -162,9 +181,17 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 
 			filtered := make([]model.Task, 0, len(tq.Tasks))
 			for _, task := range tq.Tasks {
-				if _, remove := removeSet[task.ID]; !remove {
-					filtered = append(filtered, task)
+				if _, remove := removeSet[task.ID]; remove {
+					if removable(task.Status) {
+						removed[task.ID] = true
+						continue
+					}
+					keptActive[task.ID] = true
+					r.Log(core.LogLevelWarn,
+						"R0b batch_remove_skip_active file=%s task=%s status=%s (entry advanced past pre-dispatch; keeping)",
+						name, task.ID, task.Status)
 				}
+				filtered = append(filtered, task)
 			}
 			if len(filtered) == len(tq.Tasks) {
 				return nil
@@ -182,7 +209,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 	}
 
 	if len(writeErrs) > 0 {
-		return errors.Join(writeErrs...)
+		return removed, keptActive, errors.Join(writeErrs...)
 	}
-	return nil
+	return removed, keptActive, nil
 }

@@ -1249,6 +1249,26 @@ func TestStepWorktreeFastTrackCleanup_ClearsPhantomTaskAndProceeds(t *testing.T)
 		}),
 	}
 
+	// First scan only records suspicion: daemon-side retry registration
+	// writes state before queue, so a single-instant probe could misread a
+	// registering task. Destruction requires queue absence on two
+	// consecutive scans.
+	qh.stepWorktreeFastTrackCleanup(&s)
+	{
+		data, err := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+		if err != nil {
+			t.Fatalf("read state after first scan: %v", err)
+		}
+		var st model.CommandState
+		if err := yamlv3.Unmarshal(data, &st); err != nil {
+			t.Fatalf("unmarshal state after first scan: %v", err)
+		}
+		if got := st.TaskStates["t1_retry"]; got != model.StatusPlanned {
+			t.Errorf("after first scan phantom t1_retry status=%s, want planned (suspicion only)", got)
+		}
+	}
+
+	// Second scan confirms and clears.
 	qh.stepWorktreeFastTrackCleanup(&s)
 
 	// Phantom should be force-cancelled in state. The source status was

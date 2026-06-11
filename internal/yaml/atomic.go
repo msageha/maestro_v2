@@ -67,10 +67,22 @@ func (c *validationCache) shouldSkipValidation(path string, content []byte) bool
 	return true
 }
 
+// maxValidationCacheEntries bounds the per-path validation cache. Long-lived
+// daemons accumulate one entry per state/queue file path (commands come and
+// go), so without a cap the map grows monotonically. Eviction is arbitrary:
+// a miss only costs one full validation pass.
+const maxValidationCacheEntries = 4096
+
 // recordValidation stores the checksum of successfully validated content.
 func (c *validationCache) recordValidation(path string, content []byte) {
 	sum := sha256.Sum256(content)
 	c.mu.Lock()
+	if _, exists := c.entries[path]; !exists && len(c.entries) >= maxValidationCacheEntries {
+		for k := range c.entries {
+			delete(c.entries, k)
+			break
+		}
+	}
 	c.entries[path] = &validationEntry{sum: sum}
 	c.mu.Unlock()
 }

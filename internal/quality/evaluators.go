@@ -163,13 +163,13 @@ func (e *fieldValidationEvaluator) Evaluate(_ context.Context, condition *RuleCo
 	case OpNotExists:
 		return e.evalNotExists(value, exists), nil
 	case OpEquals:
-		return e.evalEquals(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalEquals(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	case OpNotEquals:
-		return e.evalNotEquals(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalNotEquals(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	case OpContains:
-		return e.evalContains(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalContains(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	case OpNotContains:
-		return e.evalNotContains(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalNotContains(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	case OpMatches, OpNotMatches:
 		return e.evalMatches(value, condition, exists)
 	case OpGT, OpGTE, OpLT, OpLTE:
@@ -178,9 +178,9 @@ func (e *fieldValidationEvaluator) Evaluate(_ context.Context, condition *RuleCo
 		}
 		return e.compareNumeric(value, condition.Value, condition.Operator)
 	case OpIn:
-		return e.evalIn(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalIn(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	case OpNotIn:
-		return e.evalNotIn(value, condition.Value, condition.CaseSensitive, exists), nil
+		return e.evalNotIn(value, condition.Value, condition.IsCaseSensitive(), exists), nil
 	default:
 		return false, fmt.Errorf("unknown operator: %s", condition.Operator)
 	}

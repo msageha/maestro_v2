@@ -50,7 +50,7 @@ gates:
 				assert.Equal(t, ActionAllow, gate.Action.OnPass)
 				assert.Equal(t, ActionContinue, gate.Action.OnWarn)
 				assert.Equal(t, SeverityError, gate.Rules[0].Severity)
-				assert.True(t, gate.Rules[0].Condition.CaseSensitive)
+				assert.True(t, gate.Rules[0].Condition.IsCaseSensitive())
 			},
 		},
 		{

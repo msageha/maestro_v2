@@ -56,6 +56,10 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		taskID     string
 		workerID   string
 		retryCount int
+		// predecessorID is the orphaned retry's lineage predecessor (the
+		// task it was retrying). Captured so Phase 2 can rebuild the retry
+		// from the CORRECT template instead of guessing.
+		predecessorID string
 	}
 	var snapshot []retryEntry
 
@@ -66,7 +70,12 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		}
 		for taskID, value := range state.RetryEnqueueFailed {
 			wid, rc := parseRetryEnqueueValue(value)
-			snapshot = append(snapshot, retryEntry{taskID: taskID, workerID: wid, retryCount: rc})
+			snapshot = append(snapshot, retryEntry{
+				taskID:        taskID,
+				workerID:      wid,
+				retryCount:    rc,
+				predecessorID: state.RetryLineage[taskID],
+			})
 		}
 	})
 
@@ -104,10 +113,10 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			continue
 		}
 
-		originalTask := r1FindOriginalTask(run, entry.workerID, commandID)
+		originalTask := r1FindOriginalTask(run, entry.workerID, commandID, entry.predecessorID)
 		if originalTask == nil {
-			run.Log(core.LogLevelError, "R1 retry_enqueue_no_original task=%s worker=%s command=%s (original task not found, marked failed)",
-				entry.taskID, entry.workerID, commandID)
+			run.Log(core.LogLevelError, "R1 retry_enqueue_no_original task=%s worker=%s command=%s predecessor=%q (original task not found, marked failed)",
+				entry.taskID, entry.workerID, commandID, entry.predecessorID)
 			results = append(results, entryResult{entry: entry, action: actionNoOriginalFailed})
 			continue
 		}
@@ -269,7 +278,14 @@ func r1TaskExistsInQueue(run *Run, workerID, taskID string) bool {
 // r1FindOriginalTask finds a terminal task in the worker's queue that belongs to the
 // same command. This is used as a template to reconstruct the retry task.
 // Acquires queue lock internally.
-func r1FindOriginalTask(run *Run, workerID, commandID string) *model.Task {
+// r1FindOriginalTask locates the template task for rebuilding an orphaned
+// retry. When the retry's lineage predecessor is known it is matched BY ID —
+// a worker that processed several tasks of the same command would otherwise
+// have the "latest terminal task" heuristic pick a different task's
+// Content/ExpectedPaths and re-enqueue the wrong work under the orphan's ID.
+// The heuristic remains only as a fallback for legacy entries without
+// lineage.
+func r1FindOriginalTask(run *Run, workerID, commandID, predecessorID string) *model.Task {
 	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
@@ -284,7 +300,22 @@ func r1FindOriginalTask(run *Run, workerID, commandID string) *model.Task {
 		return nil
 	}
 
-	// Find the most recent terminal task for this command
+	if predecessorID != "" {
+		for i := range tq.Tasks {
+			task := &tq.Tasks[i]
+			if task.CommandID == commandID && task.ID == predecessorID {
+				cp := *task
+				return &cp
+			}
+		}
+		// The predecessor is known but absent from this queue (archived /
+		// cleaned). Do NOT fall through to the heuristic: rebuilding from
+		// an unrelated task is worse than dead-lettering for Planner
+		// review.
+		return nil
+	}
+
+	// Legacy fallback: find the most recent terminal task for this command.
 	var best *model.Task
 	for i := range tq.Tasks {
 		task := &tq.Tasks[i]

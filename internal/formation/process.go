@@ -17,6 +17,11 @@ const (
 	// target process (e.g. PID was reused). The caller should not clean up
 	// PID files in this case.
 	terminateNotTarget
+	// terminateSurvived means the process is still alive after SIGKILL
+	// (e.g. uninterruptible disk sleep). The caller must NOT remove the
+	// PID file: doing so would orphan a live daemon with no way to find
+	// it again.
+	terminateSurvived
 )
 
 // terminateProcess sends SIGTERM to pid, waits up to termTimeout for exit,
@@ -59,7 +64,7 @@ func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeo
 	}
 
 	if c.ProcMgr.Alive(pid) {
-		return terminateStopped, fmt.Errorf("process pid=%d still alive after SIGKILL", pid)
+		return terminateSurvived, fmt.Errorf("process pid=%d still alive after SIGKILL", pid)
 	}
 	return terminateStopped, nil
 }

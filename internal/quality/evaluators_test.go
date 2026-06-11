@@ -560,7 +560,7 @@ func TestFieldValidation_CaseSensitiveEquals(t *testing.T) {
 				Field:         "field",
 				Operator:      OpEquals,
 				Value:         tt.target,
-				CaseSensitive: tt.caseSensitive,
+				CaseSensitive: &tt.caseSensitive,
 			}
 			got, err := eval.Evaluate(ctx, cond, evalCtx)
 			require.NoError(t, err)
@@ -594,7 +594,7 @@ func TestFieldValidation_CaseSensitiveNotEquals(t *testing.T) {
 				Field:         "field",
 				Operator:      OpNotEquals,
 				Value:         tt.target,
-				CaseSensitive: tt.caseSensitive,
+				CaseSensitive: &tt.caseSensitive,
 			}
 			got, err := eval.Evaluate(ctx, cond, evalCtx)
 			require.NoError(t, err)
@@ -630,7 +630,7 @@ func TestFieldValidation_CaseSensitiveIn(t *testing.T) {
 				Field:         "field",
 				Operator:      OpIn,
 				Value:         tt.list,
-				CaseSensitive: tt.caseSensitive,
+				CaseSensitive: &tt.caseSensitive,
 			}
 			got, err := eval.Evaluate(ctx, cond, evalCtx)
 			require.NoError(t, err)
@@ -663,7 +663,7 @@ func TestFieldValidation_CaseSensitiveContains(t *testing.T) {
 				Field:         "field",
 				Operator:      OpContains,
 				Value:         tt.target,
-				CaseSensitive: tt.caseSensitive,
+				CaseSensitive: &tt.caseSensitive,
 			}
 			got, err := eval.Evaluate(ctx, cond, evalCtx)
 			require.NoError(t, err)

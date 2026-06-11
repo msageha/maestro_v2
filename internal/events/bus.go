@@ -174,13 +174,21 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 					fn(event)
 				}()
 			case <-b.ctx.Done():
-				// Drain remaining buffered events so the channel becomes empty
-				// and the goroutine exits promptly. Without this drain, the
-				// goroutine would block on <-sub.ch until Close() closes the
-				// channel, causing a goroutine leak if the subscriber is slow.
-				for range sub.ch { //nolint:revive // intentional drain loop
+				// Drain only what is currently buffered, then exit. A
+				// blocking `for range sub.ch` would park here until Close()
+				// closes the channel — a goroutine leak (and a silent event
+				// sink that keeps accepting publishes) for callers that
+				// cancel the context without pairing it with Close.
+				for {
+					select {
+					case _, ok := <-sub.ch:
+						if !ok {
+							return
+						}
+					default:
+						return
+					}
 				}
-				return
 			}
 		}
 	}()

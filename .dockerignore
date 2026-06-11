@@ -1,0 +1,13 @@
+# Allow-list: only what the Go build (COPY . in docker/Dockerfile) needs.
+# Everything else — .git history, .maestro control-plane state, audit
+# reports, untracked local files — stays out of the build context and image
+# layers (a later `rm -rf` cannot remove content from the COPY layer).
+# NOTE: templates/**/*.md are embedded via go:embed and must stay included.
+**
+!go.mod
+!go.sum
+!cmd/**
+!internal/**
+!templates/**
+!docker/entrypoint.sh
+!Makefile

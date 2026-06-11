@@ -295,19 +295,36 @@ func (wm *Manager) stageResolvedForwardMergeFiles(integrationPath string, confli
 	return true, nil
 }
 
+// bytesContainConflictMarkers reports whether data still contains an
+// UNRESOLVED git conflict: a `<<<<<<<` line followed (in order, at line
+// start) by a `=======` line and then a `>>>>>>>` line. Requiring the
+// ordered triple avoids false positives on legitimate content — most
+// notably Markdown setext heading underlines (`=======`), which previously
+// made publish-conflict resolutions containing such files permanently
+// unstageable (every retry refused to stage → attempt budget exhausted →
+// quarantine, with no path for the worker to fix it).
 func bytesContainConflictMarkers(data []byte) bool {
-	s := string(data)
-	if strings.Contains(s, "<<<<<<<") ||
-		strings.Contains(s, "\n=======") ||
-		strings.Contains(s, "\n>>>>>>>") {
-		return true
-	}
-	// Pathological edge case: a file that opens with the divider or closing
-	// marker on the very first byte has no leading newline, so the "\n..."
-	// substrings above miss it. Cover that case explicitly.
-	if bytes.HasPrefix(data, []byte("=======")) ||
-		bytes.HasPrefix(data, []byte(">>>>>>>")) {
-		return true
+	const (
+		seekStart = iota
+		seekDivider
+		seekEnd
+	)
+	state := seekStart
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		switch state {
+		case seekStart:
+			if bytes.HasPrefix(line, []byte("<<<<<<<")) {
+				state = seekDivider
+			}
+		case seekDivider:
+			if bytes.HasPrefix(line, []byte("=======")) {
+				state = seekEnd
+			}
+		case seekEnd:
+			if bytes.HasPrefix(line, []byte(">>>>>>>")) {
+				return true
+			}
+		}
 	}
 	return false
 }

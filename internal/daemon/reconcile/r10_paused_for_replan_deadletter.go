@@ -145,11 +145,29 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 	// escalation set so Phase 3 leaves their state at paused_for_replan
 	// for the next scan to retry.
 	type prepared struct {
-		taskID string
-		age    time.Duration
+		taskID     string
+		age        time.Duration
+		workerID   string
+		prevStatus model.Status
 	}
 	var ready []prepared
 	for _, c := range candidates {
+		// Pre-write re-check (lock-free atomic state read): the Planner may
+		// have re-activated the task (paused_for_replan → ready is a legal
+		// markTaskReady transition) between the Phase 1 snapshot and now.
+		// Writing queue=failed first and only then noticing the state change
+		// in Phase 3 left a state=ready / queue=failed split: terminal queue
+		// rows are never re-dispatched, so the revived task hung forever.
+		// The residual window after this check is micro-seconds.
+		if st, err := run.loadState(statePath); err == nil {
+			if st.TaskStates[c.taskID] != model.StatusPausedForReplan {
+				run.Log(core.LogLevelInfo,
+					"R10 skip_task_left_paused command=%s task=%s status=%s "+
+						"(Planner acted between snapshot and queue write)",
+					commandID, c.taskID, st.TaskStates[c.taskID])
+				continue
+			}
+		}
 		workerID, findErr := r10FindOwningWorker(run, commandID, c.taskID)
 		if findErr != nil {
 			run.Log(core.LogLevelWarn,
@@ -158,16 +176,19 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 				commandID, c.taskID, findErr)
 			continue
 		}
+		var prevStatus model.Status
 		if workerID != "" {
-			if err := r10MarkQueueTaskFailed(run, workerID, c.taskID); err != nil {
+			var qErr error
+			prevStatus, qErr = r10MarkQueueTaskFailed(run, workerID, c.taskID)
+			if qErr != nil {
 				run.Log(core.LogLevelWarn,
 					"R10 queue_update_failed command=%s task=%s worker=%s error=%v "+
 						"(state left at paused_for_replan so the next scan can retry)",
-					commandID, c.taskID, workerID, err)
+					commandID, c.taskID, workerID, qErr)
 				continue
 			}
 		}
-		ready = append(ready, prepared(c))
+		ready = append(ready, prepared{taskID: c.taskID, age: c.age, workerID: workerID, prevStatus: prevStatus})
 	}
 	if len(ready) == 0 {
 		return nil
@@ -179,6 +200,7 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 	// paused_for_replan). We never overwrite a non-paused_for_replan
 	// status — better to skip than to clobber a legitimate transition.
 	var commandRepairs []Repair
+	var queueRestores []prepared
 	requiredTaskEscalated := false
 	run.Deps.LockMap.WithLock("state:"+commandID, func() {
 		state, err := run.loadState(statePath)
@@ -202,8 +224,14 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 			if state.TaskStates[p.taskID] != model.StatusPausedForReplan {
 				run.Log(core.LogLevelDebug,
 					"R10 skip_terminal_write command=%s task=%s reason=status_changed_during_queue_update "+
-						"(another path advanced the state; honouring it)",
+						"(another path advanced the state; honouring it and restoring the queue entry)",
 					commandID, p.taskID)
+				if p.workerID != "" && p.prevStatus != "" {
+					// Compensate after releasing the state lock (queue locks
+					// must never be taken while holding state — canonical
+					// order is queue → state).
+					queueRestores = append(queueRestores, p)
+				}
 				continue
 			}
 			run.Log(core.LogLevelWarn,
@@ -233,6 +261,12 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 			}
 		}
 	})
+
+	// Compensation (post Phase 3, state lock released): restore queue
+	// entries whose state re-check showed the Planner revived the task.
+	for _, p := range queueRestores {
+		r10RestoreQueueTaskStatus(run, p.workerID, p.taskID, p.prevStatus)
+	}
 
 	// Phase 4: when at least one *required* task was escalated, publish a
 	// synthetic planner result with status=failed so R3PlannerQueue picks
@@ -398,9 +432,15 @@ func r10FindOwningWorker(run *Run, commandID, taskID string) (string, error) {
 // could not be read, parsed, or atomically written; the caller uses the
 // non-nil error as a signal to leave state at paused_for_replan so the next
 // R10 scan can retry the whole transition.
-func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) error {
+// r10MarkQueueTaskFailed flips the queue entry to failed and returns the
+// status it had before the overwrite (empty when the entry was missing,
+// already terminal, or the write failed) so the caller can compensate —
+// restore the previous status — when Phase 3 discovers the Planner revived
+// the task in the meantime.
+func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) (model.Status, error) {
 	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
 	var retErr error
+	var prevStatus model.Status
 	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
 		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in the controlled queue directory
 		if err != nil {
@@ -427,6 +467,7 @@ func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) error {
 			if model.IsTerminal(t.Status) {
 				return // already terminal — idempotent success
 			}
+			prevStatus = t.Status
 			t.Status = model.StatusFailed
 			t.UpdatedAt = nowStr
 			modified = true
@@ -435,8 +476,51 @@ func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) error {
 			return // task not found in queue — treat as success
 		}
 		if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+			prevStatus = ""
 			retErr = fmt.Errorf("write queue: %w", err)
 		}
 	})
-	return retErr
+	return prevStatus, retErr
+}
+
+// r10RestoreQueueTaskStatus undoes r10MarkQueueTaskFailed when Phase 3
+// found the state no longer at paused_for_replan (the Planner revived the
+// task between the queue write and the state re-check). Only restores when
+// the entry is still at the failed status R10 wrote — a CAS so concurrent
+// legitimate writes are never clobbered. Without this compensation the
+// task was left state=ready / queue=failed: terminal queue rows are never
+// re-dispatched, so the revived task hung forever.
+func r10RestoreQueueTaskStatus(run *Run, workerID, taskID string, prevStatus model.Status) {
+	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
+		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in the controlled queue directory
+		if err != nil {
+			run.Log(core.LogLevelWarn, "R10 queue_restore_read_failed worker=%s task=%s error=%v", workerID, taskID, err)
+			return
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			run.Log(core.LogLevelWarn, "R10 queue_restore_parse_failed worker=%s task=%s error=%v", workerID, taskID, err)
+			return
+		}
+		for i := range tq.Tasks {
+			t := &tq.Tasks[i]
+			if t.ID != taskID {
+				continue
+			}
+			if t.Status != model.StatusFailed {
+				return // someone else wrote since — honour it
+			}
+			t.Status = prevStatus
+			t.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				run.Log(core.LogLevelWarn, "R10 queue_restore_write_failed worker=%s task=%s error=%v", workerID, taskID, err)
+				return
+			}
+			run.Log(core.LogLevelInfo,
+				"R10 queue_status_restored worker=%s task=%s status=%s (state left paused_for_replan during queue update)",
+				workerID, taskID, prevStatus)
+			return
+		}
+	})
 }

@@ -328,13 +328,30 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		}
 	}
 
-	// If the task was injected into a completed phase, reopen it so that
-	// the new pending task is properly tracked by the phase lifecycle.
-	if selectedPhaseIdx >= 0 && state.Phases[selectedPhaseIdx].Status == model.PhaseStatusCompleted {
-		reopenedAt := nowUTC()
-		state.Phases[selectedPhaseIdx].Status = model.PhaseStatusActive
-		state.Phases[selectedPhaseIdx].CompletedAt = nil
-		state.Phases[selectedPhaseIdx].ReopenedAt = &reopenedAt
+	// If the task was injected into a terminal phase, reopen it so the new
+	// planned task is tracked by the phase lifecycle. Without the reopen, a
+	// terminal phase silently accumulates planned tasks that no dispatcher
+	// or completion check ever looks at.
+	//   - completed → active: the historical reopen path.
+	//   - failed → active: the same transition the retry pipeline uses
+	//     (ValidatePhaseTransition's dedicated add-retry special case).
+	//   - cancelled: the state machine forbids cancelled → active, so the
+	//     injection is rejected outright instead of stranding the task.
+	if selectedPhaseIdx >= 0 {
+		switch state.Phases[selectedPhaseIdx].Status {
+		case model.PhaseStatusCompleted, model.PhaseStatusFailed:
+			reopenedAt := nowUTC()
+			state.Phases[selectedPhaseIdx].Status = model.PhaseStatusActive
+			state.Phases[selectedPhaseIdx].CompletedAt = nil
+			state.Phases[selectedPhaseIdx].ReopenedAt = &reopenedAt
+		case model.PhaseStatusCancelled:
+			if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+				slogc().Error("state restore failed during cancelled-phase rejection", "error", rsErr)
+			}
+			return nil, &planValidationError{Msg: fmt.Sprintf(
+				"phase %q is cancelled and cannot accept injected tasks (cancelled phases cannot be reopened); target a different phase via --target-phase or submit a fresh command",
+				state.Phases[selectedPhaseIdx].PhaseID)}
+		}
 	}
 
 	// Record idempotency key for deduplication on retry

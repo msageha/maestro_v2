@@ -74,6 +74,14 @@ type QueueHandler struct {
 	// scanExecutor handles periodic scan orchestration and scan-specific state.
 	scanExecutor *ScanPhaseExecutor
 
+	// phantomSuspects tracks "state has it, queues don't" candidates across
+	// scans (key: commandID+"/"+taskID). A candidate is only force-cleared
+	// after being queue-absent on TWO consecutive scans: daemon-side retry
+	// registration (RetryTaskAtomically, R9) writes state BEFORE the queue,
+	// so a single-instant probe can catch a task mid-registration. Accessed
+	// only from the serialized PeriodicScan goroutine — no lock needed.
+	phantomSuspects map[string]int
+
 	// scanRunMu exposes the scan run mutex for test cleanup synchronization.
 	scanRunMu *sync.Mutex
 

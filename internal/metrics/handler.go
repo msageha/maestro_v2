@@ -25,9 +25,13 @@ type Logger interface {
 	Warnf(format string, args ...any)
 }
 
-// resultFileEntry holds cached result file data keyed by modtime.
+// resultFileEntry holds cached result file data keyed by modtime + size.
+// Size participates in the staleness check because filesystems with coarse
+// timestamp granularity can give two successive atomic renames the same
+// modtime; size catches most of those rewrites.
 type resultFileEntry struct {
 	modTime time.Time
+	size    int64
 	file    *model.TaskResultFile
 }
 
@@ -177,8 +181,8 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 		}
 		modTime := info.ModTime()
 
-		// Use cached entry if modtime is unchanged.
-		if cached, ok := h.resultCache[name]; ok && cached.modTime.Equal(modTime) {
+		// Use cached entry if modtime and size are unchanged.
+		if cached, ok := h.resultCache[name]; ok && cached.modTime.Equal(modTime) && cached.size == info.Size() {
 			wID := strings.TrimSuffix(name, ".yaml")
 			result[wID] = cached.file
 			continue
@@ -198,7 +202,7 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 			continue
 		}
 
-		h.resultCache[name] = &resultFileEntry{modTime: modTime, file: &rf}
+		h.resultCache[name] = &resultFileEntry{modTime: modTime, size: info.Size(), file: &rf}
 		wID := strings.TrimSuffix(name, ".yaml")
 		result[wID] = &rf
 	}

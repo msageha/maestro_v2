@@ -111,11 +111,53 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 			continue
 		}
 
+		// Phase 2 pre-check: re-read the state (lock-free atomic file read)
+		// and drop phases that left `filling` since the Phase 1 snapshot.
+		// R0b fires precisely when the Planner is slow, so "Planner
+		// completed the fill between snapshot and now" is a realistic race:
+		// batchRemoveTaskIDsFromQueues ignores task status and would strip
+		// freshly dispatched in_progress tasks from the queues, while
+		// Phase 3's filling re-check then skips the state restore — a
+		// state/queue split-brain whose workers get task-not-found on
+		// result_write. The residual window between this re-check and the
+		// queue mutation is micro-seconds instead of the full Phase 1→2 gap,
+		// and Phase 3 still re-verifies the state side under the lock.
+		if state, err := run.loadState(statePath); err == nil {
+			stillFilling := make(map[string]bool)
+			for i := range state.Phases {
+				if state.Phases[i].Status == model.PhaseStatusFilling {
+					stillFilling[state.Phases[i].Name] = true
+				}
+			}
+			filtered := stuckPhases[:0]
+			allTaskIDsToRemove = allTaskIDsToRemove[:0]
+			for _, sp := range stuckPhases {
+				if !stillFilling[sp.phaseName] {
+					run.Log(core.LogLevelInfo,
+						"R0b skip_phase_left_filling command=%s phase=%s (fill completed between snapshot and queue removal)",
+						commandID, sp.phaseName)
+					continue
+				}
+				filtered = append(filtered, sp)
+				allTaskIDsToRemove = append(allTaskIDsToRemove, sp.taskIDs...)
+			}
+			stuckPhases = filtered
+			if len(stuckPhases) == 0 {
+				continue
+			}
+		}
+
 		// Phase 2: remove tasks from worker queues (no state lock held).
 		// If this fails, skip state update to prevent split-brain.
+		// keptActive entries (status advanced past pre-dispatch between the
+		// re-check above and the removal) veto their whole phase in Phase 3:
+		// a phase with a live dispatched task is no longer stuck-filling.
+		keptActive := map[string]bool{}
 		if len(allTaskIDsToRemove) > 0 {
-			if err := run.batchRemoveTaskIDsFromQueues(allTaskIDsToRemove); err != nil {
-				run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v, skipping state update", commandID, err)
+			var batchErr error
+			_, keptActive, batchErr = run.batchRemoveTaskIDsFromQueues(allTaskIDsToRemove)
+			if batchErr != nil {
+				run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v, skipping state update", commandID, batchErr)
 				continue
 			}
 		}
@@ -145,6 +187,21 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				}
 				// Re-verify: phase may no longer be in filling status.
 				if phase.Status != model.PhaseStatusFilling {
+					continue
+				}
+				// Veto: a task of this phase advanced past pre-dispatch
+				// during Phase 2 — the fill is live, leave the phase alone.
+				phaseHasActive := false
+				for _, taskID := range sp.taskIDs {
+					if keptActive[taskID] {
+						phaseHasActive = true
+						break
+					}
+				}
+				if phaseHasActive {
+					run.Log(core.LogLevelInfo,
+						"R0b skip_phase_with_active_task command=%s phase=%s (queue entry advanced past pre-dispatch during removal)",
+						state.CommandID, sp.phaseName)
 					continue
 				}
 

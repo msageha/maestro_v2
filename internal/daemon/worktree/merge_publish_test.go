@@ -931,8 +931,10 @@ func TestPublishToBase_NoFalsePositiveStash(t *testing.T) {
 	}
 }
 
-// TestBytesContainConflictMarkers covers edge cases where a naive
-// strings.Contains-based detector would miss conflict markers.
+// TestBytesContainConflictMarkers: only the ordered triple
+// (<<<<<<< … ======= … >>>>>>>) counts as an unresolved conflict. Lone
+// marker-lookalike lines (setext heading underlines, separators in docs)
+// are legitimate content and must not block staging.
 func TestBytesContainConflictMarkers(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -942,16 +944,17 @@ func TestBytesContainConflictMarkers(t *testing.T) {
 	}{
 		{"empty", []byte(""), false},
 		{"clean text", []byte("hello\nworld\n"), false},
-		{"opening marker", []byte("a\n<<<<<<< HEAD\nx\n"), true},
-		{"divider after newline", []byte("a\n=======\nx\n"), true},
-		{"closing marker after newline", []byte("a\n>>>>>>> branch\n"), true},
-		// Pathological files that begin with the divider/closing marker
-		// without a leading newline must still be flagged.
-		{"divider at file head", []byte("=======\nrest\n"), true},
-		{"closing at file head", []byte(">>>>>>> branch\nrest\n"), true},
-		// Lone "=======" inside the body without a preceding newline must NOT
-		// be treated as a conflict marker (false positive guard).
+		{"full conflict block", []byte("a\n<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch\nb\n"), true},
+		{"conflict block at file head", []byte("<<<<<<< HEAD\nx\n=======\ny\n>>>>>>> branch\n"), true},
+		{"conflict block CRLF", []byte("<<<<<<< HEAD\r\nx\r\n=======\r\ny\r\n>>>>>>> branch\r\n"), true},
+		// Lone markers / lookalikes are NOT conflicts.
+		{"opening marker only", []byte("a\n<<<<<<< HEAD\nx\n"), false},
+		{"setext heading underline", []byte("Title\n=======\nbody\n"), false},
+		{"closing marker only", []byte("a\n>>>>>>> branch\n"), false},
+		{"divider at file head", []byte("=======\nrest\n"), false},
 		{"divider mid-line no newline", []byte("foo=======bar"), false},
+		// Out-of-order markers are not a conflict either.
+		{"reversed order", []byte(">>>>>>> b\n=======\n<<<<<<< a\n"), false},
 	}
 	for _, tc := range cases {
 		tc := tc
@@ -962,6 +965,104 @@ func TestBytesContainConflictMarkers(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestTryCompleteInterruptedPublishSync reproduces the crash window between
+// the base update-ref and the project-root sync: base ref advanced to the
+// published merge, index/worktree still at the pre-publish tree, marker ref
+// present. The repair must complete the sync; genuine staged edits must
+// refuse it.
+func TestTryCompleteInterruptedPublishSync(t *testing.T) {
+	t.Parallel()
+
+	setupCrashState := func(t *testing.T) (string, *Manager, string) {
+		t.Helper()
+		projectRoot := testutil.InitTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+		commandID := "cmd_pubsync"
+
+		mustGit := func(args ...string) string {
+			t.Helper()
+			cmd := exec.Command("git", args...)
+			cmd.Dir = projectRoot
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("git %v: %v\n%s", args, err, out)
+			}
+			return strings.TrimSpace(string(out))
+		}
+
+		baseBranch := mustGit("symbolic-ref", "--short", "HEAD")
+		oldSHA := mustGit("rev-parse", "HEAD")
+
+		// Build the "published merge" on a side branch, then move the base
+		// ref to it WITHOUT syncing the checkout — the crash state.
+		mustGit("checkout", "-b", "published_tmp")
+		if err := os.WriteFile(filepath.Join(projectRoot, "published.txt"), []byte("published\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mustGit("add", "-A")
+		mustGit("commit", "-m", "published change")
+		mergeSHA := mustGit("rev-parse", "HEAD")
+		mustGit("checkout", baseBranch)
+		mustGit("update-ref", "refs/heads/"+baseBranch, mergeSHA, oldSHA)
+		mustGit("update-ref", publishSyncPendingRef(commandID), oldSHA)
+
+		// Sanity: root now looks "dirty" (index vs advanced HEAD).
+		if out := mustGit("status", "--porcelain", "--untracked-files=no"); out == "" {
+			t.Fatal("setup: expected stale-root crash state to look dirty")
+		}
+		return projectRoot, wm, commandID
+	}
+
+	t.Run("completes interrupted sync", func(t *testing.T) {
+		t.Parallel()
+		projectRoot, wm, commandID := setupCrashState(t)
+
+		if !wm.tryCompleteInterruptedPublishSync(commandID) {
+			t.Fatal("expected crash-signature repair to proceed")
+		}
+		if _, err := os.Stat(filepath.Join(projectRoot, "published.txt")); err != nil {
+			t.Errorf("published content should be materialised after resync: %v", err)
+		}
+		statusCmd := exec.Command("git", "status", "--porcelain", "--untracked-files=no")
+		statusCmd.Dir = projectRoot
+		out, err := statusCmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("git status: %v", err)
+		}
+		if strings.TrimSpace(string(out)) != "" {
+			t.Errorf("root should be clean after resync, got:\n%s", out)
+		}
+		verify := exec.Command("git", "rev-parse", "--verify", "-q", publishSyncPendingRef(commandID))
+		verify.Dir = projectRoot
+		if verify.Run() == nil {
+			t.Error("sync-pending marker should be deleted after repair")
+		}
+	})
+
+	t.Run("refuses when operator staged edits", func(t *testing.T) {
+		t.Parallel()
+		projectRoot, wm, commandID := setupCrashState(t)
+
+		// Stage a genuine operator edit on top of the crash state.
+		if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("operator edit\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		add := exec.Command("git", "add", "README.md")
+		add.Dir = projectRoot
+		if out, err := add.CombinedOutput(); err != nil {
+			t.Fatalf("git add: %v\n%s", err, out)
+		}
+
+		if wm.tryCompleteInterruptedPublishSync(commandID) {
+			t.Fatal("repair must refuse when the index holds operator edits (reset --hard would destroy them)")
+		}
+		data, err := os.ReadFile(filepath.Join(projectRoot, "README.md"))
+		if err != nil || string(data) != "operator edit\n" {
+			t.Errorf("operator edit must survive (data=%q err=%v)", data, err)
+		}
+	})
 }
 
 // TestMergeToIntegration_DefersWhenForwardMergeInFlight: while the

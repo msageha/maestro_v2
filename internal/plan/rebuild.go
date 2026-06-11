@@ -203,13 +203,16 @@ func detectPhantomPlannedTasks(maestroDir, commandID string, taskStates map[stri
 		path := filepath.Join(queueDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application queue directory
 		if err != nil {
-			slogc().Warn("rebuild: phantom scan skipping unreadable queue", "file", name, "error", err)
-			continue
+			// Fail-safe: a queue we cannot read may contain exactly the
+			// planned tasks we are checking for. Continuing the scan would
+			// classify them as phantoms and force-fail healthy tasks over a
+			// transient I/O error / single corrupt file. Mirror the
+			// directory-read failure: abort the whole phantom pass.
+			return nil, fmt.Errorf("read queue %s (aborting phantom scan; a hidden queue could hold the scanned tasks): %w", name, err)
 		}
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			slogc().Warn("rebuild: phantom scan skipping corrupt queue", "file", name, "error", err)
-			continue
+			return nil, fmt.Errorf("parse queue %s (aborting phantom scan; a hidden queue could hold the scanned tasks): %w", name, err)
 		}
 		for _, t := range tq.Tasks {
 			if t.CommandID != commandID {

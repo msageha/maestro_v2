@@ -395,7 +395,7 @@ func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
 	}
 }
 
-func TestR7MergeConflict_StateWriteFailure_StillReturnsNotifications(t *testing.T) {
+func TestR7MergeConflict_StateWriteFailure_SuppressesNotifications(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
@@ -418,18 +418,15 @@ func TestR7MergeConflict_StateWriteFailure_StillReturnsNotifications(t *testing.
 	run := newRun(&deps)
 	outcome := R7MergeConflict{}.Apply(run)
 
-	if len(outcome.Repairs) != 1 {
-		t.Fatalf("expected 1 repair even on state write failure, got %d: %+v", len(outcome.Repairs), outcome.Repairs)
+	// Suppressed: the unsaved attempt counters / resolving transition mean
+	// the next scan re-derives the SAME decision and re-emits. Delivering
+	// now AND on the next scan would double-dispatch resolution tasks to
+	// the Planner (no downstream dedupe exists for these pane messages).
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs on state write failure (re-derived next scan), got %d: %+v", len(outcome.Repairs), outcome.Repairs)
 	}
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification even on state write failure, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
-	}
-	n := outcome.Notifications[0]
-	if n.Kind != NotifyConflictResolution {
-		t.Errorf("notification kind = %s, want %s", n.Kind, NotifyConflictResolution)
-	}
-	if n.WorkerID != "worker1" {
-		t.Errorf("notification workerID = %s, want worker1", n.WorkerID)
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("expected 0 notifications on state write failure (re-derived next scan), got %d: %+v", len(outcome.Notifications), outcome.Notifications)
 	}
 }
 

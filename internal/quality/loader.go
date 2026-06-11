@@ -296,13 +296,11 @@ func (l *Loader) applyDefaults(config *GateConfiguration) {
 	}
 }
 
-// applyConditionDefaults applies defaults to a condition
+// applyConditionDefaults applies defaults to a condition.
+// Case sensitivity is NOT defaulted here: RuleCondition.IsCaseSensitive
+// treats nil as true, so an explicit `case_sensitive: false` survives
+// loading (a plain bool default used to overwrite it).
 func (l *Loader) applyConditionDefaults(condition *RuleCondition) {
-	// Default case sensitivity
-	if condition.Type == ConditionFieldValidation && !condition.CaseSensitive {
-		condition.CaseSensitive = true
-	}
-
 	// Default script language
 	if condition.Type == ConditionScript && condition.Language == "" {
 		condition.Language = "bash"

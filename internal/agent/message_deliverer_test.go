@@ -151,7 +151,7 @@ func TestSendAndConfirm_SetStatusFails(t *testing.T) {
 	}
 }
 
-func TestSendAndConfirm_GetCommandError_ProceedsToSend(t *testing.T) {
+func TestSendAndConfirm_GetCommandError_DefersDelivery(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
 	mock.GetPaneCurrentCommandFn = func(_ string) (string, error) {
@@ -164,12 +164,17 @@ func TestSendAndConfirm_GetCommandError_ProceedsToSend(t *testing.T) {
 		Message: "payload",
 	}, "%0")
 
-	// When GetPaneCurrentCommand errors, shell guard is skipped → delivery proceeds
-	if result.Error != nil {
-		t.Fatalf("unexpected error: %v", result.Error)
+	// Fail-closed: an unverifiable pane must defer delivery (retryable),
+	// never paste blind — if Claude crashed, the multi-line envelope would
+	// execute line-by-line in the bare shell.
+	if result.Error == nil {
+		t.Fatal("expected retryable error when pane state is unverifiable")
 	}
-	if !result.Success {
-		t.Error("expected Success=true when command check errors (guard skipped)")
+	if !result.Retryable {
+		t.Error("expected Retryable=true so the dispatcher re-attempts delivery")
+	}
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("no text should be sent when the pane probe fails, got %v", mock.sentTexts)
 	}
 }
 
