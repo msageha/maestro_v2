@@ -9,7 +9,9 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-const version = "2.0.0"
+// version is the release version. Keep in sync with the git tag (vX.Y.Z)
+// when cutting a release.
+const version = "2.4.0"
 const maestroDirEnv = "MAESTRO_DIR"
 
 // ExitCodeRetryable is the exit code used when the CLI operation can be retried.
