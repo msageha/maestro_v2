@@ -41,6 +41,22 @@ type PhaseCManager struct {
 	// original widen/deepen choice. Cleared after consumption to bound memory.
 	taskDecisions map[string]search.Decision
 
+	// banditMu protects the C-2 taskBloom bookkeeping below. Separate from
+	// searchMu / evolutionMu so the code paths don't contend.
+	banditMu sync.Mutex
+	// taskBloom maps taskID → Bloom level recorded at dispatch (tagged with
+	// a generation seq). Consumed when the task terminates so
+	// recordBanditReward can route the reward to the matching difficulty
+	// bucket (contextual bandit). Bounded by taskBloomMaxEntries — see
+	// RecordTaskBloom.
+	taskBloom map[string]taskBloomEntry
+	// taskBloomOrder tracks taskBloom insertion order for FIFO eviction.
+	// May contain already-consumed entries (lazy deletion): eviction skips
+	// entries whose id+seq no longer match the live record.
+	taskBloomOrder []taskBloomOrderEntry
+	// taskBloomSeq is the generation counter for taskBloom entries.
+	taskBloomSeq uint64
+
 	// evolutionMu protects the per-command evolutionary bookkeeping below.
 	// Separate from searchMu so the two code paths don't contend.
 	evolutionMu sync.Mutex
@@ -73,6 +89,7 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	m := &PhaseCManager{
 		commandRoots:    make(map[string]bool),
 		taskDecisions:   make(map[string]search.Decision),
+		taskBloom:       make(map[string]taskBloomEntry),
 		commandNovelty:  make(map[string]map[string]struct{}),
 		commandFailures: make(map[string]int),
 	}

@@ -274,11 +274,11 @@ func (d *Daemon) initComponents() {
 	// The executor is set before d.Run() in cmd_daemon.go, but PhaseC state
 	// (bandit selector) is constructed here, so we perform the late binding
 	// now — after PhaseC is ready but before any plan traffic arrives.
-	d.modelSelector = newBanditModelSelector(d.phaseC.BanditSelector, d.config.Bandit)
+	d.modelSelector = newBanditModelSelector(d.phaseC.BanditSelector, d.config.Bandit, d.log)
 	if d.modelSelector != nil {
 		if settable, ok := d.planExecutor.(core.PlanExecutorModelSelectorSettable); ok {
 			settable.SetModelSelector(d.modelSelector)
-			d.log(LogLevelInfo, "adaptive model selector wired into plan executor")
+			d.log(LogLevelInfo, "adaptive model selector wired into plan executor (contextual buckets=%d)", bloomBucketCount)
 		} else {
 			d.log(LogLevelDebug, "plan executor does not support SetModelSelector; static model mapping retained")
 		}

@@ -71,21 +71,31 @@ func (rh *ResultHandler) recordFingerprintCapture(r *model.TaskResult, workerID 
 // recordBanditReward is the C-2 path of recordTaskResultLearning. Reward
 // policy: Completed=1.0, Failed/DeadLetter=0.0, anything else ignored.
 // Mirrors REQUIREMENTS §5-7 — see internal/daemon/model_selector.go.
+//
+// The task's Bloom level (recorded at dispatch, see RecordTaskBloom) routes
+// the reward to the matching contextual bucket. It is consumed before the
+// model name is resolved so the dispatch-time entry is released even when
+// resolution fails — otherwise such tasks would leak entries until eviction.
 func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string) {
 	sel := rh.getModelSelector()
 	if sel == nil {
 		return
 	}
+	var reward float64
+	switch r.Status {
+	case model.StatusCompleted:
+		reward = 1.0
+	case model.StatusFailed, model.StatusDeadLetter:
+		reward = 0.0
+	default:
+		return
+	}
+	bloomLevel := rh.getPhaseC().ConsumeTaskBloom(r.TaskID)
 	modelName := rh.workerModelName(workerID)
 	if modelName == "" {
 		return
 	}
-	switch r.Status {
-	case model.StatusCompleted:
-		sel.RecordResult(modelName, 1.0)
-	case model.StatusFailed, model.StatusDeadLetter:
-		sel.RecordResult(modelName, 0.0)
-	}
+	sel.RecordResult(modelName, bloomLevel, reward)
 }
 
 // recordSearchTreeOutcome is the C-4 path of recordTaskResultLearning. It

@@ -182,6 +182,11 @@ func (qh *QueueHandler) classifyAndLogTask(task *model.Task, workerID string) {
 	qh.log(LogLevelInfo, "phase_c_task_classified id=%s worker=%s level=%s bloom=%d attempts=%d",
 		task.ID, workerID, level, task.BloomLevel, task.Attempts)
 
+	// C-2 contextual bandit: remember the task's Bloom level so the reward
+	// recorded at result time can be routed to the matching difficulty
+	// bucket. No-op when the bandit is disabled.
+	qh.phaseC.RecordTaskBloom(task.ID, task.BloomLevel)
+
 	// C-4 search tree / Thompson sampler: lazily add the command root (in case
 	// a task is dispatched without its command entering classifyAndLogCommand
 	// first — e.g., on retry), expand the task under it, and sample a
