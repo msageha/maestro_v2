@@ -23,7 +23,6 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -79,7 +78,6 @@ type Daemon struct {
 	qualityGateDaemon     *QualityGateDaemon
 	circuitBreaker        *circuitbreaker.Handler
 	admissionCtrl         *admission.Controller
-	fallbackMgr           *fallback.Manager
 	worktreeManager       *WorktreeManager
 	continuousHandler     *ContinuousHandler
 
@@ -205,12 +203,6 @@ func (d *Daemon) LockMap() *lock.MutexMap {
 // dependency graph explicit and testable.
 
 func (d *Daemon) eventBusAccessor() *events.Bus { return d.eventBus }
-func (d *Daemon) fallbackAccessor() fallbackRecorder {
-	if d.fallbackMgr != nil {
-		return d.fallbackMgr
-	}
-	return nil
-}
 func (d *Daemon) circuitBreakerAccessor() circuitBreakerUpdater {
 	if d.circuitBreaker != nil {
 		return d.circuitBreaker

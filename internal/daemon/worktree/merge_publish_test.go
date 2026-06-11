@@ -1016,8 +1016,8 @@ func TestTryCompleteInterruptedPublishSync(t *testing.T) {
 		t.Parallel()
 		projectRoot, wm, commandID := setupCrashState(t)
 
-		if !wm.tryCompleteInterruptedPublishSync(commandID) {
-			t.Fatal("expected crash-signature repair to proceed")
+		if got := wm.tryCompleteInterruptedPublishSync(commandID); got != publishSyncRepairCompleted {
+			t.Fatalf("expected crash-signature repair to complete, got outcome %d", got)
 		}
 		if _, err := os.Stat(filepath.Join(projectRoot, "published.txt")); err != nil {
 			t.Errorf("published content should be materialised after resync: %v", err)
@@ -1052,8 +1052,8 @@ func TestTryCompleteInterruptedPublishSync(t *testing.T) {
 			t.Fatalf("git add: %v\n%s", err, out)
 		}
 
-		if wm.tryCompleteInterruptedPublishSync(commandID) {
-			t.Fatal("repair must refuse when the index holds operator edits (reset --hard would destroy them)")
+		if got := wm.tryCompleteInterruptedPublishSync(commandID); got != publishSyncRepairRefused {
+			t.Fatalf("repair must refuse when the index holds operator edits (reset --hard would destroy them), got outcome %d", got)
 		}
 		data, err := os.ReadFile(filepath.Join(projectRoot, "README.md"))
 		if err != nil || string(data) != "operator edit\n" {

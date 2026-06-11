@@ -34,12 +34,6 @@ func sanitizeContentForLog(s string) string {
 	return b.String()
 }
 
-// fallbackRecorder records worker success/failure for health monitoring.
-type fallbackRecorder interface {
-	RecordSuccess(workerID string)
-	RecordFailure(workerID string)
-}
-
 // circuitBreakerUpdater updates circuit breaker counters on result.
 type circuitBreakerUpdater interface {
 	UpdateCounterOnResult(state *model.CommandState, resultStatus model.Status, taskID string, resultID string, now time.Time) (bool, string)
@@ -80,7 +74,6 @@ type ResultWriteAPI struct {
 	*apiContext
 	// Domain-specific deps (late-bound via closures to support test wiring
 	// where Daemon fields are set after newDaemon returns).
-	fallbackMgr    func() fallbackRecorder
 	circuitBreaker func() circuitBreakerUpdater
 	reviewCoord    func() reviewDispatcher
 	triggerScan    scanTriggerFunc
@@ -331,18 +324,6 @@ func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) (stri
 // inside the daemon package can keep their existing import surface
 // after the request-decoding logic moved into daemonapi.
 type ResultWriteParams = daemonapi.ResultWriteParams
-
-// recordFallback records worker success/failure for health monitoring.
-func (h *ResultWriteAPI) recordFallback(params ResultWriteParams, resultStatus model.Status) {
-	if fm := h.fallbackMgr(); fm != nil {
-		switch resultStatus {
-		case model.StatusCompleted:
-			fm.RecordSuccess(params.Reporter)
-		case model.StatusFailed:
-			fm.RecordFailure(params.Reporter)
-		}
-	}
-}
 
 func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, resultStatus model.Status) *uds.Response {
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)

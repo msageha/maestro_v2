@@ -339,12 +339,16 @@ var unstattablePathRe = regexp.MustCompile(`unable to stat '([^']+)'`)
 
 // gitAddAllWithUnstattableFallback runs `git add -A` and, when git rejects
 // it with "unable to stat ...: Operation not permitted" / "Permission
-// denied", appends the offending paths to the worktree's
-// .git/info/exclude (worktree-local; never touches the repo's tracked
-// .gitignore) and retries. This pattern is triggered by sandboxed
-// environments (macOS Claude Code rules denying `/**/.env*` reads, etc.)
-// where the file genuinely cannot be added to the index — git can't
-// possibly stat it, so excluding it is the only autonomous path forward.
+// denied", appends the offending paths to the repo-shared
+// .git/info/exclude (the common-dir copy, wrapped in a command-tagged
+// marker block — see appendToGitInfoExclude; never touches the repo's
+// tracked .gitignore) and retries. Per-worktree exclude files are NOT
+// used: git resolves info/exclude via the common dir for every worktree,
+// so a worktree-local copy would simply be ignored. This pattern is
+// triggered by sandboxed environments (macOS Claude Code rules denying
+// `/**/.env*` reads, etc.) where the file genuinely cannot be added to
+// the index — git can't possibly stat it, so excluding it is the only
+// autonomous path forward.
 //
 // Bounded: gives up after gitAddAllAttemptLimit attempts so a truly
 // unrecoverable file-system error (volume offline, etc.) returns the

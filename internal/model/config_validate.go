@@ -207,12 +207,6 @@ func (c Config) validateSkills(errs *[]error) {
 	if p := c.Skills.MissingRefPolicy; p != "" && p != "warn" && p != "error" {
 		*errs = append(*errs, fmt.Errorf("skills.missing_ref_policy: must be \"warn\" or \"error\""))
 	}
-	if c.Skills.AutoCollect.MinOccurrences != nil && *c.Skills.AutoCollect.MinOccurrences < 0 {
-		*errs = append(*errs, fmt.Errorf("skills.auto_collect.min_occurrences: must be >= 0"))
-	}
-	if c.Skills.AutoCollect.MinCommands != nil && *c.Skills.AutoCollect.MinCommands < 0 {
-		*errs = append(*errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
-	}
 }
 
 func (c Config) validateAdmissionControl(errs *[]error) {
@@ -293,9 +287,6 @@ func (c Config) validateExperimental(errs *[]error) {
 	}
 	if c.Bandit.MinSamplesBeforeUse != nil && *c.Bandit.MinSamplesBeforeUse < 0 {
 		*errs = append(*errs, fmt.Errorf("bandit.min_samples_before_use: must be >= 0"))
-	}
-	if c.Bandit.DecayFactor != nil && (*c.Bandit.DecayFactor <= 0 || *c.Bandit.DecayFactor > 1) {
-		*errs = append(*errs, fmt.Errorf("bandit.decay_factor: must be in (0, 1]"))
 	}
 	if c.Bandit.TraceDataRequirement != nil && *c.Bandit.TraceDataRequirement < 0 {
 		*errs = append(*errs, fmt.Errorf("bandit.trace_data_requirement: must be >= 0"))
@@ -399,9 +390,6 @@ func (c Config) validateFloatFields(errs *[]error) {
 	}
 	if !isFiniteFloat64Ptr(c.Bandit.ExplorationCoeff) {
 		*errs = append(*errs, fmt.Errorf("bandit.exploration_coefficient: must be a finite value"))
-	}
-	if !isFiniteFloat64Ptr(c.Bandit.DecayFactor) {
-		*errs = append(*errs, fmt.Errorf("bandit.decay_factor: must be a finite value"))
 	}
 	if !isFiniteFloat64Ptr(c.Search.PruneThreshold) {
 		*errs = append(*errs, fmt.Errorf("search.prune_threshold: must be a finite value"))

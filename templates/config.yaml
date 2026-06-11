@@ -232,9 +232,6 @@ retry:
   # command_dispatch_inline_retry_delay_sec: コマンドディスパッチインラインリトライの遅延 (秒)
   # type: int | default: 2 (DefaultCommandDispatchInlineRetryDelaySec) | range: >= 0
   command_dispatch_inline_retry_delay_sec: 2
-  # command_dispatch_timeout_sec: コマンドディスパッチのタイムアウト (秒)
-  # type: int | default: 30 (DefaultCommandDispatchTimeoutSec) | range: >= 0
-  command_dispatch_timeout_sec: 30
   # task_dispatch_inline_retries: タスクディスパッチのインラインリトライ回数
   # type: int | default: 5 (DefaultTaskDispatchInlineRetries) | range: >= 0
   task_dispatch_inline_retries: 5
@@ -403,12 +400,6 @@ skills:
     # enabled: 学習知見からの自動スキル収集 (opt-in)
     # type: bool | default: false | range: true/false
     enabled: false
-    # min_occurrences: 自動収集の最小出現回数
-    # type: *int | default: 3 (DefaultAutoCollectMinOccurrences) | range: >= 0
-    min_occurrences: 3
-    # min_commands: 自動収集の最小コマンド数
-    # type: *int | default: 2 (DefaultAutoCollectMinCommands) | range: >= 0
-    min_commands: 2
 
 # --- Quality Gates ---
 quality_gates:
@@ -520,9 +511,6 @@ bandit:
   # min_samples_before_use: 使用開始前の最小サンプル数
   # type: *int | default: 10 (DefaultMinSamplesBeforeUse) | range: 制限なし
   min_samples_before_use: 10
-  # decay_factor: 減衰係数
-  # type: *float64 | default: 0.95 (DefaultDecayFactor) | range: 制限なし
-  decay_factor: 0.95
   # trace_data_requirement: トレースデータ要件
   # type: *int | default: 50 (DefaultTraceDataRequirement) | range: 制限なし
   trace_data_requirement: 50

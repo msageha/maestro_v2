@@ -458,6 +458,109 @@ func TestCleanupCommand_DeletesPublishBranch(t *testing.T) {
 	}
 }
 
+// setupPublishCrashStateForCleanup reproduces the crash window between the
+// base update-ref and the project-root sync (base ref advanced to the
+// published merge, index/worktree still at the pre-publish tree, sync-pending
+// marker present) for a command that already has worktrees, so CleanupCommand
+// can be exercised against it.
+func setupPublishCrashStateForCleanup(t *testing.T, wm *Manager, projectRoot, commandID string) {
+	t.Helper()
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+	mustGit := func(args ...string) string {
+		t.Helper()
+		out, err := wm.gitOutput(args...)
+		if err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+		return strings.TrimSpace(out)
+	}
+	baseBranch := mustGit("symbolic-ref", "--short", "HEAD")
+	oldSHA := mustGit("rev-parse", "HEAD")
+
+	// Build the "published merge" on a side branch, then move the base ref
+	// to it WITHOUT syncing the checkout — the crash state.
+	mustGit("checkout", "-b", "published_tmp_"+commandID)
+	if err := os.WriteFile(filepath.Join(projectRoot, "published.txt"), []byte("published\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mustGit("add", "-A")
+	mustGit("commit", "-m", "published change")
+	mergeSHA := mustGit("rev-parse", "HEAD")
+	mustGit("checkout", baseBranch)
+	mustGit("update-ref", "refs/heads/"+baseBranch, mergeSHA, oldSHA)
+	mustGit("update-ref", publishSyncPendingRef(commandID), oldSHA)
+
+	if out := mustGit("status", "--porcelain", "--untracked-files=no"); out == "" {
+		t.Fatal("setup: expected stale-root crash state to look dirty")
+	}
+}
+
+// TestCleanupCommand_CompletesInterruptedPublishSync covers the
+// crash-then-cleanup-without-retry sequence: CleanupCommand must complete the
+// interrupted project-root sync via the marker before dropping it. Deleting
+// the marker first would leave the root permanently dirty and every later
+// publish blocked on errPublishDirtyRoot with no autonomous repair path.
+func TestCleanupCommand_CompletesInterruptedPublishSync(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_pubsync_cleanup"
+	setupPublishCrashStateForCleanup(t, wm, projectRoot, commandID)
+
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(projectRoot, "published.txt")); err != nil {
+		t.Errorf("published content should be materialised by cleanup-time resync: %v", err)
+	}
+	statusOut, err := wm.gitOutput("status", "--porcelain", "--untracked-files=no")
+	if err != nil {
+		t.Fatalf("git status: %v", err)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		t.Errorf("project root should be clean after cleanup-time resync, got:\n%s", statusOut)
+	}
+	if _, err := wm.gitOutput("rev-parse", "--verify", "-q", publishSyncPendingRef(commandID)); err == nil {
+		t.Error("sync-pending marker should be deleted after cleanup")
+	}
+}
+
+// TestCleanupCommand_DropsUnactionableSyncMarker verifies the genuine-dirty
+// branch: when operator edits sit on top of the crash state the repair must
+// refuse (preserving the edits) and cleanup falls back to dropping the
+// marker, matching the pre-fix behaviour.
+func TestCleanupCommand_DropsUnactionableSyncMarker(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_pubsync_dirty"
+	setupPublishCrashStateForCleanup(t, wm, projectRoot, commandID)
+
+	// Genuine operator edit on top of the crash state.
+	operatorFile := filepath.Join(projectRoot, "operator.txt")
+	if err := os.WriteFile(operatorFile, []byte("operator edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.gitOutput("add", "operator.txt"); err != nil {
+		t.Fatalf("git add: %v", err)
+	}
+
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand: %v", err)
+	}
+
+	data, err := os.ReadFile(operatorFile)
+	if err != nil || string(data) != "operator edit\n" {
+		t.Errorf("operator edit must survive cleanup (refused repair), got data=%q err=%v", data, err)
+	}
+	if _, err := wm.gitOutput("rev-parse", "--verify", "-q", publishSyncPendingRef(commandID)); err == nil {
+		t.Error("unactionable sync-pending marker should still be dropped by cleanup")
+	}
+}
+
 // TestCleanupTempPublishBranch_DeletesLeakedBranch verifies that
 // CleanupTempPublishBranch deletes the maestro/{commandID}/_publish temporary
 // branch without removing worktrees (used for quarantined integrations).

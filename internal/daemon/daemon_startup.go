@@ -198,15 +198,11 @@ func (d *Daemon) initComponents() {
 		d.config.AdmissionControl.EffectiveMaxConcurrentVerify(),
 		d.config.AdmissionControl.EffectiveMaxConcurrentRepair())
 
-	// Fallback manager (degraded-mode worker blacklisting) is intentionally
-	// not started: blacklisting a worker on consecutive failures creates a
-	// deadlock — the same worker can never reach `healthy` because its
-	// dispatch is suppressed (Report 1 from 2026-05-03 e2e: 17+ min stall
-	// in degraded mode with zero recovery). Autonomous LLM Orchestration
-	// recovers via per-task retry, repair tasks, and circuit breakers; it
-	// must not silence whole workers. The Fallback config struct is kept
-	// for YAML backward compat but no longer takes effect.
-	d.log(LogLevelDebug, "fallback_manager_not_started reason=degraded_mode_disabled_by_design")
+	// Degraded-mode worker blacklisting (the old fallback manager) is
+	// intentionally absent — see the retirement note in
+	// model/config_types.go. Autonomous LLM Orchestration recovers via
+	// per-task retry, repair tasks, and circuit breakers; it must not
+	// silence whole workers.
 
 	if d.config.CircuitBreaker.Enabled {
 		d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)

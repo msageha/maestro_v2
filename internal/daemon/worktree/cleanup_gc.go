@@ -515,9 +515,32 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 			commandID, publishBranch, err)
 	}
 
-	// Delete a leaked publish sync-pending marker (crash between update-ref
-	// and project-root sync followed by command cleanup without a retry).
-	wm.deletePublishSyncPendingRef(commandID)
+	// A leaked publish sync-pending marker (crash between update-ref and
+	// project-root sync, followed by command cleanup without a publish
+	// retry) is the only record that lets the stale project root self-heal:
+	// the repair is keyed to this command's marker and no other command's
+	// publish can consume it. Deleting it before attempting the repair
+	// would leave every later publish failing the dirty-root guard with no
+	// autonomous path out (operator intervention required). Try the repair
+	// first — on success it deletes the marker itself; a refused repair
+	// (genuine operator edits) drops the unactionable marker as before; a
+	// FAILED repair (signature matched but the git op errored) keeps the
+	// marker so the recovery record survives for a later attempt.
+	switch wm.tryCompleteInterruptedPublishSync(commandID) {
+	case publishSyncRepairRefused:
+		wm.deletePublishSyncPendingRef(commandID)
+	case publishSyncRepairFailed:
+		// Block state removal (errs non-empty keeps the state file) so GC
+		// retries the whole cleanup — and with it this resync — after the
+		// transient git/path failure clears. Completing cleanup here would
+		// orphan the marker: nothing keyed to this command runs again.
+		wm.Log(core.LogLevelWarn,
+			"publish_sync_marker_kept command=%s (cleanup-time resync failed; keeping marker and state so GC retries)",
+			commandID)
+		errs = append(errs, "publish sync-pending repair failed; cleanup deferred for retry")
+	case publishSyncRepairNoMarker, publishSyncRepairCompleted:
+		// Nothing to do: no marker, or the repair consumed it.
+	}
 
 	// Delete pre-publish-stash durable ref created by syncProjectRootAfterPublish
 	prePublishStashRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)

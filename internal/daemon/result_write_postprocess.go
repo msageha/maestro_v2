@@ -28,7 +28,6 @@ func newResultPostProcessor(api *ResultWriteAPI) resultPostProcessor {
 
 func (p resultPostProcessor) AfterPhaseB(input resultPostPhaseBInput) {
 	h := p.api
-	h.recordFallback(input.params, input.resultStatus)
 	h.handleRetryRegistration(input.phaseA, input.params)
 	if input.phaseBStatus == model.StatusPausedForReplan {
 		// emitPausedForReplanPlannerSignal requires callers to hold

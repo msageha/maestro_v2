@@ -1887,6 +1887,92 @@ func TestR0bFillingStuck_BatchRemoveFails_StateNotUpdated(t *testing.T) {
 	}
 }
 
+// TestR0bFillingStuck_PartialBatchRemoveFailure_RestoresRemovedRows covers
+// the partial-failure compensation: when batchRemoveTaskIDsFromQueues fails
+// on one queue file after already removing rows from another, the state is
+// left untouched (split-brain guard) AND the rows removed from the healthy
+// queue must be re-inserted — otherwise the state references tasks with no
+// queue rows and tryClearPhantomTasks force-cancels the fill later.
+func TestR0bFillingStuck_PartialBatchRemoveFailure_RestoresRemovedRows(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	oldTime := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r0b_partial",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_1": model.StatusPending,
+				"task_2": model.StatusPending,
+			},
+			RequiredTaskIDs:  []string{"task_1", "task_2"},
+			TaskDependencies: map[string][]string{"task_1": {}, "task_2": {}},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusFilling,
+					TaskIDs: []string{"task_1", "task_2"},
+				},
+			},
+		},
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_partial.yaml"), state)
+
+	// worker1: healthy queue holding a pre-dispatch row for task_1 — its
+	// removal succeeds before the batch hits the corrupted worker2 file.
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "task_1", CommandID: "cmd_r0b_partial", Status: model.StatusPlanned},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+	// worker2: corrupted queue → unmarshal error → batchErr non-nil.
+	os.WriteFile(filepath.Join(maestroDir, "queue", "worker2.yaml"), []byte("{{invalid"), 0644)
+
+	run := newRun(&deps)
+	outcome := R0bFillingStuck{}.Apply(run)
+
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when batch remove partially fails, got %d", len(outcome.Repairs))
+	}
+
+	// State untouched.
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_partial.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Phases[0].Status != model.PhaseStatusFilling {
+		t.Errorf("state should remain in filling, got %s", updated.Phases[0].Status)
+	}
+	if len(updated.TaskStates) != 2 {
+		t.Errorf("task_states should be unchanged, got %v", updated.TaskStates)
+	}
+
+	// The healthy queue's removed row must be restored (compensation).
+	qdata, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	var restoredQ model.TaskQueue
+	yamlv3.Unmarshal(qdata, &restoredQ)
+	found := false
+	for _, task := range restoredQ.Tasks {
+		if task.ID == "task_1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("task_1 row should be restored to worker1 queue after partial batch failure, got %+v", restoredQ.Tasks)
+	}
+}
+
 // --- H-bug4: ExecuteDeferredNotifications failure list tests ---
 
 // TestEngine_ExecuteDeferredNotifications_ReturnsFailedOnDeliveryError verifies

@@ -24,7 +24,6 @@ func newAPI(d *Daemon) *API {
 	queueWrite := &QueueWriteAPI{apiContext: shared}
 	resultWrite := &ResultWriteAPI{
 		apiContext:     shared,
-		fallbackMgr:    d.fallbackAccessor,
 		circuitBreaker: d.circuitBreakerAccessor,
 		reviewCoord:    d.reviewCoordAccessor,
 		ctx:            d.contextAccessor,

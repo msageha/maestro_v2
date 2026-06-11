@@ -275,7 +275,7 @@ func (wm *Manager) fastForwardBaseBranchRef(
 			// that died between update-ref and the project-root sync; in
 			// that case complete the interrupted sync instead of
 			// quarantining with a misleading "commit or stash" reason.
-			if !wm.tryCompleteInterruptedPublishSync(commandID) {
+			if wm.tryCompleteInterruptedPublishSync(commandID) != publishSyncRepairCompleted {
 				return false, errPublishDirtyRoot
 			}
 		}
@@ -312,6 +312,27 @@ func (wm *Manager) deletePublishSyncPendingRef(commandID string) {
 	}
 }
 
+// publishSyncRepairOutcome classifies a tryCompleteInterruptedPublishSync
+// attempt so callers can distinguish "nothing to repair" and "marker is
+// unactionable" (safe to drop the marker) from "repair was attempted but a
+// git operation failed" (the marker is still the only durable recovery
+// record and must be kept).
+type publishSyncRepairOutcome int
+
+const (
+	// publishSyncRepairNoMarker — no sync-pending marker exists.
+	publishSyncRepairNoMarker publishSyncRepairOutcome = iota
+	// publishSyncRepairRefused — the marker exists but the crash signature
+	// does not hold (genuine unstaged/staged operator changes).
+	publishSyncRepairRefused
+	// publishSyncRepairFailed — the signature matched but the repair's git
+	// operation failed; the root is still stale and the marker must survive.
+	publishSyncRepairFailed
+	// publishSyncRepairCompleted — the interrupted sync was completed and
+	// the marker deleted.
+	publishSyncRepairCompleted
+)
+
 // tryCompleteInterruptedPublishSync detects and repairs the crash window
 // between the base update-ref and the project-root sync of a PRIOR publish
 // attempt. Signature (all must hold):
@@ -325,26 +346,26 @@ func (wm *Manager) deletePublishSyncPendingRef(commandID string) {
 // so finishing the interrupted read-tree + reset --hard is exactly what the
 // crashed publish would have done and provably discards no local edits.
 // Anything else — genuine unstaged or staged operator changes — returns
-// false and the caller surfaces errPublishDirtyRoot. Without this repair,
-// the retry's dirty-root guard misread the entire published delta as
-// "uncommitted changes" and quarantined with an instruction ("commit or
-// stash them first") that would lead an operator to commit a full revert of
-// the published content.
-func (wm *Manager) tryCompleteInterruptedPublishSync(commandID string) bool {
+// publishSyncRepairRefused and the publish caller surfaces
+// errPublishDirtyRoot. Without this repair, the retry's dirty-root guard
+// misread the entire published delta as "uncommitted changes" and
+// quarantined with an instruction ("commit or stash them first") that would
+// lead an operator to commit a full revert of the published content.
+func (wm *Manager) tryCompleteInterruptedPublishSync(commandID string) publishSyncRepairOutcome {
 	markerOut, err := wm.gitOutput("rev-parse", "--verify", "-q", publishSyncPendingRef(commandID))
 	if err != nil {
-		return false
+		return publishSyncRepairNoMarker
 	}
 	preBaseSHA := strings.TrimSpace(markerOut)
 	if wm.gitRun("diff", "--quiet") != nil {
-		return false // working tree has unstaged edits — genuinely dirty
+		return publishSyncRepairRefused // working tree has unstaged edits — genuinely dirty
 	}
 	if wm.gitRun("diff", "--quiet", "--cached", preBaseSHA) != nil {
-		return false // index moved past the pre-publish tree — staged edits
+		return publishSyncRepairRefused // index moved past the pre-publish tree — staged edits
 	}
 	if guardErr := ensureWithinProjectRoot(wm.projectRoot, wm.projectRoot); guardErr != nil {
 		wm.Log(core.LogLevelError, "publish_resync_path_guard command=%s error=%v", commandID, guardErr)
-		return false
+		return publishSyncRepairFailed
 	}
 	wm.Log(core.LogLevelWarn,
 		"publish_root_resync command=%s pre_base=%s (completing project-root sync interrupted by daemon crash after update-ref)",
@@ -354,10 +375,10 @@ func (wm *Manager) tryCompleteInterruptedPublishSync(commandID string) bool {
 	}
 	if err := wm.gitRun("reset", "--hard", "HEAD"); err != nil {
 		wm.Log(core.LogLevelError, "publish_resync_reset_failed command=%s error=%v", commandID, err)
-		return false
+		return publishSyncRepairFailed
 	}
 	wm.deletePublishSyncPendingRef(commandID)
-	return true
+	return publishSyncRepairCompleted
 }
 
 // syncProjectRootAfterPublish syncs the projectRoot working tree and index to

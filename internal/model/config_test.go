@@ -494,9 +494,6 @@ func TestBanditConfig_Defaults(t *testing.T) {
 	if v := bc.EffectiveMinSamplesBeforeUse(); v != 10 {
 		t.Errorf("EffectiveMinSamplesBeforeUse() = %d, want 10", v)
 	}
-	if v := bc.EffectiveDecayFactor(); v != 0.95 {
-		t.Errorf("EffectiveDecayFactor() = %v, want 0.95", v)
-	}
 	if v := bc.EffectiveTraceDataRequirement(); v != 50 {
 		t.Errorf("EffectiveTraceDataRequirement() = %d, want 50", v)
 	}
@@ -507,7 +504,6 @@ func TestBanditConfig_Configured(t *testing.T) {
 		Enabled:              ptr.Bool(true),
 		ExplorationCoeff:     ptr.Float64(2.0),
 		MinSamplesBeforeUse:  ptr.Int(20),
-		DecayFactor:          ptr.Float64(0.9),
 		TraceDataRequirement: ptr.Int(100),
 	}
 	if !bc.EffectiveEnabled() {
@@ -518,9 +514,6 @@ func TestBanditConfig_Configured(t *testing.T) {
 	}
 	if v := bc.EffectiveMinSamplesBeforeUse(); v != 20 {
 		t.Errorf("EffectiveMinSamplesBeforeUse() = %d, want 20", v)
-	}
-	if v := bc.EffectiveDecayFactor(); v != 0.9 {
-		t.Errorf("EffectiveDecayFactor() = %v, want 0.9", v)
 	}
 	if v := bc.EffectiveTraceDataRequirement(); v != 100 {
 		t.Errorf("EffectiveTraceDataRequirement() = %d, want 100", v)
@@ -1437,7 +1430,6 @@ func TestValidate_Float64Ptr_NaN_Inf(t *testing.T) {
 		{"evolution novelty NaN", func(c *Config) { c.Evolution.NoveltyThreshold = &nan }, "evolution.novelty_threshold"},
 		{"evolution novelty Inf", func(c *Config) { c.Evolution.NoveltyThreshold = &inf }, "evolution.novelty_threshold"},
 		{"bandit exploration NaN", func(c *Config) { c.Bandit.ExplorationCoeff = &nan }, "bandit.exploration_coefficient"},
-		{"bandit decay Inf", func(c *Config) { c.Bandit.DecayFactor = &inf }, "bandit.decay_factor"},
 		{"search prune NaN", func(c *Config) { c.Search.PruneThreshold = &nan }, "search.prune_threshold"},
 		{"search alpha Inf", func(c *Config) { c.Search.ThompsonAlpha = &inf }, "search.thompson_alpha"},
 		{"search beta NaN", func(c *Config) { c.Search.ThompsonBeta = &nan }, "search.thompson_beta"},

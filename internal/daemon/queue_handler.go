@@ -11,7 +11,6 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/daemon/paneactivity"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
@@ -66,7 +65,6 @@ type QueueHandler struct {
 	metricsHandler        *metrics.Handler
 	circuitBreaker        *circuitbreaker.Handler
 	admissionCtrl         *admission.Controller
-	fallbackMgr           *fallback.Manager
 	worktreeManager       QueueWorktreeManager
 	deferredPlanCompleter DeferredPlanCompleterFunc
 	lockMap               *lock.MutexMap

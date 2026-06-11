@@ -6,7 +6,6 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 )
 
@@ -52,14 +51,6 @@ func (qh *QueueHandler) SetAdmissionController(ac *admission.Controller) {
 	qh.initMu.Lock()
 	defer qh.initMu.Unlock()
 	qh.admissionCtrl = ac
-}
-
-// SetFallbackManager wires the fallback manager for degraded-mode operation.
-// Must be called before Run() starts.
-func (qh *QueueHandler) SetFallbackManager(fm *fallback.Manager) {
-	qh.initMu.Lock()
-	defer qh.initMu.Unlock()
-	qh.fallbackMgr = fm
 }
 
 // SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.

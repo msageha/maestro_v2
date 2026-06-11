@@ -47,7 +47,6 @@ type BanditConfig struct {
 	Enabled              *bool    `yaml:"enabled,omitempty"`
 	ExplorationCoeff     *float64 `yaml:"exploration_coefficient,omitempty"`
 	MinSamplesBeforeUse  *int     `yaml:"min_samples_before_use,omitempty"`
-	DecayFactor          *float64 `yaml:"decay_factor,omitempty"`
 	TraceDataRequirement *int     `yaml:"trace_data_requirement,omitempty"`
 }
 
@@ -62,11 +61,6 @@ func (b BanditConfig) EffectiveExplorationCoeff() float64 {
 // EffectiveMinSamplesBeforeUse returns MinSamplesBeforeUse, or DefaultMinSamplesBeforeUse when unset.
 func (b BanditConfig) EffectiveMinSamplesBeforeUse() int {
 	return effectiveValue(b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse)
-}
-
-// EffectiveDecayFactor returns DecayFactor, or DefaultDecayFactor when unset.
-func (b BanditConfig) EffectiveDecayFactor() float64 {
-	return effectiveValue(b.DecayFactor, DefaultDecayFactor)
 }
 
 // EffectiveTraceDataRequirement returns TraceDataRequirement, or DefaultTraceDataRequirement when unset.
@@ -276,7 +270,6 @@ func normalizeBandit(b *BanditConfig) {
 	resolvePtr(&b.Enabled, false)
 	resolvePtr(&b.ExplorationCoeff, DefaultExplorationCoeff)
 	resolvePtr(&b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse)
-	resolvePtr(&b.DecayFactor, DefaultDecayFactor)
 	resolvePtr(&b.TraceDataRequirement, DefaultTraceDataRequirement)
 }
 

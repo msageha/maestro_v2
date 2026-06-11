@@ -50,8 +50,6 @@ const (
 	DefaultMissingRefPolicy = "warn"
 
 	// autoCollectConfig
-	DefaultAutoCollectMinOccurrences = 3
-	DefaultAutoCollectMinCommands    = 2
 
 	// MaestroConfig
 	// DefaultAwaitingFillStallNotifyMinutes is the elapsed-since-awaiting_fill
@@ -151,7 +149,6 @@ const (
 	// BanditConfig
 	DefaultExplorationCoeff     = 1.41
 	DefaultMinSamplesBeforeUse  = 10
-	DefaultDecayFactor          = 0.95
 	DefaultTraceDataRequirement = 50
 
 	// ExtendedVerificationConfig
@@ -188,7 +185,6 @@ const (
 	// RetryConfig — command dispatch inline retry
 	DefaultCommandDispatchInlineRetries       = 2
 	DefaultCommandDispatchInlineRetryDelaySec = 2
-	DefaultCommandDispatchTimeoutSec          = 30
 
 	// RetryConfig — task dispatch inline retry
 	DefaultTaskDispatchInlineRetries       = 5

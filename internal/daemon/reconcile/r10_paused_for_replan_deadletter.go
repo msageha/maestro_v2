@@ -159,6 +159,16 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 		// in Phase 3 left a state=ready / queue=failed split: terminal queue
 		// rows are never re-dispatched, so the revived task hung forever.
 		// The residual window after this check is micro-seconds.
+		//
+		// A daemon crash between this queue write and the Phase 3 state
+		// write is NOT the same hazard: the leftover queue row is terminal
+		// (failed), so the dispatch loop (SortPendingIndices filters on
+		// StatusPending) can never fire markTaskReady for it again — state
+		// stays paused_for_replan, the next R10 scan re-selects the task,
+		// r10MarkQueueTaskFailed treats the already-terminal row as
+		// idempotent success, and Phase 3 completes the escalation. The
+		// crash window self-heals; only the within-scan race needs the
+		// compensation below. (Audit 2026-06-12, confirmed with 2nd review.)
 		if st, err := run.loadState(statePath); err == nil {
 			if st.TaskStates[c.taskID] != model.StatusPausedForReplan {
 				run.Log(core.LogLevelInfo,

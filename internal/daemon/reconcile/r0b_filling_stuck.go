@@ -158,18 +158,36 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 			var batchErr error
 			removedEntries, keptActive, batchErr = run.batchRemoveTaskIDsFromQueues(allTaskIDsToRemove)
 			if batchErr != nil {
-				run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v, skipping state update", commandID, batchErr)
+				// Partial failure: queues that were written before the error
+				// lost their rows while the state keeps the task IDs — the
+				// same split-brain the veto compensation guards against.
+				// Re-insert everything captured so far (idempotent: rows
+				// whose write actually failed still exist and are skipped).
+				run.Log(core.LogLevelError,
+					"R0b batch_remove_tasks command=%s error=%v, skipping state update (re-inserting %d removed rows)",
+					commandID, batchErr, len(removedEntries))
+				restoreAllRemovedEntries(run, removedEntries)
 				continue
 			}
 		}
 
 		// Phase 3: re-acquire state lock, re-read state, apply changes, write.
+		// Every early exit that leaves the state referencing the removed
+		// tasks must queue a compensation re-insert (restoreAll / restores),
+		// otherwise the state/queue split-brain lets tryClearPhantomTasks
+		// force-cancel a healthy fill two scans later.
 		var modified bool
-		var vetoRestores []removedQueueEntry
+		var restores []removedQueueEntry
+		restoreAll := false
 		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
-				run.Log(core.LogLevelError, "R0b reload_state command=%s error=%v", commandID, err)
+				// State unchanged on disk but queue rows are gone — restore
+				// them all so the next scan can retry the whole transition.
+				run.Log(core.LogLevelError,
+					"R0b reload_state command=%s error=%v (re-inserting %d removed queue rows)",
+					commandID, err, len(removedEntries))
+				restoreAll = true
 				return
 			}
 
@@ -187,8 +205,24 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				if !ok {
 					continue
 				}
-				// Re-verify: phase may no longer be in filling status.
+				// Re-verify: phase may no longer be in filling status (the
+				// Planner completed the fill between the Phase 2 queue
+				// removal and this re-read). The fill is live, so re-insert
+				// the pre-dispatch rows Phase 2 deleted — same compensation
+				// as the active-task veto below.
 				if phase.Status != model.PhaseStatusFilling {
+					restored := 0
+					for _, taskID := range sp.taskIDs {
+						if e, ok := removedEntries[taskID]; ok {
+							restores = append(restores, e)
+							restored++
+						}
+					}
+					if restored > 0 {
+						run.Log(core.LogLevelInfo,
+							"R0b skip_phase_left_filling_after_removal command=%s phase=%s status=%s (re-inserting %d rows)",
+							state.CommandID, sp.phaseName, phase.Status, restored)
+					}
 					continue
 				}
 				// Veto: a task of this phase advanced past pre-dispatch
@@ -207,12 +241,12 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				if phaseHasActive {
 					for _, taskID := range sp.taskIDs {
 						if e, ok := removedEntries[taskID]; ok {
-							vetoRestores = append(vetoRestores, e)
+							restores = append(restores, e)
 						}
 					}
 					run.Log(core.LogLevelInfo,
 						"R0b skip_phase_with_active_task command=%s phase=%s (queue entry advanced past pre-dispatch during removal; re-inserting %d sibling rows)",
-						state.CommandID, sp.phaseName, len(vetoRestores))
+						state.CommandID, sp.phaseName, len(restores))
 					continue
 				}
 
@@ -240,7 +274,12 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.Log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
+					// State unchanged on disk (write failed) but queue rows
+					// are gone — restore everything so the next scan retries.
+					run.Log(core.LogLevelError,
+						"R0b write_state command=%s error=%v (re-inserting %d removed queue rows)",
+						state.CommandID, err, len(removedEntries))
+					restoreAll = true
 					return
 				}
 				repairs = append(repairs, localRepairs...)
@@ -249,10 +288,15 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 			modified = localModified
 		})
 
-		// Compensation (state lock released): re-insert pre-dispatch rows
-		// that Phase 2 deleted for phases whose reset was vetoed.
-		if len(vetoRestores) > 0 {
-			run.restoreQueueEntries(vetoRestores)
+		// Compensation (state lock released; queue→state lock order): re-insert
+		// pre-dispatch rows that Phase 2 deleted but the state still references —
+		// vetoed phases, phases that left filling, or whole-batch failure paths.
+		// restoreQueueEntries is idempotent, but restoreAll supersedes the
+		// per-phase list to avoid building both for the same rows.
+		if restoreAll {
+			restoreAllRemovedEntries(run, removedEntries)
+		} else if len(restores) > 0 {
+			run.restoreQueueEntries(restores)
 		}
 
 		if modified && run.Deps.ExecutorFactory != nil {
@@ -264,4 +308,19 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 	}
 
 	return Outcome{Repairs: repairs, Notifications: notifications}
+}
+
+// restoreAllRemovedEntries re-inserts every queue row captured by
+// batchRemoveTaskIDsFromQueues. Used by the R0b failure paths (partial batch
+// failure, state reload failure, state write failure) where the state still
+// references all removed tasks. Idempotent via restoreQueueEntries.
+func restoreAllRemovedEntries(run *Run, removedEntries map[string]removedQueueEntry) {
+	if len(removedEntries) == 0 {
+		return
+	}
+	all := make([]removedQueueEntry, 0, len(removedEntries))
+	for _, e := range removedEntries {
+		all = append(all, e)
+	}
+	run.restoreQueueEntries(all)
 }

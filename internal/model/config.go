@@ -68,17 +68,11 @@ func (s SkillsConfig) EffectiveMissingRefPolicy() string {
 }
 
 // autoCollectConfig controls automatic skill collection from learnings.
+// (Removed) MinOccurrences / MinCommands — the thresholds were parsed and
+// validated but never read by any collection logic. Old YAML configs with
+// the keys continue to load (yaml.v3 ignores unknown fields).
 type autoCollectConfig struct {
-	Enabled        bool `yaml:"enabled"`
-	MinOccurrences *int `yaml:"min_occurrences"`
-	MinCommands    *int `yaml:"min_commands"`
-}
-
-func (a autoCollectConfig) EffectiveMinOccurrences() int {
-	return effectiveValue(a.MinOccurrences, DefaultAutoCollectMinOccurrences)
-}
-func (a autoCollectConfig) EffectiveMinCommands() int {
-	return effectiveValue(a.MinCommands, DefaultAutoCollectMinCommands)
+	Enabled bool `yaml:"enabled"`
 }
 
 // --- ProjectConfig / MaestroConfig ---
@@ -270,7 +264,6 @@ type RetryConfig struct {
 	ResultNotifyDeliveryTimeoutSec     *int            `yaml:"result_notify_delivery_timeout_sec"`
 	CommandDispatchInlineRetries       *int            `yaml:"command_dispatch_inline_retries"`
 	CommandDispatchInlineRetryDelaySec *int            `yaml:"command_dispatch_inline_retry_delay_sec"`
-	CommandDispatchTimeoutSec          *int            `yaml:"command_dispatch_timeout_sec"`
 	TaskDispatchInlineRetries          *int            `yaml:"task_dispatch_inline_retries"`
 	TaskDispatchInlineRetryDelaySec    *int            `yaml:"task_dispatch_inline_retry_delay_sec"`
 	TaskExecution                      TaskRetryConfig `yaml:"task_execution"`
@@ -311,11 +304,6 @@ func (r RetryConfig) EffectiveCommandDispatchInlineRetryDelaySec() int {
 	return effectiveValue(r.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
 }
 
-// EffectiveCommandDispatchTimeoutSec returns CommandDispatchTimeoutSec, or DefaultCommandDispatchTimeoutSec when unset.
-func (r RetryConfig) EffectiveCommandDispatchTimeoutSec() int {
-	return effectiveValue(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
-}
-
 // EffectiveTaskDispatchInlineRetries returns TaskDispatchInlineRetries, or DefaultTaskDispatchInlineRetries when unset.
 func (r RetryConfig) EffectiveTaskDispatchInlineRetries() int {
 	return effectiveValue(r.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
@@ -343,7 +331,6 @@ func NormalizeRetryConfig(cfg *Config) {
 	resolvePtr(&cfg.Retry.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
 	resolvePtr(&cfg.Retry.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
 	resolvePtr(&cfg.Retry.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
-	resolvePtr(&cfg.Retry.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
 }

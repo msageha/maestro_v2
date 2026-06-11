@@ -157,6 +157,10 @@ var retiredConfigPaths = map[string]string{
 	"worktree.commit_policy":              "commit_policy gates (max_files / require_gitignore / message_pattern) were retired with the orchestrator-owns-commit redesign; the daemon commits Worker output verbatim. Drop the worktree.commit_policy block from your config.yaml.",
 	"fallback":                            "degraded-mode worker blacklisting (fallback.enabled / consecutive_failure_threshold / recovery_check_interval_sec / min_healthy_duration_sec) was retired; per-task retry + circuit_breaker.progress_timeout cover the recovery path. Drop the fallback block.",
 	"watcher.clear_second_enter_delay_ms": "Claude Code 2.x runs /clear on the first Enter; the second-Enter delay is unused. Drop watcher.clear_second_enter_delay_ms from your config.yaml.",
+	"bandit.decay_factor":                 "the decay factor was parsed and validated but never read by the UCB1 selector. Drop bandit.decay_factor from your config.yaml.",
+	"retry.command_dispatch_timeout_sec":  "the command-dispatch timeout was parsed but never read by the dispatcher. Drop retry.command_dispatch_timeout_sec from your config.yaml.",
+	"skills.auto_collect.min_occurrences": "the auto-collect threshold was parsed but never read by any collection logic. Drop skills.auto_collect.min_occurrences from your config.yaml.",
+	"skills.auto_collect.min_commands":    "the auto-collect threshold was parsed but never read by any collection logic. Drop skills.auto_collect.min_commands from your config.yaml.",
 }
 
 // logRetiredConfigKeys emits a WARN for each retired nested key found

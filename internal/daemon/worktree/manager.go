@@ -512,9 +512,10 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	// it — so the orchestrator's only autonomous path forward is to
 	// exclude the offending paths from the index and proceed with what
 	// remains. We isolate the names from the error output, append them
-	// to .git/info/exclude (worktree-local; never touches the repo's
-	// committed .gitignore), and retry. Bounded retries prevent runaway
-	// loops on truly unrecoverable file-system errors.
+	// to the repo-shared .git/info/exclude (the common-dir copy, in a
+	// command-tagged marker block; never touches the repo's committed
+	// .gitignore), and retry. Bounded retries prevent runaway loops on
+	// truly unrecoverable file-system errors.
 	if err := wm.gitAddAllWithUnstattableFallback(ws.Path, commandID, workerID); err != nil {
 		return fmt.Errorf("git add -A (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
