@@ -629,7 +629,11 @@ func (qh *QueueHandler) respawnWorkerPanesForCleanup(commandID string) error {
 	}
 	var firstErr error
 	for _, ws := range state.Workers {
-		if err := exec.RespawnPaneToProjectRoot(ws.WorkerID); err != nil {
+		// Scope the eviction to panes still sitting inside this command's
+		// worktree. A worker that has already been re-assigned to another
+		// command (its pane cwd moved to the new worktree) must not be
+		// killed by the old command's cleanup.
+		if err := exec.RespawnPaneToProjectRoot(ws.WorkerID, ws.Path); err != nil {
 			qh.log(LogLevelWarn,
 				"worktree_cleanup_pane_respawn worker=%s command=%s error=%v",
 				ws.WorkerID, commandID, err)

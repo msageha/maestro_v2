@@ -13,11 +13,12 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
-	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -221,7 +222,7 @@ func (e *recordingExecutor) Close() error { return nil }
 // RespawnPaneToProjectRoot satisfies the AgentExecutor interface for
 // Phase B's pre-cleanup pane respawn. The integration test does not
 // exercise that path, so a no-op stub is sufficient.
-func (e *recordingExecutor) RespawnPaneToProjectRoot(string) error { return nil }
+func (e *recordingExecutor) RespawnPaneToProjectRoot(string, string) error { return nil }
 
 func (e *recordingExecutor) getCalls() []agent.ExecRequest {
 	e.mu.Lock()

@@ -414,8 +414,8 @@ var defaultActiveHintRegex = regexp.MustCompile(
 		`Simmering|Computing|Considering|Cogitating|Reasoning|` +
 		`Hypothesizing|Brainstorming|Planning|Drafting|Reading|Writing|` +
 		`Searching|Exploring|Investigating|Evaluating|Reflecting|` +
-		`Strategizing|Cooking|Brewing|Cooked|Brewed|Cogitated|` +
-		`Determining|Determining|Waiting|Fetching|Downloading|` +
+		`Strategizing|Cooking|Brewing|` +
+		`Determining|Waiting|Fetching|Downloading|` +
 		`Uploading|Installing|Resolving|Linking|Unpacking|Indexing|` +
 		`Updating|Caching|Verifying|Validating|Testing|Checking)\w*` +
 		// Optional trailing ellipsis / dots. Not required because some
@@ -443,6 +443,31 @@ var defaultActiveHintRegex = regexp.MustCompile(
 		// livenessNoiseRegexp's normalisation set). Their presence in
 		// the tail signals an active animation.
 		`|[✻✼✽✾✿⏳⏰⌛◐◑◒◓◴◵◶◷⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏]`)
+
+// completionSummaryLineRegex matches the static completion-summary line
+// Claude Code renders after a turn finishes — "✻ Cooked for 1m 35s",
+// "✻ Worked for 5m 4s", "✻ Sautéed for 40s" — which then stays on screen
+// while the pane sits idle at the prompt. The glyph set overlaps
+// defaultActiveHintRegex's spinner glyphs, so without stripping these
+// lines first an idle pane showing a completion summary matches the
+// activity hint forever and is lease-extended up to the 30-minute hard
+// cap (E2E 2026-06-11: "lease_extend_pane_active … pane shows cross-scan
+// activity" on a pane that had been idle for half an hour).
+//
+// Anchored to whole lines and to real duration units ("for 1m 35s", not
+// "for 2 workers") so live status lines like "✻ Waiting for 2 workers"
+// or a spinner "✶ Wrangling… (43s · ↑ 757 tokens)" are never stripped.
+// [ \t] is used instead of \s so the match cannot cross newlines.
+var completionSummaryLineRegex = regexp.MustCompile(
+	`(?m)^[ \t]*[✻✶✼✽✾✿⏺][ \t]*\p{L}+(?:…|\.{3})?[ \t]+for[ \t]+` +
+		`\d+(?:\.\d+)?(?:ms|s|m|h)(?:[ \t]+\d+(?:\.\d+)?(?:ms|s|m|h))*[ \t]*$`,
+)
+
+// stripCompletionSummary removes finished-turn summary lines from a pane
+// tail before activity-hint matching. See completionSummaryLineRegex.
+func stripCompletionSummary(tail string) string {
+	return completionSummaryLineRegex.ReplaceAllString(tail, "")
+}
 
 // MaxUncertainStreak is the maximum number of consecutive VerdictUncertain
 // outcomes per agent before the next Uncertain is downgraded to
@@ -877,7 +902,11 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	// verbs, Claude Code 2.x verbs, ⎿ subprocess output prefix, etc.).
 	// This is a daemon-managed default by design — see the comment on
 	// defaultActiveHintRegex for the rationale.
-	activeHintMatched := defaultActiveHintRegex.MatchString(tail)
+	//
+	// Finished-turn summary lines ("✻ Cooked for 1m 35s") are stripped
+	// first: they share the spinner glyph set but indicate the pane is
+	// DONE, not active — see completionSummaryLineRegex.
+	activeHintMatched := defaultActiveHintRegex.MatchString(stripCompletionSummary(tail))
 	var verdict Verdict
 	// uncertainCounted is true when this Uncertain outcome should count
 	// toward the consecutive-uncertain streak. We only count the

@@ -21,8 +21,8 @@ type stubExecutor struct {
 func (s *stubExecutor) Execute(_ agent.ExecRequest) agent.ExecResult {
 	return agent.ExecResult{Error: s.err, Retryable: s.err != nil}
 }
-func (s *stubExecutor) Close() error                          { return nil }
-func (s *stubExecutor) RespawnPaneToProjectRoot(string) error { return nil }
+func (s *stubExecutor) Close() error                                  { return nil }
+func (s *stubExecutor) RespawnPaneToProjectRoot(string, string) error { return nil }
 
 // stubExecutorGetter wraps a core.AgentExecutor.
 type stubExecutorGetter struct {
@@ -248,5 +248,5 @@ func (c *countingStubExecutor) Execute(_ agent.ExecRequest) agent.ExecResult {
 	c.calls++
 	return agent.ExecResult{Error: c.err, Retryable: c.err != nil}
 }
-func (c *countingStubExecutor) Close() error                          { return nil }
-func (c *countingStubExecutor) RespawnPaneToProjectRoot(string) error { return nil }
+func (c *countingStubExecutor) Close() error                                  { return nil }
+func (c *countingStubExecutor) RespawnPaneToProjectRoot(string, string) error { return nil }

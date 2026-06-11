@@ -709,7 +709,7 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 		for queueFile, tq := range s.tasks {
 			agentID := workerIDFromPath(queueFile)
 			d := s.taskDirty[queueFile]
-			items := qh.collectExpiredTaskBusyChecks(tq, agentID, queueFile, &d)
+			items := qh.collectExpiredTaskBusyChecks(tq, agentID, queueFile, &d, s.paneVerdicts)
 			s.taskDirty[queueFile] = d
 			s.work.busyChecks = append(s.work.busyChecks, items...)
 		}

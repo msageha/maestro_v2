@@ -136,7 +136,7 @@ func TestCollectExpiredTaskBusyChecks_ExtendsLeaseWhenPaneActive(t *testing.T) {
 	}
 	dirty := false
 
-	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty)
+	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty, nil)
 
 	if len(items) != 0 {
 		t.Fatalf("expected zero busy-check items when pane is active, got %d (%+v)", len(items), items)
@@ -193,7 +193,7 @@ func TestCollectExpiredTaskBusyChecks_GraceExtendsWhenNoBaseline(t *testing.T) {
 	}
 	dirty := false
 
-	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty)
+	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty, nil)
 
 	if len(items) != 0 {
 		t.Fatalf("expected zero busy-check items when verdict is uncertain (grace extension), got %d", len(items))
@@ -255,7 +255,7 @@ func TestCollectExpiredTaskBusyChecks_FallsBackToBusyCheckWhenPaneIdle(t *testin
 	}
 	dirty := false
 
-	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty)
+	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty, nil)
 
 	if len(items) != 1 {
 		t.Fatalf("expected one busy-check item when verdict is idle, got %d", len(items))
@@ -426,3 +426,57 @@ func (e *captureError) Error() string { return e.msg }
 // types it conjures so a refactor that breaks this file fails the build
 // rather than the test run.
 var _ = model.StatusInProgress
+
+// TestCollectExpiredTaskBusyChecks_ReusesScanTickVerdict pins the E2E
+// 2026-06-11 fix: stepBlockedPaneTimeout observes every in-progress
+// worker's pane at the top of the scan tick, so the lease-expiry path
+// must reuse that verdict instead of re-observing. A second observation
+// in the same tick lands within minPrevAge and degrades to a same-scan
+// VerdictUncertain, which the grace-extension path then extends on every
+// expiry up to the 30-minute hard cap — a dead pane (claude process gone,
+// shell prompt) was repeatedly "grace-extended one cycle" for 30 minutes.
+func TestCollectExpiredTaskBusyChecks_ReusesScanTickVerdict(t *testing.T) {
+	tracker := paneactivity.New(nil)
+	clock := &fixedClock{now: time.Unix(1_700_000_000, 0).UTC()}
+	qh := newQueueHandlerForPaneActivityTest(t, tracker, clock)
+	captureCalls := 0
+	qh.paneCapture = func(string) (string, error) {
+		captureCalls++
+		return "(idle shell prompt)", nil
+	}
+	qh.paneFinder = func(string) (string, error) { return "session:0.1", nil }
+
+	expiredAt := clock.now.Add(-1 * time.Minute).Format(time.RFC3339)
+	owner := "daemon:1"
+	tq := &taskQueueEntry{
+		Queue: model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks: []model.Task{{
+				ID:             "task_1",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &expiredAt,
+				LeaseEpoch:     2,
+				UpdatedAt:      clock.now.Add(-2 * time.Minute).Format(time.RFC3339),
+				CommandID:      "cmd_1",
+			}},
+		},
+		Path: "/tmp/worker1.yaml",
+	}
+	dirty := false
+
+	// Simulate stepBlockedPaneTimeout having already judged the pane Idle
+	// earlier in this scan tick.
+	scanVerdicts := map[string]paneactivity.Verdict{
+		"worker1": paneactivity.VerdictIdle,
+	}
+	items := qh.collectExpiredTaskBusyChecks(tq, "worker1", "/tmp/worker1.yaml", &dirty, scanVerdicts)
+
+	if captureCalls != 0 {
+		t.Errorf("pane must NOT be re-observed when a scan-tick verdict is cached, captures=%d", captureCalls)
+	}
+	if len(items) != 1 {
+		t.Fatalf("cached VerdictIdle must fall through to the busy-check probe, got %d items", len(items))
+	}
+}

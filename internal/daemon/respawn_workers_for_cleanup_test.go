@@ -37,8 +37,10 @@ func TestRespawnWorkerPanesForCleanup_EvictsBeforeCleanup(t *testing.T) {
 		FileType:      "worktree_command_state",
 		CommandID:     commandID,
 		Workers: []model.WorktreeState{
-			{CommandID: commandID, WorkerID: "worker1", Branch: "maestro/" + commandID + "/worker1"},
-			{CommandID: commandID, WorkerID: "worker2", Branch: "maestro/" + commandID + "/worker2"},
+			{CommandID: commandID, WorkerID: "worker1", Branch: "maestro/" + commandID + "/worker1",
+				Path: filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")},
+			{CommandID: commandID, WorkerID: "worker2", Branch: "maestro/" + commandID + "/worker2",
+				Path: filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker2")},
 		},
 		CreatedAt: "2026-04-28T00:00:00Z",
 		UpdatedAt: "2026-04-28T00:00:00Z",
@@ -69,6 +71,16 @@ func TestRespawnWorkerPanesForCleanup_EvictsBeforeCleanup(t *testing.T) {
 	}
 	if got, want := exec.RespawnedWorkers, []string{"worker1", "worker2"}; !equalStrings(got, want) {
 		t.Errorf("RespawnedWorkers = %v, want %v", got, want)
+	}
+	// Each eviction must be scoped to that worker's own worktree path so a
+	// pane already re-assigned to another command is left untouched
+	// (stale-eviction guard, E2E 2026-06-11).
+	wantScopes := []string{
+		filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1"),
+		filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker2"),
+	}
+	if !equalStrings(exec.RespawnedScopes, wantScopes) {
+		t.Errorf("RespawnedScopes = %v, want %v", exec.RespawnedScopes, wantScopes)
 	}
 }
 

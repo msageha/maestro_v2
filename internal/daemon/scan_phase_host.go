@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/msageha/maestro_v2/internal/daemon/paneactivity"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -38,6 +39,7 @@ func (qh *QueueHandler) newScanState(counters *metrics.ScanCounters) scanState {
 		signals:       fileState[model.PlannerSignalQueue]{Data: signalQueue, Path: signalPath},
 		signalIndex:   buildSignalIndex(signalQueue.Signals),
 		scanStart:     scanStart,
+		paneVerdicts:  make(map[string]paneactivity.Verdict),
 	}
 }
 

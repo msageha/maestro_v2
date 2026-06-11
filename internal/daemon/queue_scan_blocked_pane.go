@@ -51,13 +51,17 @@ func (qh *QueueHandler) stepBlockedPaneTimeout(s *scanState) {
 		if !hasInProgress {
 			continue
 		}
-		// Refresh pane verdict so blockedSince is current. Side-effect
-		// note: this is the canonical scan-tick observation; the
-		// down-stream collectExpiredTaskBusyChecks (which only fires on
-		// lease expiry) will see the same-scan snapshot via the cached
-		// minPrevAge guard, but its expired-lease path is gated on
-		// LeaseExpiresAt so a task we fail here never reaches it.
+		// Refresh pane verdict so blockedSince is current. This is the
+		// canonical scan-tick observation: the verdict is cached in
+		// scanState so the downstream lease-expiry path reuses it instead
+		// of re-observing. A second ObserveVerdict in the same tick lands
+		// within minPrevAge of this one and degrades to a same-scan
+		// VerdictUncertain, which the grace-extension path then extends on
+		// every expiry up to the 30-minute hard cap (E2E 2026-06-11).
 		verdict := qh.observePaneVerdictForAgent(agentID)
+		if s.paneVerdicts != nil {
+			s.paneVerdicts[agentID] = verdict
+		}
 
 		// Terminal-error fast-fail: the runtime emitted a non-recoverable
 		// error frame. The task cannot recover without operator action,
@@ -221,7 +225,9 @@ func (qh *QueueHandler) recoverWorkerPaneAfterBlocked(workerID string) error {
 			workerID, err)
 		return nil
 	}
-	if err := exec.RespawnPaneToProjectRoot(workerID); err != nil {
+	// Unconditional eviction: the pane is known to be stuck on a blocked
+	// prompt, so there is no healthy process to preserve.
+	if err := exec.RespawnPaneToProjectRoot(workerID, ""); err != nil {
 		return fmt.Errorf("respawn worker pane %s: %w", workerID, err)
 	}
 	qh.log(LogLevelInfo,

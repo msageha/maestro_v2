@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/paneactivity"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -26,6 +27,16 @@ type scanState struct {
 	signalIndex   map[signalKey]struct{}
 	work          deferredWork
 	scanStart     time.Time
+	// paneVerdicts caches the per-agent pane-activity verdict observed by
+	// stepBlockedPaneTimeout earlier in the same scan tick. Downstream
+	// lease-expiry handling MUST reuse this instead of re-observing: a
+	// second ObserveVerdict in the same tick always lands within
+	// minPrevAge of the first and returns a same-scan VerdictUncertain,
+	// which the grace-extension path then extends — every lease expiry,
+	// up to the 30-minute hard cap (E2E 2026-06-11: a worker whose claude
+	// process had died was grace-extended for 30 minutes because each
+	// expiry re-observed the pane just after the scan-tick observation).
+	paneVerdicts map[string]paneactivity.Verdict
 }
 
 // forEachUntilCanceled iterates items, calling fn for each. If ctx is
