@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -39,57 +41,161 @@ type abWorktreeOps interface {
 	CommitCandidateChanges(commandID, taskID string) error
 	RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []worktree.ABSelectionInput, verifyCmds []string) (*worktree.ABSelectionOutcome, error)
 	IntakeWinner(commandID, workerID, candidateBranch, taskID string) error
-	RemoveCandidateWorktree(commandID, taskID string) error
 }
 
-// abGroupWorkItem is collected in Phase A from the queue snapshot.
+// findABCandidateGroup loads the command state lock-free and returns the
+// candidate group containing taskID. Returns nil when the task belongs to
+// no group or the state is unreadable — callers treat that as "not an A/B
+// candidate" because blocking normal machinery on a state read hiccup is
+// worse than one redundant action.
+func findABCandidateGroup(maestroDir, commandID, taskID string) *model.CandidateGroup {
+	if commandID == "" || taskID == "" {
+		return nil
+	}
+	data, err := os.ReadFile(commandStatePath(maestroDir, commandID)) //nolint:gosec // controlled state path
+	if err != nil {
+		return nil
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		return nil
+	}
+	_, g := cs.FindCandidateGroupByTask(taskID)
+	return g
+}
+
+// abGroupWorkItem is collected in Phase A from the queue + state snapshot.
 type abGroupWorkItem struct {
 	CommandID string
 	GroupID   string
-	// QueueStatuses snapshots the candidates' queue row statuses.
+	// QueueStatuses snapshots the candidates' queue row statuses. A task
+	// ABSENT from the map has NO queue row (dead-lettered / archived / never
+	// enqueued) — Phase B falls back to the durable state entry for it.
 	QueueStatuses map[string]model.Status
-	// CanonicalWallClockSec carries the canonical row's abort budget for the
+	// RowWorkers maps task ID → worker queue holding its row.
+	RowWorkers map[string]string
+	// RowTagged records whether the row still carries the ab_group_id tag
+	// (false = crashed fan-out left the canonical untagged).
+	RowTagged map[string]bool
+	// CanonicalWallClockSec carries the candidates' abort budget for the
 	// race-timeout fallback (0 when unset).
 	CanonicalWallClockSec int
 }
 
-// collectABGroupWork walks the queue snapshot and emits one work item per
-// distinct candidate group that has at least one row in the queues.
+// abRowInfo is the per-row slice of the queue snapshot indexed by task ID.
+type abRowInfo struct {
+	WorkerID  string
+	Status    model.Status
+	Tagged    bool
+	WallClock int
+}
+
+// collectABGroupWork emits one work item per unresolved candidate group.
+// Discovery is STATE-DRIVEN first (the durable CandidateGroups map is the
+// SSOT — groups whose rows were deleted by dead-letter/archive or never
+// written still get an item), then tag-driven for orphan rows whose group
+// is missing from state (crashed legacy fan-out) so Phase B can repair them.
 func (qh *QueueHandler) collectABGroupWork(taskQueues map[string]*taskQueueEntry, work *deferredWork) {
+	rows := map[string]abRowInfo{}
 	type agg struct {
 		commandID string
-		statuses  map[string]model.Status
-		wallClock int
+		taskIDs   []string
 	}
-	groups := map[string]*agg{}
+	taggedGroups := map[string]*agg{}
 	for _, tq := range taskQueues {
 		if tq == nil {
 			continue
 		}
+		workerID := workerIDFromPath(tq.Path)
 		for i := range tq.Queue.Tasks {
 			t := &tq.Queue.Tasks[i]
+			info := abRowInfo{WorkerID: workerID, Status: t.Status, Tagged: t.ABGroupID != ""}
+			if t.DefinitionOfAbort != nil {
+				info.WallClock = t.DefinitionOfAbort.MaxWallClockSec
+			}
+			rows[t.ID] = info
 			if t.ABGroupID == "" {
 				continue
 			}
-			a := groups[t.ABGroupID]
+			a := taggedGroups[t.ABGroupID]
 			if a == nil {
-				a = &agg{commandID: t.CommandID, statuses: map[string]model.Status{}}
-				groups[t.ABGroupID] = a
+				a = &agg{commandID: t.CommandID}
+				taggedGroups[t.ABGroupID] = a
 			}
-			a.statuses[t.ID] = t.Status
-			if t.DefinitionOfAbort != nil && t.DefinitionOfAbort.MaxWallClockSec > a.wallClock {
-				a.wallClock = t.DefinitionOfAbort.MaxWallClockSec
-			}
+			a.taskIDs = append(a.taskIDs, t.ID)
 		}
 	}
-	for groupID, a := range groups {
-		work.abGroups = append(work.abGroups, abGroupWorkItem{
-			CommandID:             a.commandID,
-			GroupID:               groupID,
-			QueueStatuses:         a.statuses,
-			CanonicalWallClockSec: a.wallClock,
-		})
+
+	buildItem := func(commandID, groupID string, taskIDs []string) abGroupWorkItem {
+		item := abGroupWorkItem{
+			CommandID:     commandID,
+			GroupID:       groupID,
+			QueueStatuses: map[string]model.Status{},
+			RowWorkers:    map[string]string{},
+			RowTagged:     map[string]bool{},
+		}
+		for _, id := range taskIDs {
+			r, ok := rows[id]
+			if !ok {
+				continue
+			}
+			item.QueueStatuses[id] = r.Status
+			item.RowWorkers[id] = r.WorkerID
+			item.RowTagged[id] = r.Tagged
+			if r.WallClock > item.CanonicalWallClockSec {
+				item.CanonicalWallClockSec = r.WallClock
+			}
+		}
+		return item
 	}
+
+	emitted := map[string]bool{}
+	for _, cs := range qh.readABCommandStates() {
+		for gid, g := range cs.CandidateGroups {
+			if g == nil || !g.Status.IsUnresolved() {
+				continue
+			}
+			ids := make([]string, 0, len(g.Candidates))
+			for _, c := range g.Candidates {
+				ids = append(ids, c.TaskID)
+			}
+			work.abGroups = append(work.abGroups, buildItem(cs.CommandID, gid, ids))
+			emitted[cs.CommandID+"/"+gid] = true
+		}
+	}
+	for groupID, a := range taggedGroups {
+		if emitted[a.commandID+"/"+groupID] {
+			continue
+		}
+		work.abGroups = append(work.abGroups, buildItem(a.commandID, groupID, a.taskIDs))
+	}
+}
+
+// readABCommandStates returns parsed command states containing a
+// candidate_groups section. Cheap byte pre-filter: most command states never
+// ran an A/B race, so full YAML parsing is skipped unless the key appears.
+func (qh *QueueHandler) readABCommandStates() []*model.CommandState {
+	dir := filepath.Join(qh.maestroDir, "state", "commands")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []*model.CommandState
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // controlled state dir
+		if err != nil || !bytes.Contains(data, []byte("candidate_groups")) {
+			continue
+		}
+		var cs model.CommandState
+		if err := yamlv3.Unmarshal(data, &cs); err != nil || len(cs.CandidateGroups) == 0 {
+			continue
+		}
+		out = append(out, &cs)
+	}
+	return out
 }
 
 // stepABSelection drives every collected candidate group one transition
@@ -99,7 +205,7 @@ func (qh *QueueHandler) stepABSelection(ctx context.Context, pa *phaseAResult) {
 		return
 	}
 	wm, ok := qh.worktreeManager.(abWorktreeOps)
-	if !ok || qh.worktreeManager == nil {
+	if !ok {
 		return // worktree manager absent or stubbed without A/B capability
 	}
 	for _, item := range pa.work.abGroups {
@@ -118,20 +224,58 @@ func (qh *QueueHandler) processABGroup(ctx context.Context, wm abWorktreeOps, it
 		return
 	}
 	g := state.CandidateGroups[item.GroupID]
-	if g == nil || !g.Status.IsUnresolved() {
-		return // resolved/degraded already, or unknown group
+	if g == nil {
+		// Tagged rows without a durable group: legacy fan-out (queues
+		// written before state) crashed mid-way. Repair so the rows stop
+		// freezing their workers and any candidate-branch work is recovered.
+		qh.repairOrphanABRows(wm, item, state)
+		return
+	}
+	if !g.Status.IsUnresolved() {
+		return // resolved/degraded already
 	}
 
 	canonical := g.CandidateByTask(g.CanonicalTaskID)
 	shadow := g.OtherCandidate(g.CanonicalTaskID)
 	if canonical == nil || shadow == nil {
 		qh.resolveABGroup(item.CommandID, item.GroupID, g.CanonicalTaskID, true,
-			"malformed candidate group", map[string]string{"degraded": "malformed_group"}, wm)
+			"malformed candidate group", map[string]string{"degraded": "malformed_group"})
 		return
 	}
 
-	completed := func(taskID string) bool { return item.QueueStatuses[taskID] == model.StatusCompleted }
-	terminal := func(taskID string) bool { return model.IsTerminal(item.QueueStatuses[taskID]) }
+	// Fan-out incomplete (state-first write order): the group exists but the
+	// canonical row never received its tag — the canonical is living a
+	// normal NON-candidate life in the worker worktree, so the candidate
+	// machinery (commit/intake from candidate branches) cannot apply to it.
+	// Degrade: the canonical keeps its own status/lifecycle untouched, the
+	// shadow is superseded.
+	if tagged, present := item.RowTagged[canonical.TaskID]; present && !tagged {
+		qh.resolveABGroup(item.CommandID, item.GroupID, "", true,
+			"fan-out incomplete: canonical row untagged",
+			map[string]string{"degraded": "fanout_incomplete"})
+		return
+	}
+	// Shadow row never enqueued (crash between the state and shadow-queue
+	// writes): nobody will ever pick it up — cancel it in state so the race
+	// converges to a canonical walkover instead of hanging until timeout.
+	if _, present := item.QueueStatuses[shadow.TaskID]; !present &&
+		state.TaskStates[shadow.TaskID] == model.StatusPending {
+		qh.cancelABCandidateStateOnly(item.CommandID, shadow.TaskID, "ab_fanout_incomplete")
+		return // re-collected with the cancelled state on the next scan
+	}
+
+	// Effective status: the queue row when one exists, else the durable
+	// state entry. Rows can vanish while the group is unresolved (dead-letter
+	// deletes exhausted pending rows and mirrors `failed` into state); the
+	// group must still converge (#1 of the 2026-06-12 A/B audit).
+	eff := func(taskID string) model.Status {
+		if s, present := item.QueueStatuses[taskID]; present {
+			return s
+		}
+		return state.TaskStates[taskID]
+	}
+	completed := func(taskID string) bool { return eff(taskID) == model.StatusCompleted }
+	terminal := func(taskID string) bool { return model.IsTerminal(eff(taskID)) }
 
 	switch {
 	case terminal(canonical.TaskID) && terminal(shadow.TaskID):
@@ -143,19 +287,168 @@ func (qh *QueueHandler) processABGroup(ctx context.Context, wm abWorktreeOps, it
 		// RUNNING loser is never finalized destructively here — its worker
 		// is executing inside the candidate worktree, and its own
 		// DefinitionOfAbort / lease machinery bounds it; the all-terminal
-		// branch above finalizes afterwards. Only a still-PENDING loser
-		// (never dispatched) is safe to cancel so the race cannot hang on
-		// a row no worker ever picks up.
+		// branch above finalizes afterwards. Cancellation is limited to
+		// candidates no worker is executing: a still-PENDING row (never
+		// dispatched) or a rowless candidate whose state entry never went
+		// terminal (lost row).
 		for _, c := range []*model.ABCandidate{canonical, shadow} {
 			other := g.OtherCandidate(c.TaskID)
-			if item.QueueStatuses[c.TaskID] == model.StatusPending && other != nil && completed(other.TaskID) {
+			if other == nil || !completed(other.TaskID) {
+				continue
+			}
+			s, present := item.QueueStatuses[c.TaskID]
+			switch {
+			case present && s == model.StatusPending:
 				qh.cancelPendingABCandidate(item.CommandID, c)
+			case !present && !model.IsTerminal(state.TaskStates[c.TaskID]):
+				qh.cancelABCandidateStateOnly(item.CommandID, c.TaskID, "superseded_by_ab_timeout")
 			}
 		}
 		qh.log(LogLevelDebug, "ab_race_timeout_waiting command=%s group=%s statuses=%v",
 			item.CommandID, item.GroupID, item.QueueStatuses)
 	}
 	// else: still racing within budget — wait for the next scan.
+}
+
+// cancelABCandidateStateOnly CAS-cancels a candidate that has NO queue row
+// (never enqueued, or the row was deleted while undispatched) directly in
+// command state so the group can converge.
+func (qh *QueueHandler) cancelABCandidateStateOnly(commandID, taskID, reason string) {
+	stateKey := "state:" + commandID
+	qh.lockMap.Lock(stateKey)
+	defer qh.lockMap.Unlock(stateKey)
+	if err := updateYAMLFile(commandStatePath(qh.maestroDir, commandID), func(state *model.CommandState) error {
+		if model.IsTerminal(state.TaskStates[taskID]) {
+			return errNoUpdate
+		}
+		if state.CancelledReasons == nil {
+			state.CancelledReasons = map[string]string{}
+		}
+		state.TaskStates[taskID] = model.StatusCancelled
+		state.CancelledReasons[taskID] = reason
+		state.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		if !errors.Is(err, errNoUpdate) {
+			qh.log(LogLevelWarn, "ab_state_cancel_failed command=%s task=%s error=%v", commandID, taskID, err)
+		}
+		return
+	}
+	qh.log(LogLevelInfo, "ab_candidate_state_cancelled command=%s task=%s reason=%s", commandID, taskID, reason)
+}
+
+// repairOrphanABRows handles tagged queue rows whose group is absent from a
+// READABLE command state (legacy queue-first fan-out crashed between the
+// queue and state writes). Without repair such rows freeze their workers
+// forever (fail-closed) and route work to candidate branches nobody intakes.
+func (qh *QueueHandler) repairOrphanABRows(wm abWorktreeOps, item abGroupWorkItem, state *model.CommandState) {
+	for taskID, workerID := range item.RowWorkers {
+		if !item.RowTagged[taskID] {
+			continue
+		}
+		status := item.QueueStatuses[taskID]
+		_, knownToState := state.TaskStates[taskID]
+		switch {
+		case status == model.StatusInProgress:
+			// A worker is executing in the candidate worktree; lease/DOA
+			// bounds it. Repair once it goes terminal.
+			continue
+		case knownToState && status == model.StatusCompleted:
+			// Work happened inside the candidate worktree — recover it into
+			// the worker branch before releasing the freeze.
+			if err := wm.CommitCandidateChanges(item.CommandID, taskID); err != nil {
+				qh.log(LogLevelWarn, "ab_orphan_commit_failed command=%s task=%s error=%v (retry next scan)",
+					item.CommandID, taskID, err)
+				continue
+			}
+			if err := wm.IntakeWinner(item.CommandID, workerID,
+				model.ABCandidateBranch(item.CommandID, taskID), taskID); err != nil {
+				// The work cannot be merged: a bare tag strip would let a
+				// completed-but-unintegrated task flow onward (silent work
+				// loss). Re-execute through the standard repair machinery
+				// instead; only then release the freeze. The candidate
+				// branch stays for audit until command cleanup.
+				qh.log(LogLevelError, "ab_orphan_intake_failed command=%s task=%s error=%v (re-executing via repair task)",
+					item.CommandID, taskID, err)
+				if !qh.enqueueOrphanRepair(item.CommandID, workerID, taskID, err) {
+					continue // keep the tag (fail-closed freeze); retry next scan
+				}
+			}
+			qh.stripABTag(workerID, taskID, false)
+		case knownToState:
+			// pending / failed / cancelled: no candidate work worth
+			// recovering — strip the tag so a pending row rejoins the
+			// normal pipeline and a terminal row rests as a plain row.
+			qh.stripABTag(workerID, taskID, false)
+		default:
+			// Unknown to state: a shadow remnant. It must never dispatch
+			// (it would duplicate the canonical's work) and must stop
+			// freezing its worker.
+			qh.stripABTag(workerID, taskID, true)
+		}
+	}
+}
+
+// enqueueOrphanRepair re-executes an orphan candidate's logical task through
+// the standard repair machinery (idempotent via the wired RetryLineage
+// successor: a repeated call detects the previous repair and succeeds
+// without re-issuing). Returns false when no repair could be ensured.
+func (qh *QueueHandler) enqueueOrphanRepair(commandID, workerID, taskID string, cause error) bool {
+	if cs, err := qh.readCommandState(commandID); err == nil {
+		for _, pred := range cs.RetryLineage {
+			if pred == taskID {
+				return true // a successor is already wired
+			}
+		}
+	}
+	row := qh.findQueueTask(workerID, taskID)
+	if row == nil {
+		qh.log(LogLevelWarn, "ab_orphan_repair_no_row command=%s task=%s (retry next scan)", commandID, taskID)
+		return false
+	}
+	retryHandler := NewTaskRetryHandler(qh.maestroDir, qh.config, qh.lockMap, qh.logger, qh.logLevel)
+	repairTask, err := retryHandler.CreateVerifyRepairTask(row,
+		fmt.Sprintf("orphan A/B candidate work could not be merged into the worker branch: %v. Re-implement the task on the current state.", cause))
+	if err != nil {
+		qh.log(LogLevelWarn, "ab_orphan_repair_create_failed command=%s task=%s error=%v", commandID, taskID, err)
+		return false
+	}
+	repairTask.ABGroupID = ""
+	if err := retryHandler.RetryTaskAtomically(repairTask, taskID, commandID, workerID); err != nil {
+		qh.log(LogLevelWarn, "ab_orphan_repair_enqueue_failed command=%s task=%s error=%v", commandID, taskID, err)
+		return false
+	}
+	qh.log(LogLevelInfo, "ab_orphan_repair_enqueued command=%s task=%s repair=%s", commandID, taskID, repairTask.ID)
+	return true
+}
+
+// stripABTag CAS-clears a queue row's ab_group_id (releasing the fail-closed
+// freeze); when cancelPending is set a still-pending row is also cancelled.
+func (qh *QueueHandler) stripABTag(workerID, taskID string, cancelPending bool) {
+	queueKey := "queue:" + workerID
+	qh.lockMap.Lock(queueKey)
+	defer qh.lockMap.Unlock(queueKey)
+	if err := updateYAMLFile(taskQueuePath(qh.maestroDir, workerID), func(tq *model.TaskQueue) error {
+		for i := range tq.Tasks {
+			t := &tq.Tasks[i]
+			if t.ID != taskID || t.ABGroupID == "" {
+				continue
+			}
+			t.ABGroupID = ""
+			if cancelPending && t.Status == model.StatusPending {
+				t.Status = model.StatusCancelled
+			}
+			t.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
+			return nil
+		}
+		return errNoUpdate
+	}); err != nil {
+		if !errors.Is(err, errNoUpdate) {
+			qh.log(LogLevelWarn, "ab_tag_strip_failed worker=%s task=%s error=%v", workerID, taskID, err)
+		}
+		return
+	}
+	qh.log(LogLevelInfo, "ab_orphan_row_repaired worker=%s task=%s cancel_pending=%v", workerID, taskID, cancelPending)
 }
 
 // cancelPendingABCandidate CAS-cancels a never-dispatched candidate row
@@ -220,11 +513,81 @@ func (qh *QueueHandler) runABSelectionAndResolve(ctx context.Context, wm abWorkt
 		// the normal repair path; the shadow is terminally superseded.
 		qh.resolveABGroup(item.CommandID, item.GroupID, "", true,
 			"both candidates failed; canonical continues on the normal repair path",
-			map[string]string{"degraded": "both_failed"}, wm)
+			map[string]string{"degraded": "both_failed"})
 		return
 	}
 
-	// Commit completed candidates' worktrees (idempotent).
+	// Repair-priority (crash between repair enqueue and resolve): a wired
+	// NON-candidate successor of the canonical proves a repair task already
+	// exists, so the winner must not be intaken anymore — finishing it now
+	// would double-execute the logical task. While the group is unresolved
+	// such a successor can only come from degradeABGroupWithRepair (daemon
+	// and Planner retries are gated for candidates), so this check is sound
+	// and must run BEFORE the pending-winner replay.
+	for succ, pred := range state.RetryLineage {
+		if pred == g.CanonicalTaskID && g.CandidateByTask(succ) == nil {
+			qh.degradeABGroupWithRepair(item, g,
+				map[string]string{"degraded": "repair_already_enqueued"},
+				fmt.Errorf("repair successor %s already wired", succ))
+			return
+		}
+	}
+
+	// Durable winner from a crashed previous attempt: re-finalize EXACTLY
+	// that decision. Re-running the selection could flake to a different
+	// winner and merge a SECOND candidate branch into another worker. The
+	// replay is still bounded by the selecting timeout: a permanently
+	// failing winner commit escapes to the repair degrade instead of
+	// wedging on the recorded decision forever.
+	if g.PendingWinnerTaskID != "" {
+		if winner := g.CandidateByTask(g.PendingWinnerTaskID); winner != nil {
+			if qh.abSelectionTimedOut(g) {
+				if err := wm.CommitCandidateChanges(item.CommandID, winner.TaskID); err != nil {
+					qh.log(LogLevelWarn, "ab_pending_winner_unrecoverable command=%s group=%s winner=%s error=%v",
+						item.CommandID, item.GroupID, winner.TaskID, err)
+					qh.degradeABGroupWithRepair(item, g,
+						map[string]string{"degraded": "pending_winner_timeout"},
+						fmt.Errorf("pending winner unrecoverable past the selection budget: %w", err))
+					return
+				}
+			}
+			qh.finalizeABWinner(wm, item, g, winner, g.OtherCandidate(winner.TaskID),
+				map[string]string{"recovered": "pending_winner"})
+			return
+		}
+	}
+
+	// Mark selecting FIRST (CAS: racing → selecting): the selection-timeout
+	// clock then bounds EVERY later step — including a permanently failing
+	// candidate commit — so the degrade escape below stays reachable.
+	if g.Status == model.ABGroupRacing {
+		if err := qh.markABGroupSelecting(item.CommandID, item.GroupID); err != nil {
+			qh.log(LogLevelWarn, "ab_group_mark_selecting_failed command=%s group=%s error=%v",
+				item.CommandID, item.GroupID, err)
+			return
+		}
+	} else if qh.abSelectionTimedOut(g) {
+		// Selection never converged within the budget. Walk over to the
+		// first finisher (canonical preferred) when its work is still
+		// recoverable; otherwise re-execute the logical task through the
+		// repair machinery, which needs no candidate artifacts.
+		w := finished[0]
+		if err := wm.CommitCandidateChanges(item.CommandID, w.TaskID); err == nil {
+			qh.finalizeABWinner(wm, item, g, w, g.OtherCandidate(w.TaskID),
+				map[string]string{"walkover": "selection_timeout"})
+			return
+		} else { //nolint:revive // keep err scoped to the walkover attempt
+			qh.log(LogLevelWarn, "ab_selection_timeout_walkover_unrecoverable command=%s group=%s error=%v",
+				item.CommandID, item.GroupID, err)
+			qh.degradeABGroupWithRepair(item, g,
+				map[string]string{"degraded": "selection_timeout"},
+				fmt.Errorf("selection timed out and the finisher's work is unrecoverable: %w", err))
+			return
+		}
+	}
+
+	// Commit completed candidates' worktrees (idempotent; bounded by the
+	// selecting timeout above when permanently failing).
 	for _, c := range finished {
 		if err := wm.CommitCandidateChanges(item.CommandID, c.TaskID); err != nil {
 			qh.log(LogLevelWarn, "ab_candidate_commit_failed command=%s task=%s error=%v (retry next scan)",
@@ -233,74 +596,73 @@ func (qh *QueueHandler) runABSelectionAndResolve(ctx context.Context, wm abWorkt
 		}
 	}
 
-	if len(finished) == 1 {
-		winner := finished[0]
-		loser := canonical
-		if winner == canonical {
-			loser = shadow
-		}
-		qh.finalizeABWinner(ctx, wm, item, g, winner, loser,
-			map[string]string{"walkover": "single_completed"})
-		return
-	}
-
-	// Mark selecting (CAS: racing → selecting) so the selection-timeout
-	// clock starts and observers see the phase change.
-	if g.Status == model.ABGroupRacing {
-		if err := qh.markABGroupSelecting(item.CommandID, item.GroupID); err != nil {
-			qh.log(LogLevelWarn, "ab_group_mark_selecting_failed command=%s group=%s error=%v",
-				item.CommandID, item.GroupID, err)
-			return
-		}
-	} else if qh.abSelectionTimedOut(g) {
-		qh.log(LogLevelWarn, "ab_selection_timeout command=%s group=%s (canonical walkover)",
-			item.CommandID, item.GroupID)
-		qh.finalizeABWinner(ctx, wm, item, g, canonical, shadow,
-			map[string]string{"walkover": "selection_timeout"})
-		return
-	}
-
+	// Selection runs for ONE finisher too (walkover verification, design
+	// §5): a healthy verifier must pass the sole finisher before intake.
 	verifyCmds := qh.loadABVerifyCommands(item.CommandID)
-	inputs := []worktree.ABSelectionInput{ // canonical FIRST: ties go to it
-		{TaskID: canonical.TaskID, Branch: canonical.Branch},
-		{TaskID: shadow.TaskID, Branch: shadow.Branch},
+	inputs := make([]worktree.ABSelectionInput, 0, len(finished)) // canonical FIRST: ties go to it
+	for _, c := range finished {
+		inputs = append(inputs, worktree.ABSelectionInput{TaskID: c.TaskID, Branch: c.Branch})
 	}
 	outcome, err := wm.RunCandidateSelection(ctx, item.CommandID, item.GroupID, inputs, verifyCmds)
 	if err != nil {
-		if errors.Is(err, worktree.ErrSelectionBusy) {
+		switch {
+		case errors.Is(err, worktree.ErrSelectionBusy):
 			qh.log(LogLevelDebug, "ab_selection_deferred command=%s group=%s (integration busy)",
 				item.CommandID, item.GroupID)
-			return // selecting status persists; selection-timeout bounds the wait
+		case errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			// Shutdown — resume on the next scan, never a verdict.
+			qh.log(LogLevelDebug, "ab_selection_interrupted command=%s group=%s (retry next scan)",
+				item.CommandID, item.GroupID)
+		default:
+			qh.log(LogLevelWarn, "ab_selection_failed command=%s group=%s error=%v (walkover to first finisher)",
+				item.CommandID, item.GroupID, err)
+			qh.finalizeABWinner(wm, item, g, finished[0], g.OtherCandidate(finished[0].TaskID),
+				map[string]string{"walkover": "selection_error", "selection_error": err.Error()})
 		}
-		qh.log(LogLevelWarn, "ab_selection_failed command=%s group=%s error=%v (canonical walkover)",
-			item.CommandID, item.GroupID, err)
-		qh.finalizeABWinner(ctx, wm, item, g, canonical, shadow,
-			map[string]string{"walkover": "selection_error", "selection_error": err.Error()})
-		return
+		return // busy / interrupted: selecting persists; selection-timeout bounds the wait
 	}
 
 	evidence := outcome.Evidence
 	if evidence == nil {
 		evidence = map[string]string{}
 	}
-	winner, loser := canonical, shadow
+	if outcome.SoleCandidateFailed {
+		// Healthy verifier, sole finisher demonstrably bad: re-execute the
+		// logical task instead of shipping verified-bad work.
+		evidence["degraded"] = "sole_finisher_failed_verification"
+		qh.degradeABGroupWithRepair(item, g, evidence,
+			errors.New("sole finisher failed verification against a healthy baseline"))
+		return
+	}
+	winner := finished[0]
 	if outcome.Degraded {
 		// Mechanical signal unavailable (verifier broken / no verifier /
-		// all candidates conflicted). Canonical wins by deterministic
-		// default; signal the Planner that the verifier needs attention.
+		// all candidates conflicted). First finisher (canonical preferred)
+		// wins by deterministic default; signal the Planner that the
+		// verifier needs attention.
 		evidence["degraded_selection"] = outcome.Reason
-		qh.log(LogLevelWarn, "ab_selection_no_signal command=%s group=%s reason=%q (canonical default win)",
+		qh.log(LogLevelWarn, "ab_selection_no_signal command=%s group=%s reason=%q (default win)",
 			item.CommandID, item.GroupID, outcome.Reason)
-	} else if outcome.WinnerTaskID == shadow.TaskID {
-		winner, loser = shadow, canonical
+	} else if w := g.CandidateByTask(outcome.WinnerTaskID); w != nil {
+		winner = w
 	}
-	qh.finalizeABWinner(ctx, wm, item, g, winner, loser, evidence)
+	qh.finalizeABWinner(wm, item, g, winner, g.OtherCandidate(winner.TaskID), evidence)
 }
 
-// finalizeABWinner performs intake (winner candidate branch → its worker
-// branch), loser cleanup, and the state resolution. An intake conflict
-// degrades the group with canonical re-execution (design §6, PR1).
-func (qh *QueueHandler) finalizeABWinner(_ context.Context, wm abWorktreeOps, item abGroupWorkItem, g *model.CandidateGroup, winner, loser *model.ABCandidate, evidence map[string]string) {
+// finalizeABWinner records the decision durably, performs intake (winner
+// candidate branch → its worker branch) and writes the state resolution.
+// Candidate worktrees/branches are intentionally NOT removed here — they
+// stay for audit until command cleanup (design §7), which also removes the
+// crash window between artifact removal and resolution. An intake conflict
+// degrades the group with a repair re-execution (design §6, PR1).
+func (qh *QueueHandler) finalizeABWinner(wm abWorktreeOps, item abGroupWorkItem, g *model.CandidateGroup, winner, loser *model.ABCandidate, evidence map[string]string) {
+	// Durable decision BEFORE any worker-branch mutation: a crash after the
+	// intake then re-finalizes this exact winner instead of re-deciding.
+	if err := qh.markABPendingWinner(item.CommandID, item.GroupID, winner.TaskID); err != nil {
+		qh.log(LogLevelWarn, "ab_pending_winner_mark_failed command=%s group=%s winner=%s error=%v (retry next scan)",
+			item.CommandID, item.GroupID, winner.TaskID, err)
+		return
+	}
 	// Winner work must be committed even on walkover paths (idempotent).
 	if err := wm.CommitCandidateChanges(item.CommandID, winner.TaskID); err != nil {
 		qh.log(LogLevelWarn, "ab_winner_commit_failed command=%s task=%s error=%v (retry next scan)",
@@ -317,39 +679,84 @@ func (qh *QueueHandler) finalizeABWinner(_ context.Context, wm abWorktreeOps, it
 		return
 	}
 
-	// Loser + winner candidate worktrees/branches are no longer needed
-	// (winner content now lives on the worker branch). Removal failures are
-	// retried by GC/cleanup.
-	if err := wm.RemoveCandidateWorktree(item.CommandID, loser.TaskID); err != nil {
-		qh.log(LogLevelWarn, "ab_loser_cleanup_failed command=%s task=%s error=%v", item.CommandID, loser.TaskID, err)
+	qh.resolveABGroup(item.CommandID, item.GroupID, winner.TaskID, false, "", evidence)
+	loserID := "<none>"
+	if loser != nil {
+		loserID = loser.TaskID
 	}
-	if err := wm.RemoveCandidateWorktree(item.CommandID, winner.TaskID); err != nil {
-		qh.log(LogLevelWarn, "ab_winner_cleanup_failed command=%s task=%s error=%v", item.CommandID, winner.TaskID, err)
-	}
-
-	qh.resolveABGroup(item.CommandID, item.GroupID, winner.TaskID, false, "", evidence, wm)
 	qh.log(LogLevelInfo, "ab_group_resolved command=%s group=%s winner=%s loser=%s",
-		item.CommandID, item.GroupID, winner.TaskID, loser.TaskID)
-	_ = g
+		item.CommandID, item.GroupID, winner.TaskID, loserID)
 }
 
-// degradeABGroupWithRepair handles an intake conflict: the logical task is
-// re-executed through the standard repair machinery (a fresh non-A/B retry
-// task supersedes the canonical), so the Planner hears about the retry's
-// outcome instead of a stale "completed" from a candidate whose work was
-// never integrated. On any failure the group stays unresolved and the next
-// scan retries the whole finalize (including the intake itself).
-func (qh *QueueHandler) degradeABGroupWithRepair(item abGroupWorkItem, g *model.CandidateGroup, evidence map[string]string, intakeErr error) {
+// markABPendingWinner CAS-records the selection decision in the durable
+// group. Returns an error when the group is already resolved or a DIFFERENT
+// pending winner is recorded (the next scan finalizes that one instead).
+func (qh *QueueHandler) markABPendingWinner(commandID, groupID, taskID string) error {
+	lockKey := "state:" + commandID
+	qh.lockMap.Lock(lockKey)
+	defer qh.lockMap.Unlock(lockKey)
+	err := updateYAMLFile(commandStatePath(qh.maestroDir, commandID), func(state *model.CommandState) error {
+		g := state.CandidateGroups[groupID]
+		switch {
+		case g == nil || !g.Status.IsUnresolved():
+			return fmt.Errorf("group %s missing or already resolved", groupID)
+		case g.PendingWinnerTaskID == taskID:
+			return errNoUpdate // already recorded — proceed
+		case g.PendingWinnerTaskID != "":
+			return fmt.Errorf("conflicting pending winner %s already recorded", g.PendingWinnerTaskID)
+		}
+		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		g.PendingWinnerTaskID = taskID
+		g.UpdatedAt = now
+		state.UpdatedAt = now
+		return nil
+	})
+	if errors.Is(err, errNoUpdate) {
+		return nil
+	}
+	return err
+}
+
+// degradeABGroupWithRepair degrades a group whose winner cannot be intaken
+// (intake conflict, unrecoverable timeout, sole finisher failed verify): the
+// logical task is re-executed through the standard repair machinery (a fresh
+// non-A/B retry task supersedes the canonical), so the Planner hears about
+// the retry's outcome instead of a stale "completed" from a candidate whose
+// work was never integrated. On transient failure the group stays unresolved
+// and the next scan retries.
+func (qh *QueueHandler) degradeABGroupWithRepair(item abGroupWorkItem, g *model.CandidateGroup, evidence map[string]string, cause error) {
 	canonical := g.CandidateByTask(g.CanonicalTaskID)
+
+	// Idempotency: a previous attempt may have enqueued the repair and then
+	// crashed (or failed) before resolving the group. RetryTaskAtomically
+	// wires RetryLineage[repair]=canonical durably at enqueue time, so a
+	// non-candidate successor of the canonical proves a repair exists —
+	// re-issuing would double-execute the logical task. Only finish the
+	// resolution in that case.
+	if cs, err := qh.readCommandState(item.CommandID); err == nil {
+		for succ, pred := range cs.RetryLineage {
+			if pred == canonical.TaskID && g.CandidateByTask(succ) == nil {
+				qh.resolveABGroup(item.CommandID, item.GroupID, "", true,
+					"repair already enqueued ("+succ+")",
+					evidence, "superseded_by_retry:"+succ)
+				return
+			}
+		}
+	}
+
 	canonRow := qh.findQueueTask(canonical.WorkerID, canonical.TaskID)
 	if canonRow == nil {
-		qh.log(LogLevelWarn, "ab_degrade_repair_no_canonical_row command=%s task=%s (retry next scan)",
-			item.CommandID, canonical.TaskID)
+		// No row to derive a repair from (dead-lettered / archived). The
+		// canonical's own terminal state stands — resolve degraded so the
+		// command converges; evidence records why no repair was issued.
+		evidence["repair_skipped"] = "canonical row missing"
+		qh.resolveABGroup(item.CommandID, item.GroupID, "", true,
+			fmt.Sprintf("degraded without repair (no canonical row): %v", cause), evidence)
 		return
 	}
 	retryHandler := NewTaskRetryHandler(qh.maestroDir, qh.config, qh.lockMap, qh.logger, qh.logLevel)
 	repairTask, err := retryHandler.CreateVerifyRepairTask(canonRow,
-		fmt.Sprintf("A/B winner intake conflicted with the worker branch: %v. Re-implement the task on the current state.", intakeErr))
+		fmt.Sprintf("A/B selection degraded: %v. Re-implement the task on the current state.", cause))
 	if err != nil {
 		qh.log(LogLevelWarn, "ab_degrade_repair_create_failed command=%s task=%s error=%v (retry next scan)",
 			item.CommandID, canonical.TaskID, err)
@@ -362,8 +769,8 @@ func (qh *QueueHandler) degradeABGroupWithRepair(item abGroupWorkItem, g *model.
 		return
 	}
 	qh.resolveABGroup(item.CommandID, item.GroupID, "", true,
-		"winner intake conflicted; logical task re-enqueued as "+repairTask.ID,
-		evidence, nil, "superseded_by_retry:"+repairTask.ID)
+		"winner unusable; logical task re-enqueued as "+repairTask.ID,
+		evidence, "superseded_by_retry:"+repairTask.ID)
 	qh.log(LogLevelInfo, "ab_degraded_with_repair command=%s group=%s repair=%s",
 		item.CommandID, item.GroupID, repairTask.ID)
 }
@@ -392,13 +799,12 @@ func (qh *QueueHandler) findQueueTask(workerID, taskID string) *model.Task {
 // repair enqueue); when empty the canonical's own terminal status stands
 // (both-failed case — its result entry already says failed, so the notify
 // stays truthful).
-func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, degraded bool, reason string, evidence map[string]string, wm abWorktreeOps, canonicalSupersededReason ...string) {
+func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, degraded bool, reason string, evidence map[string]string, canonicalSupersededReason ...string) {
 	statePath := commandStatePath(qh.maestroDir, commandID)
 	lockKey := "state:" + commandID
 	qh.lockMap.Lock(lockKey)
 	defer qh.lockMap.Unlock(lockKey)
 
-	var loserTasks []string
 	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		g := state.CandidateGroups[groupID]
 		if g == nil || !g.Status.IsUnresolved() {
@@ -416,8 +822,8 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 		}
 
 		if degraded {
-			// Candidate work stays auditable on candidate branches until
-			// command cleanup. The canonical is only superseded when a
+			// Candidate work stays auditable on candidate worktrees/branches
+			// until command cleanup. The canonical is only superseded when a
 			// repair successor was enqueued (reason supplied); otherwise its
 			// own terminal status stands so result-entry and state agree.
 			g.Status = model.ABGroupDegraded
@@ -432,7 +838,6 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 				} else {
 					state.TaskStates[c.TaskID] = model.StatusCancelled
 					state.CancelledReasons[c.TaskID] = "superseded_by_ab_degraded"
-					loserTasks = append(loserTasks, c.TaskID)
 				}
 			}
 		} else {
@@ -458,6 +863,7 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 				}
 			}
 		}
+		g.PendingWinnerTaskID = "" // decision is final; WinnerTaskID is the record
 		g.UpdatedAt = now
 		state.UpdatedAt = now
 		return nil
@@ -466,16 +872,8 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 			commandID, groupID, err)
 		return
 	}
-	// Degraded groups keep candidate branches for audit until command
-	// cleanup; loser worktree directories can go now (wm may be nil when
-	// the caller already handled artifacts).
-	if wm != nil {
-		for _, taskID := range loserTasks {
-			if err := wm.RemoveCandidateWorktree(commandID, taskID); err != nil {
-				qh.log(LogLevelDebug, "ab_degraded_cleanup_failed command=%s task=%s error=%v", commandID, taskID, err)
-			}
-		}
-	}
+	// Candidate worktrees/branches are kept for audit until command cleanup
+	// (cleanupCommandCore removes them); nothing to remove here.
 }
 
 // markABGroupSelecting CAS-transitions a group racing → selecting.

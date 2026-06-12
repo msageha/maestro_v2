@@ -63,8 +63,14 @@ type CandidateGroup struct {
 	CanonicalTaskID string        `yaml:"canonical_task_id"`
 	// WinnerTaskID is set when Status becomes resolved. For degraded groups
 	// it records the surviving canonical task.
-	WinnerTaskID string        `yaml:"winner_task_id,omitempty"`
-	Candidates   []ABCandidate `yaml:"candidates"`
+	WinnerTaskID string `yaml:"winner_task_id,omitempty"`
+	// PendingWinnerTaskID durably records the selection decision BEFORE the
+	// winner intake mutates any worker branch. A daemon crash between intake
+	// and resolution then re-finalizes exactly this winner instead of
+	// re-running a flake-prone selection that could intake a second branch.
+	// Cleared on resolution.
+	PendingWinnerTaskID string        `yaml:"pending_winner_task_id,omitempty"`
+	Candidates          []ABCandidate `yaml:"candidates"`
 	// SelectionEvidence records how the race was decided (stage outcomes,
 	// degradation reasons). Audit + future learned-router training data.
 	SelectionEvidence map[string]string `yaml:"selection_evidence,omitempty"`

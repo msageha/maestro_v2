@@ -20,11 +20,6 @@ import (
 // canonical worker's branch, so loser isolation is structural — there is
 // nothing to revert.
 
-// maxCandidateDiffBytes caps ComputeCandidateDiff output so a runaway
-// candidate (vendored deps, generated assets) cannot blow up selection
-// evidence or the LLM judge prompt.
-const maxCandidateDiffBytes = 512 * 1024
-
 // candidateWorktreePath returns the conventional path for a candidate
 // worktree. Lives beside worker worktrees under the command directory so
 // command-level cleanup naturally sweeps it.
@@ -244,45 +239,6 @@ func (wm *Manager) CommitCandidateChanges(commandID, taskID string) error {
 
 	wm.Log(core.LogLevelInfo, "candidate_committed command=%s task=%s", commandID, taskID)
 	return nil
-}
-
-// ComputeCandidateDiff returns the changed file list and a size-capped
-// unified diff of the candidate branch against its recorded base. Selection
-// evidence + (later PRs) cross-test extraction and the LLM judge consume it.
-func (wm *Manager) ComputeCandidateDiff(commandID, taskID string) (changedFiles []string, diff string, err error) {
-	if err := validateIDs(commandID, taskID); err != nil {
-		return nil, "", err
-	}
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-
-	state, err := wm.loadState(commandID)
-	if err != nil {
-		return nil, "", fmt.Errorf("load worktree state: %w", err)
-	}
-	c := findCandidate(state, taskID)
-	if c == nil {
-		return nil, "", fmt.Errorf("candidate worktree not found (command=%s, task=%s)", commandID, taskID)
-	}
-
-	namesOut, err := wm.gitOutput("diff", "--name-only", c.BaseSHA+".."+c.Branch)
-	if err != nil {
-		return nil, "", fmt.Errorf("git diff --name-only (candidate=%s): %w", taskID, err)
-	}
-	for line := range strings.SplitSeq(strings.TrimSpace(namesOut), "\n") {
-		if line != "" {
-			changedFiles = append(changedFiles, line)
-		}
-	}
-
-	diffOut, err := wm.gitOutput("diff", c.BaseSHA+".."+c.Branch)
-	if err != nil {
-		return nil, "", fmt.Errorf("git diff (candidate=%s): %w", taskID, err)
-	}
-	if len(diffOut) > maxCandidateDiffBytes {
-		diffOut = diffOut[:maxCandidateDiffBytes] + "\n... [diff truncated]"
-	}
-	return changedFiles, diffOut, nil
 }
 
 // RemoveCandidateWorktree deletes a candidate's worktree + branch and drops

@@ -228,6 +228,19 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 			len(state.RequiredTaskIDs), len(state.OptionalTaskIDs), totalExpected, state.ExpectedTaskCount)}
 	}
 
+	// Unresolved A/B candidate groups: selection / winner intake has not
+	// finished, so the final work set is not on the worker branches yet.
+	// This guards PHASELESS commands in particular — their required-task
+	// check below reads raw TaskStates, which both candidates can satisfy
+	// (completed) while the race is still undecided. Retryable: the daemon
+	// resolves the group on a following scan.
+	for gid, g := range state.CandidateGroups {
+		if g != nil && g.Status.IsUnresolved() {
+			return "", &retryableError{Err: fmt.Errorf(
+				"A/B candidate group %s is %s (selection in progress; the daemon resolves it shortly)", gid, g.Status)}
+		}
+	}
+
 	// Check all phases are terminal (if phases exist)
 	if len(state.Phases) > 0 {
 		for _, phase := range state.Phases {

@@ -205,9 +205,10 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 		res, err = submitInitialTasks(opts, input.Tasks, sm)
 	}
 	if err == nil && res != nil {
-		// A/B fan-out is additive: runs after the submit committed, outside
-		// its locks (queue→state order is re-acquired internally per task),
-		// and only ever appends warnings.
+		// A/B fan-out is additive: runs after the submit result is
+		// committed, re-acquires queue→state locks per task (the
+		// submit-scope file lock may still be held — the lock ORDER is
+		// unchanged), and only ever appends warnings.
 		res.Warnings = append(res.Warnings,
 			maybeCreateABCandidates(opts, sm, res, collectPinnedTaskNames(input))...)
 	}

@@ -192,7 +192,9 @@ type WorktreeCommandState struct {
 	Integration   IntegrationState  `yaml:"integration"`
 	Workers       []WorktreeState   `yaml:"workers"`
 	// Candidates tracks A/B candidate worktrees (task-scoped, see
-	// CandidateWorktree). Removed on group resolution / command cleanup.
+	// CandidateWorktree). Kept — with their worktrees and branches — for
+	// audit until command cleanup removes them; group resolution does NOT
+	// delete candidate artifacts.
 	Candidates []CandidateWorktree `yaml:"candidates,omitempty"`
 	// ABSelection is the durable in-flight marker for a candidate selection
 	// run borrowing the integration worktree. Set before the first git

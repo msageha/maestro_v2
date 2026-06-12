@@ -425,6 +425,19 @@ func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWrite
 		return nil, false
 	}
 
+	// A/B candidates never get the daemon auto-retry. Re-execution is owned
+	// by the candidate-group machinery (walkover / repair-degrade, design
+	// §6): a retry row would inherit candidate routing without group
+	// membership (work stranded on an orphan candidate branch), and a late
+	// loser failure must not resurrect superseded work. The state check
+	// also covers rows whose queue tag was stripped by recovery.
+	if queueTask.ABGroupID != "" ||
+		findABCandidateGroup(h.maestroDir, queueTask.CommandID, queueTask.ID) != nil {
+		h.logFn(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID,
+			"A/B candidate; re-execution is owned by candidate-group resolution")
+		return nil, false
+	}
+
 	// Read-only integration-scoped failure (typically a verification task
 	// whose verdict is FAIL): an identical retry re-observes the same merged
 	// state and cannot change the outcome. Skip retry so the failure routes

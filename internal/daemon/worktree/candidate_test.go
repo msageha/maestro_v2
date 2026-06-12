@@ -105,35 +105,6 @@ func TestCommitCandidateChanges_CommitsAndIsCleanNoop(t *testing.T) {
 	}
 }
 
-func TestComputeCandidateDiff(t *testing.T) {
-	t.Parallel()
-	projectRoot := testutil.InitTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-	commandID := "cmd_ab_diff"
-	taskID := "task_ab_004"
-	path, _, err := wm.EnsureCandidateWorktree(commandID, taskID)
-	if err != nil {
-		t.Fatalf("EnsureCandidateWorktree: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(path, "diffed.txt"), []byte("x\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := wm.CommitCandidateChanges(commandID, taskID); err != nil {
-		t.Fatalf("CommitCandidateChanges: %v", err)
-	}
-
-	files, diff, err := wm.ComputeCandidateDiff(commandID, taskID)
-	if err != nil {
-		t.Fatalf("ComputeCandidateDiff: %v", err)
-	}
-	if len(files) != 1 || files[0] != "diffed.txt" {
-		t.Errorf("changedFiles = %v, want [diffed.txt]", files)
-	}
-	if !strings.Contains(diff, "diffed.txt") {
-		t.Errorf("diff does not mention changed file:\n%s", diff)
-	}
-}
-
 func TestRemoveCandidateWorktree(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)

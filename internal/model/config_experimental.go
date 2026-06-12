@@ -79,13 +79,15 @@ type ABTestConfig struct {
 	// MinBloomLevel is the minimum task bloom_level that triggers an A/B
 	// race (default 4 — opus-tier tasks).
 	MinBloomLevel *int `yaml:"min_bloom_level,omitempty"`
-	// TimeoutSec bounds how long the group waits for the slower candidate
-	// after the first one finishes. 0 = follow the task's
-	// definition_of_abort.max_wall_clock_sec.
+	// TimeoutSec bounds the TOTAL racing window, measured from group
+	// creation. Past it, a candidate that never dispatched (still pending /
+	// row lost) is cancelled so a completed opponent can walk over; running
+	// candidates are left to their own DOA/lease bounds. 0 = follow the
+	// task's definition_of_abort.max_wall_clock_sec.
 	TimeoutSec *int `yaml:"timeout_sec,omitempty"`
-	// SelectionTimeoutSec bounds how long a group may sit unable to start
-	// selection (e.g. integration worktree busy) before degrading to a
-	// canonical walkover.
+	// SelectionTimeoutSec bounds how long a group may sit in `selecting`
+	// without converging (integration busy, failing candidate commit)
+	// before the walkover / repair-degrade escape fires.
 	SelectionTimeoutSec *int `yaml:"selection_timeout_sec,omitempty"`
 }
 

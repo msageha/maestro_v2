@@ -526,12 +526,13 @@ ab_test:
   # min_bloom_level: A/B を発火させる最小 bloom_level
   # type: *int | default: 4 (DefaultABMinBloomLevel) | range: 1-6
   min_bloom_level: 4
-  # timeout_sec: 先着候補の完了後、遅い候補を待つ上限秒数 (0 = タスクの
-  # definition_of_abort.max_wall_clock_sec に従う)
+  # timeout_sec: レース全体の上限秒数 (グループ作成起点)。超過時、未着手の
+  # 候補は取消され完走済みの候補が不戦勝になる (実行中の候補は自身の
+  # DOA/lease に委ねる)。0 = タスクの definition_of_abort.max_wall_clock_sec に従う
   # type: *int | default: 0 | range: >= 0
   timeout_sec: 0
-  # selection_timeout_sec: integration worktree が busy 等で選抜を開始
-  # できない場合に canonical 不戦勝へ縮退するまでの上限秒数
+  # selection_timeout_sec: 選抜 (selecting) が integration busy や commit
+  # 失敗で収束しない場合に不戦勝 / repair 縮退エスケープを発火させる上限秒数
   # type: *int | default: 1800 (DefaultABSelectionTimeoutSec) | range: >= 0
   selection_timeout_sec: 1800
 

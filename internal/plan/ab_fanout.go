@@ -106,8 +106,16 @@ func pickShadowWorker(workerStates []WorkerState, canonicalWorker, canonicalMode
 // createABCandidate atomically (queue locks → state lock) creates the shadow
 // queue row, tags the canonical row with the group ID, and registers the
 // CandidateGroup + shadow task in command state. Returns a warning string on
-// any failure ("" on success); partial writes are rolled back from byte
-// snapshots so the canonical pipeline is never left inconsistent.
+// any failure ("" on success).
+//
+// Write order is STATE FIRST, then canonical tag, then shadow row: every
+// crash artifact is then visible from the durable CandidateGroups map and
+// repairable by the state-driven A/B recovery (a group whose rows are
+// untagged/missing degrades safely), whereas an orphan queue tag without a
+// group would route work to a candidate worktree nobody ever intakes.
+// Non-crash write failures are rolled back from byte snapshots; a failed
+// rollback leaves only state-first artifacts, which the same recovery
+// handles.
 func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult, shadowWorker, shadowModel string, minBloom int) string {
 	canonicalQueue := workerQueuePath(opts.MaestroDir, tr.Worker)
 	shadowQueue := workerQueuePath(opts.MaestroDir, shadowWorker)
@@ -117,7 +125,8 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
 
-	// --- Load + eligibility (everything re-checked under the locks) ---
+	// --- Load + eligibility (everything re-checked under the locks; all
+	// reads happen before the first write so read failures abort cleanly) ---
 	canonBytes, err := os.ReadFile(canonicalQueue) //nolint:gosec // controlled queue dir
 	if err != nil {
 		return fmt.Sprintf("ab fan-out skipped for %s: read canonical queue: %v", tr.TaskID, err)
@@ -146,14 +155,6 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 		return "" // verification / conflict-resolution tasks are out of scope
 	}
 
-	shadowID, err := model.NewTaskID(model.TaskIDCallerABCandidate)
-	if err != nil {
-		return fmt.Sprintf("ab fan-out skipped for %s: mint shadow ID: %v", tr.TaskID, err)
-	}
-	groupID := "abg_" + tr.TaskID
-	now := nowUTC()
-
-	// --- Queue mutations (snapshot both files for rollback) ---
 	shadowBytes, err := os.ReadFile(shadowQueue) //nolint:gosec // controlled queue dir
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Sprintf("ab fan-out skipped for %s: read shadow queue: %v", tr.TaskID, err)
@@ -166,6 +167,37 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	} else {
 		shadowTQ = model.TaskQueue{SchemaVersion: 1, FileType: "queue_task"}
 	}
+
+	state, err := sm.LoadState(opts.CommandID)
+	if err != nil {
+		return fmt.Sprintf("ab fan-out skipped for %s: load state: %v", tr.TaskID, err)
+	}
+	canonState, ok := state.TaskStates[tr.TaskID]
+	if !ok {
+		return fmt.Sprintf("ab fan-out skipped for %s: canonical task missing from state", tr.TaskID)
+	}
+	if _, g := state.FindCandidateGroupByTask(tr.TaskID); g != nil {
+		// Idempotent at the state level too: a crash between the state and
+		// queue writes leaves the group registered; completing the queue
+		// side here would race the recovery that may already be degrading
+		// it, so leave stragglers to R-AB.
+		return ""
+	}
+	statePath, err := sm.StatePath(opts.CommandID)
+	if err != nil {
+		return fmt.Sprintf("ab fan-out skipped for %s: state path: %v", tr.TaskID, err)
+	}
+	stateBytes, err := os.ReadFile(statePath) //nolint:gosec // controlled state dir
+	if err != nil {
+		return fmt.Sprintf("ab fan-out skipped for %s: snapshot state: %v", tr.TaskID, err)
+	}
+
+	shadowID, err := model.NewTaskID(model.TaskIDCallerABCandidate)
+	if err != nil {
+		return fmt.Sprintf("ab fan-out skipped for %s: mint shadow ID: %v", tr.TaskID, err)
+	}
+	groupID := "abg_" + tr.TaskID
+	now := nowUTC()
 
 	shadow := *canon // copy all task content verbatim
 	shadow.ID = shadowID
@@ -190,40 +222,7 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	canon.ABGroupID = groupID
 	canon.UpdatedAt = now
 
-	rollbackQueues := func() {
-		if err := os.WriteFile(canonicalQueue, canonBytes, 0o644); err != nil { //nolint:gosec // queue files are 0644 by convention
-			slogc().Error("ab_fanout_rollback_canonical_failed", "task", tr.TaskID, "error", err)
-		}
-		if len(shadowBytes) > 0 {
-			if err := os.WriteFile(shadowQueue, shadowBytes, 0o644); err != nil { //nolint:gosec // queue files are 0644 by convention
-				slogc().Error("ab_fanout_rollback_shadow_failed", "task", tr.TaskID, "error", err)
-			}
-		} else {
-			if err := os.Remove(shadowQueue); err != nil && !os.IsNotExist(err) {
-				slogc().Error("ab_fanout_rollback_shadow_remove_failed", "task", tr.TaskID, "error", err)
-			}
-		}
-	}
-
-	if err := yamlutil.AtomicWrite(canonicalQueue, canonTQ); err != nil {
-		return fmt.Sprintf("ab fan-out skipped for %s: write canonical queue: %v", tr.TaskID, err)
-	}
-	if err := yamlutil.AtomicWrite(shadowQueue, shadowTQ); err != nil {
-		rollbackQueues()
-		return fmt.Sprintf("ab fan-out skipped for %s: write shadow queue: %v", tr.TaskID, err)
-	}
-
-	// --- State registration ---
-	state, err := sm.LoadState(opts.CommandID)
-	if err != nil {
-		rollbackQueues()
-		return fmt.Sprintf("ab fan-out skipped for %s: load state: %v", tr.TaskID, err)
-	}
-	canonState, ok := state.TaskStates[tr.TaskID]
-	if !ok {
-		rollbackQueues()
-		return fmt.Sprintf("ab fan-out skipped for %s: canonical task missing from state", tr.TaskID)
-	}
+	// --- State registration (in memory) ---
 	state.TaskStates[shadowID] = canonState
 	if state.TaskDependencies == nil {
 		state.TaskDependencies = map[string][]string{}
@@ -258,9 +257,26 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	}
 	state.UpdatedAt = now
 
+	// --- Writes: state → canonical tag → shadow row ---
 	if err := sm.SaveState(state); err != nil {
-		rollbackQueues()
 		return fmt.Sprintf("ab fan-out skipped for %s: save state: %v", tr.TaskID, err)
+	}
+	rollbackState := func() {
+		if err := yamlutil.AtomicWriteRaw(statePath, stateBytes); err != nil {
+			// Leftover group without queue rows — degraded by R-AB recovery.
+			slogc().Error("ab_fanout_rollback_state_failed", "task", tr.TaskID, "error", err)
+		}
+	}
+	if err := yamlutil.AtomicWrite(canonicalQueue, canonTQ); err != nil {
+		rollbackState()
+		return fmt.Sprintf("ab fan-out skipped for %s: write canonical queue: %v", tr.TaskID, err)
+	}
+	if err := yamlutil.AtomicWrite(shadowQueue, shadowTQ); err != nil {
+		if rerr := yamlutil.AtomicWriteRaw(canonicalQueue, canonBytes); rerr != nil {
+			slogc().Error("ab_fanout_rollback_canonical_failed", "task", tr.TaskID, "error", rerr)
+		}
+		rollbackState()
+		return fmt.Sprintf("ab fan-out skipped for %s: write shadow queue: %v", tr.TaskID, err)
 	}
 
 	slogc().Info("ab_candidate_created",

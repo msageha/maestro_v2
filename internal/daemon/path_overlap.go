@@ -44,6 +44,11 @@ func HasPathOverlap(a, b string) bool {
 type inFlightPathEntry struct {
 	TaskID        string
 	ExpectedPaths []string
+	// ABGroupID exempts candidates of the SAME A/B race from mutual overlap
+	// blocking: they intentionally share expected_paths (the shadow is a
+	// copy) and are structurally isolated in per-candidate worktrees, so
+	// serializing them would turn the race into a walkover.
+	ABGroupID string
 }
 
 // collectInFlightPaths gathers expected_paths from all in-progress tasks
@@ -68,12 +73,14 @@ func collectInFlightPaths(taskQueues map[string]*taskQueueEntry, isExpired func(
 				entries = append(entries, inFlightPathEntry{
 					TaskID:        task.ID,
 					ExpectedPaths: []string{SentinelUnknownPaths},
+					ABGroupID:     task.ABGroupID,
 				})
 				continue
 			}
 			entries = append(entries, inFlightPathEntry{
 				TaskID:        task.ID,
 				ExpectedPaths: task.ExpectedPaths,
+				ABGroupID:     task.ABGroupID,
 			})
 		}
 	}
@@ -101,6 +108,11 @@ func findOverlappingTask(candidate *model.Task, inFlight []inFlightPathEntry) (c
 		return "", "", ""
 	}
 	for _, entry := range inFlight {
+		if candidate.ABGroupID != "" && entry.ABGroupID == candidate.ABGroupID {
+			// Same A/B race: candidates intentionally share paths and are
+			// isolated in per-candidate worktrees — never serialize them.
+			continue
+		}
 		for _, cp := range candidate.ExpectedPaths {
 			for _, ip := range entry.ExpectedPaths {
 				if HasPathOverlap(cp, ip) {

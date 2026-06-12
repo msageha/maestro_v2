@@ -246,6 +246,10 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, _ string, e
 	retryTask.LeaseEpoch = 0
 	retryTask.InProgressAt = nil // Reset so new dispatch sets fresh timestamp
 	retryTask.OperationType = model.OperationTypeRepair
+	// A/B candidacy is per-race and never inherited: a tagged retry would be
+	// routed to an orphan candidate worktree (no group membership → nobody
+	// ever intakes its work) and would dodge the selection barrier.
+	retryTask.ABGroupID = ""
 
 	now := h.clock.Now().UTC()
 	retryTask.CreatedAt = now.Format(time.RFC3339)

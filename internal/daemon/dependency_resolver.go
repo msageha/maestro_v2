@@ -100,7 +100,12 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateManager.GetEffectiveTaskStatus(task.CommandID, depTaskID)
+		// ForCompletion lens: a dep that is an UNRESOLVED A/B candidate is
+		// masked as running even when its raw state says completed — the
+		// winner's work reaches the worker branch only at intake, so a
+		// dependent dispatched earlier would build on a tree without the
+		// dep's changes.
+		status, err := dr.stateManager.GetEffectiveTaskStatusForCompletion(task.CommandID, depTaskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
 			return true, err
@@ -191,7 +196,11 @@ func (dr *DependencyResolver) CheckDependencyFailure(task *model.Task) (string, 
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateManager.GetEffectiveTaskStatus(task.CommandID, depTaskID)
+		// ForCompletion lens (same as IsTaskBlocked): an unresolved A/B
+		// candidate dep is masked as running — its raw failed/cancelled can
+		// be superseded by the other candidate winning, so cascading on it
+		// early would cancel downstream work the winner satisfies.
+		status, err := dr.stateManager.GetEffectiveTaskStatusForCompletion(task.CommandID, depTaskID)
 		if err != nil {
 			return "", "", err
 		}

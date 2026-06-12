@@ -1,8 +1,26 @@
 # 設計方針書: クロスランタイム A/B 候補選抜 (1-B)
 
-- Status: v2.2 — codex レビュー承認 (差し戻し 1 回 + 条件付き承認 2 回を経て確定)
+- Status: v2.3 — PR1 実装済み (3d8bc58) + 全体監査の修正反映 (§0.5)。codex レビュー承認済み
 - Date: 2026-06-12
 - 関連: ロードマップ 1-B、運用方針 (性能最優先・トークン費用度外視・自律完結)
+
+## 0.5 PR1 実装後の確定差分 (2026-06-12 全体監査 → 修正で確定)
+
+実装と本文が乖離する場合、本節が優先する。
+
+| # | 本文 (v2.2) | 実装 (確定) | 理由 |
+|---|------------|------------|------|
+| 1 | R-AB は独立 reconciler | **スキャンステップ + state 駆動発見**。`collectABGroupWork` が `CandidateGroups` (SSOT) から未解決 group を全列挙し、queue 行が消えていても (dead-letter / archive / 未書込) state の TaskStates へフォールバックして収束させる。group なしのタグ付き孤児行はタグ剥がし + 成果 intake で修復 | dead-letter は pending 行を物理削除するため queue 駆動だけでは永久 racing になる |
+| 2 | fan-out は queue → state の順に書込 | **state (group) を先に書く**。クラッシュ残骸は常に「durable group + 未タグ/欠落行」になり、state 駆動復旧で一元修復 (untagged canonical → degraded(fanout_incomplete)、shadow 行欠落 → state-only cancel) | 逆順の残骸 (タグ付き行 + group なし) は state から不可視で、成果が候補ブランチに取り残される |
+| 3 | タイムアウトで遅い候補を破壊的に終了 | **pending (未 dispatch) / 行喪失の候補のみ CAS 取消**。実行中の敗者は自身の DOA/lease に委ね、全 terminal 後に通常選抜。timeout_sec はグループ作成起点のレース全体予算 | 実行中 worker の worktree を消すのは破壊的すぎる |
+| 4 | walkover (単独完走) は即 intake | **単独候補でも Stage 0 + 候補スイートを実行**。健全な検証器で fail した唯一の完走者は intake せず repair 縮退 (`SoleCandidateFailed`) | 検証済みの不良成果を出荷しないため (品質最優先) |
+| 5 | 候補 worktree/branch は解決時に削除 | **command cleanup まで全保持** (監査可能性 + 解決前後のクラッシュ窓を構造的に排除)。削除は `cleanupCommandCore` に一元化 | 勝者確定〜resolve 間のクラッシュで再 commit 不能になる wedge を排除 |
+| 6 | 勝者決定は選抜のたびに再計算 | **`PendingWinnerTaskID` を intake 前に durable 記録**。クラッシュ後の再入は同じ勝者を再 finalize (flake による別勝者 intake を防止) | 選抜は at-least-once、決定は exactly-once にする |
+| 7 | §8: bandit 報酬のみ skip | **全学習経路 (fingerprint / bandit / search tree / novelty / evolution) を skip**。同一論理タスクの二重計上を防ぐ。PR4 で win/lose 信号を追加 | 学習汚染の防止 |
+| 8 | retry との相互作用は未規定 | **A/B 候補は daemon auto-retry / R1 再生成 / Planner add_retry_task の対象外** (未解決中)。解決後は勝者/残存 canonical のみ retry 可。`ABGroupID` は構造体コピーで継承させない (retry コンストラクタで必ずクリア) | retry 行が孤児候補 worktree に振られ成果消失 + ExpectedTaskCount 不変条件破壊を防ぐ |
+| 9 | barrier は ForCompletion レンズのみ | **CanComplete / HasNonTerminalTaskState (publish・cleanup ゲート) / IsTaskBlocked / CheckDependencyFailure も未解決 group を考慮** | phaseless コマンドで barrier が素通りし候補成果が cleanup で全損するのを防ぐ |
+| 10 | path-overlap 言及なし | **同一 ABGroupID 同士は path-overlap 判定から除外** (候補は専用 worktree で構造隔離済み) | overlap ゲートがレースを直列化し walkover 化するのを防ぐ |
+| 11 | shutdown 時の選抜は縮退 | **ctx cancel は retryable** (次スキャンで再開)。選抜不能の最終縮退は selecting タイムアウト (selecting マークは commit より先) + repair 縮退エスケープ | shutdown が恒久的な canonical walkover に化けるのを防ぐ |
 
 ## 0. v1 からの主な変更 (codex 指摘対応)
 

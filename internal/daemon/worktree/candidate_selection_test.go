@@ -178,3 +178,34 @@ func TestReconcile_RestoresStaleABSelectionMarker(t *testing.T) {
 		t.Errorf("integration left dirty after recovery:\n%s", statusOut)
 	}
 }
+
+// Audit #15: single-candidate mode (walkover verification) — a healthy
+// verifier failing the sole finisher must surface SoleCandidateFailed so the
+// caller degrades with a repair instead of intaking verified-bad work.
+func TestRunCandidateSelection_SoleCandidateFailed(t *testing.T) {
+	t.Parallel()
+	wm, commandID, inputs := selectionFixture(t)
+
+	// Passes on the baseline (no marker_b.txt) but fails for candidate B,
+	// the sole input.
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_sole",
+		[]ABSelectionInput{inputs[1]},
+		[]string{"test ! -f marker_b.txt"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if !outcome.SoleCandidateFailed || outcome.Degraded || outcome.WinnerTaskID != "" {
+		t.Errorf("outcome = %+v, want SoleCandidateFailed only", outcome)
+	}
+
+	// The same sole candidate with a passing verifier wins normally.
+	outcome, err = wm.RunCandidateSelection(context.Background(), commandID, "abg_sole",
+		[]ABSelectionInput{inputs[1]},
+		[]string{"true"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection (passing): %v", err)
+	}
+	if outcome.SoleCandidateFailed || outcome.WinnerTaskID != inputs[1].TaskID {
+		t.Errorf("outcome = %+v, want sole winner %s", outcome, inputs[1].TaskID)
+	}
+}

@@ -353,6 +353,9 @@ func r1BuildRetryTask(original *model.Task, retryTaskID string, clock core.Clock
 	// counts them against the repair concurrency limit, regardless of how the
 	// original task's Purpose was named.
 	retryTask.OperationType = model.OperationTypeRepair
+	// A/B candidacy is per-race and never inherited (see CreateRetryTask):
+	// a tagged rebuild would route to an orphan candidate worktree.
+	retryTask.ABGroupID = ""
 	retryTask.CreatedAt = now
 	retryTask.UpdatedAt = now
 	return retryTask

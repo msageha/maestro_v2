@@ -519,6 +519,27 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	if !ok {
 		return nil, &planValidationError{Msg: fmt.Sprintf("task %s not found in state", opts.RetryOf)}
 	}
+	// A/B candidate-group members: while the race is unresolved, retry is
+	// owned by the selection machinery (a Planner retry would race the
+	// barrier and duplicate work). After resolution only the surviving line
+	// — winner (resolved) or canonical (degraded) — may be retried; losers
+	// are superseded and re-executing them duplicates the winner's work.
+	if gid, g := state.FindCandidateGroupByTask(opts.RetryOf); g != nil {
+		if g.Status.IsUnresolved() {
+			return nil, &planValidationError{Msg: fmt.Sprintf(
+				"task %s belongs to A/B candidate group %s (status %s); retry is owned by the selection machinery until the group resolves",
+				opts.RetryOf, gid, g.Status)}
+		}
+		surviving := g.CanonicalTaskID
+		if g.Status == model.ABGroupResolved && g.WinnerTaskID != "" {
+			surviving = g.WinnerTaskID
+		}
+		if opts.RetryOf != surviving {
+			return nil, &planValidationError{Msg: fmt.Sprintf(
+				"task %s is a superseded A/B candidate (group %s, surviving task %s); retry the surviving task instead",
+				opts.RetryOf, gid, surviving)}
+		}
+	}
 	// Accepted retry-of statuses: failed, paused_for_replan, repair_pending,
 	// and a constrained subset of cancelled.
 	//

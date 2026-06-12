@@ -125,6 +125,16 @@ func (r *PlanStateReader) HasNonTerminalTaskState(commandID string) (bool, error
 			return true, nil
 		}
 	}
+	// Unresolved A/B candidate groups count as in-flight work: every member
+	// row can be terminal (both candidates completed) while selection /
+	// winner intake has not happened yet, so the command's final work set is
+	// not on the worker branches. Publishing or cleaning up here would
+	// destroy the candidate branches that hold the only copy of the work.
+	for _, g := range state.CandidateGroups {
+		if g != nil && g.Status.IsUnresolved() {
+			return true, nil
+		}
+	}
 	return false, nil
 }
 

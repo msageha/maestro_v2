@@ -36,12 +36,17 @@ type ABSelectionInput struct {
 
 // ABSelectionOutcome is the machine-decided result of a selection run.
 type ABSelectionOutcome struct {
-	// WinnerTaskID is empty only when Degraded is true.
+	// WinnerTaskID is empty when Degraded or SoleCandidateFailed is true.
 	WinnerTaskID string
 	// Degraded means selection could not pick mechanically; the caller
 	// resolves the group as degraded (canonical walkover).
 	Degraded bool
-	Reason   string
+	// SoleCandidateFailed: single-candidate mode (walkover verification)
+	// where the verifier is HEALTHY (Stage 0 passed) but the sole finisher
+	// merge-conflicted or failed the suite. The caller degrades with a
+	// repair re-execution instead of intaking verified-bad work.
+	SoleCandidateFailed bool
+	Reason              string
 	// Evidence holds per-stage results for selection_evidence.
 	Evidence map[string]string
 }
@@ -146,6 +151,13 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		return outcome, nil
 	}
 	basePass, baseFailCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+	if ctx.Err() != nil {
+		// Shutdown mid-selection is RETRYABLE, not a verdict: command
+		// failures caused by the dying context must not masquerade as a
+		// broken verifier and permanently lock in a canonical walkover.
+		// The durable marker + selecting status resume the run next scan.
+		return nil, fmt.Errorf("selection interrupted: %w", ctx.Err())
+	}
 	evidence["stage0_pass"] = fmt.Sprintf("%d/%d", basePass, len(verifyCmds))
 	if basePass < len(verifyCmds) {
 		evidence["stage0"] = "verifier_broken"
@@ -174,17 +186,22 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 			}
 		}
 		restore() // back to preSHA before the next candidate
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("selection interrupted: %w", ctx.Err()) // retryable (see Stage 0)
+		}
 		if score > bestScore {
 			bestScore = score
 			bestIdx = i
 		}
-		if ctx.Err() != nil {
-			outcome.Degraded = true
-			outcome.Reason = "selection cancelled: " + ctx.Err().Error()
-			return outcome, nil
-		}
 	}
 
+	if len(candidates) == 1 && bestScore < len(verifyCmds) {
+		// The verifier is healthy (Stage 0 passed) and the SOLE finisher
+		// demonstrably fails: intaking it would ship verified-bad work.
+		outcome.SoleCandidateFailed = true
+		outcome.Reason = "sole finisher failed verification against a healthy baseline"
+		return outcome, nil
+	}
 	if bestIdx < 0 || bestScore < 0 {
 		outcome.Degraded = true
 		outcome.Reason = "no candidate could be evaluated (all merge-conflicted against integration)"
