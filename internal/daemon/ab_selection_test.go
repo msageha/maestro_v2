@@ -706,3 +706,61 @@ func TestProcessABGroup_OrphanIntakeFailure_EnqueuesRepairBeforeStrip(t *testing
 		t.Errorf("re-entry must not issue a second repair, got %d rows", len(q.Tasks))
 	}
 }
+
+// PR2: the mtime+size cache must serve unchanged files, notice rewrites
+// (AtomicWrite bumps mtime), and prune deleted entries.
+func TestReadABCommandStates_Cache(t *testing.T) {
+	qh, maestroDir := abTestQueueHandler(t)
+	writeABState(t, maestroDir, "cmd_cache")
+
+	if got := qh.readABCommandStates(); len(got) != 1 || got[0].CommandID != "cmd_cache" {
+		t.Fatalf("first read = %v, want one state", got)
+	}
+	// Cached read returns the same parsed state.
+	if got := qh.readABCommandStates(); len(got) != 1 {
+		t.Fatalf("cached read = %d states, want 1", len(got))
+	}
+	// Rewrite with the group resolved: discovery must reflect it (the item
+	// is still returned — filtering happens in collectABGroupWork).
+	mutateABState(t, maestroDir, "cmd_cache", func(cs *model.CommandState) {
+		cs.CandidateGroups["abg_x"].Status = model.ABGroupResolved
+	})
+	got := qh.readABCommandStates()
+	if len(got) != 1 || got[0].CandidateGroups["abg_x"].Status != model.ABGroupResolved {
+		t.Fatalf("post-rewrite read = %v, want resolved group", got)
+	}
+	// Deletion prunes the entry.
+	if err := os.Remove(filepath.Join(maestroDir, "state", "commands", "cmd_cache.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	if got := qh.readABCommandStates(); len(got) != 0 {
+		t.Fatalf("post-delete read = %d states, want 0", len(got))
+	}
+	qh.abStateCache.mu.Lock()
+	n := len(qh.abStateCache.entries)
+	qh.abStateCache.mu.Unlock()
+	if n != 0 {
+		t.Errorf("cache entries after prune = %d, want 0", n)
+	}
+}
+
+// PR2: expected_paths resolve from whichever candidate row survives so a
+// one-sided row loss cannot skew the Stage 2 deviation metric.
+func TestABExpectedPaths_SharedFallback(t *testing.T) {
+	qh, maestroDir := abTestQueueHandler(t)
+	canonical := &model.ABCandidate{TaskID: "task_canon", WorkerID: "worker1"}
+	shadow := &model.ABCandidate{TaskID: "task_shadow", WorkerID: "worker3"}
+
+	// Only the shadow row survives (canonical dead-lettered).
+	writeWorkerQueue(t, maestroDir, "worker3", []model.Task{{
+		ID: "task_shadow", CommandID: "cmd_ep", ExpectedPaths: []string{"src", "docs"},
+	}})
+	got := qh.abExpectedPaths(canonical, shadow)
+	if len(got) != 2 || got[0] != "src" {
+		t.Errorf("expected paths = %v, want shadow row's [src docs]", got)
+	}
+	// Both rows gone: nil (Stage 2 skips the deviation metric).
+	if got := qh.abExpectedPaths(&model.ABCandidate{TaskID: "x", WorkerID: "worker9"}); got != nil {
+		t.Errorf("expected nil for missing rows, got %v", got)
+	}
+}

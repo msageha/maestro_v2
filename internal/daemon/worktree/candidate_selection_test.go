@@ -209,3 +209,137 @@ func TestRunCandidateSelection_SoleCandidateFailed(t *testing.T) {
 		t.Errorf("outcome = %+v, want sole winner %s", outcome, inputs[1].TaskID)
 	}
 }
+
+// --- PR2: Stage 2 metrics tiebreak + flake guard ---
+
+func TestStage2Tiebreak(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		a, b candidateMetrics
+		want int
+		via  string
+	}{
+		{"deviation wins exactly", candidateMetrics{Deviations: 1}, candidateMetrics{Deviations: 0}, 1, "expected_paths_deviation"},
+		{"lines within 10% tie -> files", candidateMetrics{Lines: 100, Files: 20}, candidateMetrics{Lines: 95, Files: 10}, 1, "files_changed"},
+		{"lines beyond 10% decides", candidateMetrics{Lines: 100}, candidateMetrics{Lines: 60}, 1, "diff_lines"},
+		{"all tie -> canonical first", candidateMetrics{Lines: 10, Files: 2}, candidateMetrics{Lines: 10, Files: 2}, 0, "tie_canonical_first"},
+		{"zero metrics tie", candidateMetrics{}, candidateMetrics{}, 0, "tie_canonical_first"},
+		{"files within margin tie", candidateMetrics{Files: 10}, candidateMetrics{Files: 10}, 0, "tie_canonical_first"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := map[string]string{}
+			got := stage2Tiebreak(tc.a, tc.b, ev)
+			if got != tc.want || ev["stage2_decision"] != tc.via {
+				t.Errorf("tiebreak = %d via %q, want %d via %q", got, ev["stage2_decision"], tc.want, tc.via)
+			}
+		})
+	}
+}
+
+func TestParseNumstat(t *testing.T) {
+	t.Parallel()
+	out := "3\t1\tsrc/a.go\n-\t-\tassets/logo.png\n5\t0\tdocs/readme.md\n2\t2\tgo.sum\n"
+	m := parseNumstat(out, []string{"src"})
+	// go.sum is a dependency manifest (always allowed); docs/readme.md and
+	// the binary asset are outside "src".
+	if m.Files != 4 || m.Lines != 3+1+5+0+2+2 || m.Binaries != 1 || m.Deviations != 2 {
+		t.Errorf("metrics = %+v, want files=4 lines=13 binaries=1 deviations=2", m)
+	}
+	// Empty expected paths: deviations are not counted.
+	if m := parseNumstat(out, nil); m.Deviations != 0 {
+		t.Errorf("deviations with unknown scope = %d, want 0", m.Deviations)
+	}
+}
+
+// Stage 2 deviation: equal suite scores, candidate B touches a file outside
+// the expected scope — A must win even when B is listed first.
+func TestRunCandidateSelection_Stage2DeviationDecides(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_ab_stage2"
+
+	mk := func(task string, files map[string]string) ABSelectionInput {
+		path, branch, err := wm.EnsureCandidateWorktree(commandID, task)
+		if err != nil {
+			t.Fatalf("EnsureCandidateWorktree(%s): %v", task, err)
+		}
+		for name, content := range files {
+			full := filepath.Join(path, name)
+			if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := wm.CommitCandidateChanges(commandID, task); err != nil {
+			t.Fatalf("CommitCandidateChanges(%s): %v", task, err)
+		}
+		return ABSelectionInput{TaskID: task, Branch: branch, ExpectedPaths: []string{"scope"}}
+	}
+	inScope := mk("task_s2_in", map[string]string{"scope/feature.txt": "x\n"})
+	outScope := mk("task_s2_out", map[string]string{"scope/feature2.txt": "x\n", "stray/extra.txt": "y\n"})
+
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_s2",
+		[]ABSelectionInput{outScope, inScope}, []string{"true"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if outcome.WinnerTaskID != "task_s2_in" {
+		t.Errorf("winner = %s (evidence %v), want in-scope candidate", outcome.WinnerTaskID, outcome.Evidence)
+	}
+	if outcome.Evidence["stage2_decision"] != "expected_paths_deviation" {
+		t.Errorf("stage2_decision = %q, want expected_paths_deviation", outcome.Evidence["stage2_decision"])
+	}
+}
+
+// Flake guard: candidate B fails once (sticky flag outside the worktree
+// makes the verifier pass afterwards) — the rerun recovers it and Stage 2
+// settles the tie instead of the flaky first run deciding.
+func TestRunCandidateSelection_FlakeRerunRecovers(t *testing.T) {
+	t.Parallel()
+	wm, commandID, inputs := selectionFixture(t)
+	flag := filepath.Join(t.TempDir(), "flake_seen")
+	// Baseline + candidate A: marker_b.txt absent -> first branch passes.
+	// Candidate B first run: flag absent -> create it, fail. Rerun: passes.
+	cmd := "test ! -f marker_b.txt || test -f " + flag + " || { touch " + flag + "; exit 1; }"
+
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_flake",
+		[]ABSelectionInput{inputs[0], inputs[1]}, []string{cmd})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if outcome.Evidence["flake_rerun_"+inputs[1].TaskID] != "recovered" {
+		t.Fatalf("flake rerun evidence = %v, want recovered", outcome.Evidence)
+	}
+	// Recovered -> tie -> Stage 2 (equal metrics) -> first input wins.
+	if outcome.WinnerTaskID != inputs[0].TaskID ||
+		outcome.Evidence["stage2_decision"] == "" {
+		t.Errorf("winner = %s evidence = %v, want first input via stage2", outcome.WinnerTaskID, outcome.Evidence)
+	}
+}
+
+// Flake guard: a deterministic failure stays failing after the rerun and
+// the all-pass candidate wins on score.
+func TestRunCandidateSelection_FlakeRerunStillFailing(t *testing.T) {
+	t.Parallel()
+	wm, commandID, inputs := selectionFixture(t)
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_flake2",
+		[]ABSelectionInput{inputs[1], inputs[0]}, // failing candidate listed first
+		[]string{"test ! -f marker_b.txt"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if outcome.Evidence["flake_rerun_"+inputs[1].TaskID] != "still_failing" {
+		t.Errorf("flake rerun evidence = %v, want still_failing", outcome.Evidence)
+	}
+	if outcome.WinnerTaskID != inputs[0].TaskID {
+		t.Errorf("winner = %s, want the all-pass candidate", outcome.WinnerTaskID)
+	}
+	if outcome.Evidence["stage2_decision"] != "" {
+		t.Errorf("stage2 must not run on a score win, got %q", outcome.Evidence["stage2_decision"])
+	}
+}

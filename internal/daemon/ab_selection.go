@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -171,29 +172,77 @@ func (qh *QueueHandler) collectABGroupWork(taskQueues map[string]*taskQueueEntry
 	}
 }
 
+// abStateCache caches per-file results of readABCommandStates keyed by
+// path. AtomicWrite always replaces the file (rename → fresh inode +
+// mtime), so mtime+size is a reliable change detector here.
+type abStateCache struct {
+	mu      sync.Mutex
+	entries map[string]abStateCacheEntry
+}
+
+type abStateCacheEntry struct {
+	modTimeNano int64
+	size        int64
+	// state is the parsed command state when the file contains candidate
+	// groups, nil otherwise. READ-ONLY for consumers — collectABGroupWork
+	// copies what it needs and never mutates.
+	state *model.CommandState
+}
+
 // readABCommandStates returns parsed command states containing a
-// candidate_groups section. Cheap byte pre-filter: most command states never
-// ran an A/B race, so full YAML parsing is skipped unless the key appears.
+// candidate_groups section. Two cheap layers: an mtime+size cache skips
+// unchanged files entirely, and a byte pre-filter skips YAML parsing for
+// states that never ran an A/B race.
 func (qh *QueueHandler) readABCommandStates() []*model.CommandState {
 	dir := filepath.Join(qh.maestroDir, "state", "commands")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil
 	}
+	cache := &qh.abStateCache
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.entries == nil {
+		cache.entries = map[string]abStateCacheEntry{}
+	}
+
 	var out []*model.CommandState
+	seen := make(map[string]bool, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // controlled state dir
-		if err != nil || !bytes.Contains(data, []byte("candidate_groups")) {
+		path := filepath.Join(dir, e.Name())
+		seen[path] = true
+		info, err := e.Info()
+		if err != nil {
 			continue
 		}
-		var cs model.CommandState
-		if err := yamlv3.Unmarshal(data, &cs); err != nil || len(cs.CandidateGroups) == 0 {
+		if c, ok := cache.entries[path]; ok &&
+			c.modTimeNano == info.ModTime().UnixNano() && c.size == info.Size() {
+			if c.state != nil {
+				out = append(out, c.state)
+			}
 			continue
 		}
-		out = append(out, &cs)
+		entry := abStateCacheEntry{modTimeNano: info.ModTime().UnixNano(), size: info.Size()}
+		data, err := os.ReadFile(path) //nolint:gosec // controlled state dir
+		if err == nil && bytes.Contains(data, []byte("candidate_groups")) {
+			var cs model.CommandState
+			if err := yamlv3.Unmarshal(data, &cs); err == nil && len(cs.CandidateGroups) > 0 {
+				entry.state = &cs
+			}
+		}
+		cache.entries[path] = entry
+		if entry.state != nil {
+			out = append(out, entry.state)
+		}
+	}
+	// Prune deleted files so the cache cannot grow unboundedly.
+	for path := range cache.entries {
+		if !seen[path] {
+			delete(cache.entries, path)
+		}
 	}
 	return out
 }
@@ -599,9 +648,15 @@ func (qh *QueueHandler) runABSelectionAndResolve(ctx context.Context, wm abWorkt
 	// Selection runs for ONE finisher too (walkover verification, design
 	// §5): a healthy verifier must pass the sole finisher before intake.
 	verifyCmds := qh.loadABVerifyCommands(item.CommandID)
+	// Both candidates share the LOGICAL task's expected_paths: use whichever
+	// queue row survives so a one-sided row loss cannot skew the Stage 2
+	// deviation metric.
+	expectedPaths := qh.abExpectedPaths(canonical, shadow)
 	inputs := make([]worktree.ABSelectionInput, 0, len(finished)) // canonical FIRST: ties go to it
 	for _, c := range finished {
-		inputs = append(inputs, worktree.ABSelectionInput{TaskID: c.TaskID, Branch: c.Branch})
+		inputs = append(inputs, worktree.ABSelectionInput{
+			TaskID: c.TaskID, Branch: c.Branch, ExpectedPaths: expectedPaths,
+		})
 	}
 	outcome, err := wm.RunCandidateSelection(ctx, item.CommandID, item.GroupID, inputs, verifyCmds)
 	if err != nil {
@@ -773,6 +828,21 @@ func (qh *QueueHandler) degradeABGroupWithRepair(item abGroupWorkItem, g *model.
 		evidence, "superseded_by_retry:"+repairTask.ID)
 	qh.log(LogLevelInfo, "ab_degraded_with_repair command=%s group=%s repair=%s",
 		item.CommandID, item.GroupID, repairTask.ID)
+}
+
+// abExpectedPaths resolves the logical task's expected_paths from whichever
+// candidate queue row still exists (canonical preferred). Nil when both rows
+// are gone — Stage 2 then skips the deviation metric.
+func (qh *QueueHandler) abExpectedPaths(candidates ...*model.ABCandidate) []string {
+	for _, c := range candidates {
+		if c == nil {
+			continue
+		}
+		if row := qh.findQueueTask(c.WorkerID, c.TaskID); row != nil && len(row.ExpectedPaths) > 0 {
+			return row.ExpectedPaths
+		}
+	}
+	return nil
 }
 
 // findQueueTask reads a worker queue row by ID (lock-free atomic read).

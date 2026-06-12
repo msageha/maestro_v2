@@ -1,6 +1,6 @@
 # 設計方針書: クロスランタイム A/B 候補選抜 (1-B)
 
-- Status: v2.3 — PR1 実装済み (3d8bc58) + 全体監査の修正反映 (§0.5)。codex レビュー承認済み
+- Status: v2.4 — PR1 実装 + 監査修正 + 実機 E2E 済み、PR2 (Stage 2 + flake ガード) 実装済み。codex レビュー承認済み
 - Date: 2026-06-12
 - 関連: ロードマップ 1-B、運用方針 (性能最優先・トークン費用度外視・自律完結)
 
@@ -20,6 +20,7 @@
 | 8 | retry との相互作用は未規定 | **A/B 候補は daemon auto-retry / R1 再生成 / Planner add_retry_task の対象外** (未解決中)。解決後は勝者/残存 canonical のみ retry 可。`ABGroupID` は構造体コピーで継承させない (retry コンストラクタで必ずクリア) | retry 行が孤児候補 worktree に振られ成果消失 + ExpectedTaskCount 不変条件破壊を防ぐ |
 | 9 | barrier は ForCompletion レンズのみ | **CanComplete / HasNonTerminalTaskState (publish・cleanup ゲート) / IsTaskBlocked / CheckDependencyFailure も未解決 group を考慮** | phaseless コマンドで barrier が素通りし候補成果が cleanup で全損するのを防ぐ |
 | 10 | path-overlap 言及なし | **同一 ABGroupID 同士は path-overlap 判定から除外** (候補は専用 worktree で構造隔離済み) | overlap ゲートがレースを直列化し walkover 化するのを防ぐ |
+| 12 | (PR2) Stage 2/flake の仕様詳細は未確定 | **flake ガード**: 両候補 merge 成功かつ「片方 all pass・片方 fail」のときのみ fail 側を 1 回再実行 (conflict / 両 fail は対象外)。回復 → 同点として Stage 2 へ (evidence に flake_rerun=recovered)。**Stage 2**: healthy Stage 1 の同点時のみ。辞書式 expected_paths 逸脱 (完全一致のみ tie) → diff 行数 → 変更ファイル数 (後 2 者は (larger-smaller)/larger <= 0.10 を tie とする相対マージン、larger=0 は tie)。binary diff は Files に数え Lines は不算入。expected_paths は生存している方の queue 行から両候補へ共通適用 (verifier broken / no verifier は従来どおり default intake で Stage 2 に進まない) | 機械シグナルの決定論性とノイズ耐性の両立 |
 | 11 | shutdown 時の選抜は縮退 | **ctx cancel は retryable** (次スキャンで再開)。選抜不能の最終縮退は selecting タイムアウト (selecting マークは commit より先) + repair 縮退エスケープ | shutdown が恒久的な canonical walkover に化けるのを防ぐ |
 
 ## 0. v1 からの主な変更 (codex 指摘対応)

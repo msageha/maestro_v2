@@ -6,19 +6,22 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/pathutil"
 )
 
 // A/B candidate selection engine (docs/design/ab_candidate_selection.md §5).
 //
-// PR1 scope: Stage 0 (verifier baseline health) + the candidate suite. The
+// Implemented stages: Stage 0 (verifier baseline health) + the candidate
+// suite (PR1), the flake guard and the Stage 2 metric tiebreak (PR2). The
 // integration worktree is borrowed sequentially under wm.mu with a durable
 // ABSelection marker so a daemon crash mid-selection is restored by startup
-// Reconcile. Cross-tests, metric tie-breaks and the LLM judge are later PRs.
+// Reconcile. Cross-tests (PR3) and the LLM judge (PR4) are later PRs.
 
 // ErrSelectionBusy signals that the integration worktree is not idle
 // (in-flight merge / publish / quarantine); the caller defers to the next
@@ -32,6 +35,11 @@ const selectionCmdTimeout = 10 * time.Minute
 type ABSelectionInput struct {
 	TaskID string
 	Branch string
+	// ExpectedPaths is the logical task's declared scope, shared by both
+	// candidates (the caller applies a surviving row's paths to both).
+	// Empty = unknown — the Stage 2 deviation metric then treats every
+	// change as in-scope and decision falls to the later metrics.
+	ExpectedPaths []string
 }
 
 // ABSelectionOutcome is the machine-decided result of a selection run.
@@ -168,34 +176,80 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 	}
 	evidence["stage0"] = "pass"
 
-	// Stage 1: candidate suite per candidate.
-	bestIdx := -1
-	bestScore := -2
-	for i, c := range candidates {
-		score := -1 // merge conflict / setup failure sentinel
+	// Stage 1: candidate suite per candidate. Metrics for the Stage 2
+	// tiebreak are collected while the candidate is merged (no re-merge
+	// needed later).
+	total := len(verifyCmds)
+	runCandidate := func(c ABSelectionInput) candidateRun {
+		r := candidateRun{score: -1} // merge conflict / setup failure sentinel
 		if err := wm.gitRunInDir(intPath, "merge", "--no-ff", "--no-commit", c.Branch); err != nil {
 			wm.Log(core.LogLevelInfo, "ab_selection_candidate_merge_conflict command=%s task=%s error=%v",
 				commandID, c.TaskID, err)
 			evidence["suite_"+c.TaskID] = "merge_conflict"
-		} else {
-			pass, failCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
-			score = pass
-			evidence["suite_"+c.TaskID] = fmt.Sprintf("%d/%d", pass, len(verifyCmds))
-			if failCmd != "" {
-				evidence["suite_"+c.TaskID+"_first_fail"] = failCmd
-			}
+			restore()
+			return r
 		}
+		r.merged = true
+		r.metrics = wm.collectCandidateMetrics(intPath, c.ExpectedPaths)
+		pass, failCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+		r.score = pass
+		r.firstFail = failCmd
+		evidence["suite_"+c.TaskID] = fmt.Sprintf("%d/%d", pass, total)
+		if failCmd != "" {
+			evidence["suite_"+c.TaskID+"_first_fail"] = failCmd
+		}
+		evidence["metrics_"+c.TaskID] = r.metrics.String()
 		restore() // back to preSHA before the next candidate
+		return r
+	}
+
+	runs := make([]candidateRun, len(candidates))
+	for i, c := range candidates {
+		runs[i] = runCandidate(c)
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("selection interrupted: %w", ctx.Err()) // retryable (see Stage 0)
 		}
-		if score > bestScore {
-			bestScore = score
+	}
+
+	// Flake guard: both candidates merged, one all-pass and one failing —
+	// re-run the failing suite ONCE before deciding. A recovered rerun
+	// makes the race a tie (Stage 2 decides); instability is recorded.
+	if len(candidates) == 2 && runs[0].merged && runs[1].merged && total > 0 {
+		failing := -1
+		switch {
+		case runs[0].score == total && runs[1].score >= 0 && runs[1].score < total:
+			failing = 1
+		case runs[1].score == total && runs[0].score >= 0 && runs[0].score < total:
+			failing = 0
+		}
+		if failing >= 0 {
+			taskID := candidates[failing].TaskID
+			evidence["flake_rerun_"+taskID+"_initial_fail"] = runs[failing].firstFail
+			wm.Log(core.LogLevelInfo, "ab_selection_flake_rerun command=%s task=%s first_fail=%q",
+				commandID, taskID, runs[failing].firstFail)
+			rerun := runCandidate(candidates[failing])
+			if ctx.Err() != nil {
+				return nil, fmt.Errorf("selection interrupted: %w", ctx.Err())
+			}
+			if rerun.merged && rerun.score == total {
+				evidence["flake_rerun_"+taskID] = "recovered"
+				runs[failing] = rerun
+			} else {
+				evidence["flake_rerun_"+taskID] = "still_failing"
+			}
+		}
+	}
+
+	bestIdx := -1
+	bestScore := -2
+	for i := range runs {
+		if runs[i].score > bestScore {
+			bestScore = runs[i].score
 			bestIdx = i
 		}
 	}
 
-	if len(candidates) == 1 && bestScore < len(verifyCmds) {
+	if len(candidates) == 1 && bestScore < total {
 		// The verifier is healthy (Stage 0 passed) and the SOLE finisher
 		// demonstrably fails: intaking it would ship verified-bad work.
 		outcome.SoleCandidateFailed = true
@@ -207,10 +261,126 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		outcome.Reason = "no candidate could be evaluated (all merge-conflicted against integration)"
 		return outcome, nil
 	}
+
+	// Stage 2: deterministic metric tiebreak when the suites cannot
+	// discriminate (equal scores). Falls back to the FIRST input
+	// (canonical) when every metric ties within margin.
+	if len(candidates) == 2 && runs[0].score == runs[1].score {
+		if len(candidates[0].ExpectedPaths) == 0 {
+			evidence["metrics_expected_paths"] = "missing"
+		}
+		bestIdx = stage2Tiebreak(runs[0].metrics, runs[1].metrics, evidence)
+	}
+
 	outcome.WinnerTaskID = candidates[bestIdx].TaskID
 	evidence["winner"] = outcome.WinnerTaskID
-	evidence["winner_score"] = fmt.Sprintf("%d/%d", bestScore, len(verifyCmds))
+	evidence["winner_score"] = fmt.Sprintf("%d/%d", runs[bestIdx].score, total)
 	return outcome, nil
+}
+
+// candidateRun captures one candidate's Stage 1 evaluation.
+type candidateRun struct {
+	score     int
+	firstFail string
+	merged    bool
+	metrics   candidateMetrics
+}
+
+// candidateMetrics is the Stage 2 input collected while the candidate was
+// merged into the integration worktree.
+type candidateMetrics struct {
+	// Deviations counts changed files outside the task's expected_paths
+	// (shared semantics with the verify runner via pathutil).
+	Deviations int
+	// Lines is added+deleted across text files (binary files excluded —
+	// numstat reports no counts for them; they still count in Files).
+	Lines int
+	// Files is the changed-file count (text + binary).
+	Files int
+	// Binaries counts binary-diff files (line counts unknowable).
+	Binaries int
+}
+
+func (m candidateMetrics) String() string {
+	return fmt.Sprintf("deviations:%d,lines:%d,files:%d,binaries:%d", m.Deviations, m.Lines, m.Files, m.Binaries)
+}
+
+// collectCandidateMetrics reads `git diff --cached --numstat` (the staged
+// merge result vs the pre-selection HEAD) inside the integration worktree.
+// Best-effort: a git failure returns zero metrics, which Stage 2 treats as
+// indistinguishable (decision falls through to the canonical-first rule).
+func (wm *Manager) collectCandidateMetrics(intPath string, expectedPaths []string) candidateMetrics {
+	out, err := wm.gitOutputInDir(intPath, "diff", "--cached", "--numstat")
+	if err != nil {
+		wm.Log(core.LogLevelWarn, "ab_selection_metrics_failed dir=%s error=%v", intPath, err)
+		return candidateMetrics{}
+	}
+	return parseNumstat(out, expectedPaths)
+}
+
+// parseNumstat turns `git diff --numstat` output into candidateMetrics.
+// Binary diffs report "-" for both counts: they count as Files (and
+// Deviations when out of scope) but contribute no Lines. Renames appear as
+// a single "{old => new}" row, counted once.
+func parseNumstat(out string, expectedPaths []string) candidateMetrics {
+	var m candidateMetrics
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		fields := strings.SplitN(line, "\t", 3)
+		if len(fields) != 3 {
+			continue
+		}
+		m.Files++
+		if len(expectedPaths) > 0 && !pathutil.AllowedByExpectedPaths(fields[2], expectedPaths) {
+			m.Deviations++
+		}
+		if fields[0] == "-" || fields[1] == "-" {
+			m.Binaries++ // binary diff: line counts unknowable
+			continue
+		}
+		added, aerr := strconv.Atoi(fields[0])
+		deleted, derr := strconv.Atoi(fields[1])
+		if aerr == nil && derr == nil {
+			m.Lines += added + deleted
+		}
+	}
+	return m
+}
+
+// stage2Tiebreak compares two same-score candidates lexicographically:
+// expected_paths deviations (exact) → diff lines (10% relative margin) →
+// changed files (10% margin). Within-margin differences are ties so noisy
+// hair-splitting never decides a race; a full tie keeps index 0 (the
+// canonical, by input order). Returns the winning index and records the
+// deciding metric in evidence.
+func stage2Tiebreak(a, b candidateMetrics, evidence map[string]string) int {
+	withinMargin := func(x, y int) bool {
+		larger, smaller := x, y
+		if larger < smaller {
+			larger, smaller = smaller, larger
+		}
+		if larger == 0 {
+			return true
+		}
+		return float64(larger-smaller)/float64(larger) <= 0.10
+	}
+	pick := func(metric string, x, y int) int {
+		evidence["stage2_decision"] = metric
+		if y < x {
+			return 1
+		}
+		return 0
+	}
+	switch {
+	case a.Deviations != b.Deviations:
+		return pick("expected_paths_deviation", a.Deviations, b.Deviations)
+	case !withinMargin(a.Lines, b.Lines):
+		return pick("diff_lines", a.Lines, b.Lines)
+	case !withinMargin(a.Files, b.Files):
+		return pick("files_changed", a.Files, b.Files)
+	default:
+		evidence["stage2_decision"] = "tie_canonical_first"
+		return 0
+	}
 }
 
 // runSelectionCmds executes verify commands sequentially in dir, stopping at

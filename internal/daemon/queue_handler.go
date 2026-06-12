@@ -80,6 +80,11 @@ type QueueHandler struct {
 	// only from the serialized PeriodicScan goroutine — no lock needed.
 	phantomSuspects map[string]int
 
+	// abStateCache caches per-file parse results for readABCommandStates
+	// (state-driven A/B group discovery runs every scan; most command
+	// states never contain candidate_groups). Guarded by its own mutex.
+	abStateCache abStateCache
+
 	// scanRunMu exposes the scan run mutex for test cleanup synchronization.
 	scanRunMu *sync.Mutex
 
