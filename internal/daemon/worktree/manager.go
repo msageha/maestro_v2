@@ -125,76 +125,11 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 			return fmt.Errorf("load worktree state: %w", err)
 		}
 		// No state yet — create everything from scratch
-		baseBranch := wm.config.EffectiveBaseBranch()
-		baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
-		if err != nil {
-			return fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
+		state, rollbackIntegration, cErr := wm.createIntegrationStateUnlocked(commandID, now)
+		if cErr != nil {
+			return cErr
 		}
-		baseSHA = strings.TrimSpace(baseSHA)
-		if err := validateSHA(baseSHA); err != nil {
-			return fmt.Errorf("base SHA from %s: %w", baseBranch, err)
-		}
-
-		// Create integration branch
-		integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
-		if err := wm.gitRun("branch", integrationBranch, baseSHA); err != nil {
-			return fmt.Errorf("create integration branch: %w", err)
-		}
-
-		// Create integration worktree (H3: merge/publish ops happen here)
-		integrationPath := wm.integrationWorktreePath(commandID)
-		if err := os.MkdirAll(filepath.Dir(integrationPath), 0750); err != nil {
-			_ = wm.gitRun("branch", "-D", integrationBranch)
-			return fmt.Errorf("create integration worktree parent dir: %w", err)
-		}
-		// gitWorktreeAddWithUnstattableFallback handles both:
-		//   (a) the unstattable-file fallback (sandbox / SIP denying
-		//       stat on a tracked file like .env.example), retrying
-		//       with --no-checkout + skip-worktree marks; and
-		//   (b) the partial-directory cleanup so a follow-up retry
-		//       does not hit "fatal: '<path>' already exists".
-		// Both pathologies were observed in 2026-05-06 P0-A/B reports.
-		if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
-			[]string{"worktree", "add", integrationPath, integrationBranch}); err != nil {
-			// Final cleanup pass in case the fallback also failed.
-			if rmErr := os.RemoveAll(integrationPath); rmErr != nil {
-				wm.Log(core.LogLevelWarn,
-					"integration_worktree_partial_cleanup_failed command=%s path=%s error=%v",
-					commandID, integrationPath, rmErr)
-			}
-			_ = wm.gitRun("worktree", "prune", "-v")
-			_ = wm.gitRun("branch", "-D", integrationBranch)
-			return fmt.Errorf("create integration worktree: %w", err)
-		}
-
-		rollbackIntegration := func() error {
-			var errs []error
-			if rbErr := wm.gitRun("worktree", "remove", "--force", integrationPath); rbErr != nil {
-				wm.Log(core.LogLevelWarn, "rollback_integration_worktree command=%s error=%v", commandID, rbErr)
-				errs = append(errs, fmt.Errorf("remove integration worktree: %w", rbErr))
-			}
-			if rbErr := wm.gitRun("branch", "-D", integrationBranch); rbErr != nil {
-				wm.Log(core.LogLevelWarn, "rollback_integration_branch command=%s error=%v", commandID, rbErr)
-				errs = append(errs, fmt.Errorf("delete integration branch: %w", rbErr))
-			}
-			return errors.Join(errs...)
-		}
-
-		state = &model.WorktreeCommandState{
-			SchemaVersion: 1,
-			FileType:      "state_worktree",
-			CommandID:     commandID,
-			Integration: model.IntegrationState{
-				CommandID: commandID,
-				Branch:    integrationBranch,
-				BaseSHA:   baseSHA,
-				Status:    model.IntegrationStatusCreated,
-				CreatedAt: now,
-				UpdatedAt: now,
-			},
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
+		baseSHA := state.Integration.BaseSHA
 
 		// Create the worker worktree; rollback integration on failure
 		if err := wm.addWorkerWorktreeUnlocked(state, commandID, workerID, baseSHA, now); err != nil {
@@ -284,6 +219,86 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 		return origErr
 	}
 	return nil
+}
+
+// createIntegrationStateUnlocked creates the integration branch + worktree
+// for a command that has no worktree state yet and returns the fresh
+// in-memory state (NOT yet persisted) plus a rollback closure that undoes
+// the integration branch/worktree. Shared by EnsureWorkerWorktree and
+// EnsureCandidateWorktree so the critical creation sequence exists once.
+// Caller MUST hold wm.mu.
+func (wm *Manager) createIntegrationStateUnlocked(commandID, now string) (*model.WorktreeCommandState, func() error, error) {
+	baseBranch := wm.config.EffectiveBaseBranch()
+	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
+	if err != nil {
+		return nil, nil, fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	if err := validateSHA(baseSHA); err != nil {
+		return nil, nil, fmt.Errorf("base SHA from %s: %w", baseBranch, err)
+	}
+
+	// Create integration branch
+	integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
+	if err := wm.gitRun("branch", integrationBranch, baseSHA); err != nil {
+		return nil, nil, fmt.Errorf("create integration branch: %w", err)
+	}
+
+	// Create integration worktree (H3: merge/publish ops happen here)
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := os.MkdirAll(filepath.Dir(integrationPath), 0750); err != nil {
+		_ = wm.gitRun("branch", "-D", integrationBranch)
+		return nil, nil, fmt.Errorf("create integration worktree parent dir: %w", err)
+	}
+	// gitWorktreeAddWithUnstattableFallback handles both:
+	//   (a) the unstattable-file fallback (sandbox / SIP denying
+	//       stat on a tracked file like .env.example), retrying
+	//       with --no-checkout + skip-worktree marks; and
+	//   (b) the partial-directory cleanup so a follow-up retry
+	//       does not hit "fatal: '<path>' already exists".
+	// Both pathologies were observed in 2026-05-06 P0-A/B reports.
+	if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
+		[]string{"worktree", "add", integrationPath, integrationBranch}); err != nil {
+		// Final cleanup pass in case the fallback also failed.
+		if rmErr := os.RemoveAll(integrationPath); rmErr != nil {
+			wm.Log(core.LogLevelWarn,
+				"integration_worktree_partial_cleanup_failed command=%s path=%s error=%v",
+				commandID, integrationPath, rmErr)
+		}
+		_ = wm.gitRun("worktree", "prune", "-v")
+		_ = wm.gitRun("branch", "-D", integrationBranch)
+		return nil, nil, fmt.Errorf("create integration worktree: %w", err)
+	}
+
+	rollbackIntegration := func() error {
+		var errs []error
+		if rbErr := wm.gitRun("worktree", "remove", "--force", integrationPath); rbErr != nil {
+			wm.Log(core.LogLevelWarn, "rollback_integration_worktree command=%s error=%v", commandID, rbErr)
+			errs = append(errs, fmt.Errorf("remove integration worktree: %w", rbErr))
+		}
+		if rbErr := wm.gitRun("branch", "-D", integrationBranch); rbErr != nil {
+			wm.Log(core.LogLevelWarn, "rollback_integration_branch command=%s error=%v", commandID, rbErr)
+			errs = append(errs, fmt.Errorf("delete integration branch: %w", rbErr))
+		}
+		return errors.Join(errs...)
+	}
+
+	state := &model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			CommandID: commandID,
+			Branch:    integrationBranch,
+			BaseSHA:   baseSHA,
+			Status:    model.IntegrationStatusCreated,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	return state, rollbackIntegration, nil
 }
 
 func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, commandID, workerID, baseSHA, now string) error {

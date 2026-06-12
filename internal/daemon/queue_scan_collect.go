@@ -93,7 +93,7 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 // all queues, used to prevent dispatching tasks with overlapping file paths.
 // allTaskQueues is the full task queue map (used by the RunOnIntegration
 // pre-merge gate to look up dep tasks' owning workers).
-func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, allTaskQueues map[string]*taskQueueEntry, work *deferredWork) bool {
+func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, allTaskQueues map[string]*taskQueueEntry, abFreeze map[string]map[string]bool, work *deferredWork) bool {
 	// Skip dispatch when tmux session is lost — delivery would fail.
 	if qh.sessionLost != nil && qh.sessionLost.Load() {
 		qh.log(LogLevelDebug, "session_lost_guard: skipping task dispatch for worker=%s", workerID)
@@ -133,6 +133,17 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
 				continue
 			}
+		}
+
+		// A/B worker freeze: while this worker is a member of an unresolved
+		// candidate group, only that group's own candidate tasks may
+		// dispatch to it — the post-selection intake merges into the worker
+		// branch and requires the worker to stay idle (design §3).
+		if allowed, isFrozen := abFreeze[workerID]; isFrozen && !allowed[task.ID] {
+			qh.log(LogLevelDebug,
+				"ab_freeze_skip worker=%s task=%s (worker reserved by unresolved A/B group)",
+				workerID, task.ID)
+			continue
 		}
 
 		// (Removed) Fallback degraded-mode gate: blacklisting workers on

@@ -252,6 +252,15 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 		return
 	}
 
+	// A/B candidates skip the advisory review: pre-selection review would
+	// be duplicated work against the wrong diff source (the review pipeline
+	// reads worker-branch diffs while candidate work lives on candidate
+	// branches). Post-intake review of the winner is a later-PR concern.
+	if task.ABGroupID != "" {
+		rc.log(LogLevelDebug, "review_dispatch_skip task=%s reason=ab_candidate group=%s",
+			params.TaskID, task.ABGroupID)
+		return
+	}
 	if !rc.dispatcher.ShouldReview(*task) {
 		return
 	}

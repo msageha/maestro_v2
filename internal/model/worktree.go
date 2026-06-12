@@ -164,12 +164,41 @@ type MergeConflict struct {
 
 // WorktreeCommandState holds all worktree state for a single command.
 // Persisted at .maestro/state/worktrees/{command_id}.yaml
+// CandidateWorktree records an A/B candidate-exclusive worktree + branch
+// (docs/design/ab_candidate_selection.md §3). Unlike worker worktrees these
+// are task-scoped and never merged directly: the selection pipeline merges
+// the winner's branch into the canonical worker's branch.
+type CandidateWorktree struct {
+	TaskID    string `yaml:"task_id"`
+	Path      string `yaml:"path"`
+	Branch    string `yaml:"branch"`
+	BaseSHA   string `yaml:"base_sha"`
+	CreatedAt string `yaml:"created_at"`
+	UpdatedAt string `yaml:"updated_at"`
+}
+
+// ABSelectionMarker records an in-flight A/B candidate selection on the
+// integration worktree (docs/design/ab_candidate_selection.md §5.0).
+type ABSelectionMarker struct {
+	GroupID   string `yaml:"group_id"`
+	PreSHA    string `yaml:"pre_sha"`
+	StartedAt string `yaml:"started_at"`
+}
+
 type WorktreeCommandState struct {
 	SchemaVersion int               `yaml:"schema_version"`
 	FileType      string            `yaml:"file_type"`
 	CommandID     string            `yaml:"command_id"`
 	Integration   IntegrationState  `yaml:"integration"`
 	Workers       []WorktreeState   `yaml:"workers"`
+	// Candidates tracks A/B candidate worktrees (task-scoped, see
+	// CandidateWorktree). Removed on group resolution / command cleanup.
+	Candidates []CandidateWorktree `yaml:"candidates,omitempty"`
+	// ABSelection is the durable in-flight marker for a candidate selection
+	// run borrowing the integration worktree. Set before the first git
+	// mutation, cleared after the worktree is restored to PreSHA. Startup
+	// Reconcile restores and clears a stale marker after a daemon crash.
+	ABSelection *ABSelectionMarker `yaml:"ab_selection,omitempty"`
 	MergedPhases  map[string]string `yaml:"merged_phases,omitempty"` // phase_id -> merged_at (tracks which phases have been merged)
 	// CommitFailedWorkers tracks worker IDs whose auto-commit failed during a phase merge.
 	// Publish-to-base is blocked while this list is non-empty so unmerged worker changes

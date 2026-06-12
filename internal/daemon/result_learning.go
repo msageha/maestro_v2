@@ -7,6 +7,10 @@ package daemon
 // to evolve in isolation when adding new C-x signals.
 
 import (
+	"os"
+
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -91,6 +95,14 @@ func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string
 		return
 	}
 	bloomLevel := rh.getPhaseC().ConsumeTaskBloom(r.TaskID)
+	// A/B candidates skip the normal reward: the selection resolver records
+	// the authoritative win/lose signal (docs/design/ab_candidate_selection.md
+	// §8). The check is DURABLE (CandidateGroups in command state) so a
+	// daemon restart between dispatch and result cannot double-count. The
+	// bloom record above is still consumed to release its entry.
+	if rh.isABCandidateTask(r.CommandID, r.TaskID) {
+		return
+	}
 	modelName := rh.workerModelName(workerID)
 	if modelName == "" {
 		return
@@ -137,6 +149,27 @@ func (rh *ResultHandler) recordEvolutionSignal(r *model.TaskResult, m *PhaseCMan
 				r.CommandID, r.TaskID, len(slots))
 		}
 	}
+}
+
+// isABCandidateTask reports whether the task belongs to a CandidateGroup
+// (any status) by consulting the durable command state. Read failures fall
+// back to false — a single normal reward for an A/B candidate after a state
+// read hiccup is bounded noise, while silently dropping ALL rewards on
+// state unavailability would starve the bandit.
+func (rh *ResultHandler) isABCandidateTask(commandID, taskID string) bool {
+	if commandID == "" || taskID == "" {
+		return false
+	}
+	data, err := os.ReadFile(commandStatePath(rh.maestroDir, commandID)) //nolint:gosec // controlled state path
+	if err != nil {
+		return false
+	}
+	var cs model.CommandState
+	if err := yamlv3.Unmarshal(data, &cs); err != nil {
+		return false
+	}
+	_, g := cs.FindCandidateGroupByTask(taskID)
+	return g != nil
 }
 
 // workerModelName resolves the model name configured for the given worker.

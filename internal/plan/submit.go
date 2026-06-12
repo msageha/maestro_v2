@@ -87,7 +87,15 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 		if err := validateRequiredVerifySnapshot(opts); err != nil {
 			return nil, err
 		}
-		return submitPhaseFill(opts, *input)
+		res, err := submitPhaseFill(opts, *input)
+		if err == nil && res != nil {
+			// A/B fan-out is additive: runs after the submit committed,
+			// outside its locks, and only ever appends warnings.
+			sm := NewStateManager(opts.MaestroDir, opts.LockMap)
+			res.Warnings = append(res.Warnings,
+				maybeCreateABCandidates(opts, sm, res, collectPinnedTaskNames(*input))...)
+		}
+		return res, err
 	}
 
 	if len(input.Tasks) > 0 && len(input.Phases) > 0 {
@@ -189,10 +197,21 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	defer releaseFlock(stateFlock)
 
 	// Route by input type
+	var res *SubmitResult
+	var err error
 	if len(input.Phases) > 0 {
-		return submitInitialPhases(opts, input.Phases, sm)
+		res, err = submitInitialPhases(opts, input.Phases, sm)
+	} else {
+		res, err = submitInitialTasks(opts, input.Tasks, sm)
 	}
-	return submitInitialTasks(opts, input.Tasks, sm)
+	if err == nil && res != nil {
+		// A/B fan-out is additive: runs after the submit committed, outside
+		// its locks (queue→state order is re-acquired internally per task),
+		// and only ever appends warnings.
+		res.Warnings = append(res.Warnings,
+			maybeCreateABCandidates(opts, sm, res, collectPinnedTaskNames(input))...)
+	}
+	return res, err
 }
 
 func lockInitialStateForWrite(opts SubmitOptions, sm *StateManager) (func(), error) {

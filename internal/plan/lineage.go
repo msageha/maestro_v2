@@ -90,6 +90,16 @@ func EffectiveStatusForCompletion(taskID string, state *model.CommandState) mode
 	if state == nil {
 		return ""
 	}
+	// Pre-selection barrier (A/B candidate groups): while a group is
+	// unresolved, its candidates must not drive phase / plan completion
+	// even if they already reported completed — no winner has been merged
+	// into the canonical worker branch yet, so "completed" would let the
+	// phase merge collect nothing and progress on empty work. Mask as a
+	// non-terminal status; the real status flows once the group resolves.
+	// See docs/design/ab_candidate_selection.md §4.5.
+	if state.ABBarrierActive(taskID) {
+		return model.StatusRunning
+	}
 	return effectiveStatusForCompletion(taskID, state, map[string]bool{})
 }
 

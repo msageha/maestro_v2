@@ -68,6 +68,44 @@ func (b BanditConfig) EffectiveTraceDataRequirement() int {
 	return effectiveValue(b.TraceDataRequirement, DefaultTraceDataRequirement)
 }
 
+// --- A/B Candidate Selection Config ---
+
+// ABTestConfig controls cross-runtime A/B candidate selection (best-of-2).
+// Disabled by default. Only knobs that PR1 actually reads are defined here;
+// later PRs (flake retry, cross-test patterns) add theirs when implemented.
+// See docs/design/ab_candidate_selection.md.
+type ABTestConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// MinBloomLevel is the minimum task bloom_level that triggers an A/B
+	// race (default 4 — opus-tier tasks).
+	MinBloomLevel *int `yaml:"min_bloom_level,omitempty"`
+	// TimeoutSec bounds how long the group waits for the slower candidate
+	// after the first one finishes. 0 = follow the task's
+	// definition_of_abort.max_wall_clock_sec.
+	TimeoutSec *int `yaml:"timeout_sec,omitempty"`
+	// SelectionTimeoutSec bounds how long a group may sit unable to start
+	// selection (e.g. integration worktree busy) before degrading to a
+	// canonical walkover.
+	SelectionTimeoutSec *int `yaml:"selection_timeout_sec,omitempty"`
+}
+
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
+func (a ABTestConfig) EffectiveEnabled() bool { return effectiveValue(a.Enabled, false) }
+
+// EffectiveMinBloomLevel returns MinBloomLevel, or DefaultABMinBloomLevel when unset.
+func (a ABTestConfig) EffectiveMinBloomLevel() int {
+	return effectiveValue(a.MinBloomLevel, DefaultABMinBloomLevel)
+}
+
+// EffectiveTimeoutSec returns TimeoutSec, or 0 (follow the task budget) when unset.
+func (a ABTestConfig) EffectiveTimeoutSec() int { return effectiveValue(a.TimeoutSec, 0) }
+
+// EffectiveSelectionTimeoutSec returns SelectionTimeoutSec, or
+// DefaultABSelectionTimeoutSec when unset.
+func (a ABTestConfig) EffectiveSelectionTimeoutSec() int {
+	return effectiveValue(a.SelectionTimeoutSec, DefaultABSelectionTimeoutSec)
+}
+
 // --- C-3 Extended Verification Config ---
 
 // ExtendedVerificationConfig controls retry-on-fail behaviour for verify
@@ -244,6 +282,7 @@ func (fp FeatureProfile) EffectiveAdaptiveDepth() bool {
 func NormalizeExperimentalConfig(cfg *Config) {
 	normalizeEvolution(&cfg.Evolution)
 	normalizeBandit(&cfg.Bandit)
+	normalizeABTest(&cfg.ABTest)
 	normalizeExtendedVerification(&cfg.ExtendedVerification)
 	normalizeSearch(&cfg.Search)
 	normalizeSelfImprovement(&cfg.SelfImprovement)
@@ -264,6 +303,13 @@ func normalizeEvolution(e *EvolutionConfig) {
 	if len(e.StrategyWeights) == 0 {
 		e.StrategyWeights = map[string]int{"diff": 2, "full": 1, "cross": 1}
 	}
+}
+
+func normalizeABTest(a *ABTestConfig) {
+	resolvePtr(&a.Enabled, false)
+	resolvePtr(&a.MinBloomLevel, DefaultABMinBloomLevel)
+	resolvePtr(&a.TimeoutSec, 0)
+	resolvePtr(&a.SelectionTimeoutSec, DefaultABSelectionTimeoutSec)
 }
 
 func normalizeBandit(b *BanditConfig) {

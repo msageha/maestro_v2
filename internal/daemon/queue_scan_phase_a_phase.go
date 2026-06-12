@@ -702,6 +702,11 @@ func (qh *QueueHandler) stepPreemptiveRenewal(s *scanState) {
 
 // stepDispatchOrRecovery — Steps 1 & 2: Dispatch or recovery (mutually exclusive).
 func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
+	// A/B candidate groups are collected regardless of the dispatch/recovery
+	// branch below: group timeouts and selections must keep progressing even
+	// on scans that skip dispatch (expired-lease recovery ticks).
+	qh.collectABGroupWork(s.tasks, &s.work)
+
 	expiredExists := qh.hasExpiredLeases(s.tasks, &s.commands.Data, &s.notifications.Data)
 
 	if expiredExists {
@@ -722,13 +727,14 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 
 		globalInFlight := qh.buildGlobalInFlightSet(s.tasks)
 		inFlightPaths := collectInFlightPaths(s.tasks, qh.leaseManager.IsLeaseExpired)
+		abFreeze := qh.computeABFreeze(s.tasks)
 		for queueFile, tq := range s.tasks {
 			workerID := workerIDFromPath(queueFile)
 			if workerID == "" {
 				qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
 				continue
 			}
-			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, inFlightPaths, s.tasks, &s.work)
+			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, inFlightPaths, s.tasks, abFreeze, &s.work)
 			if dirty {
 				s.taskDirty[queueFile] = true
 			}

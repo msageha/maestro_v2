@@ -801,6 +801,18 @@ func (rh *ResultHandler) notifyTaskStateTerminal(entry *model.TaskResult) bool {
 			entry.TaskID, entry.CommandID, entry.ID, err)
 		return false
 	}
+	// Pre-selection barrier (A/B): hold the Planner notification while the
+	// task's candidate group is unresolved. After resolution the winner's
+	// notify proceeds normally and the loser is silently acked via the
+	// existing superseded_by_* path (taskSupersededByRetry matches the
+	// "superseded_by_ab_*" reasons by prefix).
+	// See docs/design/ab_candidate_selection.md §4.5.
+	if cs.ABBarrierActive(entry.TaskID) {
+		rh.log(LogLevelDebug,
+			"notify_gate_defer_ab_selection task=%s command=%s result=%s",
+			entry.TaskID, entry.CommandID, entry.ID)
+		return false
+	}
 	status, ok := cs.TaskStates[entry.TaskID]
 	if !ok {
 		rh.log(LogLevelDebug,

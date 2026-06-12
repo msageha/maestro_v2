@@ -292,6 +292,17 @@ func (c Config) validateExperimental(errs *[]error) {
 		*errs = append(*errs, fmt.Errorf("bandit.trace_data_requirement: must be >= 0"))
 	}
 
+	// A/B candidate selection
+	if c.ABTest.MinBloomLevel != nil && (*c.ABTest.MinBloomLevel < 1 || *c.ABTest.MinBloomLevel > 6) {
+		*errs = append(*errs, fmt.Errorf("ab_test.min_bloom_level: must be in [1, 6]"))
+	}
+	if c.ABTest.TimeoutSec != nil && *c.ABTest.TimeoutSec < 0 {
+		*errs = append(*errs, fmt.Errorf("ab_test.timeout_sec: must be >= 0"))
+	}
+	if c.ABTest.SelectionTimeoutSec != nil && *c.ABTest.SelectionTimeoutSec < 0 {
+		*errs = append(*errs, fmt.Errorf("ab_test.selection_timeout_sec: must be >= 0"))
+	}
+
 	// C-3 Extended Verification
 	if c.ExtendedVerification.MaxAutoRetries != nil && *c.ExtendedVerification.MaxAutoRetries < 0 {
 		*errs = append(*errs, fmt.Errorf("extended_verification.max_auto_retries: must be >= 0"))

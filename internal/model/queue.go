@@ -99,6 +99,12 @@ type Task struct {
 	ModelOverride string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
 	// C-6/C-8: Complexity level (simple|standard|complex|critical)
 	ComplexityLevel string `yaml:"complexity_level,omitempty" json:"complexity_level,omitempty"`
+	// ABGroupID marks this task as an A/B candidate belonging to the given
+	// CandidateGroup (state.candidate_groups). Empty for normal tasks. The
+	// daemon uses it to route the task into a candidate-exclusive worktree
+	// and to apply the pre-selection barrier. See docs/design/
+	// ab_candidate_selection.md.
+	ABGroupID string `yaml:"ab_group_id,omitempty" json:"ab_group_id,omitempty"`
 	// RunOnMain instructs the dispatcher to run this task in the main working
 	// directory instead of the worker's worktree. Use for read-only verification
 	// tasks that must evaluate the merged state on the main branch.

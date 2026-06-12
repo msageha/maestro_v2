@@ -515,6 +515,26 @@ bandit:
   # type: *int | default: 50 (DefaultTraceDataRequirement) | range: 制限なし
   trace_data_requirement: 50
 
+# --- A/B Candidate Selection ---
+# クロスランタイム A/B 候補選抜 (実験的機能)。同一タスクを claude-code /
+# codex の Worker に並列発注し、検証パイプラインで勝者を選抜する。
+# 詳細: docs/design/ab_candidate_selection.md
+ab_test:
+  # enabled: A/B 候補選抜を有効化
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # min_bloom_level: A/B を発火させる最小 bloom_level
+  # type: *int | default: 4 (DefaultABMinBloomLevel) | range: 1-6
+  min_bloom_level: 4
+  # timeout_sec: 先着候補の完了後、遅い候補を待つ上限秒数 (0 = タスクの
+  # definition_of_abort.max_wall_clock_sec に従う)
+  # type: *int | default: 0 | range: >= 0
+  timeout_sec: 0
+  # selection_timeout_sec: integration worktree が busy 等で選抜を開始
+  # できない場合に canonical 不戦勝へ縮退するまでの上限秒数
+  # type: *int | default: 1800 (DefaultABSelectionTimeoutSec) | range: >= 0
+  selection_timeout_sec: 1800
+
 # --- Extended Verification ---
 # 拡張検証 (verify.yaml ベース)。
 #

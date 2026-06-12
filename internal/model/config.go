@@ -25,6 +25,7 @@ type Config struct {
 	AdmissionControl   AdmissionControl     `yaml:"admission_control"`
 	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
 	Review             ReviewConfig         `yaml:"review"`
+	ABTest             ABTestConfig         `yaml:"ab_test,omitempty"`
 
 	// C-1 Evolution
 	Evolution EvolutionConfig `yaml:"evolution,omitempty"`

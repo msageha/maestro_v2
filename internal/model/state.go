@@ -77,6 +77,10 @@ type CommandState struct {
 	TaskTracking     `yaml:",inline"`
 	RetryTracking    `yaml:",inline"`
 	PhaseTracking    `yaml:",inline"`
+	// CandidateGroups tracks A/B candidate races (cross-runtime best-of-2).
+	// Keyed by group ID. See internal/model/ab.go and
+	// docs/design/ab_candidate_selection.md.
+	CandidateGroups map[string]*CandidateGroup `yaml:"candidate_groups,omitempty"`
 	LastReconciledAt *string `yaml:"last_reconciled_at"`
 	CreatedAt        string  `yaml:"created_at"`
 	UpdatedAt        string  `yaml:"updated_at"`

@@ -27,6 +27,11 @@ type PreTaskGateEvaluator interface {
 type WorktreeResolver interface {
 	GetWorkerPath(commandID, workerID string) (string, error)
 	EnsureWorkerWorktree(commandID, workerID string) error
+	// EnsureCandidateWorktree lazily creates the candidate-exclusive
+	// worktree + branch for an A/B candidate task (task.ABGroupID != "").
+	// Candidates never run inside worker worktrees — their work must stay
+	// off the worker branch until selection picks a winner.
+	EnsureCandidateWorktree(commandID, taskID string) (path, branch string, err error)
 	// GetIntegrationPath returns the filesystem path of the integration worktree
 	// for the given command. Used by the dispatcher to resolve the working
 	// directory for RunOnIntegration tasks (publish_conflict resolution).

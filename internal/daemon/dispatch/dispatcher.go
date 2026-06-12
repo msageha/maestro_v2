@@ -465,6 +465,20 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 		return "", nil
 	}
 
+	// A/B candidates run in a candidate-exclusive worktree so their work
+	// never reaches the worker branch before selection picks a winner
+	// (docs/design/ab_candidate_selection.md §3). The worker worktree is
+	// intentionally NOT ensured for these tasks.
+	if task.ABGroupID != "" {
+		path, _, err := wm.EnsureCandidateWorktree(task.CommandID, task.ID)
+		if err != nil {
+			disp.dl.Logf(core.LogLevelError, "candidate_worktree_failed task=%s group=%s error=%v",
+				task.ID, task.ABGroupID, err)
+			return "", fmt.Errorf("candidate worktree resolution failed: %w", err)
+		}
+		return path, nil
+	}
+
 	wtPath, err := wm.GetWorkerPath(task.CommandID, workerID)
 	if err != nil {
 		if createErr := wm.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {

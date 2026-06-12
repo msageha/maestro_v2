@@ -79,6 +79,9 @@ const (
 	// TaskIDCallerSystemInternal — internal/test entrypoint for queue_write
 	// task path. NOT exposed via the maestro CLI.
 	TaskIDCallerSystemInternal TaskIDCaller = "system-internal"
+	// TaskIDCallerABCandidate — plan-side A/B fan-out (shadow candidate
+	// creation, docs/design/ab_candidate_selection.md).
+	TaskIDCallerABCandidate TaskIDCaller = "ab-candidate"
 )
 
 var validTaskIDCallers = map[TaskIDCaller]bool{
@@ -89,6 +92,7 @@ var validTaskIDCallers = map[TaskIDCaller]bool{
 	TaskIDCallerDaemonRetry:              true,
 	TaskIDCallerDaemonConflictResolution: true,
 	TaskIDCallerSystemInternal:           true,
+	TaskIDCallerABCandidate:              true,
 }
 
 // NewTaskID is the single, audited entrypoint for minting task IDs. The

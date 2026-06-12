@@ -236,11 +236,14 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 // publish/cleanup paths can proceed without leaving worker worktrees
 // permanently at WorktreeStatusActive (Report 2026-05-04 stall).
 //
-// Lineage-aware via GetEffectiveTaskStatus: a task whose lineage
-// successor finished is treated as if it had reached the successor's
-// status, the same view checkActivePhaseCompletion uses. Tasks the
-// state reader cannot resolve (missing entry, transient error) fall
-// back to "non-terminal" so a degraded read does not race the gate.
+// Lineage-aware via GetEffectiveTaskStatusForCompletion: a task whose
+// lineage successor finished is treated as if it had reached the
+// successor's status, the same view checkActivePhaseCompletion uses —
+// including the A/B pre-selection barrier, which masks unresolved
+// candidate-group members as non-terminal so a phase merge can never
+// collect before the winner intake (design §4.5). Tasks the state
+// reader cannot resolve (missing entry, transient error) fall back to
+// "non-terminal" so a degraded read does not race the gate.
 func phaseTasksAllTerminal(stateReader StateReader, commandID string, phase PhaseInfo) bool {
 	if stateReader == nil {
 		return false
@@ -253,7 +256,7 @@ func phaseTasksAllTerminal(stateReader StateReader, commandID string, phase Phas
 		return false
 	}
 	for _, taskID := range taskIDs {
-		status, err := stateReader.GetEffectiveTaskStatus(commandID, taskID)
+		status, err := stateReader.GetEffectiveTaskStatusForCompletion(commandID, taskID)
 		if err != nil {
 			return false
 		}

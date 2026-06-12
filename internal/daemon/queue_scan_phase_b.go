@@ -48,6 +48,7 @@ func (qh *QueueHandler) executePhaseBSteps(ctx context.Context, pa *phaseAResult
 	qh.stepDeliverSignals(ctx, pa, result)
 	qh.stepLogPartialFailures(result)
 	qh.stepClearAgents(ctx, pa)
+	qh.stepABSelection(ctx, pa)
 	qh.stepCommitAndMergeWorktrees(ctx, pa, result)
 	additionalCleanups := qh.stepPublishWorktrees(ctx, pa, result)
 	qh.stepCleanupWorktrees(ctx, pa, result, additionalCleanups)

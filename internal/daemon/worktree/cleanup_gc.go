@@ -339,6 +339,9 @@ func (wm *Manager) detectAndRemoveOrphanWorktrees() {
 		for _, ws := range st.Workers {
 			knownPaths[ws.Path] = true
 		}
+		for _, c := range st.Candidates {
+			knownPaths[c.Path] = true
+		}
 		knownPaths[wm.integrationWorktreePath(cmdID)] = true
 	}
 	// Fail-safe: if any state file failed to load (corrupted YAML, transient
@@ -437,6 +440,16 @@ func (wm *Manager) gcBakFiles() {
 func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCommandState, trackWorkerStatus bool) []string {
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	var errs []string
+
+	// Remove A/B candidate worktrees + branches. Candidates are task-scoped
+	// and never merged directly, so removal is unconditional; "already gone"
+	// outcomes are tolerated inside removeCandidateArtifactsUnlocked.
+	for i := range state.Candidates {
+		c := &state.Candidates[i]
+		if err := wm.removeCandidateArtifactsUnlocked(commandID, c.TaskID); err != nil {
+			errs = append(errs, fmt.Sprintf("remove candidate %s: %v", c.TaskID, err))
+		}
+	}
 
 	// Remove worker worktrees (skip already-cleaned entries for retry-safety)
 	for i := range state.Workers {
@@ -755,6 +768,11 @@ func (wm *Manager) Reconcile() {
 			wm.Log(core.LogLevelWarn, "reconcile_load_state command=%s error=%v", commandID, loadErr)
 			continue
 		}
+
+		// Restore a stale in-flight A/B selection (daemon crashed while the
+		// selection borrowed the integration worktree). Saves its own state;
+		// runs before the worker sweep so the sweep sees the restored tree.
+		wm.reconcileABSelectionMarkerUnlocked(commandID, state)
 
 		stateChanged := false
 		now := wm.clock.Now().UTC().Format(time.RFC3339)

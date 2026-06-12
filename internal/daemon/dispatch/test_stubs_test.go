@@ -10,6 +10,9 @@ type stubResolver struct{}
 
 func (stubResolver) GetWorkerPath(string, string) (string, error)   { return "", nil }
 func (stubResolver) EnsureWorkerWorktree(string, string) error      { return nil }
+func (stubResolver) EnsureCandidateWorktree(string, string) (string, string, error) {
+	return "", "", nil
+}
 func (stubResolver) GetIntegrationPath(string) (string, error)      { return "", nil }
 func (stubResolver) EnsureIntegrationBranchCheckedOut(string) error { return nil }
 func (stubResolver) GetIntegrationStatus(string) (model.IntegrationStatus, error) {

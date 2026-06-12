@@ -151,6 +151,10 @@ const (
 	DefaultMinSamplesBeforeUse  = 10
 	DefaultTraceDataRequirement = 50
 
+	// A/B candidate selection (docs/design/ab_candidate_selection.md)
+	DefaultABMinBloomLevel       = 4
+	DefaultABSelectionTimeoutSec = 1800
+
 	// ExtendedVerificationConfig
 	DefaultMaxAutoRetries = 2
 
