@@ -457,19 +457,6 @@ func SessionExists() bool {
 	return exists
 }
 
-// CreateSession creates a new maestro tmux session.
-// The first window is named windowName. Returns an error if the session already exists.
-func CreateSession(windowName string) error {
-	debugLog("CreateSession session=%s window=%s", GetSessionName(), windowName)
-	err := run("new-session", "-d", "-s", GetSessionName(), "-n", windowName)
-	if err != nil {
-		debugLog("CreateSession FAILED session=%s error=%v", GetSessionName(), err)
-	} else {
-		debugLog("CreateSession OK session=%s", GetSessionName())
-	}
-	return err
-}
-
 // KillSession destroys the maestro tmux session.
 // It is idempotent: if the session (or tmux server) does not exist, it returns nil.
 func KillSession() error {
@@ -498,14 +485,6 @@ type SessionHealthResult struct {
 	WindowInfo     string // window/pane info (if session is alive)
 	ServerOptions  string // server options (exit-empty, exit-unattached)
 	SessionOptions string // session options (destroy-unattached)
-}
-
-// SessionHealthCheck performs a detailed session health check and logs the result.
-// Returns true if the session is alive, false otherwise.
-// When the session is missing, it also checks if the tmux server is running.
-func SessionHealthCheck() bool {
-	result := SessionHealthCheckDetailed()
-	return result.Alive
 }
 
 // SessionHealthCheckDetailed performs a detailed session health check and returns

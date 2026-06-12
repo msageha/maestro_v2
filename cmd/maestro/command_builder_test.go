@@ -235,28 +235,3 @@ func TestCommandBuilder_CheckOrder(t *testing.T) {
 		t.Errorf("expected first check to fail, got: %s", ce.Msg)
 	}
 }
-
-func TestCommandBuilder_Validate(t *testing.T) {
-	t.Parallel()
-	cmd := NewCommand("maestro test", "maestro test --x <v>")
-	var x string
-	cmd.RequiredString(&x, "x", "")
-
-	// ParsePositional does not run validation
-	if err := cmd.ParsePositional(nil); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Validate runs checks explicitly
-	err := cmd.Validate()
-	if err == nil {
-		t.Fatal("expected error from Validate")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-	if !strings.Contains(ce.Msg, "--x is required") {
-		t.Errorf("expected '--x is required', got: %s", ce.Msg)
-	}
-}

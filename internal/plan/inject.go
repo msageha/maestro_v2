@@ -644,7 +644,7 @@ func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionO
 // This is used as a fallback when TargetPhase and BlockedBy are both unset but
 // TargetWorkerID is specified (e.g. conflict resolution tasks).
 func findPhaseForWorker(state *model.CommandState, maestroDir string, workerID string) int {
-	queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, workerID)
+	queueFile := workerQueuePath(maestroDir, workerID)
 	// queueFile is built from a controlled application directory + worker ID.
 	data, err := os.ReadFile(queueFile) //nolint:gosec // controlled path
 	if err != nil {
@@ -691,7 +691,7 @@ func findFirstNonTerminalPhase(phases []model.Phase) (int, error) {
 func lookupTaskAssignment(maestroDir string, taskID string, workers model.WorkerConfig) (string, string) {
 	for i := 1; i <= workers.Count; i++ {
 		wID := fmt.Sprintf("worker%d", i)
-		queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, wID)
+		queueFile := workerQueuePath(maestroDir, wID)
 		// queueFile is built from a controlled application directory + worker ID.
 		data, err := os.ReadFile(queueFile) //nolint:gosec // controlled path
 		if err != nil {

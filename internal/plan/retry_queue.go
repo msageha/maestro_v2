@@ -76,7 +76,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 
 func loadOriginalTasksFromQueue(maestroDir string, commandID string, lockMap *lock.MutexMap) (map[string]model.Task, error) {
 	result := make(map[string]model.Task)
-	queueDir := filepath.Join(maestroDir, "queue")
+	queueDir := queueDirPath(maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -145,7 +145,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 				defer lockMap.Unlock("queue:" + rb.workerID)
 			}
 
-			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(rb.workerID))
+			queueFile := workerQueuePath(maestroDir, rb.workerID)
 			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
 				slogc().Warn("rollback: failed to read queue", "file", queueFile, "error", err)
@@ -193,7 +193,7 @@ func restoreState(state *model.CommandState, data []byte) error {
 // to desynchronise queue and state when the retried task's queue entry was
 // completed (repair_pending / paused_for_replan lifecycles).
 func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID string, status model.Status, now string, lockMap *lock.MutexMap) (model.Status, error) {
-	queueDir := filepath.Join(maestroDir, "queue")
+	queueDir := queueDirPath(maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

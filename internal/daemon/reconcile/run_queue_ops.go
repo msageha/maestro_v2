@@ -19,7 +19,7 @@ func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 	r.Deps.LockMap.Lock("queue:planner")
 	defer r.Deps.LockMap.Unlock("queue:planner")
 
-	queuePath := filepath.Join(r.Deps.MaestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(r.Deps.MaestroDir)
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -52,7 +52,7 @@ func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 
 // removeTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
 func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
-	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
+	queueDir := queueDirPath(r.Deps.MaestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -152,7 +152,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed map[string
 		return false
 	}
 
-	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
+	queueDir := queueDirPath(r.Deps.MaestroDir)
 	entries, dirErr := os.ReadDir(queueDir)
 	if dirErr != nil {
 		return removed, keptActive, fmt.Errorf("read queue dir: %w", dirErr)
@@ -234,7 +234,7 @@ func (r *Run) restoreQueueEntries(entries []removedQueueEntry) {
 	for _, e := range entries {
 		byWorker[e.workerID] = append(byWorker[e.workerID], e.task)
 	}
-	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
+	queueDir := queueDirPath(r.Deps.MaestroDir)
 	for workerID, tasks := range byWorker {
 		r.Deps.LockMap.WithLock("queue:"+workerID, func() {
 			queuePath := filepath.Join(queueDir, workerID+".yaml")

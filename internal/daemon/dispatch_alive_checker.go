@@ -3,7 +3,6 @@ package daemon
 import (
 	"errors"
 	"os"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -42,7 +41,7 @@ func (c *queueTaskAliveChecker) IsDispatchActive(workerID, taskID string, expect
 		// production daemons.
 		return true
 	}
-	queuePath := filepath.Join(c.qh.maestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(c.qh.maestroDir, workerID)
 
 	lockKey := "queue:" + workerID
 	c.qh.lockMap.Lock(lockKey)

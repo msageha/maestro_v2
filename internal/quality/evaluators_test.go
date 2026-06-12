@@ -15,20 +15,20 @@ import (
 // ---------------------------------------------------------------------------
 
 func TestValidateScript_EmptyScript(t *testing.T) {
-	assert.Error(t, validateScript(""))
-	assert.Error(t, validateScript("   "))
+	assert.Error(t, validateScriptForLanguage("", ""))
+	assert.Error(t, validateScriptForLanguage("   ", ""))
 }
 
 func TestValidateScript_ExceedsMaxLength(t *testing.T) {
 	long := strings.Repeat("a", maxScriptLength+1)
-	err := validateScript(long)
+	err := validateScriptForLanguage(long, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum length")
 }
 
 func TestValidateScript_AtMaxLength(t *testing.T) {
 	exact := strings.Repeat("a", maxScriptLength)
-	assert.NoError(t, validateScript(exact))
+	assert.NoError(t, validateScriptForLanguage(exact, ""))
 }
 
 func TestValidateScript_DangerousPatterns(t *testing.T) {
@@ -59,7 +59,7 @@ func TestValidateScript_DangerousPatterns(t *testing.T) {
 
 	for _, tc := range dangerous {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateScript(tc.script)
+			err := validateScriptForLanguage(tc.script, "")
 			require.Error(t, err, "expected script to be rejected: %s", tc.script)
 			assert.Contains(t, err.Error(), "dangerous command pattern")
 		})
@@ -115,7 +115,7 @@ func TestValidateScript_BypassPatterns(t *testing.T) {
 
 	for _, tc := range bypass {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateScript(tc.script)
+			err := validateScriptForLanguage(tc.script, "")
 			require.Error(t, err, "expected bypass pattern to be blocked: %s", tc.script)
 			assert.Contains(t, err.Error(), "dangerous command pattern")
 		})
@@ -140,7 +140,7 @@ func TestValidateScript_SafeScripts(t *testing.T) {
 
 	for _, s := range safe {
 		t.Run(s, func(t *testing.T) {
-			assert.NoError(t, validateScript(s))
+			assert.NoError(t, validateScriptForLanguage(s, ""))
 		})
 	}
 }
@@ -475,7 +475,7 @@ func TestValidateScript_QuotedEvalBlocked(t *testing.T) {
 
 	for _, tc := range scripts {
 		t.Run(tc.name, func(t *testing.T) {
-			err := validateScript(tc.script)
+			err := validateScriptForLanguage(tc.script, "")
 			require.Error(t, err, "expected quoted eval to be blocked: %s", tc.script)
 			assert.Contains(t, err.Error(), "dangerous command pattern")
 		})
@@ -491,7 +491,7 @@ func TestValidateScript_SubstringExtractionWithSpace(t *testing.T) {
 
 	for _, s := range scripts {
 		t.Run(s, func(t *testing.T) {
-			err := validateScript(s)
+			err := validateScriptForLanguage(s, "")
 			require.Error(t, err, "expected substring extraction with space to be blocked: %s", s)
 			assert.Contains(t, err.Error(), "dangerous command pattern")
 		})

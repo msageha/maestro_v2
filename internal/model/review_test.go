@@ -57,25 +57,6 @@ func TestReviewStatus_ValidStatuses(t *testing.T) {
 	}
 }
 
-func TestIsTerminalReviewStatus(t *testing.T) {
-	tests := []struct {
-		status   ReviewStatus
-		terminal bool
-	}{
-		{ReviewStatusPending, false},
-		{ReviewStatusInProgress, false},
-		{ReviewStatusCompleted, true},
-		{ReviewStatusSkipped, true},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			if got := IsTerminalReviewStatus(tt.status); got != tt.terminal {
-				t.Errorf("IsTerminalReviewStatus(%q) = %v, want %v", tt.status, got, tt.terminal)
-			}
-		})
-	}
-}
-
 func TestReviewSeverity_ValidSeverities(t *testing.T) {
 	expected := []ReviewSeverity{
 		ReviewSeverityInfo,

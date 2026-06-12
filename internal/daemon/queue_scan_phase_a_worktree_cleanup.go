@@ -462,7 +462,7 @@ func (qh *QueueHandler) stepForceFailStuckPhases(commandID string, stuck []Phase
 // failures count as "might exist": when queue contents cannot be confirmed,
 // the safe answer for a destructive caller is to skip.
 func (qh *QueueHandler) liveQueueHasTask(commandID, taskID string) bool {
-	queueDir := filepath.Join(qh.maestroDir, "queue")
+	queueDir := queueDirPath(qh.maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		return !os.IsNotExist(err)

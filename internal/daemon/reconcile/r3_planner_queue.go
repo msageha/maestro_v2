@@ -29,7 +29,7 @@ func (R3PlannerQueue) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(run.Deps.MaestroDir)
 	repairs, repairedCommands, err := reconcileTerminalQueue(
 		run, PatternR3, "planner", queuePath, terminalResults,
 		unmarshalCommandQueue, setCommandQueueItems, commandQueueAccessor(),

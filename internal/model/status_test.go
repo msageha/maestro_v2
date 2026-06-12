@@ -33,66 +33,6 @@ func TestIsTerminal(t *testing.T) {
 	}
 }
 
-func TestIsActiveStatus(t *testing.T) {
-	tests := []struct {
-		status Status
-		active bool
-	}{
-		{StatusPending, false},
-		{StatusInProgress, false},
-		{StatusCompleted, false},
-		{StatusFailed, false},
-		{StatusCancelled, false},
-		{StatusDeadLetter, false},
-		{StatusPlanned, false},
-		{StatusReady, false},
-		{StatusDispatched, true},
-		{StatusRunning, true},
-		{StatusVerifyPending, true},
-		{StatusRepairPending, true},
-		{StatusPausedForReplan, false},
-		{StatusPausedForHuman, false},
-		{StatusAborted, false},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			if got := IsActiveStatus(tt.status); got != tt.active {
-				t.Errorf("IsActiveStatus(%q) = %v, want %v", tt.status, got, tt.active)
-			}
-		})
-	}
-}
-
-func TestIsPausedStatus(t *testing.T) {
-	tests := []struct {
-		status Status
-		paused bool
-	}{
-		{StatusPending, false},
-		{StatusInProgress, false},
-		{StatusCompleted, false},
-		{StatusFailed, false},
-		{StatusCancelled, false},
-		{StatusDeadLetter, false},
-		{StatusPlanned, false},
-		{StatusReady, false},
-		{StatusDispatched, false},
-		{StatusRunning, false},
-		{StatusVerifyPending, false},
-		{StatusRepairPending, false},
-		{StatusPausedForReplan, true},
-		{StatusPausedForHuman, true},
-		{StatusAborted, false},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			if got := IsPausedStatus(tt.status); got != tt.paused {
-				t.Errorf("IsPausedStatus(%q) = %v, want %v", tt.status, got, tt.paused)
-			}
-		})
-	}
-}
-
 func TestIsPlanTerminal(t *testing.T) {
 	tests := []struct {
 		status   PlanStatus

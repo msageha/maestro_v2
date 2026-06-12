@@ -233,7 +233,7 @@ func (ch *ContinuousHandler) writeContinuousTransitionNotification(
 	// Synthetic source_result_id — one per (iteration, commandID, status) tuple.
 	sourceID := fmt.Sprintf("continuous:%s:%d:%s", newStatus, iteration, commandID)
 
-	queuePath := filepath.Join(ch.maestroDir, "queue", "orchestrator.yaml")
+	queuePath := notificationQueuePath(ch.maestroDir)
 
 	ch.lockMap.Lock("queue:orchestrator")
 	defer ch.lockMap.Unlock("queue:orchestrator")
@@ -375,7 +375,7 @@ func (ch *ContinuousHandler) hasNonTerminalCommands() (bool, error) {
 // once-per-stall control lives in stallNotifiedKey (see CheckStall).
 func (ch *ContinuousHandler) writeContinuousStallNotification(state *model.Continuous, stalledFor time.Duration) error {
 	sourceID := fmt.Sprintf("continuous:stalled:%d:%s", state.CurrentIteration, *state.LastCommandID)
-	queuePath := filepath.Join(ch.maestroDir, "queue", "orchestrator.yaml")
+	queuePath := notificationQueuePath(ch.maestroDir)
 
 	ch.lockMap.Lock("queue:orchestrator")
 	defer ch.lockMap.Unlock("queue:orchestrator")

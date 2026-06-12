@@ -185,7 +185,7 @@ func Rebuild(opts RebuildOptions) error {
 // (sorted, for deterministic test ordering) phantom IDs and any error
 // encountered while reading the queue directory.
 func detectPhantomPlannedTasks(maestroDir, commandID string, taskStates map[string]model.Status) ([]string, error) {
-	queueDir := filepath.Join(maestroDir, "queue")
+	queueDir := queueDirPath(maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if os.IsNotExist(err) {

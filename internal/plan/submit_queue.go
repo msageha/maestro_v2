@@ -197,7 +197,7 @@ func rollbackQueueEntriesLocked(maestroDir string, tasks []TaskInput, nameToID m
 			}
 			defer releaseFlock(flockFile)
 
-			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
+			queueFile := workerQueuePath(maestroDir, workerID)
 
 			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
@@ -274,7 +274,7 @@ func removeFromSlice(s []string, target string) []string {
 }
 
 func checkCommandNotCancelled(maestroDir string, commandID string) error {
-	plannerQueuePath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	plannerQueuePath := plannerQueueFilePath(maestroDir)
 
 	// C-A4: Acquire shared file-level lock for consistent reads.
 	// AtomicWrite (temp→rename) already guarantees no partial reads on POSIX;

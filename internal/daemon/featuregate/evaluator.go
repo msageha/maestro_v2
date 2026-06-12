@@ -3,10 +3,10 @@ package featuregate
 
 import "sync"
 
-// ProfileLevel represents task complexity classification.
-// Values are identical to model.ComplexityLevel* / model.ProfileLevel*
-// constants by convention. This package defines its own type to avoid
-// coupling the feature gate layer to the model package (DIP).
+// ProfileLevel represents task complexity classification
+// ("simple" / "standard" / "complex" / "critical").
+// This package defines its own type to avoid coupling the feature gate
+// layer to the model package (DIP).
 type ProfileLevel string
 
 const (

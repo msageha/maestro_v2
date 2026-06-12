@@ -206,7 +206,7 @@ func r9ScheduleVerifyRepairs(run *Run, statePath, commandID string, repairs []Re
 }
 
 func r9FindQueueTaskByID(run *Run, commandID, taskID string) (*model.Task, string) {
-	queueDir := filepath.Join(run.Deps.MaestroDir, "queue")
+	queueDir := queueDirPath(run.Deps.MaestroDir)
 	entries, err := run.cachedReadDir(queueDir)
 	if err != nil {
 		return nil, ""
@@ -418,7 +418,7 @@ func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	signalPath := filepath.Join(run.Deps.MaestroDir, "queue", "planner_signals.yaml")
+	signalPath := signalQueuePath(run.Deps.MaestroDir)
 	run.Deps.LockMap.WithLock("queue:planner_signals", func() {
 		if err := yamlutil.ReadModifyWrite(signalPath, func(sq *model.PlannerSignalQueue) error {
 			for _, existing := range sq.Signals {
@@ -446,7 +446,7 @@ func r9SetQueueTaskTerminalStatus(run *Run, workerID, taskID string, status mode
 	if workerID == "" || taskID == "" || !model.IsTerminal(status) {
 		return
 	}
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
 		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in a controlled queue directory
 		if err != nil {

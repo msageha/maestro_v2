@@ -387,7 +387,7 @@ func r10ResolveStaleAnchor(state *model.CommandState) (time.Time, bool) {
 // non-terminal while state is escalated to failed (publish gate
 // invariant).
 func r10FindOwningWorker(run *Run, commandID, taskID string) (string, error) {
-	queueDir := filepath.Join(run.Deps.MaestroDir, "queue")
+	queueDir := queueDirPath(run.Deps.MaestroDir)
 	entries, err := run.cachedReadDir(queueDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -448,7 +448,7 @@ func r10FindOwningWorker(run *Run, commandID, taskID string) (string, error) {
 // restore the previous status — when Phase 3 discovers the Planner revived
 // the task in the meantime.
 func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) (model.Status, error) {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 	var retErr error
 	var prevStatus model.Status
 	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
@@ -501,7 +501,7 @@ func r10MarkQueueTaskFailed(run *Run, workerID, taskID string) (model.Status, er
 // task was left state=ready / queue=failed: terminal queue rows are never
 // re-dispatched, so the revived task hung forever.
 func r10RestoreQueueTaskStatus(run *Run, workerID, taskID string, prevStatus model.Status) {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
 		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in the controlled queue directory
 		if err != nil {

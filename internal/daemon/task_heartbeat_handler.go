@@ -36,11 +36,6 @@ type TaskHeartbeatHandler struct {
 // TaskHeartbeatHandlerOption configures a TaskHeartbeatHandler.
 type TaskHeartbeatHandlerOption func(*TaskHeartbeatHandler)
 
-// WithHeartbeatClock sets a custom Clock for the TaskHeartbeatHandler.
-func WithHeartbeatClock(c Clock) TaskHeartbeatHandlerOption {
-	return func(h *TaskHeartbeatHandler) { h.clock = c }
-}
-
 // WithHeartbeatSelfWrites wires the self-write tracker so that heartbeat
 // queue writes are filtered out of fsnotify event processing.
 func WithHeartbeatSelfWrites(tr *selfWriteTracker) TaskHeartbeatHandlerOption {

@@ -595,9 +595,9 @@ complexity:
 
 # --- Feature Profiles ---
 # 複雑度レベル別の機能フラグプロファイル (キー名がプロファイル識別子)。
-# 値は SSOT である daemon/featuregate.Evaluator.DefaultProfiles と
-# model.DefaultFeatureProfiles を反映した既定値。空 ({}) にすると daemon は
-# Evaluator の内蔵デフォルトプロファイルを使用する。
+# 値は SSOT である daemon/featuregate.Evaluator.DefaultProfiles を反映した
+# 既定値。空 ({}) にすると daemon は Evaluator の内蔵デフォルトプロファイル
+# を使用する。
 # 標準キー: simple / standard / complex / critical
 feature_profiles:
   simple:

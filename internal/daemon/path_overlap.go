@@ -40,22 +40,6 @@ func HasPathOverlap(a, b string) bool {
 	return pathutil.IsDescendant(cb, ca) || pathutil.IsDescendant(ca, cb)
 }
 
-// HasTaskPathOverlap reports whether any expected_path in paths1 overlaps
-// with any expected_path in paths2.
-func HasTaskPathOverlap(paths1, paths2 []string) bool {
-	if len(paths1) == 0 || len(paths2) == 0 {
-		return false
-	}
-	for _, p1 := range paths1 {
-		for _, p2 := range paths2 {
-			if HasPathOverlap(p1, p2) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // inFlightPathEntry pairs a task ID with its expected_paths for overlap logging.
 type inFlightPathEntry struct {
 	TaskID        string

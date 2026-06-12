@@ -48,11 +48,6 @@ var terminalReviewStatuses = map[ReviewStatus]bool{
 	ReviewStatusSkipped:   true,
 }
 
-// IsTerminalReviewStatus returns true if the given review status is terminal.
-func IsTerminalReviewStatus(s ReviewStatus) bool {
-	return terminalReviewStatuses[s]
-}
-
 // ReviewFinding represents a single finding from a code review.
 type ReviewFinding struct {
 	Severity     ReviewSeverity `json:"severity" yaml:"severity"`

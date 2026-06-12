@@ -982,23 +982,3 @@ func TestSleepWithBackoff_ContextCancelled(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
-
-// --- getPaneMutex / removePaneMutex tests ---
-
-func TestRemovePaneMutex(t *testing.T) {
-	t.Parallel()
-	d := &messageDeliverer{}
-
-	mu1 := d.getPaneMutex("%0")
-	if mu1 == nil {
-		t.Fatal("expected non-nil mutex")
-	}
-
-	d.removePaneMutex("%0")
-
-	// After removal, a new mutex should be created
-	mu2 := d.getPaneMutex("%0")
-	if mu1 == mu2 {
-		t.Error("expected different mutex after removal")
-	}
-}

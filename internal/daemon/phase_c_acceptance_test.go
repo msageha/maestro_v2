@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"testing"
-	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/complexity"
@@ -163,32 +162,6 @@ func TestC4_SearchTree_DaemonComplete(t *testing.T) {
 	}
 }
 
-func TestC4_SearchTree_FitnessBasedEvaluation(t *testing.T) {
-	t.Parallel()
-	// §6 C-4: Evaluation based on S1-2 mechanical Fitness.
-	// Backpropagate reward should correlate with FitnessScore.
-
-	// FitnessScore.QualityScore can be used as the reward signal.
-	scoreA := model.FitnessScore{Passed: true, QualityScore: 0.9}
-	scoreB := model.FitnessScore{Passed: true, QualityScore: 0.4}
-	th := model.DefaultFitnessThresholds()
-
-	// Compare: higher QualityScore should win (when other axes are equal).
-	cmp := scoreA.Compare(scoreB, th)
-	if cmp != -1 {
-		t.Errorf("expected scoreA (QualityScore=0.9) to win over scoreB (0.4), got Compare=%d", cmp)
-	}
-
-	// QualityScore is the final axis in lexicographic comparison.
-	// Equal on all other axes → QualityScore difference decides.
-	equalA := model.FitnessScore{Passed: true, RepairCount: 1, DiffLinesChanged: 50, QualityScore: 0.8}
-	equalB := model.FitnessScore{Passed: true, RepairCount: 1, DiffLinesChanged: 50, QualityScore: 0.6}
-	cmpEqual := equalA.Compare(equalB, th)
-	if cmpEqual != -1 {
-		t.Errorf("expected equalA to win on QualityScore axis, got Compare=%d", cmpEqual)
-	}
-}
-
 func TestC4_ThompsonSampling_WidenDeepen(t *testing.T) {
 	t.Parallel()
 	// Thompson Sampler: probabilistic widen/deepen decisions.
@@ -242,21 +215,6 @@ func TestC7_RuntimeDefinitions(t *testing.T) {
 	}
 	if model.RuntimeGemini != "gemini" {
 		t.Errorf("RuntimeGemini = %q, want gemini", model.RuntimeGemini)
-	}
-
-	// ValidateRuntime tests.
-	validRuntimes := []string{"claude-code", "codex", "gemini"}
-	for _, rt := range validRuntimes {
-		if !model.ValidateRuntime(rt) {
-			t.Errorf("ValidateRuntime(%q) = false, want true", rt)
-		}
-	}
-
-	invalidRuntimes := []string{"", "unknown", "gpt-4", "llama"}
-	for _, rt := range invalidRuntimes {
-		if model.ValidateRuntime(rt) {
-			t.Errorf("ValidateRuntime(%q) = true, want false", rt)
-		}
 	}
 
 	// DefaultRuntime.
@@ -379,69 +337,6 @@ func TestC8_Complexity_DepthIntegration(t *testing.T) {
 		t.Errorf("complex → depth 3, got %d (level=%q)", scorer.EstimateDepth(complexScore), complexScore.Level)
 	}
 }
-
-// --- Model: FitnessScore.QualityScore in Compare ---
-
-func TestModel_FitnessQualityScore(t *testing.T) {
-	t.Parallel()
-	th := model.DefaultFitnessThresholds()
-
-	// QualityScore difference decides when all other axes are equal.
-	a := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      1,
-		DiffLinesChanged: 50,
-		ExecutionTime:    10 * time.Second,
-		QualityScore:     0.9,
-	}
-	b := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      1,
-		DiffLinesChanged: 50,
-		ExecutionTime:    10 * time.Second,
-		QualityScore:     0.3,
-	}
-
-	cmp := a.Compare(b, th)
-	if cmp != -1 {
-		t.Errorf("higher QualityScore should win: Compare=%d, expected -1", cmp)
-	}
-
-	// Reverse.
-	cmp2 := b.Compare(a, th)
-	if cmp2 != 1 {
-		t.Errorf("lower QualityScore should lose: Compare=%d, expected 1", cmp2)
-	}
-
-	// QualityScore within margin → tie.
-	c := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      1,
-		DiffLinesChanged: 50,
-		ExecutionTime:    10 * time.Second,
-		QualityScore:     0.9,
-	}
-	d := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      1,
-		DiffLinesChanged: 50,
-		ExecutionTime:    10 * time.Second,
-		QualityScore:     0.87, // within 0.05 margin
-	}
-	cmpTie := c.Compare(d, th)
-	if cmpTie != 0 {
-		t.Errorf("QualityScore within margin should tie: Compare=%d, expected 0", cmpTie)
-	}
-
-	// QualityScore is final axis — same scores on all axes should be 0.
-	same := model.FitnessScore{Passed: true, QualityScore: 0.5}
-	cmpSame := same.Compare(same, th)
-	if cmpSame != 0 {
-		t.Errorf("identical scores should tie: Compare=%d, expected 0", cmpSame)
-	}
-}
-
-// --- Model: Task Extension Fields ---
 
 func TestModel_TaskExtensions(t *testing.T) {
 	t.Parallel()

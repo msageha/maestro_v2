@@ -227,13 +227,6 @@ func (e *Executor) Close() error {
 	return nil
 }
 
-// CleanupPaneMutex removes the per-pane delivery mutex for the given pane target.
-// Call this when a pane is no longer in use to prevent unbounded growth of
-// the internal sync.Map.
-func (e *Executor) CleanupPaneMutex(paneTarget string) {
-	e.deliverer.removePaneMutex(paneTarget)
-}
-
 // RespawnPaneToProjectRoot kills the agent process inside the worker's
 // tmux pane and respawns the shell into the project root. Phase B uses
 // this just before `git worktree remove` so the pane never holds a cwd

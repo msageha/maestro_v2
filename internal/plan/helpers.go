@@ -73,7 +73,7 @@ func readModifyWriteResultFile(maestroDir string, modifyFn func(rf *model.Comman
 // flow idempotent and allows the caller's modifyFn to populate the queue
 // from scratch.
 func readModifyWriteCommandQueue(maestroDir string, modifyFn func(cq *model.CommandQueue) (writeNeeded bool)) error {
-	path := filepath.Join(maestroDir, "queue", "planner.yaml")
+	path := plannerQueueFilePath(maestroDir)
 
 	var cq model.CommandQueue
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
@@ -103,7 +103,7 @@ func readModifyWriteCommandQueue(maestroDir string, modifyFn func(cq *model.Comm
 // If modifyFn panics, the original queue state is preserved (no write occurs) and the panic
 // is converted to an error.
 func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *model.TaskQueue)) (retErr error) {
-	queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
+	queueFile := workerQueuePath(maestroDir, workerID)
 
 	var tq model.TaskQueue
 	data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory

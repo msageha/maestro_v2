@@ -42,7 +42,7 @@ type R0Dispatch struct{}
 func (R0Dispatch) Apply(run *Run) Outcome {
 	var repairs []Repair
 
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(run.Deps.MaestroDir)
 	lockKey := "queue:planner"
 
 	leaseSec := run.Deps.Config.Watcher.DispatchLeaseSec

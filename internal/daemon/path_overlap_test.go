@@ -116,63 +116,6 @@ func TestHasPathOverlap(t *testing.T) {
 	}
 }
 
-func TestHasTaskPathOverlap(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name   string
-		paths1 []string
-		paths2 []string
-		want   bool
-	}{
-		{
-			name:   "overlap_in_one_pair",
-			paths1: []string{"internal/model/", "cmd/main.go"},
-			paths2: []string{"internal/model/queue.go"},
-			want:   true,
-		},
-		{
-			name:   "no_overlap",
-			paths1: []string{"internal/model/"},
-			paths2: []string{"internal/daemon/"},
-			want:   false,
-		},
-		{
-			name:   "empty_paths1",
-			paths1: nil,
-			paths2: []string{"internal/daemon/"},
-			want:   false,
-		},
-		{
-			name:   "empty_paths2",
-			paths1: []string{"internal/daemon/"},
-			paths2: nil,
-			want:   false,
-		},
-		{
-			name:   "both_empty",
-			paths1: nil,
-			paths2: nil,
-			want:   false,
-		},
-		{
-			name:   "multiple_paths_one_overlap",
-			paths1: []string{"pkg/util/", "internal/daemon/"},
-			paths2: []string{"cmd/main.go", "internal/daemon/handler.go"},
-			want:   true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			got := HasTaskPathOverlap(tt.paths1, tt.paths2)
-			if got != tt.want {
-				t.Errorf("HasTaskPathOverlap() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestFindOverlappingTask(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

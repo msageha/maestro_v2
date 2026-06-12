@@ -40,26 +40,6 @@ func TestParseRuntimeFromModel(t *testing.T) {
 	}
 }
 
-func TestValidateRuntime(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"claude-code", true},
-		{"codex", true},
-		{"gemini", true},
-		{"openai", false},
-		{"", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := ValidateRuntime(tt.input); got != tt.want {
-				t.Errorf("ValidateRuntime(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestDefaultRuntime(t *testing.T) {
 	if got := DefaultRuntime(); got != "claude-code" {
 		t.Errorf("DefaultRuntime() = %q, want claude-code", got)

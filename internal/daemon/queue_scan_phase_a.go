@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -95,7 +94,7 @@ func (qh *QueueHandler) stepDeadLetters(s *scanState) {
 		s.notifications.Data.Notifications = append(s.notifications.Data.Notifications, pendingNtfs...)
 		s.notifications.Dirty = true
 		if s.notifications.Path == "" {
-			s.notifications.Path = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
+			s.notifications.Path = notificationQueuePath(qh.maestroDir)
 		}
 	}
 }
@@ -406,7 +405,7 @@ func (qh *QueueHandler) stepCancelAutoComplete(s *scanState) {
 			})
 			s.notifications.Dirty = true
 			if s.notifications.Path == "" {
-				s.notifications.Path = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
+				s.notifications.Path = notificationQueuePath(qh.maestroDir)
 			}
 			// WARN level so operators grepping daemon.log for cancelled
 			// outcomes (the canonical workflow established by the

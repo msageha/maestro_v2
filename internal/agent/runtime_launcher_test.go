@@ -184,17 +184,6 @@ func TestRuntimeLauncher_ClaudeCodeWithModel(t *testing.T) {
 	}
 }
 
-func TestFallbackToDefault_AlwaysClaudeCode(t *testing.T) {
-	rl := NewRuntimeLauncher()
-	cmd, args := rl.FallbackToDefault()
-	if cmd != "claude" {
-		t.Errorf("expected claude, got %s", cmd)
-	}
-	if len(args) != 0 {
-		t.Errorf("expected no default args, got %v", args)
-	}
-}
-
 // TestLaunchAlternativeRuntimeRejectsOrchestratorAndPlanner pins the
 // orchestrator / planner restriction: codex / gemini must never be allowed
 // for those roles because they operate directly on the project root with

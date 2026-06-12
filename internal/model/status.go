@@ -485,19 +485,9 @@ var activeStatuses = map[Status]bool{
 	StatusRepairPending: true,
 }
 
-// IsActiveStatus returns true for states where a task is actively being worked on.
-func IsActiveStatus(s Status) bool {
-	return activeStatuses[s]
-}
-
 var pausedStatuses = map[Status]bool{
 	StatusPausedForReplan: true,
 	StatusPausedForHuman:  true,
-}
-
-// IsPausedStatus returns true for states where a task is paused awaiting intervention.
-func IsPausedStatus(s Status) bool {
-	return pausedStatuses[s]
 }
 
 // IsPlanTerminal reports whether s is a terminal plan status.

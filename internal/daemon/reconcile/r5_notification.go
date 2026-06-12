@@ -42,7 +42,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
-	nqPath := filepath.Join(run.Deps.MaestroDir, "queue", "orchestrator.yaml")
+	nqPath := notificationQueuePath(run.Deps.MaestroDir)
 	var nq model.NotificationQueue
 	var nqReadErr bool
 	run.Deps.LockMap.WithLock("queue:orchestrator", func() {

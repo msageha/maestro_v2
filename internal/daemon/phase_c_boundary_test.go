@@ -3,7 +3,6 @@ package daemon
 import (
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/complexity"
@@ -139,29 +138,6 @@ func TestBoundary_NoLLMTokenConsumption(t *testing.T) {
 
 func TestBoundary_AntiRequirements(t *testing.T) {
 	t.Parallel()
-	t.Run("S5_1_QualityScore_StaticAnalysis", func(t *testing.T) {
-		t.Parallel()
-		// §5-1: FitnessScore.QualityScore is static-analysis-based, no LLM override.
-		// QualityScore is a plain float64 field — no LLM accessor.
-		fs := model.FitnessScore{
-			Passed:       true,
-			QualityScore: 0.85,
-		}
-		th := model.FitnessThresholds{
-			RepairCountMargin:   0,
-			DiffSizeMargin:      10,
-			ExecutionTimeMargin: 30 * time.Second,
-			QualityScoreMargin:  0.05,
-		}
-
-		// Compare uses QualityScore mechanically without LLM evaluation.
-		lower := model.FitnessScore{Passed: true, QualityScore: 0.4}
-		cmp := fs.Compare(lower, th)
-		if cmp != -1 {
-			t.Errorf("higher QualityScore should win mechanically, got %d", cmp)
-		}
-	})
-
 	t.Run("S5_2_Ensemble_IndependentEvaluation", func(t *testing.T) {
 		t.Parallel()
 		// §5-2: Ensemble uses independent evaluation + weighted aggregation, NOT majority vote.
@@ -203,7 +179,7 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 		//   1. A zero-value VerifyConfig is detected as empty so callers can gate.
 		//   2. The default fallback is non-empty so the system never silently
 		//      runs evolution with zero verification commands.
-		//   3. LoadOrDefaultVerifyConfig returns the safe fallback when
+		//   3. LoadOrDefaultVerifyConfigForProject returns the safe fallback when
 		//      verify.yaml is missing (explicit signal, not panic / nil-deref).
 		//   4. DefinitionOfAbort enforces a finite repair budget so the
 		//      verify→repair loop cannot spin forever when verify keeps failing.
@@ -226,12 +202,12 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 		// (3) Loader returns the safe fallback for a missing file rather than
 		// surfacing a not-exist error or nil pointer.
 		missing := filepath.Join(t.TempDir(), "does-not-exist", "verify.yaml")
-		cfg, err := model.LoadOrDefaultVerifyConfig(missing)
+		cfg, err := model.LoadOrDefaultVerifyConfigForProject(t.TempDir(), missing)
 		if err != nil {
-			t.Fatalf("LoadOrDefaultVerifyConfig(missing) returned error: %v", err)
+			t.Fatalf("LoadOrDefaultVerifyConfigForProject(missing) returned error: %v", err)
 		}
 		if cfg == nil {
-			t.Fatal("LoadOrDefaultVerifyConfig(missing) returned nil config; evolution would proceed blindly")
+			t.Fatal("LoadOrDefaultVerifyConfigForProject(missing) returned nil config; evolution would proceed blindly")
 		}
 		if cfg.IsEmpty() {
 			t.Error("fallback VerifyConfig must not be empty when verify.yaml is missing")
@@ -551,48 +527,5 @@ func TestModel_TaskExtensions_Boundary(t *testing.T) {
 	emptyTask := model.Task{ID: "empty"}
 	if emptyTask.Runtime != "" || emptyTask.ModelOverride != "" || emptyTask.ComplexityLevel != "" {
 		t.Error("unset extension fields should be zero values for backward compatibility")
-	}
-}
-
-// --- Model: FitnessScore QualityScore in Compare ---
-
-func TestModel_FitnessQualityScore_Boundary(t *testing.T) {
-	t.Parallel()
-	th := model.FitnessThresholds{
-		RepairCountMargin:   0,
-		DiffSizeMargin:      10,
-		ExecutionTimeMargin: 30 * time.Second,
-		QualityScoreMargin:  0.05,
-	}
-
-	// QualityScore is the final comparison axis.
-	// When all prior axes tie, QualityScore decides.
-	a := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      0,
-		DiffFilesChanged: 5,
-		DiffLinesChanged: 20,
-		ExecutionTime:    5 * time.Second,
-		QualityScore:     0.95,
-	}
-	b := model.FitnessScore{
-		Passed:           true,
-		RepairCount:      0,
-		DiffFilesChanged: 5,
-		DiffLinesChanged: 20,
-		ExecutionTime:    5 * time.Second,
-		QualityScore:     0.5,
-	}
-
-	cmp := a.Compare(b, th)
-	if cmp != -1 {
-		t.Errorf("QualityScore 0.95 vs 0.5: expected -1, got %d", cmp)
-	}
-
-	// QualityScore equal within margin → overall tie (0).
-	c := model.FitnessScore{Passed: true, QualityScore: 0.80}
-	d := model.FitnessScore{Passed: true, QualityScore: 0.78} // diff=0.02 < margin 0.05
-	if c.Compare(d, th) != 0 {
-		t.Errorf("QualityScore within margin should tie, got %d", c.Compare(d, th))
 	}
 }

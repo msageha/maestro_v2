@@ -361,7 +361,7 @@ func aggregateCommandTaskStats(data *DashboardData, cs *commandStateSnapshot) {
 
 // updateQueueStatus reads current queue depths by parsing queue YAML files.
 func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
-	queueDir := filepath.Join(f.maestroDir, "queue")
+	queueDir := queueDirPath(f.maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		return

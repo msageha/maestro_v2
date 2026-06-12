@@ -537,7 +537,7 @@ func (qh *QueueHandler) dispatchConflictsAndFlushSignals(
 	if *signalsDirty && qh.worktreeManager != nil {
 		p := signalPath
 		if p == "" {
-			p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			p = signalQueuePath(qh.maestroDir)
 		}
 		if err := yamlutil.AtomicWrite(p, *signalQueue); err != nil {
 			qh.log(LogLevelError, "write_planner_signals_pre_c1 error=%v", err)
@@ -579,7 +579,7 @@ func (qh *QueueHandler) dispatchConflictsAndFlushSignals(
 	if *signalsDirty {
 		p := signalPath
 		if p == "" {
-			p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			p = signalQueuePath(qh.maestroDir)
 		}
 		if len(signalQueue.Signals) == 0 {
 			_ = os.Remove(p)

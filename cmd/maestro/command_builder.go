@@ -119,11 +119,6 @@ func (b *CommandBuilder) ParsePositional(args []string) error {
 	return nil
 }
 
-// Validate runs all registered validation checks.
-func (b *CommandBuilder) Validate() error {
-	return b.validate()
-}
-
 // NArg returns the number of remaining positional arguments after parsing.
 func (b *CommandBuilder) NArg() int { return b.fs.NArg() }
 

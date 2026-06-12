@@ -311,7 +311,7 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 		workerModel := GetWorkerModel(workerID, config)
 
 		pendingCount := 0
-		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
+		queueFile := workerQueuePath(maestroDir, workerID)
 		data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
@@ -358,6 +358,25 @@ func SnapshotWorkerStates(states []WorkerState) []WorkerState {
 func workerIDToQueueFile(workerID string) string {
 	// worker1 → worker1.yaml
 	return workerID + ".yaml"
+}
+
+// Queue-layout path helpers. Centralised so the plan package does not
+// scatter `.maestro/queue` literals (mirrors internal/daemon/paths.go;
+// duplicated locally to keep plan decoupled from daemon).
+
+// queueDirPath returns the path to the queue directory.
+func queueDirPath(maestroDir string) string {
+	return filepath.Join(maestroDir, "queue")
+}
+
+// workerQueuePath returns the path to a worker's task queue file.
+func workerQueuePath(maestroDir, workerID string) string {
+	return filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
+}
+
+// plannerQueueFilePath returns the path to the planner command queue file.
+func plannerQueueFilePath(maestroDir string) string {
+	return filepath.Join(maestroDir, "queue", "planner.yaml")
 }
 
 // workerExistsForModel reports whether at least one worker in stateMap is

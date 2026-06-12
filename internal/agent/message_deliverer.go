@@ -31,7 +31,7 @@ type messageDeliverer struct {
 	execCfg   ExecutorConfig
 	logger    *log.Logger
 	logLevel  logLevel
-	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock
+	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock; bounded by the formation's static pane set (entries are never removed)
 }
 
 // Submit-probe tuning.
@@ -107,15 +107,6 @@ func (d *messageDeliverer) getPaneMutex(paneTarget string) *sync.Mutex {
 		d.paneMu.Store(paneTarget, mu)
 	}
 	return mu
-}
-
-// removePaneMutex deletes the per-pane mutex entry for the given pane target.
-// Call this when a pane is no longer in use to prevent unbounded growth of
-// the sync.Map. Currently called when an agent is removed from the watcher's
-// tracked set. If new call sites are added that create pane entries, ensure
-// corresponding cleanup calls are added.
-func (d *messageDeliverer) removePaneMutex(paneTarget string) {
-	d.paneMu.Delete(paneTarget)
 }
 
 // sendAndConfirm sends the message and updates @status to busy.

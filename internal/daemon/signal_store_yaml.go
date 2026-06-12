@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -36,7 +35,7 @@ func (s *YAMLSignalStore) UpdateMergeConflictSignal(commandID, phaseID, workerID
 	s.lockMap.Lock("queue:planner_signals")
 	defer s.lockMap.Unlock("queue:planner_signals")
 
-	path := filepath.Join(s.maestroDir, "queue", "planner_signals.yaml")
+	path := signalQueuePath(s.maestroDir)
 
 	return updateYAMLFile(path, func(sq *model.PlannerSignalQueue) error {
 		idx := -1

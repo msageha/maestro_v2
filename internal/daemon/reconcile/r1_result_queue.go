@@ -41,7 +41,7 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 
 		workerID := strings.TrimSuffix(name, ".yaml")
 		resultPath := filepath.Join(resultsDir, name)
-		queuePath := filepath.Join(run.Deps.MaestroDir, "queue", name)
+		queuePath := filepath.Join(queueDirPath(run.Deps.MaestroDir), name)
 
 		resultData, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if err != nil {
@@ -220,7 +220,7 @@ func parseQueueWriteFailedValue(value string) (workerID, resultID string) {
 // Returns nil on any I/O or parse error (caller will retry on the next scan).
 // Used to batch-check multiple tasks against a single queue read.
 func r1LoadQueueTerminalTasks(run *Run, workerID string) map[string]bool {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)

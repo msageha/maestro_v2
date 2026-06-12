@@ -3,8 +3,8 @@
 // to determine subtask decomposition depth.
 package complexity
 
-// Level represents a complexity classification.
-// Values are identical to model.ComplexityLevel* constants by convention.
+// Level represents a complexity classification
+// ("simple" / "standard" / "complex" / "critical").
 // This package defines its own type to avoid coupling the daemon scoring
 // layer to the model package (Dependency Inversion Principle).
 type Level string

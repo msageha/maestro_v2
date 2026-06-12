@@ -191,7 +191,9 @@ func (d *Daemon) initComponents() {
 	}
 
 	// Admission control: always initialized (uses effective defaults if unconfigured)
-	d.admissionCtrl = admission.NewController(d.config.AdmissionControl)
+	// WithLogger wires the persistent-saturation WARN path; without it the
+	// controller's saturation telemetry can never fire (logger stays nil).
+	d.admissionCtrl = admission.NewController(d.config.AdmissionControl, admission.WithLogger(d.logger))
 	d.handler.SetAdmissionController(d.admissionCtrl)
 	d.api.result.SetAdmissionController(d.admissionCtrl)
 	d.log(LogLevelInfo, "admission_control initialized verify=%d repair=%d",

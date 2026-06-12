@@ -55,28 +55,6 @@ func AdvanceTaskState(states map[string]Status, taskID string, target Status) er
 	return nil
 }
 
-// TerminateForAbort applies the §2.1 universal `* → aborted` transition for
-// taskID. Returns nil if the task is already aborted (idempotent) and an error
-// if the task is missing or in a non-aborted terminal state.
-func TerminateForAbort(states map[string]Status, taskID string) error {
-	if states == nil {
-		return fmt.Errorf("TerminateForAbort: states map is nil")
-	}
-	current, ok := states[taskID]
-	if !ok {
-		return fmt.Errorf("TerminateForAbort: task %q not registered in states", taskID)
-	}
-	if current == StatusAborted {
-		return nil
-	}
-	if IsTerminal(current) {
-		return fmt.Errorf("TerminateForAbort: task %q is already terminal (%s); cannot abort",
-			taskID, current)
-	}
-	states[taskID] = StatusAborted
-	return nil
-}
-
 // shortestTaskStatePath returns the sequence of intermediate states (excluding
 // from, including to) that forms the shortest valid path from `from` to `to`
 // through validTaskStateTransitions. Universal-transition shortcuts

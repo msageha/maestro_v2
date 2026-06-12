@@ -216,10 +216,6 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 			return fmt.Errorf("script condition requires script")
 		}
 
-	case ConditionFeatureGate:
-		// Feature gate conditions have no required fields; they are evaluated
-		// by the registered FeatureGateRule evaluator at runtime.
-
 	default:
 		return fmt.Errorf("unknown condition type: %s", condition.Type)
 	}

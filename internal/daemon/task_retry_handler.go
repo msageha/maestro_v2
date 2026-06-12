@@ -29,16 +29,8 @@ type TaskRetryHandler struct {
 	logLevel   LogLevel
 }
 
-// TaskRetryHandlerOption configures a TaskRetryHandler.
-type TaskRetryHandlerOption func(*TaskRetryHandler)
-
-// WithRetryHandlerClock sets a custom Clock for the TaskRetryHandler.
-func WithRetryHandlerClock(c Clock) TaskRetryHandlerOption {
-	return func(h *TaskRetryHandler) { h.clock = c }
-}
-
 // NewTaskRetryHandler creates a new task retry handler.
-func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...TaskRetryHandlerOption) *TaskRetryHandler {
+func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *TaskRetryHandler {
 	h := &TaskRetryHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
@@ -47,9 +39,6 @@ func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.Mute
 		dl:         NewDaemonLoggerFromLegacy("task_retry", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-	}
-	for _, opt := range opts {
-		opt(h)
 	}
 	return h
 }
@@ -372,7 +361,7 @@ func (h *TaskRetryHandler) AddRetryTaskToQueue(task *model.Task, workerID string
 // addRetryTaskToQueueLocked adds a retry task to the worker's queue.
 // Caller must hold lockMap lock for key "queue:<workerID>".
 func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID string) error {
-	queuePath := filepath.Join(h.maestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(h.maestroDir, workerID)
 
 	if err := updateYAMLFile(queuePath, func(queue *model.TaskQueue) error {
 		if queue.SchemaVersion == 0 {

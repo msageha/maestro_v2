@@ -6,28 +6,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
-func TestValidateComplexityLevel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  bool
-	}{
-		{"simple", true},
-		{"standard", true},
-		{"complex", true},
-		{"critical", true},
-		{"unknown", false},
-		{"", false},
-		{"Simple", false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			if got := ValidateComplexityLevel(tt.input); got != tt.want {
-				t.Errorf("ValidateComplexityLevel(%q) = %v, want %v", tt.input, got, tt.want)
-			}
-		})
-	}
-}
-
 func TestComplexityThresholds_Defaults(t *testing.T) {
 	ct := ComplexityThresholds{}
 	if v := ct.EffectiveSimpleMaxFiles(); v != 3 {

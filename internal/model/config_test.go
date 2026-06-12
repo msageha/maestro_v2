@@ -1770,3 +1770,27 @@ func TestValidate_WorktreePathPrefix_Invalid(t *testing.T) {
 		})
 	}
 }
+
+// TestFeatureProfile_Defaults pins the zero-value FeatureProfile semantics:
+// every feature toggle defaults to disabled.
+func TestFeatureProfile_Defaults(t *testing.T) {
+	fp := FeatureProfile{}
+	if fp.EffectiveCrossAgentReview() {
+		t.Errorf("default CrossAgentReview = %v, want false", fp.EffectiveCrossAgentReview())
+	}
+	if fp.EffectiveExploratoryOptimization() {
+		t.Error("default ExploratoryOptimization should be false")
+	}
+	if fp.EffectiveEvolutionaryQuality() {
+		t.Error("default EvolutionaryQuality should be false")
+	}
+	if fp.EffectiveAdaptiveModelSelection() {
+		t.Error("default AdaptiveModelSelection should be false")
+	}
+	if fp.EffectiveSelfImprovement() {
+		t.Error("default SelfImprovement should be false")
+	}
+	if fp.EffectiveAdaptiveDepth() {
+		t.Error("default AdaptiveDepth should be false")
+	}
+}

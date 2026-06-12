@@ -92,11 +92,6 @@ func WithLogger(l *log.Logger) ControllerOption {
 	return func(c *Controller) { c.logger = l }
 }
 
-// WithSaturationThreshold sets the consecutive rejection count that triggers a warning.
-func WithSaturationThreshold(n int) ControllerOption {
-	return func(c *Controller) { c.saturationThreshold = n }
-}
-
 // TryAcquire attempts to acquire a concurrency slot for the given operation
 // type. It returns true if the slot was acquired, false if the limit has been
 // reached. OpUnknown always succeeds (no limit enforced).

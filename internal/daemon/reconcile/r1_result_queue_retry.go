@@ -254,7 +254,7 @@ func formatRetryEnqueueValue(workerID string, retryCount int) string {
 // r1TaskExistsInQueue checks if a task with the given ID exists in the worker's queue.
 // Acquires queue lock internally.
 func r1TaskExistsInQueue(run *Run, workerID, taskID string) bool {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
@@ -286,7 +286,7 @@ func r1TaskExistsInQueue(run *Run, workerID, taskID string) bool {
 // The heuristic remains only as a fallback for legacy entries without
 // lineage.
 func r1FindOriginalTask(run *Run, workerID, commandID, predecessorID string) *model.Task {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
@@ -361,7 +361,7 @@ func r1BuildRetryTask(original *model.Task, retryTaskID string, clock core.Clock
 // r1AddTaskToQueue appends a task to the worker's queue file.
 // Acquires queue lock internally.
 func r1AddTaskToQueue(run *Run, workerID string, task *model.Task) error {
-	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)

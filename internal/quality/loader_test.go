@@ -232,7 +232,11 @@ gates:
 			errMsg:  "unknown condition type",
 		},
 		{
-			name: "feature_gate condition type is valid",
+			// feature_gate was retired: the rule was never registered by the
+			// daemon, so a gate declaring it silently never evaluated. The
+			// loader now rejects it explicitly instead of accepting an inert
+			// condition.
+			name: "feature_gate condition type is rejected (retired)",
 			yaml: `
 schema_version: "1.0.0"
 gates:
@@ -247,7 +251,8 @@ gates:
       on_pass: allow
       on_fail: block
 `,
-			wantErr: false,
+			wantErr: true,
+			errMsg:  "unknown condition type",
 		},
 	}
 

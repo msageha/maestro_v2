@@ -205,7 +205,7 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatal("session should not exist initially")
 	}
 
-	if err := CreateSession("test-window"); err != nil {
+	if err := CreateSessionWithServerOptions("test-window", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -226,7 +226,7 @@ func TestUserVariables(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -261,7 +261,7 @@ func TestCreateWindowAndListPanes(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("orchestrator"); err != nil {
+	if err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -292,7 +292,7 @@ func TestSetupWorkerGrid(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("orchestrator"); err != nil {
+	if err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	if err := CreateWindow("workers"); err != nil {
@@ -358,7 +358,7 @@ func TestCapturePane(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -382,7 +382,7 @@ func TestFindPaneByAgentID(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -442,7 +442,7 @@ func TestSendTextAndSubmit(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -483,7 +483,7 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -537,7 +537,7 @@ func TestSetSessionOption(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSession("test"); err != nil {
+	if err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 

@@ -153,11 +153,3 @@ func buildRuntimeArgs(runtime string, def RuntimeDef, opts RuntimeLaunchOptions)
 	}
 	return args
 }
-
-// FallbackToDefault returns the command and args for the default runtime (claude-code).
-func (rl *RuntimeLauncher) FallbackToDefault() (string, []string) {
-	def := rl.runtimes[rl.defaultRuntime]
-	args := make([]string, len(def.Args))
-	copy(args, def.Args)
-	return def.Command, args
-}

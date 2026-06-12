@@ -1203,26 +1203,6 @@ func newBufLogger(buf *bytes.Buffer) *log.Logger {
 	return log.New(buf, "", 0)
 }
 
-// --- CleanupPaneMutex tests ---
-
-func TestCleanupPaneMutex(t *testing.T) {
-	t.Parallel()
-	mock := newExecMock()
-	exec, _ := newTestExecutorWithLog(mock)
-
-	// Trigger mutex creation by accessing deliverer
-	exec.deliverer.getPaneMutex("%0")
-
-	// Cleanup should remove the mutex
-	exec.CleanupPaneMutex("%0")
-
-	// After cleanup, a new mutex should be created
-	mu := exec.deliverer.getPaneMutex("%0")
-	if mu == nil {
-		t.Error("expected new mutex after cleanup")
-	}
-}
-
 // --- Fix: Per-pane mutex in messageDeliverer ---
 
 func TestGetPaneMutex_Identity(t *testing.T) {

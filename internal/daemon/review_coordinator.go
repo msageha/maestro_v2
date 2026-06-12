@@ -228,7 +228,7 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 	if rc.dispatcher == nil {
 		return
 	}
-	queuePath := filepath.Join(rc.maestroDir, "queue", params.Reporter+".yaml")
+	queuePath := taskQueuePath(rc.maestroDir, params.Reporter)
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		rc.log(LogLevelDebug, "review_dispatch_skip task=%s reason=queue_read_error: %v", params.TaskID, err)

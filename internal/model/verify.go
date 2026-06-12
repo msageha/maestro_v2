@@ -134,24 +134,6 @@ func ParseVerifyCommand(command string) (VerifyCommand, error) {
 	}, nil
 }
 
-// LoadOrDefaultVerifyConfig reads and parses a verify.yaml file.
-// If the file does not exist, it returns DefaultVerifyConfig() as a fallback.
-// If the file exists but cannot be parsed, it returns an error.
-//
-// New production code should prefer LoadOrDefaultVerifyConfigForProject so the
-// fallback is project-aware (see DefaultVerifyConfigForProject) rather than
-// hard-coded to Go's `go vet ./...`.
-func LoadOrDefaultVerifyConfig(path string) (*VerifyConfig, error) {
-	cfg, err := LoadVerifyConfig(path)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return DefaultVerifyConfig(), nil
-		}
-		return nil, err
-	}
-	return cfg, nil
-}
-
 // LoadOrDefaultVerifyConfigForProject reads and parses verify.yaml at path.
 // If the file does not exist it returns the project-appropriate default from
 // DefaultVerifyConfigForProject(projectRoot). Non-Go repositories receive a
