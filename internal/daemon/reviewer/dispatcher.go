@@ -102,7 +102,17 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 		CreatedAt:     time.Now(),
 	}
 
+	// Re-check the concurrency limit under the write lock. ShouldReview's
+	// RLock read is only a cheap pre-filter: result_write requests arrive on
+	// concurrent UDS connections, so two callers can both pass ShouldReview
+	// at limit-1 and race into Dispatch (check-then-act). The authoritative
+	// admission decision is this lock-held check.
 	d.mu.Lock()
+	if d.activeReviews >= d.config.EffectiveMaxConcurrentReviews() {
+		d.mu.Unlock()
+		return fmt.Errorf("review dispatch: concurrent review limit reached (%d)",
+			d.config.EffectiveMaxConcurrentReviews())
+	}
 	d.activeReviews++
 	defer d.mu.Unlock()
 

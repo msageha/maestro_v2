@@ -110,7 +110,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the task")
 	cmd.StringVar(&acceptanceCriteriaFile, "acceptance-criteria-file", "", "Read acceptance criteria from a file or '-' for stdin (mutually exclusive with --acceptance-criteria)")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
-	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
+	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion (default true; pass --required=false to inject an optional task)")
 	cmd.BoolVar(&runOnMain, "run-on-main", false, "Run task in main branch directory instead of worker worktree (for read-only verification tasks)")
 	cmd.BoolVar(&runOnIntegration, "run-on-integration", false, "Run task in integration worktree instead of worker worktree (for publish_conflict resolution tasks)")
 	cmd.StringVar(&operationType, "operation-type", "", "Explicit operation classification: 'verify' (read-only verification) or 'repair' (write recovery). Defaults: --run-on-main → verify, --run-on-integration → repair. Set 'verify' on run-on-integration verification tasks so a FAIL verdict replans immediately instead of burning identical retries")

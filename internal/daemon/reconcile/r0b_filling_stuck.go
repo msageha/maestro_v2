@@ -182,8 +182,19 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
-				// State unchanged on disk but queue rows are gone — restore
-				// them all so the next scan can retry the whole transition.
+				// State file deleted between Phase 2 and here (concurrent
+				// cancel / cleanup finished the command): the removed rows
+				// belong to a dead command, so re-inserting them would only
+				// create orphan queue rows. Drop them instead.
+				if os.IsNotExist(err) {
+					run.Log(core.LogLevelInfo,
+						"R0b state_gone_after_removal command=%s (command finished concurrently; dropping %d removed pre-dispatch rows)",
+						commandID, len(removedEntries))
+					return
+				}
+				// Transient read failure: state unchanged on disk but queue
+				// rows are gone — restore them all so the next scan can
+				// retry the whole transition.
 				run.Log(core.LogLevelError,
 					"R0b reload_state command=%s error=%v (re-inserting %d removed queue rows)",
 					commandID, err, len(removedEntries))

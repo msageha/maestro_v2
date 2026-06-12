@@ -243,7 +243,7 @@ phases:
 - `--expected-paths` は必須（1 つ以上、繰り返し指定）。元タスクと同じパスが基本。リポジトリ全体に触れる場合のみ `.`
 - `--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承し、依存先でキャンセルされた後続タスクも自動復旧する
 - `--max-repair-count` / `--max-wall-clock-sec` 省略時は default（max_repair_count=3, max_wall_clock_sec=1800）が適用される
-- `--required` / `--constraints` / `--persona-hint` / `--tools-hint` / `--skill-refs` / `--worker-id` は **サポートされず**、元タスクから自動継承される。これらを変更したい場合は `add-retry-task` ではなく `add-task` を使う
+- `--required` / `--constraints` / `--persona-hint` / `--tools-hint` / `--skill-refs` は **サポートされず**、元タスクから自動継承される。worker は元タスクの担当に固定されず、負荷と bloom level に基づき再アサインされる。これらを変更したい場合は `add-retry-task` ではなく `add-task` を使う
 
 **既存プランへのタスク追加**（conflict recovery 等で sealed プランに新規タスクを注入する場合）: `maestro plan add-task --command-id <id> ...`
 

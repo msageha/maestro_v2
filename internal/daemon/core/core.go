@@ -158,7 +158,9 @@ type RealClock = clock.RealClock
 // ---------------------------------------------------------------------------
 
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
-// Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
+// plan.PlanStateReader is the concrete implementation (wired in
+// cmd_daemon.go); the daemon depends on this interface so it stays
+// decoupled from the plan package.
 type StateReader interface {
 	// GetTaskState returns the status of a task from the command state.
 	GetTaskState(commandID, taskID string) (model.Status, error)

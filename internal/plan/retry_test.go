@@ -675,6 +675,150 @@ func TestAddRetryTask_HappyPath(t *testing.T) {
 	}
 }
 
+// findQueueTaskByID scans all worker queues for the given task ID.
+func findQueueTaskByID(t *testing.T, maestroDir, taskID string) *model.Task {
+	t.Helper()
+	for i := 1; i <= 2; i++ {
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if yamlv3.Unmarshal(data, &tq) != nil {
+			continue
+		}
+		for j := range tq.Tasks {
+			if tq.Tasks[j].ID == taskID {
+				return &tq.Tasks[j]
+			}
+		}
+	}
+	return nil
+}
+
+// TestAddRetryTask_InheritsAdvisoryFieldsFromOriginal pins the planner.md
+// contract: constraints / persona-hint / tools-hint / skill-refs have no CLI
+// flags on add-retry-task and must be auto-inherited from the original
+// task's queue row (audit 2026-06-12 F1 — the primary retry used to drop
+// them silently, losing the original's execution constraints).
+func TestAddRetryTask_InheritsAdvisoryFieldsFromOriginal(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	origQueue := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:          failedTaskID,
+			CommandID:   commandID,
+			Status:      model.StatusFailed,
+			Constraints: []string{"do not modify docs/"},
+			ToolsHint:   []string{"go test ./..."},
+			PersonaHint: "implementer",
+			SkillRefs:   []string{"skill_build"},
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), origQueue); err != nil {
+		t.Fatalf("write orig queue: %v", err)
+	}
+
+	result, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "retry with inheritance",
+		Content:            "redo",
+		AcceptanceCriteria: "passes",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddRetryTask: %v", err)
+	}
+
+	got := findQueueTaskByID(t, maestroDir, result.TaskID)
+	if got == nil {
+		t.Fatal("retry task not found in any worker queue")
+	}
+	if len(got.Constraints) != 1 || got.Constraints[0] != "do not modify docs/" {
+		t.Errorf("Constraints = %v, want inherited [do not modify docs/]", got.Constraints)
+	}
+	if len(got.ToolsHint) != 1 || got.ToolsHint[0] != "go test ./..." {
+		t.Errorf("ToolsHint = %v, want inherited [go test ./...]", got.ToolsHint)
+	}
+	if got.PersonaHint != "implementer" {
+		t.Errorf("PersonaHint = %q, want inherited %q", got.PersonaHint, "implementer")
+	}
+	if len(got.SkillRefs) != 1 || got.SkillRefs[0] != "skill_build" {
+		t.Errorf("SkillRefs = %v, want inherited [skill_build]", got.SkillRefs)
+	}
+}
+
+// TestAddRetryTask_ExplicitAdvisoryFieldsWin verifies that explicitly
+// supplied values (bridge JSON callers) take precedence over inheritance,
+// including a non-nil empty slice as an explicit clear.
+func TestAddRetryTask_ExplicitAdvisoryFieldsWin(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	origQueue := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:          failedTaskID,
+			CommandID:   commandID,
+			Status:      model.StatusFailed,
+			Constraints: []string{"orig constraint"},
+			ToolsHint:   []string{"orig tool"},
+			PersonaHint: "implementer",
+			SkillRefs:   []string{"orig_skill"},
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), origQueue); err != nil {
+		t.Fatalf("write orig queue: %v", err)
+	}
+
+	result, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "retry with explicit fields",
+		Content:            "redo",
+		AcceptanceCriteria: "passes",
+		BloomLevel:         2,
+		Constraints:        []string{}, // explicit clear
+		ToolsHint:          []string{"explicit tool"},
+		PersonaHint:        "reviewer",
+		SkillRefs:          []string{"explicit_skill"},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddRetryTask: %v", err)
+	}
+
+	got := findQueueTaskByID(t, maestroDir, result.TaskID)
+	if got == nil {
+		t.Fatal("retry task not found in any worker queue")
+	}
+	if len(got.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want explicit clear (empty)", got.Constraints)
+	}
+	if len(got.ToolsHint) != 1 || got.ToolsHint[0] != "explicit tool" {
+		t.Errorf("ToolsHint = %v, want explicit [explicit tool]", got.ToolsHint)
+	}
+	if got.PersonaHint != "reviewer" {
+		t.Errorf("PersonaHint = %q, want explicit %q", got.PersonaHint, "reviewer")
+	}
+	if len(got.SkillRefs) != 1 || got.SkillRefs[0] != "explicit_skill" {
+		t.Errorf("SkillRefs = %v, want explicit [explicit_skill]", got.SkillRefs)
+	}
+}
+
 func TestAddRetryTask_CancelsOriginalQueueEntry(t *testing.T) {
 	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
 	cfg := testConfig()

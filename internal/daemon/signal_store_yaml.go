@@ -1,7 +1,6 @@
 package daemon
 
 import (
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )

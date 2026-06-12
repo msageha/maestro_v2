@@ -478,18 +478,6 @@ func IsTerminal(s Status) bool {
 	return terminalStatuses[s]
 }
 
-var activeStatuses = map[Status]bool{
-	StatusDispatched:    true,
-	StatusRunning:       true,
-	StatusVerifyPending: true,
-	StatusRepairPending: true,
-}
-
-var pausedStatuses = map[Status]bool{
-	StatusPausedForReplan: true,
-	StatusPausedForHuman:  true,
-}
-
 // IsPlanTerminal reports whether s is a terminal plan status.
 func IsPlanTerminal(s PlanStatus) bool {
 	return terminalPlanStatuses[s]

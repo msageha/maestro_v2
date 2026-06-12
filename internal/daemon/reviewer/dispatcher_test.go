@@ -131,6 +131,33 @@ func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
 	}
 }
 
+// TestDispatch_ReenforcesConcurrentLimit pins the lock-held admission check
+// inside Dispatch (audit 2026-06-12 F2): ShouldReview's RLock read is only a
+// pre-filter, and concurrent UDS result_writes can race past it — Dispatch
+// itself must reject once the limit is reached.
+func TestDispatch_ReenforcesConcurrentLimit(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.MaxConcurrentReviews = ptr.Int(1)
+	d, _ := newDispatcherWithStub(cfg)
+
+	// Simulate an in-flight review that won the race.
+	d.mu.Lock()
+	d.activeReviews = 1
+	d.mu.Unlock()
+
+	err := d.Dispatch(context.Background(), taskWithBloom(3), "diff")
+	if err == nil {
+		t.Fatal("expected Dispatch to reject when concurrent review limit is reached")
+	}
+	d.mu.Lock()
+	got := d.activeReviews
+	d.mu.Unlock()
+	if got != 1 {
+		t.Errorf("activeReviews = %d, want 1 (rejected dispatch must not increment)", got)
+	}
+}
+
 func TestShouldReview_ConcurrentLimitNotReached(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()

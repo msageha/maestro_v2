@@ -1038,6 +1038,18 @@ func TestTryCompleteInterruptedPublishSync(t *testing.T) {
 		}
 	})
 
+	t.Run("no marker returns NoMarker", func(t *testing.T) {
+		t.Parallel()
+		projectRoot := testutil.InitTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		// No sync-pending marker exists: rev-parse --verify -q exits 1,
+		// which must classify as NoMarker (not Failed) so cleanup proceeds.
+		if got := wm.tryCompleteInterruptedPublishSync("cmd_no_marker"); got != publishSyncRepairNoMarker {
+			t.Fatalf("missing marker: outcome = %d, want publishSyncRepairNoMarker", got)
+		}
+	})
+
 	t.Run("refuses when operator staged edits", func(t *testing.T) {
 		t.Parallel()
 		projectRoot, wm, commandID := setupCrashState(t)

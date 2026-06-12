@@ -120,6 +120,19 @@ func wrapGitOutputError(err error, args []string) error {
 	return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
 
+// gitExitCode extracts the git process exit code from a (possibly wrapped)
+// gitOutput / gitRun error. Returns -1 when the error does not carry an
+// *exec.ExitError (exec failure, context cancellation, nil, ...). Callers
+// use this to distinguish semantic non-zero exits (e.g. `rev-parse --verify
+// -q` exits 1 for "ref does not exist") from git-level faults.
+func gitExitCode(err error) int {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
 // sleepCtx waits for the specified duration or until the context is cancelled.
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)

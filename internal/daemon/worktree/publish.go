@@ -354,7 +354,19 @@ const (
 func (wm *Manager) tryCompleteInterruptedPublishSync(commandID string) publishSyncRepairOutcome {
 	markerOut, err := wm.gitOutput("rev-parse", "--verify", "-q", publishSyncPendingRef(commandID))
 	if err != nil {
-		return publishSyncRepairNoMarker
+		// `rev-parse --verify -q` exits 1 for a missing ref; anything else
+		// (exit 128, exec failure, ...) is a git-level fault where the
+		// marker may well exist. Classifying such faults as NoMarker would
+		// let cleanup proceed to state removal and orphan the recovery
+		// record, so they are Failed instead — cleanup defers and GC
+		// retries once the fault clears.
+		if gitExitCode(err) == 1 {
+			return publishSyncRepairNoMarker
+		}
+		wm.Log(core.LogLevelWarn,
+			"publish_sync_marker_probe_failed command=%s error=%v (treating as repair failure; marker state unknown)",
+			commandID, err)
+		return publishSyncRepairFailed
 	}
 	preBaseSHA := strings.TrimSpace(markerOut)
 	if wm.gitRun("diff", "--quiet") != nil {

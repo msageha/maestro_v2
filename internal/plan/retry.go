@@ -249,7 +249,12 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, fmt.Errorf("apply retry state changes: %w", err)
 	}
 
-	primaryTask := buildPrimaryRetryTask(opts, newTaskID, rc.blockedBy, assignment.WorkerID)
+	// Fill advisory fields from the original task's queue row before building
+	// the primary retry entry. Scoped to the primary task on purpose: cascade
+	// rebuilds inherit from their own originals in buildCascadeQueueTask and
+	// must not pick up primary-derived values through opts.
+	primaryOpts := inheritRetryFieldsFromOriginal(opts, origTaskCache)
+	primaryTask := buildPrimaryRetryTask(primaryOpts, newTaskID, rc.blockedBy, assignment.WorkerID)
 	queueLockedOpts := opts
 	queueLockedOpts.LockMap = nil
 	if err := writeAndCommitRetryQueue(
@@ -291,6 +296,37 @@ func assignWorkerForRetry(opts RetryOptions) (WorkerAssignment, []WorkerState, e
 	}
 
 	return assignments[0], workerStates, nil
+}
+
+// inheritRetryFieldsFromOriginal returns a copy of opts with empty advisory
+// fields (constraints / tools hint / persona hint / skill refs) filled from
+// the original task's queue row. planner.md promises these are auto-inherited
+// on retry and the CLI deliberately exposes no flags for them; without this
+// fill the primary retry task silently dropped the original's execution
+// constraints and hints (audit 2026-06-12 F1). Semantics:
+//   - nil slice / empty string means "not specified" → inherit;
+//   - a non-nil empty slice (possible via the bridge JSON API) is an explicit
+//     clear and takes precedence;
+//   - a missing queue row (already swept) leaves the fields empty as before —
+//     the queue row is the only place these advisory fields are recorded.
+func inheritRetryFieldsFromOriginal(opts RetryOptions, origTaskCache map[string]model.Task) RetryOptions {
+	orig, ok := origTaskCache[opts.RetryOf]
+	if !ok {
+		return opts
+	}
+	if opts.Constraints == nil {
+		opts.Constraints = orig.Constraints
+	}
+	if opts.ToolsHint == nil {
+		opts.ToolsHint = orig.ToolsHint
+	}
+	if opts.PersonaHint == "" {
+		opts.PersonaHint = orig.PersonaHint
+	}
+	if opts.SkillRefs == nil {
+		opts.SkillRefs = orig.SkillRefs
+	}
+	return opts
 }
 
 // buildPrimaryRetryTask constructs the retryQueueTask for the primary retry task.

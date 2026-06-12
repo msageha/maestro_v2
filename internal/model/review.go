@@ -43,11 +43,6 @@ var ValidReviewStatuses = map[ReviewStatus]bool{
 	ReviewStatusSkipped:    true,
 }
 
-var terminalReviewStatuses = map[ReviewStatus]bool{
-	ReviewStatusCompleted: true,
-	ReviewStatusSkipped:   true,
-}
-
 // ReviewFinding represents a single finding from a code review.
 type ReviewFinding struct {
 	Severity     ReviewSeverity `json:"severity" yaml:"severity"`
