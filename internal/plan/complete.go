@@ -414,7 +414,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// Counting both inflates aggregated_results past expected_task_count even
 	// though only one *logical* task slot exists. Reduce to the lineage-latest
 	// view before comparing — see EffectiveStatusForCompletion / LatestDescendant.
-	logicalResultCount := lineageLatestResultCount(taskResults, state.RetryLineage)
+	logicalResultCount := lineageLatestResultCount(taskResults, state.RetryLineage, state.CancelledReasons)
 	if logicalResultCount != state.ExpectedTaskCount {
 		slogc().Warn("Complete: task result count does not match expected_task_count",
 			"command_id", opts.CommandID,
@@ -687,12 +687,14 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 //
 // Algorithm: walk RetryLineage to build the set of "superseded" task IDs
 // (any taskID that appears as a predecessor i.e. a *value* in the map), then
-// count results whose TaskID is NOT in that set. Result files for tasks
-// outside any lineage chain pass through unchanged.
-func lineageLatestResultCount(results []model.CommandResultTask, retryLineage map[string]string) int {
-	if len(retryLineage) == 0 {
-		return len(results)
-	}
+// count results whose TaskID is NOT in that set. Additionally, any task
+// cancelled with a "superseded_by_*" reason is dropped — an A/B loser
+// (superseded_by_ab_loser / superseded_by_ab_degraded) writes a result file
+// for the same logical task slot as the winner, which is not a lineage
+// predecessor and would otherwise inflate the count past
+// expected_task_count (2026-06-13 E2E finding F-3). Result files for tasks
+// outside any lineage/supersession pass through unchanged.
+func lineageLatestResultCount(results []model.CommandResultTask, retryLineage map[string]string, cancelledReasons map[string]string) int {
 	superseded := make(map[string]struct{}, len(retryLineage))
 	for _, predecessor := range retryLineage {
 		superseded[predecessor] = struct{}{}
@@ -700,6 +702,9 @@ func lineageLatestResultCount(results []model.CommandResultTask, retryLineage ma
 	count := 0
 	for _, r := range results {
 		if _, dropped := superseded[r.TaskID]; dropped {
+			continue
+		}
+		if strings.HasPrefix(cancelledReasons[r.TaskID], "superseded_by_") {
 			continue
 		}
 		count++

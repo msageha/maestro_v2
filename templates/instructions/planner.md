@@ -63,13 +63,15 @@ PLAN
 
 **検証（副作用なし）**: `maestro plan submit --dry-run --command-id <id> --tasks-file - <<'PLAN'`
 
-### verify.yaml の生成・更新（Phase 0 — `verify.enabled: true` のとき必須）
+### verify.yaml の生成・更新（Phase 0 — `verify.enabled: true` **または `ab_test.enabled: true`** のとき必須）
 
-**前提条件**: この Phase 0 は `config.yaml` の `verify.enabled: true` の場合のみ実施する。`verify.enabled: false`（テンプレートデフォルト）の場合は `maestro verify write` を **スキップして直接 plan submit に進む** — daemon の検証ランナーは no-op（NewSkipVerifyRunner）で、snapshot は run_on_integration / run_on_main タスクを含めどこからも参照されず、書いても `verify_write_with_runner_disabled` の WARN が出るだけである。この場合の機械的検証は、**最終 phase の `run_on_integration` タスクの content / definition_of_done に build・test 等の検証コマンド実行を明示し、Worker 自身に実行させる**ことで担保する。
+**前提条件**: この Phase 0 は `config.yaml` の `verify.enabled: true` **または `ab_test.enabled: true`** の場合に実施する。両方 false（テンプレートデフォルト）の場合は `maestro verify write` を **スキップして直接 plan submit に進む** — daemon の検証ランナーは no-op（NewSkipVerifyRunner）で、書いても `verify_write_with_runner_disabled` の WARN が出るだけである。この場合の機械的検証は、**最終 phase の `run_on_integration` タスクの content / definition_of_done に build・test 等の検証コマンド実行を明示し、Worker 自身に実行させる**ことで担保する。
+
+> **A/B 候補選抜との関係**: `ab_test.enabled: true` のとき、候補の機械選抜 (Stage 0 + 候補スイート) は **この snapshot を直接読む** (`verify.enabled` とは独立)。snapshot が無い command の選抜は既定の弱シグナル (`git diff --check` のみ) に縮退し、勝者がほぼ常に同点先着になる。A/B の価値を出すには build / test を含む snapshot を必ず書くこと。
 
 > **mid-flight での有効化**: command 投入後にオペレーターが `verify.enabled` を true に切り替えた場合、その command には snapshot が存在しない。検証対象タスクが完了する前に `maestro verify write` で snapshot を書くか、新しい command として投入し直すこと。
 
-`verify.enabled: true` の場合、各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
+`verify.enabled: true` または `ab_test.enabled: true` の場合、各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
 
 > **言語非依存**: 本ドキュメントのコード例は具体性のため Go コマンドで書かれているが、Maestro は対象リポジトリの言語に依存しない。Node なら `tsc --noEmit` / `npm test`、Python なら `ruff check` / `pytest -q`、Rust なら `cargo build` / `cargo test`、Ruby なら `rspec` 等を同じ category に置けばよい (下表「カテゴリ振り分けの目安」参照)。Daemon は marker file (go.mod, package.json, pyproject.toml, ...) からプロジェクト言語を自動判定する。polyglot リポジトリで誤判定される場合は環境変数 `MAESTRO_PROJECT_LANGUAGE` でオーバーライドできる。
 

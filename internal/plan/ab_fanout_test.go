@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -69,6 +70,12 @@ func abFanoutFixture(t *testing.T) (maestroDir string, opts SubmitOptions, res *
 		"worker1": "opus",
 		"worker2": "sonnet",
 		"worker3": "codex",
+	}
+
+	if err := model.SaveVerifyConfig(
+		filepath.Join(maestroDir, "state", "verify", commandID+".yaml"),
+		&model.VerifyConfig{Build: []string{"true"}}); err != nil {
+		t.Fatal(err)
 	}
 
 	opts = SubmitOptions{
@@ -195,6 +202,22 @@ func TestMaybeCreateABCandidates_Gates(t *testing.T) {
 		}
 		if q := loadQueue(t, maestroDir, "worker1"); q.Tasks[0].ABGroupID != "" {
 			t.Error("canonical must be untouched for pinned tasks")
+		}
+	})
+
+	t.Run("missing verify snapshot warns", func(t *testing.T) {
+		maestroDir, opts, res := abFanoutFixture(t)
+		if err := os.Remove(filepath.Join(maestroDir, "state", "verify", opts.CommandID+".yaml")); err != nil {
+			t.Fatal(err)
+		}
+		sm := NewStateManager(maestroDir, opts.LockMap)
+		w := maybeCreateABCandidates(opts, sm, res, nil)
+		if len(w) != 1 || !strings.Contains(w[0], "verify snapshot") {
+			t.Fatalf("expected one verify-snapshot warning, got %v", w)
+		}
+		// Advisory only: the fan-out itself still happens.
+		if q := loadQueue(t, maestroDir, "worker3"); len(q.Tasks) != 1 {
+			t.Errorf("fan-out must still run without a snapshot: %d shadow rows", len(q.Tasks))
 		}
 	})
 

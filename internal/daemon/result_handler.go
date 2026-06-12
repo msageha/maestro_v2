@@ -486,23 +486,24 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		},
 
 		notify: func(r *model.TaskResult) error {
-			// Verify failure routes the original task to
-			// cancelled-as-superseded with a freshly enqueued retry
-			// task. The retry's eventual notify is the canonical
-			// signal for the Planner; emitting an additional
-			// notify_planner_success here would carry the stale
-			// worker-reported `completed` status and tell the Planner
-			// "the task succeeded" while the state machine has
-			// actually scheduled a repair (Report 2026-05-05 P1).
-			// Silently mark the original as notified by returning nil
-			// without contacting the Planner pane — markNotifySuccess
-			// will set Notified=true and the file sweeper will not
-			// retry it.
-			if rh.taskSupersededByRetry(r.CommandID, r.TaskID) {
+			// A superseded task (cancelled with a superseded_by_*
+			// reason: verify-repair / daemon retry, A/B winner, A/B
+			// loser, degraded re-execution) has a successor whose
+			// eventual notify is the canonical signal for the Planner.
+			// Notifying here would carry the stale worker-reported
+			// status and contradict the state machine (Report
+			// 2026-05-05 P1). Silently mark the original as notified by
+			// returning nil without contacting the Planner pane —
+			// markNotifySuccess will set Notified=true and the file
+			// sweeper will not retry it.
+			if reason, superseded := rh.taskSupersededReason(r.CommandID, r.TaskID); superseded {
+				// Returning nil records the entry as notified (silent ack):
+				// the trailing notify_planner_success line documents the
+				// ack, not an actual Planner contact.
 				rh.log(LogLevelInfo,
-					"notify_planner_skipped_superseded worker=%s task=%s command=%s "+
-						"(verify failure scheduled a retry; original result silently acked)",
-					workerID, r.TaskID, r.CommandID)
+					"notify_planner_skipped_superseded worker=%s task=%s command=%s reason=%s "+
+						"(superseded result silently acked; the successor / A/B winner reports instead)",
+					workerID, r.TaskID, r.CommandID, reason)
 				return nil
 			}
 			return rh.notifyPlannerOfWorkerResultWithRetry(r.CommandID, r.TaskID, workerID, string(r.Status))
@@ -804,7 +805,7 @@ func (rh *ResultHandler) notifyTaskStateTerminal(entry *model.TaskResult) bool {
 	// Pre-selection barrier (A/B): hold the Planner notification while the
 	// task's candidate group is unresolved. After resolution the winner's
 	// notify proceeds normally and the loser is silently acked via the
-	// existing superseded_by_* path (taskSupersededByRetry matches the
+	// existing superseded_by_* path (taskSupersededReason matches the
 	// "superseded_by_ab_*" reasons by prefix).
 	// See docs/design/ab_candidate_selection.md §4.5.
 	if cs.ABBarrierActive(entry.TaskID) {
@@ -829,34 +830,34 @@ func (rh *ResultHandler) notifyTaskStateTerminal(entry *model.TaskResult) bool {
 	return true
 }
 
-// taskSupersededByRetry reports whether the given task has been
+// taskSupersededReason reports whether the given task has been
 // terminal-cancelled with a "superseded_by_*" reason, meaning a retry
 // task has been scheduled and the Planner will hear about the retry's
 // outcome rather than this original result. Used to silently mark the
 // original result as notified so it doesn't sit in the queue (the
 // notify message would carry a stale "completed" status — the worker
 // reported completed before verify overruled — and confuse the Planner).
-func (rh *ResultHandler) taskSupersededByRetry(commandID, taskID string) bool {
+func (rh *ResultHandler) taskSupersededReason(commandID, taskID string) (string, bool) {
 	if commandID == "" || taskID == "" {
-		return false
+		return "", false
 	}
 	statePath := commandStatePath(rh.maestroDir, commandID)
 	data, err := os.ReadFile(statePath) //nolint:gosec // controlled application state path
 	if err != nil || len(data) == 0 {
-		return false
+		return "", false
 	}
 	var cs model.CommandState
 	if err := yamlv3.Unmarshal(data, &cs); err != nil {
-		return false
+		return "", false
 	}
 	if cs.TaskStates[taskID] != model.StatusCancelled {
-		return false
+		return "", false
 	}
 	reason, ok := cs.CancelledReasons[taskID]
-	if !ok {
-		return false
+	if !ok || !strings.HasPrefix(reason, "superseded_by_") {
+		return "", false
 	}
-	return strings.HasPrefix(reason, "superseded_by_")
+	return reason, true
 }
 
 // acquireNotifyLease sets the lease owner and expiration on a Notifiable result.

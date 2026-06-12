@@ -97,7 +97,9 @@ func (h *VerifyWrite) Handle(req *uds.Request) *uds.Response {
 	// `verify_runner_disabled`).
 	if h.verifyEnabledF != nil && h.logWarnf != nil && !h.verifyEnabledF() {
 		h.logWarnf("verify_write_with_runner_disabled command=%s commands=%d "+
-			"(verify.enabled=false in config.yaml — snapshot stored but daemon runner is no-op; the only place the snapshot is consulted is RunOnIntegration / RunOnMain tasks once you flip verify.enabled to true)",
+			"(verify.enabled=false in config.yaml — snapshot stored but the daemon verify runner is no-op; "+
+			"the snapshot IS still consulted by A/B candidate selection (ab_test.enabled) and by "+
+			"RunOnIntegration / RunOnMain tasks once verify.enabled is true)",
 			params.CommandID, len(cfg.AllCommands()))
 	}
 	return uds.SuccessResponse(map[string]string{"status": "written", "command_id": params.CommandID})

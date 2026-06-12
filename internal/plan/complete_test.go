@@ -1524,3 +1524,24 @@ func TestComplete_WorktreeDeferred_Idempotent(t *testing.T) {
 		t.Errorf("summary = %q, want %q", dc.Summary, "updated summary")
 	}
 }
+
+// 2026-06-13 E2E F-3: A/B losers (superseded_by_ab_*) are not lineage
+// predecessors but share the logical task slot with the winner — they must
+// not inflate the logical result count.
+func TestLineageLatestResultCount_DropsSupersededABLoser(t *testing.T) {
+	results := []model.CommandResultTask{
+		{TaskID: "task_winner"},
+		{TaskID: "task_loser"},
+		{TaskID: "task_old"},
+		{TaskID: "task_retry"},
+	}
+	lineage := map[string]string{"task_retry": "task_old"}
+	reasons := map[string]string{"task_loser": "superseded_by_ab_loser"}
+	if got := lineageLatestResultCount(results, lineage, reasons); got != 2 {
+		t.Errorf("logical count = %d, want 2 (winner + retry)", got)
+	}
+	// No lineage and no supersession: every result counts.
+	if got := lineageLatestResultCount(results[:2], nil, nil); got != 2 {
+		t.Errorf("plain count = %d, want 2", got)
+	}
+}

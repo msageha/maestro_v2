@@ -3,6 +3,7 @@ package plan
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -44,8 +45,18 @@ func maybeCreateABCandidates(opts SubmitOptions, sm *StateManager, res *SubmitRe
 		return []string{fmt.Sprintf("ab fan-out skipped: build worker states: %v", err)}
 	}
 
-	minBloom := cfg.ABTest.EffectiveMinBloomLevel()
 	var warnings []string
+	// Selection-quality precondition (advisory; the race still runs): the
+	// Stage 0 / candidate-suite signal reads the command-scoped verify
+	// snapshot. Without one it degenerates to the weak default
+	// (`git diff --check`) and the race resolves as a first-finisher tie
+	// (2026-06-13 E2E finding F-1).
+	if _, err := os.Stat(filepath.Join(opts.MaestroDir, "state", "verify", res.CommandID+".yaml")); err != nil {
+		warnings = append(warnings,
+			"ab_test: no verify snapshot for this command — candidate selection falls back to the weak default signal; write build/test commands via `maestro verify write` before plan submit")
+	}
+
+	minBloom := cfg.ABTest.EffectiveMinBloomLevel()
 	for _, tr := range res.Tasks {
 		if pinned[tr.Name] {
 			continue // an explicit worker pin expresses operator intent; no shadow
