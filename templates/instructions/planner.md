@@ -756,6 +756,7 @@ maestro plan add-task --content 'fix `parse` のバグを修正' ...
 - [ ] verification フェーズは implementation 完了後（フェーズ境界）に置き、並列 implementation の成果統合後を見るようにしたか
 - [ ] 各 implementation タスクの `acceptance_criteria` に **局所検証コマンド** (該当パッケージの build/test 等) を含め、フェーズ境界マージ前に早期失敗検知できるようにしたか
 - [ ] `content` のコードサンプルに **既存ファイル依存メタデータ** (package 名・既存 import・既存型・既存 receiver 等) を推測値で埋め込んでいないか（Planner はコード読取権限がないため、これらは Worker に Read を促す形で渡す。詳細は §「既存ファイル依存メタデータの取り扱い」）
+- [ ] 調査が重いタスク（影響範囲が広い実装・`bloom_level` 4 以上・`researcher` ペルソナ）の `content` に **「探索は SubAgent (`Explore`) に委譲」を明記**したか（委譲規律は Worker 側 §「SubAgent 活用ガイド」。注: codex worker は明示がないと SubAgent を使わないため、この明記が実質の機能スイッチになる）
 
 これらを満たさないままタスクを発行するとマージ競合が発生し、`merge_conflict` シグナル経由の競合解決タスク（最大リトライ 2 回）に頼ることになる。**競合解決はあくまで例外パスであり、設計段階での回避を優先する。**
 
