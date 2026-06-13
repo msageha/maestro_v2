@@ -535,6 +535,10 @@ ab_test:
   # 失敗で収束しない場合に不戦勝 / repair 縮退エスケープを発火させる上限秒数
   # type: *int | default: 1800 (DefaultABSelectionTimeoutSec) | range: >= 0
   selection_timeout_sec: 1800
+  # cross_test_patterns: クロステスト行列のテストファイル判定 (basename glob) を
+  # 既定 (*_test.go / test_*.py / *_test.py / *.test.* / *.spec.* / *_spec.rb) に追加
+  # type: []string | default: [] | '/' を含む glob は不可
+  cross_test_patterns: []
 
 # --- Extended Verification ---
 # 拡張検証 (verify.yaml ベース)。

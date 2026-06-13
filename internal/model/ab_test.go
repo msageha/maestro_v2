@@ -119,3 +119,40 @@ func TestABTestConfig_Configured(t *testing.T) {
 		t.Errorf("configured values not honored: %+v", a)
 	}
 }
+
+func TestABTestConfig_CrossTestPatterns(t *testing.T) {
+	cfg := ABTestConfig{CrossTestPatterns: []string{"*.mytest", "*_test.go"}}
+	pats := cfg.EffectiveCrossTestPatterns()
+	seen := map[string]bool{}
+	for _, p := range pats {
+		if seen[p] {
+			t.Errorf("duplicate pattern %q", p)
+		}
+		seen[p] = true
+	}
+	if !seen["*.mytest"] || !seen["*_test.go"] {
+		t.Errorf("patterns missing additions: %v", pats)
+	}
+}
+
+func TestValidate_CrossTestPatterns(t *testing.T) {
+	check := func(pattern string) error {
+		var cfg Config
+		cfg.ABTest.CrossTestPatterns = []string{pattern}
+		var errs []error
+		cfg.validateExperimental(&errs)
+		if len(errs) > 0 {
+			return errs[0]
+		}
+		return nil
+	}
+	if err := check("dir/*.go"); err == nil {
+		t.Error("pattern with '/' must be rejected")
+	}
+	if err := check("[invalid"); err == nil {
+		t.Error("invalid glob must be rejected")
+	}
+	if err := check("*.mytest"); err != nil {
+		t.Errorf("valid pattern rejected: %v", err)
+	}
+}

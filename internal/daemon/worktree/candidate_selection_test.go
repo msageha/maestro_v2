@@ -58,7 +58,7 @@ func TestRunCandidateSelection_DiscriminatingVerifier(t *testing.T) {
 	// B is listed first to prove the win comes from the score, not order.
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_test",
 		[]ABSelectionInput{inputs[1], inputs[0]},
-		[]string{"test ! -f marker_b.txt"})
+		[]string{"test ! -f marker_b.txt"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestRunCandidateSelection_TieGoesToFirstInput(t *testing.T) {
 
 	// Verifier passes for both → tie → first input (canonical slot) wins.
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_tie",
-		inputs, []string{"true"})
+		inputs, []string{"true"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRunCandidateSelection_BrokenBaselineDegrades(t *testing.T) {
 	wm, commandID, inputs := selectionFixture(t)
 
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_broken",
-		inputs, []string{"false"})
+		inputs, []string{"false"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestRunCandidateSelection_NoVerifierDegrades(t *testing.T) {
 	t.Parallel()
 	wm, commandID, inputs := selectionFixture(t)
 
-	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_nov", inputs, nil)
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_nov", inputs, nil, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestRunCandidateSelection_SoleCandidateFailed(t *testing.T) {
 	// the sole input.
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_sole",
 		[]ABSelectionInput{inputs[1]},
-		[]string{"test ! -f marker_b.txt"})
+		[]string{"test ! -f marker_b.txt"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestRunCandidateSelection_SoleCandidateFailed(t *testing.T) {
 	// The same sole candidate with a passing verifier wins normally.
 	outcome, err = wm.RunCandidateSelection(context.Background(), commandID, "abg_sole",
 		[]ABSelectionInput{inputs[1]},
-		[]string{"true"})
+		[]string{"true"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection (passing): %v", err)
 	}
@@ -284,7 +284,7 @@ func TestRunCandidateSelection_Stage2DeviationDecides(t *testing.T) {
 	outScope := mk("task_s2_out", map[string]string{"scope/feature2.txt": "x\n", "stray/extra.txt": "y\n"})
 
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_s2",
-		[]ABSelectionInput{outScope, inScope}, []string{"true"})
+		[]ABSelectionInput{outScope, inScope}, []string{"true"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -308,7 +308,7 @@ func TestRunCandidateSelection_FlakeRerunRecovers(t *testing.T) {
 	cmd := "test ! -f marker_b.txt || test -f " + flag + " || { touch " + flag + "; exit 1; }"
 
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_flake",
-		[]ABSelectionInput{inputs[0], inputs[1]}, []string{cmd})
+		[]ABSelectionInput{inputs[0], inputs[1]}, []string{cmd}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -329,7 +329,7 @@ func TestRunCandidateSelection_FlakeRerunStillFailing(t *testing.T) {
 	wm, commandID, inputs := selectionFixture(t)
 	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_flake2",
 		[]ABSelectionInput{inputs[1], inputs[0]}, // failing candidate listed first
-		[]string{"test ! -f marker_b.txt"})
+		[]string{"test ! -f marker_b.txt"}, nil)
 	if err != nil {
 		t.Fatalf("RunCandidateSelection: %v", err)
 	}
@@ -341,5 +341,110 @@ func TestRunCandidateSelection_FlakeRerunStillFailing(t *testing.T) {
 	}
 	if outcome.Evidence["stage2_decision"] != "" {
 		t.Errorf("stage2 must not run on a score win, got %q", outcome.Evidence["stage2_decision"])
+	}
+}
+
+// --- PR3: cross-test matrix ---
+
+// crossFixture: candidate A ships impl_a.txt plus a test file asserting it;
+// candidate B ships only impl_b.txt (no tests). Suites pass for both; the
+// cross layer must catch that B cannot satisfy A's test.
+func crossFixture(t *testing.T) (wm *Manager, commandID string, withTests, noTests ABSelectionInput) {
+	t.Helper()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm = newTestWorktreeManager(t, projectRoot)
+	commandID = "cmd_ab_cross"
+
+	mk := func(task string, files map[string]string) ABSelectionInput {
+		path, branch, err := wm.EnsureCandidateWorktree(commandID, task)
+		if err != nil {
+			t.Fatalf("EnsureCandidateWorktree(%s): %v", task, err)
+		}
+		for name, content := range files {
+			if err := os.WriteFile(filepath.Join(path, name), []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := wm.CommitCandidateChanges(commandID, task); err != nil {
+			t.Fatalf("CommitCandidateChanges(%s): %v", task, err)
+		}
+		return ABSelectionInput{TaskID: task, Branch: branch}
+	}
+	withTests = mk("task_cr_a", map[string]string{
+		"impl_a.txt":    "a\n",
+		"check.test.sh": "test -f impl_a.txt\n", // matches *.test.*
+	})
+	noTests = mk("task_cr_b", map[string]string{"impl_b.txt": "b\n"})
+	return wm, commandID, withTests, noTests
+}
+
+// verifyCmdRunTests runs every overlaid *.test.sh (none on the baseline).
+const verifyCmdRunTests = `for f in *.test.sh; do [ -e "$f" ] || continue; sh "$f" || exit 1; done`
+
+func TestRunCandidateSelection_CrossTestDecides(t *testing.T) {
+	t.Parallel()
+	wm, commandID, withTests, noTests := crossFixture(t)
+
+	// B listed FIRST: without the cross layer the tie would hand B the win.
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_cross",
+		[]ABSelectionInput{noTests, withTests}, []string{verifyCmdRunTests},
+		[]string{"*.test.*"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if outcome.WinnerTaskID != withTests.TaskID {
+		t.Errorf("winner = %s (evidence %v), want the candidate that satisfies its peer's tests", outcome.WinnerTaskID, outcome.Evidence)
+	}
+	// B was run against A's test and failed it.
+	if got := outcome.Evidence["cross_"+noTests.TaskID]; got != "0/1" {
+		t.Errorf("cross score for no-tests candidate = %q, want 0/1", got)
+	}
+	// A had no opponent tests: neutral.
+	if got := outcome.Evidence["cross_"+withTests.TaskID]; got != "neutral_no_tests" {
+		t.Errorf("cross evidence for tests candidate = %q, want neutral_no_tests", got)
+	}
+	if outcome.Evidence["stage2_decision"] != "" {
+		t.Errorf("stage2 must not run when cross decides, got %q", outcome.Evidence["stage2_decision"])
+	}
+
+	// Overlay cleanup: the integration worktree must not retain A's test.
+	intPath := wm.integrationWorktreePath(commandID)
+	if _, err := os.Stat(filepath.Join(intPath, "check.test.sh")); err == nil {
+		t.Error("overlaid test file must be cleaned by restore")
+	}
+}
+
+func TestRunCandidateSelection_CrossSharedPathExcluded(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_ab_crossx"
+	mk := func(task, content string) ABSelectionInput {
+		path, branch, err := wm.EnsureCandidateWorktree(commandID, task)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "shared.test.sh"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := wm.CommitCandidateChanges(commandID, task); err != nil {
+			t.Fatal(err)
+		}
+		return ABSelectionInput{TaskID: task, Branch: branch}
+	}
+	a := mk("task_cx_a", "true\n")
+	b := mk("task_cx_b", "false\n")
+
+	outcome, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_crossx",
+		[]ABSelectionInput{a, b}, []string{"true"}, []string{"*.test.*"})
+	if err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+	if outcome.Evidence["cross_excluded"] != "1" {
+		t.Errorf("cross_excluded = %q, want 1", outcome.Evidence["cross_excluded"])
+	}
+	// Both neutral after the exclusion -> full tie -> stage2 -> canonical first.
+	if outcome.WinnerTaskID != a.TaskID || outcome.Evidence["stage2_decision"] == "" {
+		t.Errorf("winner = %s evidence = %v, want first input via stage2", outcome.WinnerTaskID, outcome.Evidence)
 	}
 }

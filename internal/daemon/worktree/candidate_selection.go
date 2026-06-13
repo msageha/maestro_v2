@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -64,15 +66,20 @@ type ABSelectionOutcome struct {
 //	Stage 0: run verifyCmds on the untouched integration HEAD (baseline).
 //	         Baseline failure → verifier broken → degraded outcome (the
 //	         caller falls back to the canonical candidate).
-//	Stage 1: per candidate — merge --no-commit its branch, run verifyCmds,
-//	         abort+restore. Score = number of passing commands; a merge
-//	         conflict against integration scores -1 (below any run).
+//	Stage 1: per candidate — merge --no-commit its branch, run verifyCmds
+//	         (candidate suite), then overlay the OPPONENT's added/modified
+//	         test files (crossPatterns matched, both-touched paths
+//	         excluded) and run verifyCmds again (cross-test matrix), then
+//	         abort+restore. Score is lexicographic (suite pass count,
+//	         cross pass count); a merge conflict scores -1 (below any run)
+//	         and neutralizes the cross layer for both sides.
+//	Stage 2: deterministic metric tiebreak on a full Stage 1 tie.
 //
-// Ties (equal scores, including the no-verifier case) go to the FIRST input
-// — callers pass the canonical candidate first, making "canonical wins ties"
-// deterministic. The integration worktree is always restored to its
-// pre-selection SHA, marker-guarded for crash recovery.
-func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []ABSelectionInput, verifyCmds []string) (*ABSelectionOutcome, error) {
+// Remaining ties go to the FIRST input — callers pass the canonical
+// candidate first, making "canonical wins ties" deterministic. The
+// integration worktree is always restored to its pre-selection SHA,
+// marker-guarded for crash recovery.
+func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []ABSelectionInput, verifyCmds []string, crossPatterns []string) (*ABSelectionOutcome, error) {
 	if err := validateIDs(commandID); err != nil {
 		return nil, err
 	}
@@ -176,12 +183,67 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 	}
 	evidence["stage0"] = "pass"
 
-	// Stage 1: candidate suite per candidate. Metrics for the Stage 2
-	// tiebreak are collected while the candidate is merged (no re-merge
-	// needed later).
+	// Cross-test matrix preparation (design §5 Stage 1): extract each
+	// candidate's added/modified test files so the opponent can be run
+	// against them. Paths BOTH candidates touched are excluded (no clear
+	// ownership). Extraction failures degrade to a neutral cross layer.
 	total := len(verifyCmds)
-	runCandidate := func(c ABSelectionInput) candidateRun {
-		r := candidateRun{score: -1} // merge conflict / setup failure sentinel
+	overlays := make([][]string, len(candidates))      // files overlaid ONTO candidate i (opponent's tests)
+	opponentBranch := make([]string, len(candidates))
+	if len(candidates) == 2 && total > 0 {
+		sets := make([][]string, 2)
+		extractFailed := false
+		for i, c := range candidates {
+			files, err := wm.candidateTestFiles(state, c.TaskID, c.Branch, crossPatterns)
+			if err != nil {
+				wm.Log(core.LogLevelWarn, "ab_selection_cross_extract_failed command=%s task=%s error=%v",
+					commandID, c.TaskID, err)
+				evidence["cross_extract_"+c.TaskID] = "failed"
+				extractFailed = true
+			}
+			sets[i] = files
+		}
+		if extractFailed {
+			// An asymmetric extraction failure must not decide the race:
+			// one side would face the opponent's tests while the other gets
+			// a free pass. Neutralize the whole cross layer.
+			evidence["cross"] = "neutral_extract_failed"
+			sets[0], sets[1] = nil, nil
+		}
+		touched := func(files []string) map[string]bool {
+			m := make(map[string]bool, len(files))
+			for _, f := range files {
+				m[f] = true
+			}
+			return m
+		}
+		in0, in1 := touched(sets[0]), touched(sets[1])
+		excluded := 0
+		filter := func(files []string, other map[string]bool) []string {
+			var out []string
+			for _, f := range files {
+				if other[f] {
+					excluded++
+					continue
+				}
+				out = append(out, f)
+			}
+			return out
+		}
+		overlays[0] = filter(sets[1], in0)
+		overlays[1] = filter(sets[0], in1)
+		if excluded > 0 {
+			// Each shared path is counted once per direction; report pairs.
+			evidence["cross_excluded"] = strconv.Itoa(excluded / 2)
+		}
+		opponentBranch[0], opponentBranch[1] = candidates[1].Branch, candidates[0].Branch
+	}
+
+	// Stage 1: candidate suite + cross-test per candidate. Metrics for the
+	// Stage 2 tiebreak are collected while the candidate is merged (no
+	// re-merge needed later).
+	runCandidate := func(c ABSelectionInput, oppBranch string, overlay []string) candidateRun {
+		r := candidateRun{score: -1, crossScore: total} // cross neutral by default
 		if err := wm.gitRunInDir(intPath, "merge", "--no-ff", "--no-commit", c.Branch); err != nil {
 			wm.Log(core.LogLevelInfo, "ab_selection_candidate_merge_conflict command=%s task=%s error=%v",
 				commandID, c.TaskID, err)
@@ -199,16 +261,47 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 			evidence["suite_"+c.TaskID+"_first_fail"] = failCmd
 		}
 		evidence["metrics_"+c.TaskID] = r.metrics.String()
+
+		// Cross-test: the candidate's implementation against the OPPONENT's
+		// test expectations. A compile/run failure here is signal, not
+		// error — the candidate cannot satisfy its peer's tests.
+		switch {
+		case ctx.Err() != nil:
+			// fall through to restore; the caller surfaces the retryable error
+		case len(overlay) == 0:
+			evidence["cross_"+c.TaskID] = "neutral_no_tests"
+		default:
+			applied := wm.overlayOpponentTests(intPath, oppBranch, overlay)
+			evidence["cross_overlay_"+c.TaskID] = strconv.Itoa(applied)
+			if applied == 0 {
+				evidence["cross_"+c.TaskID] = "neutral_no_overlay"
+			} else {
+				crossPass, crossFail := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+				r.crossScore = crossPass
+				evidence["cross_"+c.TaskID] = fmt.Sprintf("%d/%d", crossPass, total)
+				if crossFail != "" {
+					evidence["cross_"+c.TaskID+"_first_fail"] = crossFail
+				}
+			}
+		}
 		restore() // back to preSHA before the next candidate
 		return r
 	}
 
 	runs := make([]candidateRun, len(candidates))
 	for i, c := range candidates {
-		runs[i] = runCandidate(c)
+		runs[i] = runCandidate(c, opponentBranch[i], overlays[i])
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("selection interrupted: %w", ctx.Err()) // retryable (see Stage 0)
 		}
+	}
+
+	// A candidate that cannot even integrate loses on the suite score; its
+	// tests must not punish the viable candidate — neutralize the cross
+	// layer for both sides.
+	if len(candidates) == 2 && (!runs[0].merged || !runs[1].merged) {
+		runs[0].crossScore, runs[1].crossScore = total, total
+		evidence["cross"] = "neutral_conflict"
 	}
 
 	// Flake guard: both candidates merged, one all-pass and one failing —
@@ -227,7 +320,7 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 			evidence["flake_rerun_"+taskID+"_initial_fail"] = runs[failing].firstFail
 			wm.Log(core.LogLevelInfo, "ab_selection_flake_rerun command=%s task=%s first_fail=%q",
 				commandID, taskID, runs[failing].firstFail)
-			rerun := runCandidate(candidates[failing])
+			rerun := runCandidate(candidates[failing], opponentBranch[failing], overlays[failing])
 			if ctx.Err() != nil {
 				return nil, fmt.Errorf("selection interrupted: %w", ctx.Err())
 			}
@@ -240,11 +333,15 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		}
 	}
 
+	// Lexicographic Stage 1 score: (candidate suite, cross-test matrix).
 	bestIdx := -1
 	bestScore := -2
+	bestCross := -1
 	for i := range runs {
-		if runs[i].score > bestScore {
+		if runs[i].score > bestScore ||
+			(runs[i].score == bestScore && runs[i].crossScore > bestCross) {
 			bestScore = runs[i].score
+			bestCross = runs[i].crossScore
 			bestIdx = i
 		}
 	}
@@ -262,10 +359,11 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		return outcome, nil
 	}
 
-	// Stage 2: deterministic metric tiebreak when the suites cannot
-	// discriminate (equal scores). Falls back to the FIRST input
-	// (canonical) when every metric ties within margin.
-	if len(candidates) == 2 && runs[0].score == runs[1].score {
+	// Stage 2: deterministic metric tiebreak when the full Stage 1 score
+	// (suite + cross matrix) cannot discriminate. Falls back to the FIRST
+	// input (canonical) when every metric ties within margin.
+	if len(candidates) == 2 && runs[0].score == runs[1].score &&
+		runs[0].crossScore == runs[1].crossScore {
 		if len(candidates[0].ExpectedPaths) == 0 {
 			evidence["metrics_expected_paths"] = "missing"
 		}
@@ -274,16 +372,75 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 
 	outcome.WinnerTaskID = candidates[bestIdx].TaskID
 	evidence["winner"] = outcome.WinnerTaskID
-	evidence["winner_score"] = fmt.Sprintf("%d/%d", runs[bestIdx].score, total)
+	evidence["winner_score"] = fmt.Sprintf("suite:%d/%d,cross:%d/%d",
+		runs[bestIdx].score, total, runs[bestIdx].crossScore, total)
 	return outcome, nil
 }
 
 // candidateRun captures one candidate's Stage 1 evaluation.
 type candidateRun struct {
 	score     int
+	crossScore int
 	firstFail string
 	merged    bool
 	metrics   candidateMetrics
+}
+
+// candidateTestFiles extracts the test files (basename-matched against
+// patterns) a candidate ADDED or MODIFIED relative to its recorded base.
+// Renames are not detected (no -M): they surface as A+D, and only A/M rows
+// are considered.
+func (wm *Manager) candidateTestFiles(state *model.WorktreeCommandState, taskID, branch string, patterns []string) ([]string, error) {
+	c := findCandidate(state, taskID)
+	if c == nil || c.BaseSHA == "" {
+		return nil, fmt.Errorf("candidate worktree entry missing (task=%s)", taskID)
+	}
+	// --no-renames pins the A+D decomposition regardless of the user's
+	// diff.renames git config (the matcher only consumes A/M rows).
+	out, err := wm.gitOutput("diff", "--no-renames", "--name-status", "-z", c.BaseSHA+".."+branch)
+	if err != nil {
+		return nil, fmt.Errorf("diff --name-status: %w", err)
+	}
+	var files []string
+	fields := strings.Split(out, "\x00")
+	for i := 0; i+1 < len(fields); i += 2 {
+		status, p := fields[i], fields[i+1]
+		if (status != "A" && status != "M") || p == "" {
+			continue
+		}
+		base := path.Base(filepath.ToSlash(p))
+		for _, pat := range patterns {
+			if ok, _ := filepath.Match(pat, base); ok {
+				files = append(files, filepath.ToSlash(p))
+				break
+			}
+		}
+	}
+	return files, nil
+}
+
+// overlayOpponentTests writes the opponent's test files (taken from its
+// candidate branch) into the merged integration worktree. Best-effort: a
+// file that cannot be materialized is skipped. The post-run restore
+// (reset --hard + clean -fd) removes every overlay.
+func (wm *Manager) overlayOpponentTests(intPath, opponentBranch string, files []string) int {
+	applied := 0
+	for _, f := range files {
+		content, err := wm.gitOutput("show", opponentBranch+":"+f)
+		if err != nil {
+			wm.Log(core.LogLevelDebug, "ab_cross_overlay_show_failed branch=%s file=%s error=%v", opponentBranch, f, err)
+			continue
+		}
+		full := filepath.Join(intPath, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil { //nolint:gosec // test files inside the managed worktree
+			continue
+		}
+		applied++
+	}
+	return applied
 }
 
 // candidateMetrics is the Stage 2 input collected while the candidate was

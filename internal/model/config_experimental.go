@@ -71,9 +71,8 @@ func (b BanditConfig) EffectiveTraceDataRequirement() int {
 // --- A/B Candidate Selection Config ---
 
 // ABTestConfig controls cross-runtime A/B candidate selection (best-of-2).
-// Disabled by default. Only knobs that PR1 actually reads are defined here;
-// later PRs (flake retry, cross-test patterns) add theirs when implemented.
-// See docs/design/ab_candidate_selection.md.
+// Disabled by default. Only knobs the implementation actually reads are
+// defined here. See docs/design/ab_candidate_selection.md.
 type ABTestConfig struct {
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// MinBloomLevel is the minimum task bloom_level that triggers an A/B
@@ -89,6 +88,17 @@ type ABTestConfig struct {
 	// without converging (integration busy, failing candidate commit)
 	// before the walkover / repair-degrade escape fires.
 	SelectionTimeoutSec *int `yaml:"selection_timeout_sec,omitempty"`
+	// CrossTestPatterns extends the built-in test-file basename patterns
+	// (DefaultCrossTestPatterns) used by the Stage 1 cross-test matrix to
+	// machine-extract a candidate's added/modified test files. Basename
+	// globs only — patterns containing '/' are rejected by validation.
+	CrossTestPatterns []string `yaml:"cross_test_patterns,omitempty"`
+}
+
+// DefaultCrossTestPatterns are the built-in basename globs identifying test
+// files for the cross-test matrix (design §5 Stage 1).
+var DefaultCrossTestPatterns = []string{
+	"*_test.go", "test_*.py", "*_test.py", "*.test.*", "*.spec.*", "*_spec.rb",
 }
 
 // EffectiveEnabled returns Enabled, defaulting to false when unset.
@@ -106,6 +116,21 @@ func (a ABTestConfig) EffectiveTimeoutSec() int { return effectiveValue(a.Timeou
 // DefaultABSelectionTimeoutSec when unset.
 func (a ABTestConfig) EffectiveSelectionTimeoutSec() int {
 	return effectiveValue(a.SelectionTimeoutSec, DefaultABSelectionTimeoutSec)
+}
+
+// EffectiveCrossTestPatterns returns the built-in patterns plus any
+// configured additions (duplicates removed, order preserved).
+func (a ABTestConfig) EffectiveCrossTestPatterns() []string {
+	out := make([]string, 0, len(DefaultCrossTestPatterns)+len(a.CrossTestPatterns))
+	seen := map[string]bool{}
+	for _, p := range append(append([]string{}, DefaultCrossTestPatterns...), a.CrossTestPatterns...) {
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // --- C-3 Extended Verification Config ---

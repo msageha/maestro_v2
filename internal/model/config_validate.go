@@ -302,6 +302,15 @@ func (c Config) validateExperimental(errs *[]error) {
 	if c.ABTest.SelectionTimeoutSec != nil && *c.ABTest.SelectionTimeoutSec < 0 {
 		*errs = append(*errs, fmt.Errorf("ab_test.selection_timeout_sec: must be >= 0"))
 	}
+	for _, p := range c.ABTest.CrossTestPatterns {
+		if strings.Contains(p, "/") {
+			*errs = append(*errs, fmt.Errorf("ab_test.cross_test_patterns: %q must be a basename glob (no '/')", p))
+			continue
+		}
+		if _, err := filepath.Match(p, "probe"); err != nil {
+			*errs = append(*errs, fmt.Errorf("ab_test.cross_test_patterns: %q is not a valid glob: %v", p, err))
+		}
+	}
 
 	// C-3 Extended Verification
 	if c.ExtendedVerification.MaxAutoRetries != nil && *c.ExtendedVerification.MaxAutoRetries < 0 {

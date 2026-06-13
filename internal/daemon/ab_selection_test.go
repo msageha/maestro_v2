@@ -25,7 +25,7 @@ type stubABOps struct {
 }
 
 func (s *stubABOps) CommitCandidateChanges(string, string) error { return s.commitErr }
-func (s *stubABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string) (*worktree.ABSelectionOutcome, error) {
+func (s *stubABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string) (*worktree.ABSelectionOutcome, error) {
 	return &worktree.ABSelectionOutcome{}, nil
 }
 func (s *stubABOps) IntakeWinner(string, string, string, string) error { return s.intakeErr }
@@ -469,7 +469,7 @@ type selectionTrackingABOps struct {
 	intaken        []string
 }
 
-func (s *selectionTrackingABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string) (*worktree.ABSelectionOutcome, error) {
+func (s *selectionTrackingABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string) (*worktree.ABSelectionOutcome, error) {
 	s.selectionCalls++
 	return &worktree.ABSelectionOutcome{WinnerTaskID: "task_canon"}, nil
 }

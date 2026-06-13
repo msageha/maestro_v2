@@ -40,7 +40,7 @@ const defaultABRaceTimeoutSec = 1800
 // stubs in tests remain valid (same pattern as PlanExecutorModelSelectorSettable).
 type abWorktreeOps interface {
 	CommitCandidateChanges(commandID, taskID string) error
-	RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []worktree.ABSelectionInput, verifyCmds []string) (*worktree.ABSelectionOutcome, error)
+	RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []worktree.ABSelectionInput, verifyCmds []string, crossPatterns []string) (*worktree.ABSelectionOutcome, error)
 	IntakeWinner(commandID, workerID, candidateBranch, taskID string) error
 }
 
@@ -658,7 +658,8 @@ func (qh *QueueHandler) runABSelectionAndResolve(ctx context.Context, wm abWorkt
 			TaskID: c.TaskID, Branch: c.Branch, ExpectedPaths: expectedPaths,
 		})
 	}
-	outcome, err := wm.RunCandidateSelection(ctx, item.CommandID, item.GroupID, inputs, verifyCmds)
+	outcome, err := wm.RunCandidateSelection(ctx, item.CommandID, item.GroupID, inputs, verifyCmds,
+		qh.config.ABTest.EffectiveCrossTestPatterns())
 	if err != nil {
 		switch {
 		case errors.Is(err, worktree.ErrSelectionBusy):
