@@ -1,6 +1,6 @@
 # 設計方針書: クロスランタイム A/B 候補選抜 (1-B)
 
-- Status: v2.5 — PR1〜PR3 実装済み (PR3 = クロステスト行列)。codex レビュー承認済み
+- Status: v2.6 — PR1〜PR4 実装済み (全 PR 完了)。codex レビュー承認済み
 - Date: 2026-06-12
 - 関連: ロードマップ 1-B、運用方針 (性能最優先・トークン費用度外視・自律完結)
 
@@ -22,6 +22,7 @@
 | 10 | path-overlap 言及なし | **同一 ABGroupID 同士は path-overlap 判定から除外** (候補は専用 worktree で構造隔離済み) | overlap ゲートがレースを直列化し walkover 化するのを防ぐ |
 | 12 | (PR2) Stage 2/flake の仕様詳細は未確定 | **flake ガード**: 両候補 merge 成功かつ「片方 all pass・片方 fail」のときのみ fail 側を 1 回再実行 (conflict / 両 fail は対象外)。回復 → 同点として Stage 2 へ (evidence に flake_rerun=recovered)。**Stage 2**: healthy Stage 1 の同点時のみ。辞書式 expected_paths 逸脱 (完全一致のみ tie) → diff 行数 → 変更ファイル数 (後 2 者は (larger-smaller)/larger <= 0.10 を tie とする相対マージン、larger=0 は tie)。binary diff は Files に数え Lines は不算入。expected_paths は生存している方の queue 行から両候補へ共通適用 (verifier broken / no verifier は従来どおり default intake で Stage 2 に進まない) | 機械シグナルの決定論性とノイズ耐性の両立 |
 | 13 | (PR3) クロステスト行列の仕様詳細は未確定 | 抽出 = `git diff --name-status -z <BaseSHA>..<branch>` の A/M 行を basename glob (既定 + `ab_test.cross_test_patterns`) で判定。両候補が変更した同一パスは除外。overlay = 相手候補のテストファイル**のみ** (`git show`) を merge 中のツリーへ配置し verifyCmds を再実行。スコアは辞書式 (suite, cross)。**cross 中立 (= 満点)**: 相手にテスト変更なし / 単独候補 / どちらかが merge conflict (統合不能候補のテストで生存候補を罰しない)。flake ガードは suite のみ対象 (cross fail は意味的差異)。Stage 2 は (suite, cross) 完全同点時のみ | 「相手のテスト期待を自候補が満たせるか」という対称な実シグナルを決定論に組み込む |
+| 14 | (PR4) Stage 3 / 学習接続の仕様詳細は未確定 | **Stage 3**: stage2 が tie_canonical_first の完全同点時のみ、judge 2 体 (`ab_test.judge_models`、既定固定ペア claude-sonnet-4-6 + codex、空リストで無効、1 件は validation 拒否) が両候補の diff (48KB cap、Stage 1 merge 中に採取) + purpose/acceptance を見て A/B 投票。一致 → 採用、不一致 → Stage 2 のマージン無視 lexicographic の僅差側 (同値 → canonical)、judge 失敗/タイムアウト (child ctx 3 分) → canonical。親 ctx cancel は retryable。**bandit**: resolved 遷移の適用時のみ (state lock 解放後) 各候補へ win=1.0/lose=0.0 を記録。degraded は記録しない。walkover は記録する。**verifier_weak**: stage0=no_verifier/verifier_broken/degraded_selection で resolve したら Planner signal `ab_verifier_weak` を group 単位 dedup で送出。**dashboard**: A/B Races セクション (未解決 + 直近解決) | 自己選好回避のクロス judge と、勝敗ラベルの学習接続を加点的に実現 |
 | 11 | shutdown 時の選抜は縮退 | **ctx cancel は retryable** (次スキャンで再開)。選抜不能の最終縮退は selecting タイムアウト (selecting マークは commit より先) + repair 縮退エスケープ | shutdown が恒久的な canonical walkover に化けるのを防ぐ |
 
 ## 0. v1 からの主な変更 (codex 指摘対応)

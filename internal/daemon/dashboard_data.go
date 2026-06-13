@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"bufio"
 	"encoding/json"
 	"io"
@@ -12,6 +13,8 @@ import (
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/events"
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -95,6 +98,10 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 
 	// Read queue depths from filesystem (independent of log file)
 	f.updateQueueStatus(data)
+
+	// A/B candidate races (state-driven, byte-filtered like the daemon's
+	// own discovery; unresolved races plus the most recent resolutions)
+	f.collectABRaces(data)
 
 	// Collect task statistics from state files (accurate, not log-windowed)
 	f.collectTaskStatsFromState(data)
@@ -479,4 +486,73 @@ func (f *DashboardFormatter) limitEvents(data *DashboardData) {
 	data.RecentEvents = truncateEvents(data.RecentEvents, f.maxEvents)
 	data.RecentErrors = truncateEvents(data.RecentErrors, f.maxErrors)
 	data.RecentWarnings = truncateEvents(data.RecentWarnings, f.maxWarnings)
+}
+
+// collectABRaces lists A/B candidate groups from command state files. Uses
+// the same cheap byte pre-filter as the daemon's state-driven discovery.
+func (f *DashboardFormatter) collectABRaces(data *DashboardData) {
+	dir := filepath.Join(f.maestroDir, "state", "commands")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	const maxRaces = 10
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // controlled state dir
+		if err != nil || !bytes.Contains(raw, []byte("candidate_groups")) {
+			continue
+		}
+		var cs model.CommandState
+		if err := yamlv3.Unmarshal(raw, &cs); err != nil {
+			continue
+		}
+		for gid, g := range cs.CandidateGroups {
+			if g == nil {
+				continue
+			}
+			info := ABRaceInfo{CommandID: cs.CommandID, GroupID: gid, Status: string(g.Status)}
+			switch {
+			case g.Status.IsUnresolved():
+				var models []string
+				for _, c := range g.Candidates {
+					models = append(models, c.Model)
+				}
+				info.Detail = strings.Join(models, " vs ")
+			case g.WinnerTaskID != "":
+				winner := g.CandidateByTask(g.WinnerTaskID)
+				detail := "winner: "
+				if winner != nil {
+					detail += winner.Model
+				} else {
+					detail += g.WinnerTaskID
+				}
+				for _, k := range []string{"stage3_decision", "stage2_decision", "walkover"} {
+					if v := g.SelectionEvidence[k]; v != "" {
+						detail += " (" + k + "=" + v + ")"
+						break
+					}
+				}
+				info.Detail = detail
+			default:
+				info.Detail = "degraded: " + g.SelectionEvidence["degraded_reason"]
+			}
+			info.updatedAt = g.UpdatedAt
+			info.unresolved = g.Status.IsUnresolved()
+			data.ABRaces = append(data.ABRaces, info)
+		}
+	}
+	// Unresolved races first, then most recently updated.
+	sort.Slice(data.ABRaces, func(i, j int) bool {
+		a, b := data.ABRaces[i], data.ABRaces[j]
+		if a.unresolved != b.unresolved {
+			return a.unresolved
+		}
+		return a.updatedAt > b.updatedAt
+	})
+	if len(data.ABRaces) > maxRaces {
+		data.ABRaces = data.ABRaces[:maxRaces]
+	}
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -67,6 +68,10 @@ type Manager struct {
 	// for the conflict-resolution lifecycle. Wired via SetSignalStore so
 	// existing NewManager call sites do not need to change.
 	signalStore SignalStore
+
+	// abJudgeInvoker (optional) overrides the Stage 3 cross-LLM judge
+	// transport; nil = real CLI runtimes (reviewer.CLIInvoker).
+	abJudgeInvoker reviewer.ClaudeInvoker
 	// cmdLocks holds per-commandID *sync.Mutex used by resolver methods to
 	// serialize against scan and against each other.
 	//

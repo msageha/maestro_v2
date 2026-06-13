@@ -93,7 +93,17 @@ type ABTestConfig struct {
 	// machine-extract a candidate's added/modified test files. Basename
 	// globs only — patterns containing '/' are rejected by validation.
 	CrossTestPatterns []string `yaml:"cross_test_patterns,omitempty"`
+	// JudgeModels are the Stage 3 cross-LLM judges (full-tie decider).
+	// Unset (nil) = DefaultABJudgeModels (a fixed cross-runtime pair —
+	// intentionally NOT derived from the worker roster so selection
+	// semantics stay environment-independent). Explicit empty list
+	// disables Stage 3. Exactly one entry is rejected by validation:
+	// the agree/disagree protocol needs two votes.
+	JudgeModels []string `yaml:"judge_models,omitempty"`
 }
+
+// DefaultABJudgeModels is the fixed cross-runtime judge pair for Stage 3.
+var DefaultABJudgeModels = []string{"claude-sonnet-4-6", "codex"}
 
 // DefaultCrossTestPatterns are the built-in basename globs identifying test
 // files for the cross-test matrix (design §5 Stage 1).
@@ -116,6 +126,15 @@ func (a ABTestConfig) EffectiveTimeoutSec() int { return effectiveValue(a.Timeou
 // DefaultABSelectionTimeoutSec when unset.
 func (a ABTestConfig) EffectiveSelectionTimeoutSec() int {
 	return effectiveValue(a.SelectionTimeoutSec, DefaultABSelectionTimeoutSec)
+}
+
+// EffectiveJudgeModels returns the Stage 3 judges: DefaultABJudgeModels
+// when unset, the configured list otherwise (empty = Stage 3 disabled).
+func (a ABTestConfig) EffectiveJudgeModels() []string {
+	if a.JudgeModels == nil {
+		return append([]string{}, DefaultABJudgeModels...)
+	}
+	return a.JudgeModels
 }
 
 // EffectiveCrossTestPatterns returns the built-in patterns plus any

@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/pathutil"
 )
@@ -20,10 +22,11 @@ import (
 // A/B candidate selection engine (docs/design/ab_candidate_selection.md §5).
 //
 // Implemented stages: Stage 0 (verifier baseline health) + the candidate
-// suite (PR1), the flake guard and the Stage 2 metric tiebreak (PR2). The
+// suite (PR1), the flake guard and the Stage 2 metric tiebreak (PR2), the
+// cross-test matrix (PR3) and the Stage 3 cross-LLM judge (PR4). The
 // integration worktree is borrowed sequentially under wm.mu with a durable
 // ABSelection marker so a daemon crash mid-selection is restored by startup
-// Reconcile. Cross-tests (PR3) and the LLM judge (PR4) are later PRs.
+// Reconcile.
 
 // ErrSelectionBusy signals that the integration worktree is not idle
 // (in-flight merge / publish / quarantine); the caller defers to the next
@@ -42,7 +45,20 @@ type ABSelectionInput struct {
 	// Empty = unknown — the Stage 2 deviation metric then treats every
 	// change as in-scope and decision falls to the later metrics.
 	ExpectedPaths []string
+	// TaskPurpose / AcceptanceCriteria give the Stage 3 judges the logical
+	// task's contract (shared by both candidates, surviving-row sourced
+	// like ExpectedPaths). Empty = judges receive no task context.
+	TaskPurpose        string
+	AcceptanceCriteria string
 }
+
+// abJudgeTimeout bounds one Stage 3 judge invocation. A CHILD-context
+// timeout — distinct from the parent ctx, whose cancellation stays
+// retryable instead of becoming a verdict.
+const abJudgeTimeout = 3 * time.Minute
+
+// abJudgeDiffCap bounds the per-candidate diff text fed to a judge.
+const abJudgeDiffCap = 48 * 1024
 
 // ABSelectionOutcome is the machine-decided result of a selection run.
 type ABSelectionOutcome struct {
@@ -79,7 +95,7 @@ type ABSelectionOutcome struct {
 // candidate first, making "canonical wins ties" deterministic. The
 // integration worktree is always restored to its pre-selection SHA,
 // marker-guarded for crash recovery.
-func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []ABSelectionInput, verifyCmds []string, crossPatterns []string) (*ABSelectionOutcome, error) {
+func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []ABSelectionInput, verifyCmds []string, crossPatterns []string, judgeModels []string) (*ABSelectionOutcome, error) {
 	if err := validateIDs(commandID); err != nil {
 		return nil, err
 	}
@@ -253,6 +269,17 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		}
 		r.merged = true
 		r.metrics = wm.collectCandidateMetrics(intPath, c.ExpectedPaths)
+		if len(candidates) == 2 && len(judgeModels) >= 2 {
+			// Stage 3 input, captured while merged (judge runs only on a
+			// full tie, but the merge is gone by then).
+			if diff, err := wm.gitOutputInDir(intPath, "diff", "--cached"); err == nil {
+				if len(diff) > abJudgeDiffCap {
+					diff = diff[:abJudgeDiffCap] + "\n... [diff truncated]"
+					evidence["stage3_diff_truncated_"+c.TaskID] = "true"
+				}
+				r.diffText = diff
+			}
+		}
 		pass, failCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
 		r.score = pass
 		r.firstFail = failCmd
@@ -361,13 +388,21 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 
 	// Stage 2: deterministic metric tiebreak when the full Stage 1 score
 	// (suite + cross matrix) cannot discriminate. Falls back to the FIRST
-	// input (canonical) when every metric ties within margin.
+	// input (canonical) when every metric ties within margin — and on that
+	// FULL tie, Stage 3 (cross-LLM judges) gets the last word.
 	if len(candidates) == 2 && runs[0].score == runs[1].score &&
 		runs[0].crossScore == runs[1].crossScore {
 		if len(candidates[0].ExpectedPaths) == 0 {
 			evidence["metrics_expected_paths"] = "missing"
 		}
 		bestIdx = stage2Tiebreak(runs[0].metrics, runs[1].metrics, evidence)
+		if evidence["stage2_decision"] == "tie_canonical_first" && len(judgeModels) >= 2 {
+			idx, err := wm.stage3Judge(ctx, commandID, judgeModels, candidates, runs, evidence)
+			if err != nil {
+				return nil, err // parent ctx cancelled — retryable
+			}
+			bestIdx = idx
+		}
 	}
 
 	outcome.WinnerTaskID = candidates[bestIdx].TaskID
@@ -379,12 +414,125 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 
 // candidateRun captures one candidate's Stage 1 evaluation.
 type candidateRun struct {
-	score     int
+	score      int
 	crossScore int
-	firstFail string
-	merged    bool
-	metrics   candidateMetrics
+	firstFail  string
+	merged     bool
+	metrics    candidateMetrics
+	// diffText is the size-capped merged diff, captured for the Stage 3
+	// judges (only when judging is possible).
+	diffText string
 }
+
+// stage3Judge breaks a FULL tie with two cross-runtime LLM judges (design
+// §5 Stage 3): both judges see both candidates' diffs and vote A or B.
+// Agreement adopts the vote; disagreement falls back to the margin-free
+// Stage 2 comparison (the "barely better" side); judge failures fall back
+// to the canonical (index 0) — Stage 3 is additive and never blocks.
+// Returns an error ONLY for parent-context cancellation (retryable).
+func (wm *Manager) stage3Judge(ctx context.Context, commandID string, judgeModels []string, candidates []ABSelectionInput, runs []candidateRun, evidence map[string]string) (int, error) {
+	invoker := wm.abJudge()
+	systemPrompt := "You are an impartial judge comparing two candidate implementations (A and B) of the SAME task. " +
+		"Judge fitness to the task purpose and acceptance criteria, correctness, and maintainability. " +
+		"Respond with ONLY a JSON object: {\"winner\":\"A\"} or {\"winner\":\"B\"}."
+	userPrompt := fmt.Sprintf(
+		"Task purpose:\n%s\n\nAcceptance criteria:\n%s\n\n--- Candidate A diff ---\n%s\n\n--- Candidate B diff ---\n%s\n",
+		candidates[0].TaskPurpose, candidates[0].AcceptanceCriteria, runs[0].diffText, runs[1].diffText)
+
+	votes := make([]int, 0, 2)
+	for _, judgeModel := range judgeModels[:2] {
+		wm.Log(core.LogLevelInfo, "ab_stage3_judge_started command=%s judge=%s", commandID, judgeModel)
+		jctx, cancel := context.WithTimeout(ctx, abJudgeTimeout)
+		out, err := invoker.Invoke(jctx, judgeModel, systemPrompt, userPrompt)
+		cancel()
+		if ctx.Err() != nil {
+			return 0, fmt.Errorf("selection interrupted: %w", ctx.Err()) // parent cancel — retryable
+		}
+		vote, perr := parseJudgeVote(out)
+		if err != nil || perr != nil {
+			wm.Log(core.LogLevelWarn, "ab_stage3_judge_failed command=%s judge=%s invoke_err=%v parse_err=%v",
+				commandID, judgeModel, err, perr)
+			evidence["stage3_vote_"+judgeModel] = "failed"
+			evidence["stage3_decision"] = "judge_failed_canonical"
+			return 0, nil
+		}
+		evidence["stage3_vote_"+judgeModel] = [2]string{"A", "B"}[vote]
+		wm.Log(core.LogLevelInfo, "ab_stage3_judge_finished command=%s judge=%s vote=%s",
+			commandID, judgeModel, [2]string{"A", "B"}[vote])
+		votes = append(votes, vote)
+	}
+
+	if votes[0] == votes[1] {
+		evidence["stage3_decision"] = "agree:" + [2]string{"A", "B"}[votes[0]]
+		return votes[0], nil
+	}
+	// Disagreement: the margin-FREE Stage 2 comparison decides (the side
+	// that was marginally better even inside the noise margin).
+	idx, equal := marginFreeCompare(runs[0].metrics, runs[1].metrics)
+	if equal {
+		evidence["stage3_decision"] = "disagree_margin:canonical_equal"
+		return 0, nil
+	}
+	evidence["stage3_decision"] = "disagree_margin:" + [2]string{"A", "B"}[idx]
+	return idx, nil
+}
+
+// parseJudgeVote extracts {"winner":"A"|"B"} from possibly-chatty judge
+// output. Strict: anything else is a judge failure.
+func parseJudgeVote(out string) (int, error) {
+	start := strings.Index(out, "{")
+	end := strings.LastIndex(out, "}")
+	if start < 0 || end <= start {
+		return 0, fmt.Errorf("no JSON object in judge output")
+	}
+	var v struct {
+		Winner string `json:"winner"`
+	}
+	if err := json.Unmarshal([]byte(out[start:end+1]), &v); err != nil {
+		return 0, fmt.Errorf("parse judge JSON: %w", err)
+	}
+	switch strings.ToUpper(strings.TrimSpace(v.Winner)) {
+	case "A":
+		return 0, nil
+	case "B":
+		return 1, nil
+	default:
+		return 0, fmt.Errorf("judge winner %q is neither A nor B", v.Winner)
+	}
+}
+
+// marginFreeCompare is the raw lexicographic Stage 2 comparison (no noise
+// margin): deviations → lines → files. equal=true on exact equality.
+func marginFreeCompare(a, b candidateMetrics) (idx int, equal bool) {
+	pick := func(x, y int) (int, bool) {
+		if x == y {
+			return 0, true
+		}
+		if y < x {
+			return 1, false
+		}
+		return 0, false
+	}
+	if i, eq := pick(a.Deviations, b.Deviations); !eq {
+		return i, false
+	}
+	if i, eq := pick(a.Lines, b.Lines); !eq {
+		return i, false
+	}
+	return pick(a.Files, b.Files)
+}
+
+// abJudge returns the Stage 3 invoker (CLI runtimes by default; tests
+// inject a stub via SetABJudge).
+func (wm *Manager) abJudge() reviewer.ClaudeInvoker {
+	if wm.abJudgeInvoker != nil {
+		return wm.abJudgeInvoker
+	}
+	return reviewer.CLIInvoker{}
+}
+
+// SetABJudge injects the Stage 3 judge invoker (tests).
+func (wm *Manager) SetABJudge(inv reviewer.ClaudeInvoker) { wm.abJudgeInvoker = inv }
 
 // candidateTestFiles extracts the test files (basename-matched against
 // patterns) a candidate ADDED or MODIFIED relative to its recorded base.

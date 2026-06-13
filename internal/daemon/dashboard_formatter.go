@@ -44,7 +44,19 @@ type DashboardEvent struct {
 }
 
 // DashboardData contains all data needed to render the dashboard
+type ABRaceInfo struct {
+	CommandID string
+	GroupID   string
+	Status    string
+	Detail    string // candidates (racing) / winner + decision (resolved) / reason (degraded)
+
+	updatedAt  string // sort key (RFC3339)
+	unresolved bool   // sort key: active races first
+}
+
 type DashboardData struct {
+	ABRaces []ABRaceInfo
+
 	Stats           DashboardStats
 	RecentEvents    []DashboardEvent
 	RecentErrors    []DashboardEvent
@@ -173,6 +185,16 @@ func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) 
 | _No agents_ | - | - | - |
 {{ end }}
 
+## A/B Races
+
+| Command | Group | Status | Detail |
+|---------|-------|--------|--------|
+{{ range .ABRaces -}}
+| {{ .CommandID }} | {{ .GroupID }} | {{ .Status }} | {{ .Detail }} |
+{{ else -}}
+| _No races_ | - | - | - |
+{{ end }}
+
 ## Recent Errors (Last {{ len .RecentErrors }})
 
 {{ if .RecentErrors -}}
@@ -279,6 +301,20 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 	}
 	for _, wID := range workerKeys {
 		fmt.Fprintf(&sb, "| %s | %d |\n", wID, workerPending[wID])
+	}
+
+	// A/B candidate races (unresolved + recent resolutions)
+	{
+		abData := &DashboardData{}
+		f.collectABRaces(abData)
+		if len(abData.ABRaces) > 0 {
+			sb.WriteString("\n## A/B Races\n\n")
+			sb.WriteString("| Command | Group | Status | Detail |\n")
+			sb.WriteString("|---------|-------|--------|--------|\n")
+			for _, r := range abData.ABRaces {
+				fmt.Fprintf(&sb, "| %s | %s | %s | %s |\n", r.CommandID, r.GroupID, r.Status, r.Detail)
+			}
+		}
 	}
 
 	// Active commands

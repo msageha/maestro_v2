@@ -25,7 +25,7 @@ type stubABOps struct {
 }
 
 func (s *stubABOps) CommitCandidateChanges(string, string) error { return s.commitErr }
-func (s *stubABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string) (*worktree.ABSelectionOutcome, error) {
+func (s *stubABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string, []string) (*worktree.ABSelectionOutcome, error) {
 	return &worktree.ABSelectionOutcome{}, nil
 }
 func (s *stubABOps) IntakeWinner(string, string, string, string) error { return s.intakeErr }
@@ -469,7 +469,7 @@ type selectionTrackingABOps struct {
 	intaken        []string
 }
 
-func (s *selectionTrackingABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string) (*worktree.ABSelectionOutcome, error) {
+func (s *selectionTrackingABOps) RunCandidateSelection(context.Context, string, string, []worktree.ABSelectionInput, []string, []string, []string) (*worktree.ABSelectionOutcome, error) {
 	s.selectionCalls++
 	return &worktree.ABSelectionOutcome{WinnerTaskID: "task_canon"}, nil
 }
@@ -755,12 +755,53 @@ func TestABExpectedPaths_SharedFallback(t *testing.T) {
 	writeWorkerQueue(t, maestroDir, "worker3", []model.Task{{
 		ID: "task_shadow", CommandID: "cmd_ep", ExpectedPaths: []string{"src", "docs"},
 	}})
-	got := qh.abExpectedPaths(canonical, shadow)
-	if len(got) != 2 || got[0] != "src" {
-		t.Errorf("expected paths = %v, want shadow row's [src docs]", got)
+	row := qh.abSurvivingRow(canonical, shadow)
+	if row == nil || len(row.ExpectedPaths) != 2 || row.ExpectedPaths[0] != "src" {
+		t.Errorf("surviving row = %+v, want shadow row with [src docs]", row)
 	}
 	// Both rows gone: nil (Stage 2 skips the deviation metric).
-	if got := qh.abExpectedPaths(&model.ABCandidate{TaskID: "x", WorkerID: "worker9"}); got != nil {
-		t.Errorf("expected nil for missing rows, got %v", got)
+	if row := qh.abSurvivingRow(&model.ABCandidate{TaskID: "x", WorkerID: "worker9"}); row != nil {
+		t.Errorf("expected nil for missing rows, got %+v", row)
+	}
+}
+
+// PR4: a weak mechanical signal at resolution queues exactly one
+// ab_verifier_weak Planner signal (dedup by group).
+func TestResolveABGroup_EmitsVerifierWeakSignal(t *testing.T) {
+	qh, maestroDir := abTestQueueHandler(t)
+	writeABState(t, maestroDir, "cmd_ab_weak")
+
+	qh.resolveABGroup("cmd_ab_weak", "abg_x", "task_canon", false, "",
+		map[string]string{"stage0": "no_verifier"})
+
+	data, err := os.ReadFile(signalQueuePath(maestroDir))
+	if err != nil {
+		t.Fatalf("signal queue not written: %v", err)
+	}
+	var sq model.PlannerSignalQueue
+	if err := yamlv3.Unmarshal(data, &sq); err != nil {
+		t.Fatal(err)
+	}
+	count := 0
+	for _, sig := range sq.Signals {
+		if sig.Kind == "ab_verifier_weak" && sig.CommandID == "cmd_ab_weak" {
+			count++
+			if sig.Reason != "no_verifier" {
+				t.Errorf("signal reason = %q, want no_verifier", sig.Reason)
+			}
+		}
+	}
+	if count != 1 {
+		t.Fatalf("ab_verifier_weak signals = %d, want 1", count)
+	}
+
+	// Idempotent re-entry: the group is resolved, no second signal.
+	qh.resolveABGroup("cmd_ab_weak", "abg_x", "task_canon", false, "",
+		map[string]string{"stage0": "no_verifier"})
+	data, _ = os.ReadFile(signalQueuePath(maestroDir))
+	var sq2 model.PlannerSignalQueue
+	_ = yamlv3.Unmarshal(data, &sq2)
+	if len(sq2.Signals) != len(sq.Signals) {
+		t.Error("re-entry must not emit another signal")
 	}
 }

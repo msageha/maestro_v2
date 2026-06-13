@@ -40,7 +40,7 @@ const defaultABRaceTimeoutSec = 1800
 // stubs in tests remain valid (same pattern as PlanExecutorModelSelectorSettable).
 type abWorktreeOps interface {
 	CommitCandidateChanges(commandID, taskID string) error
-	RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []worktree.ABSelectionInput, verifyCmds []string, crossPatterns []string) (*worktree.ABSelectionOutcome, error)
+	RunCandidateSelection(ctx context.Context, commandID, groupID string, candidates []worktree.ABSelectionInput, verifyCmds []string, crossPatterns []string, judgeModels []string) (*worktree.ABSelectionOutcome, error)
 	IntakeWinner(commandID, workerID, candidateBranch, taskID string) error
 }
 
@@ -648,18 +648,23 @@ func (qh *QueueHandler) runABSelectionAndResolve(ctx context.Context, wm abWorkt
 	// Selection runs for ONE finisher too (walkover verification, design
 	// §5): a healthy verifier must pass the sole finisher before intake.
 	verifyCmds := qh.loadABVerifyCommands(item.CommandID)
-	// Both candidates share the LOGICAL task's expected_paths: use whichever
-	// queue row survives so a one-sided row loss cannot skew the Stage 2
-	// deviation metric.
-	expectedPaths := qh.abExpectedPaths(canonical, shadow)
+	// Both candidates share the LOGICAL task's context (expected_paths for
+	// the Stage 2 deviation metric; purpose/acceptance for the Stage 3
+	// judges): use whichever queue row survives so a one-sided row loss
+	// cannot skew the signals.
+	sharedRow := qh.abSurvivingRow(canonical, shadow)
 	inputs := make([]worktree.ABSelectionInput, 0, len(finished)) // canonical FIRST: ties go to it
 	for _, c := range finished {
-		inputs = append(inputs, worktree.ABSelectionInput{
-			TaskID: c.TaskID, Branch: c.Branch, ExpectedPaths: expectedPaths,
-		})
+		in := worktree.ABSelectionInput{TaskID: c.TaskID, Branch: c.Branch}
+		if sharedRow != nil {
+			in.ExpectedPaths = sharedRow.ExpectedPaths
+			in.TaskPurpose = sharedRow.Purpose
+			in.AcceptanceCriteria = sharedRow.AcceptanceCriteria
+		}
+		inputs = append(inputs, in)
 	}
 	outcome, err := wm.RunCandidateSelection(ctx, item.CommandID, item.GroupID, inputs, verifyCmds,
-		qh.config.ABTest.EffectiveCrossTestPatterns())
+		qh.config.ABTest.EffectiveCrossTestPatterns(), qh.config.ABTest.EffectiveJudgeModels())
 	if err != nil {
 		switch {
 		case errors.Is(err, worktree.ErrSelectionBusy):
@@ -831,16 +836,17 @@ func (qh *QueueHandler) degradeABGroupWithRepair(item abGroupWorkItem, g *model.
 		item.CommandID, item.GroupID, repairTask.ID)
 }
 
-// abExpectedPaths resolves the logical task's expected_paths from whichever
-// candidate queue row still exists (canonical preferred). Nil when both rows
-// are gone — Stage 2 then skips the deviation metric.
-func (qh *QueueHandler) abExpectedPaths(candidates ...*model.ABCandidate) []string {
+// abSurvivingRow resolves the logical task's queue row from whichever
+// candidate row still exists (canonical preferred). Nil when both rows are
+// gone — Stage 2 then skips the deviation metric and the judges get no
+// task context.
+func (qh *QueueHandler) abSurvivingRow(candidates ...*model.ABCandidate) *model.Task {
 	for _, c := range candidates {
 		if c == nil {
 			continue
 		}
-		if row := qh.findQueueTask(c.WorkerID, c.TaskID); row != nil && len(row.ExpectedPaths) > 0 {
-			return row.ExpectedPaths
+		if row := qh.findQueueTask(c.WorkerID, c.TaskID); row != nil {
+			return row
 		}
 	}
 	return nil
@@ -873,10 +879,16 @@ func (qh *QueueHandler) findQueueTask(workerID, taskID string) *model.Task {
 func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, degraded bool, reason string, evidence map[string]string, canonicalSupersededReason ...string) {
 	statePath := commandStatePath(qh.maestroDir, commandID)
 	lockKey := "state:" + commandID
-	qh.lockMap.Lock(lockKey)
-	defer qh.lockMap.Unlock(lockKey)
 
-	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+	// Side-effect snapshot, applied AFTER the state lock is released:
+	// bandit rewards (resolved only — degraded has no win/lose label) and
+	// the verifier-weak signal (its own queue lock must not nest inside
+	// the state lock).
+	var rewards []abBanditOutcome
+	applied := false
+
+	qh.lockMap.Lock(lockKey)
+	err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		g := state.CandidateGroups[groupID]
 		if g == nil || !g.Status.IsUnresolved() {
 			return errNoUpdate // idempotent: already resolved
@@ -937,14 +949,107 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 		g.PendingWinnerTaskID = "" // decision is final; WinnerTaskID is the record
 		g.UpdatedAt = now
 		state.UpdatedAt = now
+		applied = true
+		if !degraded {
+			for _, c := range g.Candidates {
+				rewards = append(rewards, abBanditOutcome{
+					Model: c.Model, BloomLevel: c.BloomLevel, Win: c.TaskID == winnerTaskID,
+				})
+			}
+		}
 		return nil
-	}); err != nil && !errors.Is(err, errNoUpdate) {
+	})
+	qh.lockMap.Unlock(lockKey)
+	if err != nil && !errors.Is(err, errNoUpdate) {
 		qh.log(LogLevelError, "ab_group_resolve_write_failed command=%s group=%s error=%v (retry next scan)",
 			commandID, groupID, err)
 		return
 	}
+	if !applied {
+		return // idempotent re-entry: side effects already happened once
+	}
 	// Candidate worktrees/branches are kept for audit until command cleanup
 	// (cleanupCommandCore removes them); nothing to remove here.
+
+	// Design §8: the race outcome is the authoritative pairwise win/lose
+	// label for the contextual bandit (the candidates' normal per-result
+	// rewards were skipped by the learning gate). Walkovers count — a
+	// candidate that failed or never finished IS a loss signal.
+	if sel := qh.resultHandler.getModelSelector(); sel != nil {
+		for _, r := range rewards {
+			reward := 0.0
+			if r.Win {
+				reward = 1.0
+			}
+			sel.RecordResult(r.Model, r.BloomLevel, reward)
+			qh.log(LogLevelInfo, "ab_bandit_outcome command=%s group=%s model=%s bloom=%d win=%v",
+				commandID, groupID, r.Model, r.BloomLevel, r.Win)
+		}
+	}
+
+	// Weak mechanical signal → tell the Planner how to fix it (design §8:
+	// verifier_weak). Once per group via the signal dedup key.
+	if weak := abWeakVerifierReason(evidence); weak != "" {
+		qh.emitABVerifierWeakSignal(commandID, groupID, weak)
+	}
+}
+
+// abBanditOutcome is one candidate's win/lose label captured at resolution.
+type abBanditOutcome struct {
+	Model      string
+	BloomLevel int
+	Win        bool
+}
+
+// abWeakVerifierReason classifies evidence that the selection ran without a
+// meaningful mechanical signal ("" = signal was fine).
+func abWeakVerifierReason(evidence map[string]string) string {
+	switch {
+	case evidence["stage0"] == "no_verifier":
+		return "no_verifier"
+	case evidence["stage0"] == "verifier_broken":
+		return "verifier_broken"
+	case evidence["degraded_selection"] != "":
+		return "degraded_selection"
+	}
+	return ""
+}
+
+// emitABVerifierWeakSignal enqueues a Planner signal asking for a real
+// verify snapshot. Deduplicated per group by Kind+CommandID+PhaseID.
+func (qh *QueueHandler) emitABVerifierWeakSignal(commandID, groupID, reason string) {
+	now := qh.clock.Now().UTC().Format(time.RFC3339)
+	sig := model.PlannerSignal{
+		Kind:      "ab_verifier_weak",
+		CommandID: commandID,
+		PhaseID:   "__ab_" + groupID,
+		Message: fmt.Sprintf("[maestro] kind:ab_verifier_weak command_id:%s group:%s\nreason: %s\n"+
+			"next_action: A/B 選抜の機械シグナルが弱い状態で確定しました。次の command では `maestro verify write` で build/test を含む command-scoped verify snapshot を書いてください。",
+			commandID, groupID, reason),
+		Reason:    reason,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	qh.lockMap.Lock("queue:planner_signals")
+	defer qh.lockMap.Unlock("queue:planner_signals")
+	if err := updateYAMLFile(signalQueuePath(qh.maestroDir), func(sq *model.PlannerSignalQueue) error {
+		index := buildSignalIndex(sq.Signals)
+		if _, exists := index[signalDedupKey(sig)]; exists {
+			return errNoUpdate
+		}
+		if sq.SchemaVersion == 0 {
+			sq.SchemaVersion = 1
+			sq.FileType = "planner_signal_queue"
+		}
+		sq.Signals = append(sq.Signals, sig)
+		return nil
+	}); err != nil {
+		if !errors.Is(err, errNoUpdate) {
+			qh.log(LogLevelWarn, "ab_verifier_weak_signal_failed command=%s group=%s error=%v", commandID, groupID, err)
+		}
+		return
+	}
+	qh.log(LogLevelInfo, "ab_verifier_weak_signal_queued command=%s group=%s reason=%s", commandID, groupID, reason)
 }
 
 // markABGroupSelecting CAS-transitions a group racing → selecting.

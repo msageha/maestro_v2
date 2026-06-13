@@ -302,6 +302,20 @@ func (c Config) validateExperimental(errs *[]error) {
 	if c.ABTest.SelectionTimeoutSec != nil && *c.ABTest.SelectionTimeoutSec < 0 {
 		*errs = append(*errs, fmt.Errorf("ab_test.selection_timeout_sec: must be >= 0"))
 	}
+	if c.ABTest.JudgeModels != nil && len(c.ABTest.JudgeModels) == 1 {
+		*errs = append(*errs, fmt.Errorf("ab_test.judge_models: needs 0 (disable) or >= 2 entries (the agree/disagree protocol takes two votes)"))
+	}
+	seenJudges := map[string]bool{}
+	for _, j := range c.ABTest.JudgeModels {
+		if strings.TrimSpace(j) == "" {
+			*errs = append(*errs, fmt.Errorf("ab_test.judge_models: empty entry"))
+			continue
+		}
+		if seenJudges[j] {
+			*errs = append(*errs, fmt.Errorf("ab_test.judge_models: duplicate %q (cross-runtime judging needs distinct judges)", j))
+		}
+		seenJudges[j] = true
+	}
 	for _, p := range c.ABTest.CrossTestPatterns {
 		if strings.Contains(p, "/") {
 			*errs = append(*errs, fmt.Errorf("ab_test.cross_test_patterns: %q must be a basename glob (no '/')", p))
