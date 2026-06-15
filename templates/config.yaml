@@ -65,7 +65,7 @@ agents:
     id: "orchestrator"
     # model: 使用するモデル名
     # type: string | default: なし | range: 制限なし
-    model: "claude-opus-4-7[1m]"
+    model: "claude-opus-4-8[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
@@ -75,7 +75,7 @@ agents:
     id: "planner"
     # model: 使用するモデル名
     # type: string | default: なし | range: 制限なし
-    model: "claude-opus-4-7[1m]"
+    model: "claude-opus-4-8[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
@@ -94,8 +94,8 @@ agents:
     models:
       worker1: "claude-sonnet-4-6[1m]"
       worker2: "claude-sonnet-4-6[1m]"
-      worker3: "claude-opus-4-7[1m]"
-      worker4: "claude-opus-4-7[1m]"
+      worker3: "claude-opus-4-8[1m]"
+      worker4: "claude-opus-4-8[1m]"
     # boost: Worker のブーストモード有効化
     # type: bool | default: false | range: true/false
     boost: false
