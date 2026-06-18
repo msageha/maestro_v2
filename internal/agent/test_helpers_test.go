@@ -32,6 +32,10 @@ type mockPaneIO struct {
 	getCmdSeq      []mockResp // sequence override (clamped)
 	getCmdIdx      int
 
+	// --- GetPaneCurrentPath ---
+	currentPath    string // simple default
+	currentPathErr error
+
 	// --- CapturePane ---
 	captureContent string     // simple default
 	capturePaneSeq []mockResp // sequence override (clamped)
@@ -77,6 +81,7 @@ type mockPaneIO struct {
 	GetUserVarFn            func(paneTarget, name string) (string, error)
 	GetPanePIDFn            func(paneTarget string) (string, error)
 	GetPaneCurrentCommandFn func(paneTarget string) (string, error)
+	GetPaneCurrentPathFn    func(paneTarget string) (string, error)
 	CapturePaneFn           func(paneTarget string, lastN int) (string, error)
 	CapturePaneJoinedFn     func(paneTarget string, lastN int) (string, error)
 	IsShellCommandFn        func(cmd string) bool
@@ -197,6 +202,14 @@ func (m *mockPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
 		return m.getCmdSeq[idx].val, m.getCmdSeq[idx].err
 	}
 	return m.currentCommand, nil
+}
+
+func (m *mockPaneIO) GetPaneCurrentPath(paneTarget string) (string, error) {
+	m.calls = append(m.calls, "GetPaneCurrentPath")
+	if m.GetPaneCurrentPathFn != nil {
+		return m.GetPaneCurrentPathFn(paneTarget)
+	}
+	return m.currentPath, m.currentPathErr
 }
 
 func (m *mockPaneIO) CapturePane(paneTarget string, lastN int) (string, error) {

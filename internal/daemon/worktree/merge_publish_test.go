@@ -129,26 +129,23 @@ func TestBuildPublishMessage(t *testing.T) {
 			want:           "publish: integrate changes to develop",
 		},
 		{
-			// "publish: " (9B) + 7 × "あ" (3B each = 21B) + "x" * 50 = 80B > 72B.
-			// Cut at 72B lands inside the rune sequence of one of the trailing
-			// ASCII 'x's, but the boundary is well-defined since 'x' is 1B.
-			// Pre-fix this would be fine, but if we instead cut inside a 3B
-			// rune we must drop the partial bytes — verified separately below.
-			name:           "long japanese-ascii mix truncates cleanly",
+			// Rune-based budget: "publish: " (9 runes) + 7 "あ" + 50 'x'
+			// = 66 runes ≤ 72, so the message survives intact even though
+			// its byte length (80B) exceeds 72. The previous byte-based cut
+			// destroyed most of a Japanese summary (E2E 2026-06-11:
+			// "publish: 前回のコマンド cmd_xxx が parti").
+			name:           "japanese-ascii mix within rune budget is kept",
 			publishMessage: strings.Repeat("あ", 7) + strings.Repeat("x", 50),
 			baseBranch:     "main",
-			// 9 ("publish: ") + 21 ("ああああああ あ" = 7×3) + 42 'x' = 72.
-			want: "publish: " + strings.Repeat("あ", 7) + strings.Repeat("x", 42),
+			want:           "publish: " + strings.Repeat("あ", 7) + strings.Repeat("x", 50),
 		},
 		{
-			// Cut lands mid-rune: "publish: x" (10B) + 22 × "あ" (66B) = 76B.
-			// Cut at byte 72 covers 10 + 20×3 = 70B and then 2 bytes of the
-			// 21st "あ" (partial). ToValidUTF8 must strip the trailing partial
-			// sequence to keep the commit subject valid UTF-8.
-			name:           "japanese truncation strips partial rune",
-			publishMessage: "x" + strings.Repeat("あ", 22),
+			// Over the rune budget: "publish: " (9 runes) + 70 "あ" = 79
+			// runes → truncated to 72 runes = prefix + 63 "あ".
+			name:           "long japanese truncated by rune count",
+			publishMessage: strings.Repeat("あ", 70),
 			baseBranch:     "main",
-			want:           "publish: x" + strings.Repeat("あ", 20),
+			want:           "publish: " + strings.Repeat("あ", 63),
 		},
 	}
 
@@ -159,8 +156,8 @@ func TestBuildPublishMessage(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("buildPublishMessage() = %q, want %q", got, tt.want)
 			}
-			if len(got) > mergePublishMaxLen {
-				t.Errorf("buildPublishMessage() length %d exceeds max %d", len(got), mergePublishMaxLen)
+			if utf8.RuneCountInString(got) > mergePublishMaxLen {
+				t.Errorf("buildPublishMessage() rune count %d exceeds max %d", utf8.RuneCountInString(got), mergePublishMaxLen)
 			}
 			if !utf8.ValidString(got) {
 				t.Errorf("buildPublishMessage() produced invalid UTF-8: %q", got)
@@ -217,23 +214,22 @@ func TestTruncateMessage(t *testing.T) {
 			want:   "p: line1",
 		},
 		{
-			// Cut lands mid-rune: "p: " (3B) + "あいう" (9B) = 12B; maxLen=7
-			// would put the cut at the 1st byte of "い", so the partial
-			// sequence must be stripped to preserve valid UTF-8.
-			name:   "japanese partial rune stripped",
+			// Rune-based cut: "p: " (3 runes) + "あいう" (3 runes) = 6 runes;
+			// maxLen=4 keeps the prefix plus one Japanese character.
+			name:   "japanese truncated by rune count",
 			prefix: "p: ",
 			body:   "あいう",
-			maxLen: 7,
+			maxLen: 4,
 			want:   "p: あ",
 		},
 		{
-			// Cut lands exactly on a rune boundary: "p: " (3B) + "あいう" (9B)
-			// = 12B; maxLen=9 puts the cut right after "い" (byte 9).
-			name:   "japanese rune boundary preserved",
+			// Within the rune budget: 6 runes ≤ 9 even though the byte
+			// length (12B) exceeds 9 — byte length no longer matters.
+			name:   "japanese within rune budget is kept",
 			prefix: "p: ",
 			body:   "あいう",
 			maxLen: 9,
-			want:   "p: あい",
+			want:   "p: あいう",
 		},
 	}
 
@@ -244,8 +240,8 @@ func TestTruncateMessage(t *testing.T) {
 			if got != tt.want {
 				t.Errorf("truncateMessage() = %q, want %q", got, tt.want)
 			}
-			if tt.maxLen > 0 && len(got) > tt.maxLen {
-				t.Errorf("truncateMessage() length %d exceeds max %d", len(got), tt.maxLen)
+			if tt.maxLen > 0 && utf8.RuneCountInString(got) > tt.maxLen {
+				t.Errorf("truncateMessage() rune count %d exceeds max %d", utf8.RuneCountInString(got), tt.maxLen)
 			}
 			if !utf8.ValidString(got) {
 				t.Errorf("truncateMessage() produced invalid UTF-8: %q", got)

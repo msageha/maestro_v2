@@ -926,6 +926,16 @@ func GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// GetPaneCurrentPath returns the current working directory of the pane's
+// active process as reported by tmux.
+func GetPaneCurrentPath(paneTarget string) (string, error) {
+	out, err := output("display-message", "-t", paneTarget, "-p", "#{pane_current_path}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // RespawnPane kills the current process in the pane and respawns it as a fresh
 // shell in the given start directory. This is more reliable than sending
 // Ctrl+C/Ctrl+D to exit a running process because it does not depend on the

@@ -479,7 +479,7 @@ func buildDepTaskWorkerMap(commandID string, depTaskIDs []string, taskQueues map
 // dispatch_lease_sec that matches per-task wall-clock duration. The
 // slow busy-check path is retained as the fallback for the very first
 // lease expiry (no baseline snapshot yet) and for capture failures.
-func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID, queueFile string, dirty *bool) []busyCheckItem {
+func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID, queueFile string, dirty *bool, scanVerdicts map[string]paneactivity.Verdict) []busyCheckItem {
 	var items []busyCheckItem
 	expired := qh.leaseManager.ExpireTasks(tq.Queue.Tasks)
 	if len(expired) == 0 {
@@ -490,8 +490,19 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 	// agentID feeds every entry in `expired` (one queue per worker), so
 	// caching the result avoids redundant tmux capture-pane calls when a
 	// worker happens to have multiple expired entries.
+	//
+	// Prefer the verdict stepBlockedPaneTimeout observed earlier in this
+	// scan tick: re-observing here lands within minPrevAge of that
+	// observation and degrades to a same-scan VerdictUncertain, which the
+	// grace-extension below then extends on every lease expiry up to the
+	// 30-minute hard cap (E2E 2026-06-11: a pane whose claude process had
+	// died was repeatedly "grace-extended one cycle" for 30 minutes).
 	var paneVerdictCached paneactivity.Verdict
 	paneVerdictResolved := false
+	if v, ok := scanVerdicts[agentID]; ok {
+		paneVerdictCached = v
+		paneVerdictResolved = true
+	}
 	resolvePaneVerdict := func() paneactivity.Verdict {
 		if !paneVerdictResolved {
 			paneVerdictCached = qh.observePaneVerdictForAgent(agentID)

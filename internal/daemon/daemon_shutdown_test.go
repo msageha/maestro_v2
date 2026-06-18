@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
-	"golang.org/x/sync/errgroup"
 )
 
 // ---------------------------------------------------------------------------

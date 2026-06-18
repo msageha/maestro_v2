@@ -240,18 +240,45 @@ func (e *Executor) CleanupPaneMutex(paneTarget string) {
 // the daemon is about to delete — claude-code's Stop hook posix_spawn
 // '/bin/sh' fails with ENOENT when its cwd has been removed.
 //
+// onlyIfCWDUnder, when non-empty, restricts the eviction to panes whose
+// current working directory is inside that directory. Phase B cleanup
+// passes the worktree path being removed so a worker that has already
+// been re-assigned to a different command's worktree is left untouched
+// (E2E 2026-06-11: the orphan cleanup of a failed command evicted a
+// worker two minutes after it was dispatched for a new command, killing
+// the freshly launched claude and stalling the task until the lease hard
+// cap). An empty string keeps the unconditional behaviour.
+//
 // No-op when the worker pane cannot be located (worker never started, or
 // already torn down). Errors are returned so the caller can decide
 // whether to skip the corresponding cleanup. ensureWorkingDir on the
 // next dispatch will detect the post-respawn shell and re-launch claude,
 // so this is safe to call between turns.
-func (e *Executor) RespawnPaneToProjectRoot(workerID string) error {
+func (e *Executor) RespawnPaneToProjectRoot(workerID, onlyIfCWDUnder string) error {
 	paneTarget, err := e.paneIO.FindPaneByAgentID(workerID)
 	if err != nil {
 		e.log(logLevelDebug,
 			"respawn_to_project_root_skip worker=%s reason=pane_not_found error=%v",
 			workerID, err)
 		return nil
+	}
+	if onlyIfCWDUnder != "" {
+		cwd, cwdErr := e.paneIO.GetPaneCurrentPath(paneTarget)
+		switch {
+		case cwdErr != nil:
+			// Fall through to evict: a transient tmux query failure must not
+			// leave a pane sitting in a directory that is about to be
+			// deleted (the ENOENT failure mode this hook exists to prevent).
+			e.log(logLevelWarn,
+				"respawn_to_project_root_cwd_query_failed worker=%s error=%v (evicting anyway)",
+				workerID, cwdErr)
+		case !isPathUnder(cwd, onlyIfCWDUnder):
+			e.log(logLevelInfo,
+				"respawn_to_project_root_skip worker=%s reason=cwd_outside_target cwd=%s target=%s "+
+					"(pane already re-assigned elsewhere; leaving its process alone)",
+				workerID, cwd, onlyIfCWDUnder)
+			return nil
+		}
 	}
 	projectRoot := projectRootFromMaestroDir(e.maestroDir)
 	if projectRoot == "" {
@@ -263,6 +290,30 @@ func (e *Executor) RespawnPaneToProjectRoot(workerID string) error {
 		return nil
 	}
 	return e.processManager.respawnToProjectRoot(paneTarget, workerID, projectRoot)
+}
+
+// isPathUnder reports whether path is dir itself or located inside dir.
+// Both sides are cleaned and symlink-resolved (best effort) before the
+// comparison so /tmp vs /private/tmp style aliases on macOS compare equal.
+func isPathUnder(path, dir string) bool {
+	p := canonicalizePath(path)
+	d := canonicalizePath(dir)
+	rel, err := filepath.Rel(d, p)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// canonicalizePath cleans path and resolves symlinks when possible. When
+// the path no longer exists (e.g. a worktree already removed) the cleaned
+// absolute form is returned unchanged.
+func canonicalizePath(path string) string {
+	clean := filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(clean); err == nil {
+		return resolved
+	}
+	return clean
 }
 
 // projectRootFromMaestroDir derives the project root from the maestro

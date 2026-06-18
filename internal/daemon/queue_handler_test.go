@@ -650,7 +650,7 @@ func (m *slowMockExecutor) Close() error {
 
 // RespawnPaneToProjectRoot satisfies the AgentExecutor interface; the
 // slow-mock has no pane state so this is a no-op stub.
-func (m *slowMockExecutor) RespawnPaneToProjectRoot(string) error {
+func (m *slowMockExecutor) RespawnPaneToProjectRoot(string, string) error {
 	return nil
 }
 

@@ -3,8 +3,9 @@ package admission
 import (
 	"testing"
 
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func defaultCfg() model.AdmissionControl {

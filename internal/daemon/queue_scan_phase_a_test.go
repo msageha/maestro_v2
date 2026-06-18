@@ -75,14 +75,14 @@ type cbTripCall struct {
 	ProgressTimeoutMinutes int
 }
 
-func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error)    { return "", nil }
+func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error) { return "", nil }
 func (m *cbMockStateManager) GetEffectiveTaskStatus(string, string) (model.Status, error) {
 	return "", nil
 }
 func (m *cbMockStateManager) GetEffectiveTaskStatusForCompletion(string, string) (model.Status, error) {
 	return "", nil
 }
-func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error) { return nil, nil }
+func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error)   { return nil, nil }
 func (m *cbMockStateManager) GetTaskDependencies(string, string) ([]string, error) { return nil, nil }
 func (m *cbMockStateManager) HasNonTerminalTaskState(string) (bool, error)         { return false, nil }
 func (m *cbMockStateManager) GetNonTerminalTaskStates(string) (map[string]model.Status, error) {

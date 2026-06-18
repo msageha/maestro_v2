@@ -990,3 +990,102 @@ func TestTracker_ContextBudgetExhausted_BelowThreshold(t *testing.T) {
 		})
 	}
 }
+
+// TestTracker_CompletionSummaryIdlePaneIsNotActive pins the E2E
+// 2026-06-11 regression: a Claude Code pane that finished its turn shows
+// a static completion summary ("✻ Cooked for 1m 35s") above the idle
+// prompt. The ✻ glyph belongs to defaultActiveHintRegex's spinner set, so
+// without stripping completion-summary lines the idle pane matched the
+// activity hint on every scan and the lease was extended up to the
+// 30-minute hard cap.
+func TestTracker_CompletionSummaryIdlePaneIsNotActive(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+	t2 := t1.Add(60 * time.Second)
+
+	idleFrame := "" +
+		"  Unreleased セクションに対応する1行を追記しました。\n" +
+		"✻ Cooked for 1m 35s\n" +
+		"───────────────\n" +
+		"❯\n" +
+		"───────────────\n" +
+		"  [#----] 5% used · 95% remaining\n" +
+		"  ⏵⏵ accept edits on (shift+tab to cycle)\n"
+
+	if v := tr.ObserveVerdict("worker2", idleFrame, time.Minute, t0); v != VerdictUncertain {
+		t.Fatalf("first observation must be Uncertain (no baseline), got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker2", idleFrame, time.Minute, t1); v != VerdictIdle {
+		t.Fatalf("idle pane with completion summary must be VerdictIdle, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker2", idleFrame, time.Minute, t2); v != VerdictIdle {
+		t.Fatalf("idle pane with completion summary must stay VerdictIdle, got %v", v)
+	}
+}
+
+// TestTracker_LiveSpinnerStillActiveAfterCompletionStrip asserts the
+// completion-summary strip does not break genuine activity detection: a
+// pane whose tail contains BOTH a finished-turn summary and a live
+// spinner ("✻ Thinking… (43s · ↑ 682 tokens)" — no "for <duration>"
+// suffix) survives the strip and still yields VerdictActive.
+func TestTracker_LiveSpinnerStillActiveAfterCompletionStrip(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+
+	frame := func(elapsed int) string {
+		return "✻ Cooked for 1m 35s\n" +
+			"❯ next instruction\n" +
+			"✻ Thinking… (" + strconv.Itoa(elapsed) + "s · ↑ 682 tokens)\n"
+	}
+	_ = tr.ObserveVerdict("worker1", frame(43), time.Minute, t0)
+	if v := tr.ObserveVerdict("worker1", frame(103), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("live spinner must remain VerdictActive after completion-summary strip, got %v", v)
+	}
+}
+
+// TestStripCompletionSummary_Patterns documents the exact line shapes the
+// strip is expected to remove (finished-turn summaries) and keep (live
+// spinners, subprocess markers).
+func TestStripCompletionSummary_Patterns(t *testing.T) {
+	stripped := []string{
+		"✻ Cooked for 1m 35s",
+		"✻ Worked for 5m 4s",
+		"✻ Sautéed for 40s",
+		"✻ Crunched for 26s",
+		"✶ Brewed for 12s",
+	}
+	for _, s := range stripped {
+		if got := stripCompletionSummary(s); strings.Contains(got, "for") {
+			t.Errorf("expected completion summary %q to be stripped, got %q", s, got)
+		}
+	}
+	kept := []string{
+		"✶ Wrangling… (43s · ↑ 682 tokens)",
+		"⎿ Waiting…",
+		"✻ Thinking…",
+	}
+	for _, s := range kept {
+		if got := stripCompletionSummary(s); got != s {
+			t.Errorf("expected live marker %q to survive strip, got %q", s, got)
+		}
+	}
+}
+
+// TestStripCompletionSummary_LiveStatusWithForIsKept pins the codex-review
+// finding on the first regex draft: "for <number> <noun>" status lines are
+// live activity, not finished-turn summaries, and must survive the strip.
+// Only "for <duration-unit>" qualifies as a completion summary.
+func TestStripCompletionSummary_LiveStatusWithForIsKept(t *testing.T) {
+	kept := []string{
+		"✻ Waiting for 2 workers",
+		"✻ Searching for 3 files",
+		"✻ Polling for 12 results…",
+	}
+	for _, s := range kept {
+		if got := stripCompletionSummary(s); got != s {
+			t.Errorf("expected live status %q to survive strip, got %q", s, got)
+		}
+	}
+}

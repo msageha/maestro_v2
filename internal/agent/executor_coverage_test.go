@@ -288,7 +288,7 @@ func TestRespawnPaneToProjectRoot_ResetsCWDAndClearReady(t *testing.T) {
 	exec, buf := newCovExecutor(mock)
 	exec.maestroDir = "/project/.maestro"
 
-	if err := exec.RespawnPaneToProjectRoot("worker1"); err != nil {
+	if err := exec.RespawnPaneToProjectRoot("worker1", ""); err != nil {
 		t.Fatalf("RespawnPaneToProjectRoot: %v", err)
 	}
 
@@ -331,13 +331,92 @@ func TestRespawnPaneToProjectRoot_PaneNotFoundIsNoOp(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 	exec.maestroDir = "/project/.maestro"
 
-	if err := exec.RespawnPaneToProjectRoot("worker1"); err != nil {
+	if err := exec.RespawnPaneToProjectRoot("worker1", ""); err != nil {
 		t.Fatalf("expected no error when pane missing, got: %v", err)
 	}
 	for _, call := range mock.calls {
 		if strings.HasPrefix(call, "RespawnPane:") {
 			t.Errorf("expected no respawn when pane is missing, got: %v", mock.calls)
 		}
+	}
+}
+
+// TestRespawnPaneToProjectRoot_SkipsWhenCWDOutsideTarget pins the stale-
+// eviction guard (E2E 2026-06-11): when Phase B cleans up an old command's
+// worktree, a worker whose pane has already moved to a different command's
+// worktree must NOT be evicted — killing it would destroy a freshly
+// dispatched claude process mid-task.
+func TestRespawnPaneToProjectRoot_SkipsWhenCWDOutsideTarget(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentPath = "/project/.maestro/worktrees/cmd_NEW/worker1"
+	exec, buf := newCovExecutor(mock)
+	exec.maestroDir = "/project/.maestro"
+
+	oldWorktree := "/project/.maestro/worktrees/cmd_OLD/worker1"
+	if err := exec.RespawnPaneToProjectRoot("worker1", oldWorktree); err != nil {
+		t.Fatalf("RespawnPaneToProjectRoot: %v", err)
+	}
+	for _, call := range mock.calls {
+		if strings.HasPrefix(call, "RespawnPane:") {
+			t.Errorf("expected no respawn when pane cwd is outside the target worktree, got: %v", mock.calls)
+		}
+	}
+	if !strings.Contains(buf.String(), "cwd_outside_target") {
+		t.Errorf("expected cwd_outside_target skip log, got: %s", buf.String())
+	}
+}
+
+// TestRespawnPaneToProjectRoot_EvictsWhenCWDInsideTarget asserts the guard
+// still evicts a pane genuinely sitting in the worktree being removed,
+// including a cwd in a subdirectory of the worktree.
+func TestRespawnPaneToProjectRoot_EvictsWhenCWDInsideTarget(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentPath = "/project/.maestro/worktrees/cmd_OLD/worker1/src/pkg"
+	exec, _ := newCovExecutor(mock)
+	exec.maestroDir = "/project/.maestro"
+
+	oldWorktree := "/project/.maestro/worktrees/cmd_OLD/worker1"
+	if err := exec.RespawnPaneToProjectRoot("worker1", oldWorktree); err != nil {
+		t.Fatalf("RespawnPaneToProjectRoot: %v", err)
+	}
+	found := false
+	for _, call := range mock.calls {
+		if call == "RespawnPane:/project" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected respawn for pane inside target worktree, calls=%v", mock.calls)
+	}
+}
+
+// TestRespawnPaneToProjectRoot_EvictsWhenCWDQueryFails pins fail-open
+// behaviour for the scoped eviction: when tmux cannot report the pane's
+// cwd, the eviction proceeds so the worktree removal never deletes a
+// directory out from under a live pane (the ENOENT failure mode).
+func TestRespawnPaneToProjectRoot_EvictsWhenCWDQueryFails(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentPathErr = fmt.Errorf("tmux gone")
+	exec, buf := newCovExecutor(mock)
+	exec.maestroDir = "/project/.maestro"
+
+	if err := exec.RespawnPaneToProjectRoot("worker1", "/project/.maestro/worktrees/cmd_OLD/worker1"); err != nil {
+		t.Fatalf("RespawnPaneToProjectRoot: %v", err)
+	}
+	found := false
+	for _, call := range mock.calls {
+		if call == "RespawnPane:/project" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected respawn when cwd query fails (fail-open), calls=%v", mock.calls)
+	}
+	if !strings.Contains(buf.String(), "cwd_query_failed") {
+		t.Errorf("expected cwd_query_failed warn log, got: %s", buf.String())
 	}
 }
 

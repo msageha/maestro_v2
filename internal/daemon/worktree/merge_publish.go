@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -916,7 +917,12 @@ func buildPublishMessage(publishMessage, baseBranch string) string {
 	return prefix + "integrate changes to " + baseBranch
 }
 
-// truncateMessage builds "prefix + body" and truncates to maxLen if needed.
+// truncateMessage builds "prefix + body" and truncates to maxLen runes.
+// The limit is rune-based, not byte-based: a 72-byte cut leaves only ~21
+// Japanese characters, destroying most of the summary ("publish: 前回の
+// コマンド cmd_xxx が parti" — E2E 2026-06-11). Rune counting keeps the
+// informational budget comparable across scripts while staying within
+// git's subject-line conventions for ASCII messages.
 // If body contains newlines, only the first line is used.
 func truncateMessage(prefix, body string, maxLen int) string {
 	// Use only the first line
@@ -928,12 +934,9 @@ func truncateMessage(prefix, body string, maxLen int) string {
 		return prefix
 	}
 	msg := prefix + body
-	if len(msg) > maxLen {
-		// Cut at maxLen bytes, then strip any partial UTF-8 sequence at the
-		// tail so multi-byte runes (e.g. Japanese) are not split mid-rune.
-		// strings.ToValidUTF8 with empty replacement removes invalid trailing
-		// bytes; result is always <= maxLen bytes.
-		msg = strings.ToValidUTF8(msg[:maxLen], "")
+	if utf8.RuneCountInString(msg) > maxLen {
+		runes := []rune(msg)
+		msg = string(runes[:maxLen])
 	}
 	return msg
 }

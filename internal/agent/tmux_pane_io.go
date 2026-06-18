@@ -21,6 +21,7 @@ type PaneIO interface {
 	GetUserVar(paneTarget, name string) (string, error)
 	GetPanePID(paneTarget string) (string, error)
 	GetPaneCurrentCommand(paneTarget string) (string, error)
+	GetPaneCurrentPath(paneTarget string) (string, error)
 	CapturePane(paneTarget string, lastN int) (string, error)
 	CapturePaneJoined(paneTarget string, lastN int) (string, error)
 	IsShellCommand(cmd string) bool
@@ -78,6 +79,11 @@ func (t *TmuxPaneIO) GetPanePID(paneTarget string) (string, error) {
 // GetPaneCurrentCommand delegates to tmux.GetPaneCurrentCommand.
 func (t *TmuxPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return tmux.GetPaneCurrentCommand(paneTarget)
+}
+
+// GetPaneCurrentPath delegates to tmux.GetPaneCurrentPath.
+func (t *TmuxPaneIO) GetPaneCurrentPath(paneTarget string) (string, error) {
+	return tmux.GetPaneCurrentPath(paneTarget)
 }
 
 // CapturePane delegates to tmux.CapturePane.

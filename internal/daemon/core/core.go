@@ -272,9 +272,15 @@ type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, log
 // the cleanup transition. Implementations MUST be a no-op for unknown
 // worker IDs and tolerate "no pane found" — daemons may call this for
 // workers whose pane was never started.
+//
+// onlyIfCWDUnder, when non-empty, must restrict the eviction to panes
+// whose current working directory lies inside that directory. Cleanup
+// passes the worktree path being removed so a worker already re-assigned
+// to another command's worktree is not killed mid-task. Empty string
+// keeps the unconditional behaviour (blocked-pane recovery).
 type AgentExecutor interface {
 	Execute(req model.ExecRequest) model.ExecResult
-	RespawnPaneToProjectRoot(workerID string) error
+	RespawnPaneToProjectRoot(workerID, onlyIfCWDUnder string) error
 	Close() error
 }
 

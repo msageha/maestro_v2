@@ -14,11 +14,14 @@ import "github.com/msageha/maestro_v2/internal/model"
 // RespawnPaneToProjectRoot in call order — tests that exercise Phase B
 // cleanup can assert the daemon invoked the respawn hook for every
 // worker associated with the worktree before tearing it down.
+// RespawnedScopes records the onlyIfCWDUnder argument of each call at
+// the matching index.
 type MockExecutor struct {
 	Calls             []model.ExecRequest
 	Result            model.ExecResult
 	ResultByCall      []model.ExecResult
 	RespawnedWorkers  []string
+	RespawnedScopes   []string
 	RespawnReturnsErr error
 }
 
@@ -34,11 +37,12 @@ func (m *MockExecutor) Execute(req model.ExecRequest) model.ExecResult {
 	return m.Result
 }
 
-// RespawnPaneToProjectRoot records the workerID and returns the
+// RespawnPaneToProjectRoot records the workerID and scope, returning the
 // configured error (default nil). Tests that need to simulate a tmux
 // failure set RespawnReturnsErr.
-func (m *MockExecutor) RespawnPaneToProjectRoot(workerID string) error {
+func (m *MockExecutor) RespawnPaneToProjectRoot(workerID, onlyIfCWDUnder string) error {
 	m.RespawnedWorkers = append(m.RespawnedWorkers, workerID)
+	m.RespawnedScopes = append(m.RespawnedScopes, onlyIfCWDUnder)
 	return m.RespawnReturnsErr
 }
 

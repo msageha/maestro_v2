@@ -167,7 +167,7 @@ func (s *stubStateReader) TripCircuitBreaker(commandID string, reason string, pr
 	return nil
 }
 func (s *stubStateReader) MarkAwaitingFillStallNotified(string, string, string) error { return nil }
-func (s *stubStateReader) MarkCircuitBreakerProgress(string) error                     { return nil }
+func (s *stubStateReader) MarkCircuitBreakerProgress(string) error                    { return nil }
 
 func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
 	t.Parallel()

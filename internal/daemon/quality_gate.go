@@ -105,11 +105,11 @@ type QualityGateDaemon struct {
 	logLevel   LogLevel
 	clock      Clock
 
-	eventChan         chan QualityGateEvent
-	metrics           *QualityGateMetrics
-	stopped           atomic.Bool // Prevents EmitEvent after Stop to avoid panic
-	stopOnce sync.Once // Makes Stop() idempotent
-	engine   *quality.Engine
+	eventChan chan QualityGateEvent
+	metrics   *QualityGateMetrics
+	stopped   atomic.Bool // Prevents EmitEvent after Stop to avoid panic
+	stopOnce  sync.Once   // Makes Stop() idempotent
+	engine    *quality.Engine
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -130,18 +130,18 @@ func NewQualityGateDaemon(
 ) *QualityGateDaemon {
 	ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // cancel is stored in the struct and called on shutdown
 	return &QualityGateDaemon{
-		maestroDir:        maestroDir,
-		config:            cfg,
-		lockMap:           lockMap,
-		dl:                NewDaemonLoggerFromLegacy("quality_gate", logger, logLevel),
-		logger:            logger,
-		logLevel:          logLevel,
-		clock:             RealClock{},
-		eventChan:         make(chan QualityGateEvent, qualityGateEventBufferSize),
-		metrics:           &QualityGateMetrics{},
-		engine:            quality.NewEngine(),
-		ctx:               ctx,
-		cancel:            cancel,
+		maestroDir: maestroDir,
+		config:     cfg,
+		lockMap:    lockMap,
+		dl:         NewDaemonLoggerFromLegacy("quality_gate", logger, logLevel),
+		logger:     logger,
+		logLevel:   logLevel,
+		clock:      RealClock{},
+		eventChan:  make(chan QualityGateEvent, qualityGateEventBufferSize),
+		metrics:    &QualityGateMetrics{},
+		engine:     quality.NewEngine(),
+		ctx:        ctx,
+		cancel:     cancel,
 	}
 }
 
