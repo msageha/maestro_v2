@@ -254,6 +254,7 @@ phases:
 - `--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）
 - `--run-on-main` は **publish 済み main の read-only 検証専用**（integration が `published` のときのみ受理。pre-publish のマージ済み統合状態の検証には `--run-on-integration` を使う。詳細は §「`run_on_main` の投入ルール」）
 - `add-retry-task` と異なり既存タスクの置換ではなく新規タスクの追加で、state が存在する sealed コマンドに投入できる
+- worker の結果 summary に「深掘り推奨」（対象 file:line / 想定アプローチ / 期待される確証）が含まれ、価値が高いと判断したら、`--operation-type verify` を明示して深掘り / 実証タスクを注入してよい（事前計画になかった hot-finding の機会的深掘り）。`max_tasks` 上限を尊重し、同一 finding への深掘りを無限に積まない
 
 **conflict resolution など触る範囲が広いタスクの注意**: 触れるパスが本当に広い場合は `--expected-paths .` を渡してリポジトリ全体を許可してよいが、可能な限りディレクトリ単位で絞ること（worker policy のサンドボックスが弱まるため）。
 
@@ -403,8 +404,11 @@ Orchestrator からコマンド単位のキャンセル要求（`maestro plan re
 | `architect` | 設計・大規模構造変更 | アーキテクチャ策定、技術選定 |
 | `quality-assurance` | テスト・レビュー・品質検証 | テスト作成、コードレビュー、セキュリティ監査 |
 | `researcher` | 調査・分析・レポート | コードベース調査、ライブラリ調査、影響範囲分析 |
+| `sweeper` | 横断走査・seam 拾い上げ | 特定 domain に属さない所見の網羅的検出（セキュリティ評価の横断 sweep 等） |
 
 迷う場合はペルソナを省略。設計+実装混在タスクは `architect` → `implementer` の 2 タスクに分解。
+
+**`sweeper` の使い分け**: 複数 worker を専門領域（domain charter）に分解した際、どの領域にも明確に属さない「seam 案件」が構造的に取りこぼされる。これを補うため、**全 domain worker と並行する単一の横断 sweep タスク**を `sweeper` で 1 つ追加し、`required: true` / `expected_paths: ["."]` で発注する。他 worker と所見が重複してもよい（dedup で吸収）。セキュリティ評価では `security-threat-model` skill の §「Phase 1 並行: 横断 sweep」を参照。
 
 ### 調査→実装の委譲パターン
 
