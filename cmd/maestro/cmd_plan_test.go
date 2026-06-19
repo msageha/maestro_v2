@@ -686,7 +686,7 @@ func TestRunPlanComplete_SummaryFile(t *testing.T) {
 }
 
 // TestBuildDefinitionOfAbort_RejectsNonPositive ensures the definition_of_abort
-// CLI flags reject explicit zero or negative values. REQUIREMENTS.md §S2-2
+// CLI flags reject explicit zero or negative values. docs/requirements/REQUIREMENTS.md §S2-2
 // makes max_repair_count / max_wall_clock_sec hard stops, so a typo such as
 // `--max-repair-count 0` must surface immediately rather than silently fall
 // through to the model defaults.

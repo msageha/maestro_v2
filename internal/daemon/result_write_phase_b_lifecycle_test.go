@@ -304,7 +304,7 @@ func TestResultWrite_DuplicateDoesNotDispatchReviewBeforeAsyncVerifyCompletes(t 
 
 // TestResultWrite_CompletedGoesViaVerifyPending verifies that a worker-reported
 // completed status is routed through verify_pending before reaching completed,
-// per REQUIREMENTS.md §2.1. Observability comes from a recording VerifyRunner:
+// per docs/requirements/REQUIREMENTS.md §2.1. Observability comes from a recording VerifyRunner:
 // the runner is invoked iff Phase B parked the task at verify_pending.
 //
 // The test uses RunOnIntegration: true because the post-2026-05-05 redesign

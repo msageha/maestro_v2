@@ -11,7 +11,7 @@ import (
 // flag a conflict with every other task, which conservatively blocks dispatch
 // rather than silently letting the task race against in-flight work.
 //
-// REQUIREMENTS.md §S1-1 mandates non-empty expected_paths; this sentinel is a
+// docs/requirements/REQUIREMENTS.md §S1-1 mandates non-empty expected_paths; this sentinel is a
 // defensive guard for legacy state files or future code paths that bypass
 // validation.
 const SentinelUnknownPaths = "<unknown-paths>"
@@ -76,7 +76,7 @@ func collectInFlightPaths(taskQueues map[string]*taskQueueEntry, isExpired func(
 				continue
 			}
 			if len(task.ExpectedPaths) == 0 {
-				// STRICT (REQUIREMENTS.md §S1-1): a validated task always has
+				// STRICT (docs/requirements/REQUIREMENTS.md §S1-1): a validated task always has
 				// non-empty expected_paths. Reaching here indicates corrupted
 				// or legacy state. Treat the task as occupying an "unknown"
 				// path so any candidate is conservatively blocked, rather than
@@ -100,7 +100,7 @@ func collectInFlightPaths(taskQueues map[string]*taskQueueEntry, isExpired func(
 // with the candidate's paths, plus the specific conflicting path pair.
 // Returns ("", "", "") if no overlap is found.
 //
-// STRICT (REQUIREMENTS.md §S1-1): a candidate with empty expected_paths is
+// STRICT (docs/requirements/REQUIREMENTS.md §S1-1): a candidate with empty expected_paths is
 // conservatively flagged as conflicting with the first in-flight task. This is
 // a defensive guard — schema validation should have rejected such a task
 // before it reached the dispatch path.
