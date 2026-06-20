@@ -785,6 +785,7 @@ func (wm *Manager) removeMaestroExcludeBlocks(commandID string) {
 	if !removed {
 		return
 	}
+	// #nosec G703 -- excludePath derives from the daemon's own projectRoot.
 	if err := os.WriteFile(excludePath, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
 		wm.Log(core.LogLevelWarn, "exclude_block_gc_write_failed command=%s error=%v", commandID, err)
 		return
@@ -826,7 +827,7 @@ func resolveGitSharedExcludePath(worktreePath string) (string, error) {
 		// gitDir is the per-worktree dir `<repo>/.git/worktrees/<name>`;
 		// its `commondir` file points at the shared `.git`.
 		commonDirFile := filepath.Join(gitDir, "commondir")
-		// #nosec G304 -- path derived from the daemon-managed gitdir above.
+		// #nosec G304 G703 -- path derived from the daemon-managed gitdir above.
 		cdData, err := os.ReadFile(commonDirFile)
 		if err != nil {
 			return "", fmt.Errorf("read commondir: %w", err)
