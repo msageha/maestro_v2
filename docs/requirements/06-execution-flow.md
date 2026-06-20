@@ -3,14 +3,14 @@
 ## フェーズ A: インストール → セットアップ（手動・1 回）
 
 ```
-① install.sh
-   ├── 依存チェック: tmux, go, claude
-   ├── go build -o maestro ./cmd/maestro/
-   └── バイナリを ~/bin/ or /usr/local/bin/ に配置
+① make install
+   ├── check-deps: tmux, go, claude, jq
+   ├── go build で単一バイナリをビルド
+   └── バイナリを配置（実行権限付与）
 
 ② maestro setup <project_dir>
    └── .maestro/ ディレクトリ構造を作成
-       ├── templates/ からファイルコピー（config.yaml, maestro.md, instructions/, dashboard.md）
+       ├── バイナリ埋め込みのテンプレートを .maestro/ 直下へ直接展開（config.yaml, maestro.md, dashboard.md, instructions/, persona/, skills/。.maestro/templates/ は作らない）
        ├── queue/, results/, state/commands/, locks/, logs/, dead_letters/, quarantine/ ディレクトリ作成
        ├── state/metrics.yaml, state/continuous.yaml を初期値で作成
        ├── locks/daemon.lock を作成（ファイルロックは daemon.lock のみ）
@@ -21,39 +21,34 @@
 ## フェーズ B: フォーメーション起動
 
 ```
-③ maestro up [--reset] [--boost] [--continuous] [--no-notify]
+③ maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]
    │
-   ├── --reset 指定時:
-   │   ├── 既存 tmux セッション・デーモンプロセスの停止
-   │   ├── queue/, results/, state/commands/ の YAML クリア
-   │   ├── state/continuous.yaml のリセット（current_iteration: 0）
-   │   ├── state/metrics.yaml のカウンターリセット
-   │   ├── dead_letters/ のクリア
-   │   ├── quarantine/ は保持（デバッグ・フォレンジクス用）
-   │   ├── --reset のみ: 終了（フォーメーション起動は行わない）
-   │   └── --reset + 他フラグ: リセット後にフォーメーション起動へ進む
-   │
-   ├── config.yaml 読み込み・フラグ反映
+   ├── config.yaml 読み込み・フラグ反映（--boost / --continuous）
    │
    ├── スタートアップリカバリ
    │   ├── daemon ロックで競合防止
-   │   ├── YAML 構文検証（破損 → quarantine → リストア）
-   │   ├── schema_version チェック（旧版 → マイグレーション）
-   │   └── ワンショット reconciliation（R0, R0b, R1-R5, R6 の全 8 パターン）
+   │   ├── ディレクトリ確保・stale PID/socket 掃除
+   │   ├── YAML 構文検証（破損 → quarantine）+ schema header 検証（未対応版 → quarantine。マイグレーションは行わず state-load 時の別系統で実施）
+   │   └── （reconciliation はここでは走らない。R0, R0b, R1-R10 はデーモン側 PeriodicScan で実行）
    │
-   ├── tmux セッション作成（内部 tmux モジュール使用）
+   ├── tmux セッション作成（内部 tmux モジュール使用。per-instance socket で分離）
    │   ├── Window 0: orchestrator (1 pane)
    │   ├── Window 1: planner (1 pane)
    │   ├── Window 2: workers (grid layout)
-   │   └── 各ペインに @agent_id, @role, @model, @status を設定
-   │       （model は default_model + models map から解決）
+   │   └── 各ペインに @agent_id, @role, @model, @status, @runtime を設定
+   │       （model は default_model + models map から解決。@runtime は codex/gemini ランタイム解決用）
    │
    ├── 各ペインで maestro agent launch を実行
-   │   └── claude --model {model} --append-system-prompt "..." --dangerously-skip-permissions
+   │   ├── claude（既定 / orchestrator・planner 必須）: claude --model {model} --append-system-prompt "..." --dangerously-skip-permissions
+   │   └── codex / gemini（worker のみ）: 各ランタイムのコマンド・フラグで起動
    │
-   └── maestro daemon (background, daemon lock)
-       ├── Queue ハンドラ: queue/ 変更検知 → 配信
-       └── Result ハンドラ: results/ 変更検知 → 通知
+   ├── maestro daemon (background, daemon lock)
+   │   ├── Queue ハンドラ: queue/ 変更検知 → 配信
+   │   └── Result ハンドラ: results/ 変更検知 → 通知
+   │
+   └── --detach でなければ tmux セッションへ attach（detach 時は起動完了で終了。再接続は maestro attach）
+
+   注: up は起動時に queue / results / state を毎回初期化する（continuous / metrics は初期値で再生成、quarantine は保全）。--force / -f は稼働中セッションを破棄して再生成するためのガード解除であり、状態保全とは無関係。
 ```
 
 ## フェーズ C: コマンド実行サイクル
@@ -88,7 +83,7 @@
    └── maestro plan submit（phases 付きまたは tasks のみ）
        ├── 内部処理（デーモン側で自動実行）:
        │   ├── tasks/phases YAML バリデーション + DAG 検証（タスクレベル + フェーズレベル）
-       │   ├── continuous.enabled: true → __system_commit タスクを自動挿入（§10 参照）
+       │   ├── worktree.enabled: false → __system_commit タスクを自動挿入（worktree モード有効時はデーモンがコミットするため挿入しない。§10 参照）
        │   │   ├── tasks の場合: blocked_by に全ユーザータスクを設定
        │   │   └── phases の場合: フェーズ構造の外に独立タスクとして追加（配信条件は全フェーズ terminal）
        │   ├── Worker 自動割当（concrete フェーズのタスク + __system_commit。bloom_level → model → pending 最小）
@@ -124,7 +119,11 @@
    │   ├── blocked_by 判定: state/commands/{command_id}.yaml の task_states を参照
    │   │   └── blocked_by 内の全タスクが completed → 配信可能 / 未完了あり → スキップ
    │   └── 配信可能 → in_progress + lease 付与 + attempts 加算 → mutex 解放
-   ├── agent_executor で Worker にタスク内容を配信 (--with-clear)
+   ├── task content を enrich（BuildTaskContent。§5.17 参照）
+   │   ├── persona_hint → persona 本文を prepend（境界マーカー付き）
+   │   ├── skill_refs → skill 本文を注入
+   │   └── learnings（該当する Failure Fingerprint 知見）を注入
+   ├── agent_executor で Worker に enrich 済みタスク内容を配信 (--with-clear)
    │   ├── /clear を送信（前タスクのコンテキストをリセット）
    │   ├── cooldown_after_clear 秒待機
    │   └── タスク内容を送信
@@ -145,8 +144,8 @@
        │   ├── per-command mutex 取得
        │   ├── state/commands/{command_id}.yaml の task_states/applied_result_ids を更新
        │   └── per-command mutex 解放
-       └── [フェーズ C: 依存解決トリガー]
-           └── 完了タスクに依存する他タスクの queue ファイルを touch → fsnotify 発火
+       └── （依存解放は result write 側では行わない。完了タスクに依存する他タスクは
+           デーモンの PeriodicScan が blocked_by を再評価して配信する）
    │
    ▼
 ⑩ デーモン（Result ハンドラ）が results/worker{N}.yaml の変更を検知
@@ -178,9 +177,10 @@
    ▼
 ⑫ デーモン（Result ハンドラ）が results/planner.yaml の変更を検知
    ├── per-agent mutex → notification lease 取得 → mutex 解放
-   ├── maestro queue write orchestrator --type notification --command-id cmd_... --content "..."
-   │   → queue/orchestrator.yaml に pending 通知追加
-   ├── maestro notify "Maestro" "cmd_... が完了しました"
+   ├── maestro queue write orchestrator --type notification --command-id cmd_... --source-result-id res_... --content "..."
+   │   → queue/orchestrator.yaml に pending 通知追加（macOS 通知は行わない）
+   │     （type=notification では --command-id / --content / --source-result-id が必須。
+   │      --notification-type に command_completed | command_failed | command_cancelled を任意で付与）
    └── 成功 → mutex 再取得 → notified: true → mutex 解放
        失敗 → mutex 再取得 → lease クリア → mutex 解放（定期スキャンで再試行）
    │
@@ -190,10 +190,9 @@
    │   → in_progress + lease 付与 + attempts 加算 → mutex 解放
    ├── agent_executor で Orchestrator に通知
    │   ├── 厳格ビジー判定（busy_patterns + idle_stable_sec、リトライなし）
-   │   ├── idle → 配信成功 → Orchestrator がユーザーに結果報告
+   │   ├── idle → 配信成功 → Orchestrator が tmux ペイン上でユーザーに結果報告
    │   └── busy → 配信失敗 → pending + lease 解放（定期スキャンで再試行）
-   │                         macOS 通知は ⑫ で送信済み（ユーザーは完了を認識可能）
-   └── （配信失敗は恒久ロストにならない — 定期スキャンが保証）
+   └── （配信失敗は恒久ロストにならない — 定期スキャンが保証。ユーザーは attach 中の Orchestrator ペインで完了を確認）
 ```
 
 ## フェーズ D: Worker のコンテキスト管理
