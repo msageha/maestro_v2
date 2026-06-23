@@ -31,7 +31,7 @@ type MutationSlot struct {
 // SlotResult captures the outcome of a single mutation slot evaluation.
 //
 // FitnessScore is the canonical numeric fitness used by SelectSurvivors for
-// ordering. It is computed mechanically by the verifier (REQUIREMENTS.md
+// ordering. It is computed mechanically by the verifier (docs/requirements/REQUIREMENTS.md
 // §C-3-3 — weighted aggregation, no LLM override). FitnessDesc is an optional
 // human-readable description (e.g. "0.85 (build:pass test:pass lint:warn)")
 // that is only used as a stable tiebreaker — never as the primary key.

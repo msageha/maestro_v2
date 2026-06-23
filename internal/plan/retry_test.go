@@ -19,7 +19,7 @@ import (
 
 // addRetryTaskTest is a thin wrapper around AddRetryTask that fills in
 // ExpectedPaths and DefinitionOfAbort with valid defaults when the caller
-// leaves them blank. The schema requires both fields (REQUIREMENTS.md §S3-1)
+// leaves them blank. The schema requires both fields (docs/requirements/REQUIREMENTS.md §S3-1)
 // so production callers must supply them, but tests focusing on unrelated
 // behavior should not be forced to repeat the boilerplate.
 func addRetryTaskTest(opts RetryOptions) (*RetryResult, error) {
@@ -508,7 +508,7 @@ func setupRetryFixture(t *testing.T) (string, string, string) {
 // for the retry path: AddRetryTask must reject a missing expected_paths or
 // definition_of_abort even when called directly (without the test wrapper
 // that supplies defaults). Symmetric to TestAddTask_DirectAPI_*; this is the
-// other entry point that REQUIREMENTS.md §S3-1 must guard.
+// other entry point that docs/requirements/REQUIREMENTS.md §S3-1 must guard.
 func TestAddRetryTask_DirectAPI_RejectsMissingSchemaFields(t *testing.T) {
 	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
 	cfg := testConfig()

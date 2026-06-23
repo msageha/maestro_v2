@@ -18,7 +18,7 @@ import (
 
 // addTaskTest is a thin wrapper around AddTask that fills in
 // ExpectedPaths and DefinitionOfAbort with valid defaults when the caller
-// leaves them blank. The schema requires both fields (REQUIREMENTS.md §S3-1)
+// leaves them blank. The schema requires both fields (docs/requirements/REQUIREMENTS.md §S3-1)
 // so production callers must supply them, but tests focusing on unrelated
 // behavior should not be forced to repeat the boilerplate.
 func addTaskTest(opts InjectOptions) (*InjectResult, error) {
@@ -88,7 +88,7 @@ func setupInjectFixture(t *testing.T) (string, string, string) {
 // the test wrapper that auto-fills expected_paths / definition_of_abort. This
 // closes a coverage gap (review #8): production callers other than the test
 // suite (e.g., a future non-CLI client speaking to plan layer in-process) must
-// see REQUIREMENTS.md §S3-1 enforcement applied at the API boundary, not only
+// see docs/requirements/REQUIREMENTS.md §S3-1 enforcement applied at the API boundary, not only
 // at the CLI flag layer. Each subtest leaves exactly one field unset.
 func TestAddTask_DirectAPI_RejectsMissingSchemaFields(t *testing.T) {
 	maestroDir, commandID, completedTaskID := setupInjectFixture(t)

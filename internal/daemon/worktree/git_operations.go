@@ -559,6 +559,24 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 	}
 	_ = wm.gitRun("worktree", "prune", "-v")
 
+	// `git worktree add -b <branch>` creates the ref *before* populating the
+	// working tree, so the failed first attempt left the branch behind. Neither
+	// the directory removal nor `worktree prune` deletes a branch, so the
+	// `--no-checkout -b <branch>` retry below would fail with
+	// "fatal: a branch named '<branch>' already exists" — making worker
+	// worktree creation impossible under any sandbox/SIP that denies stat on a
+	// tracked file (e.g. a committed `.env`). Drop the orphaned branch first.
+	// Only fires for the worker shape (`-b`); the integration shape has no
+	// `-b` and references a pre-existing branch that must be preserved.
+	if orphanBranch := branchCreatedByWorktreeAddArgs(addArgs); orphanBranch != "" {
+		if delErr := wm.gitRun("branch", "-D", orphanBranch); delErr != nil {
+			wm.Log(core.LogLevelDebug,
+				"worktree_add_orphan_branch_cleanup command=%s branch=%s error=%v "+
+					"(branch may not have been created by the failed attempt; retry will surface real errors)",
+				commandID, orphanBranch, delErr)
+		}
+	}
+
 	denied := extractUnstattablePathsForWorktreeAdd(addErr.Error())
 	wm.Log(core.LogLevelWarn,
 		"worktree_add_unstattable_fallback command=%s path=%s denied_paths=%v "+
@@ -661,6 +679,19 @@ func worktreePathFromArgs(args []string) string {
 			continue
 		}
 		return a
+	}
+	return ""
+}
+
+// branchCreatedByWorktreeAddArgs returns the branch name a `git worktree add`
+// argv would *create* — i.e. the value following `-b`/`-B`. Returns "" for the
+// integration shape (`["worktree", "add", <path>, <existing-branch>]`) which
+// references a pre-existing branch the fallback must never delete.
+func branchCreatedByWorktreeAddArgs(args []string) string {
+	for i := 2; i+1 < len(args); i++ {
+		if args[i] == "-b" || args[i] == "-B" {
+			return args[i+1]
+		}
 	}
 	return ""
 }
@@ -771,6 +802,7 @@ func (wm *Manager) removeMaestroExcludeBlocks(commandID string) {
 	if !removed {
 		return
 	}
+	// #nosec G703 -- excludePath derives from the daemon's own projectRoot.
 	if err := os.WriteFile(excludePath, []byte(strings.Join(kept, "\n")), 0o600); err != nil {
 		wm.Log(core.LogLevelWarn, "exclude_block_gc_write_failed command=%s error=%v", commandID, err)
 		return
@@ -812,7 +844,7 @@ func resolveGitSharedExcludePath(worktreePath string) (string, error) {
 		// gitDir is the per-worktree dir `<repo>/.git/worktrees/<name>`;
 		// its `commondir` file points at the shared `.git`.
 		commonDirFile := filepath.Join(gitDir, "commondir")
-		// #nosec G304 -- path derived from the daemon-managed gitdir above.
+		// #nosec G304 G703 -- path derived from the daemon-managed gitdir above.
 		cdData, err := os.ReadFile(commonDirFile)
 		if err != nil {
 			return "", fmt.Errorf("read commondir: %w", err)
