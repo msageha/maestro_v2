@@ -160,7 +160,8 @@ shutdown は `sync.Once` で冪等に実行する。UDS リクエスト・`SIGTE
             --append-system-prompt "{system_prompt}" \
             --dangerously-skip-permissions
      ```
-   - **codex / gemini（Worker のみ）**: `launchAlternativeWorker` が各ランタイムのコマンド・フラグ（codex: `--dangerously-bypass-approvals-and-sandbox`、gemini: `--yolo` 等）と環境を組み立てて exec する。Orchestrator / Planner role に non-claude-code が来た場合は launcher が hard-reject する（[REQUIREMENTS.md](REQUIREMENTS.md) §5 C-7）
+     > **注意（`--dangerously-skip-permissions` は best-effort）**: 組織の managed settings が `permissions.disableBypassPermissionsMode: "disable"` を配布している環境では、このフラグは無視され claude は default permission mode に silent downgrade する（2026-07-03 に `~/.claude/remote-settings.json` 経由で観測）。同様に `sandbox.enabled: true` が強制されると Bash が OS サンドボックス下で動く。無人運転はこのフラグ単独に依存せず、全 claude-code role に注入する PreToolUse ポリシーフック（`.maestro/hooks/worker-policy.sh`、明示的 `allow` 決定でプロンプトを短絡）と `workerDisallowedTools` のブロック、`--settings` のキャッシュ `allowWrite` 追加で成立させる（[internal/agent/launcher.go](../../internal/agent/launcher.go) の `dangerousPermissionBypassFlag` コメント参照）。
+   - **codex / gemini（Worker のみ）**: `launchAlternativeWorker` が各ランタイムのコマンド・フラグ（codex: `--dangerously-bypass-approvals-and-sandbox`、gemini: `--yolo` 等）と環境を組み立てて exec する。これらは claude CLI を経由しないため、上記 claude 組織ポリシーの影響を受けない。Orchestrator / Planner role に non-claude-code が来た場合は launcher が hard-reject する（[REQUIREMENTS.md](REQUIREMENTS.md) §5 C-7）
 
 ## 5.6 maestro queue write（CLI → デーモン）
 

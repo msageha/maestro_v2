@@ -40,7 +40,9 @@
    │
    ├── 各ペインで maestro agent launch を実行
    │   ├── claude（既定 / orchestrator・planner 必須）: claude --model {model} --append-system-prompt "..." --dangerously-skip-permissions
-   │   └── codex / gemini（worker のみ）: 各ランタイムのコマンド・フラグで起動
+   │   │     ※ 組織 managed settings が bypassPermissions を無効化していると本フラグは default mode に silent downgrade（sandbox も強制され得る）。
+   │   │       無人運転は全 claude role に注入する PreToolUse ポリシーフックの明示 allow でプロンプトを短絡して成立させる（05-script-responsibilities.md §5.5 の注意参照）。
+   │   └── codex / gemini（worker のみ）: 各ランタイムのコマンド・フラグで起動（claude CLI 非経由のため組織ポリシー非対象）
    │
    ├── maestro daemon (background, daemon lock)
    │   ├── Queue ハンドラ: queue/ 変更検知 → 配信
