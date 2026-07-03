@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Maestro Worker PreToolUse hook.
+# Maestro agent PreToolUse hook.
 #
-# Scope (2026-04-30 redesign): only enforce maestro orchestration-model
-# constraints. Generic destructive-command defense (rm -rf, sudo, kill,
-# base64 decode, eval, etc.) is the responsibility of the user's global
-# Claude Code hooks (~/.claude/settings.json) and is intentionally NOT
-# duplicated here. The duplication caused recurring false positives:
+# Usage: worker-policy.sh [role]
+#
+# The role argument is one of worker, planner, orchestrator. Missing or
+# unknown roles fall back to worker, the most restrictive policy. The file
+# name remains worker-policy.sh for compatibility with existing formations,
+# but the hook now serves every claude-code managed role.
+#
+# Scope (2026-04-30 redesign; extended to all roles 2026-07-04): only enforce
+# maestro orchestration-model constraints. Generic destructive-command defense
+# (rm -rf, sudo, kill, base64 decode, eval, etc.) is the responsibility of the
+# user's global Claude Code hooks (~/.claude/settings.json) and is intentionally
+# NOT duplicated here. The duplication caused recurring false positives:
 # the e2e regression captured a Worker stalling for 9+ minutes after
 # the hook denied every escape path (heredoc, /tmp file, stdin) for a
 # `maestro result write --summary` whose payload happened to include
@@ -16,9 +23,17 @@ set -euo pipefail
 # LLM orchestration: the hook must protect the orchestration model,
 # not re-implement system-level safety the host already enforces.
 #
-# What this hook still enforces (maestro-internal contracts only):
+# Why planner/orchestrator get this hook (2026-07-04): managed org settings
+# can force sandbox.enabled=true and disable bypassPermissions, silently
+# downgrading every --dangerously-skip-permissions pane to default permission
+# mode. In that downgraded mode, hook-less planner/orchestrator panes wedge on
+# unsandboxed-retry approval prompts. A PreToolUse hook returning explicit
+# `allow` is the only promptless path verified on claude 2.1.187.
 #
-#   - Worker cannot invoke daemon-owned maestro CLI subcommands
+# Role policy matrix (maestro-internal contracts only):
+#
+#   - worker (default): all rules below apply. Worker cannot invoke
+#     daemon-owned maestro CLI subcommands
 #     (`maestro plan submit/complete/...`, `maestro queue write`,
 #     `maestro verify write`, operator-only recovery APIs). Crossing
 #     these boundaries from a Worker pane corrupts the plan/queue
@@ -40,12 +55,18 @@ set -euo pipefail
 #     EPERMs dependency extraction, and the post-failure unsandboxed
 #     retry wedges on an approval prompt when managed settings disable
 #     bypassPermissions. See allow_unsandboxed below.
+#   - planner / orchestrator: only Bash role-environment manipulation
+#     (#1b), git push (#3), and .maestro/ control-plane redirects (#4) are
+#     denied. Write/Edit only denies .maestro/ control-plane paths. The
+#     worker-only maestro subcommand matrix (#1), worktree git deny (#2),
+#     RUN_ON_MAIN (#5), package-manager unsandbox rewrite (#6), and WT001 are
+#     intentionally skipped.
 #
 # Anything outside that surface is delegated to the global hook.
 #
-# Decision model (2026-06 update): for any Bash/Write/Edit call that does NOT
+# Decision model (2026-06 update): for any tool call that does NOT
 # trip a maestro deny rule below, this hook returns an explicit `allow`
-# decision (see allow()). This is required for unattended Worker operation:
+# decision (see allow()). This is required for unattended agent operation:
 # Claude Code runs several HARDCODED Bash safety classifiers (e.g. the
 # "expansion obfuscation" check that fires on any command containing a brace
 # followed by a quote, and the `cd && <write>` compound-command guard) which
@@ -62,6 +83,12 @@ set -euo pipefail
 # and because hook `deny` takes precedence over `allow`, the operator's global
 # deny hooks remain effective.
 
+role="${1:-worker}"
+case "$role" in
+  worker|planner|orchestrator) ;;
+  *) role="worker" ;;
+esac
+
 # S3: jq dependency check - deny all if jq is unavailable (fail-safe)
 if ! command -v jq >/dev/null 2>&1; then
   echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Maestro policy hook requires jq but it is not installed. Denying for safety."}}'
@@ -77,11 +104,11 @@ deny() {
   exit 0
 }
 
-# allow emits an explicit PreToolUse "allow" decision so the Worker proceeds
+# allow emits an explicit PreToolUse "allow" decision so the agent proceeds
 # without an approval prompt. Reached only after every maestro deny rule has
 # passed. See the decision-model note above for why this is necessary.
 allow() {
-  jq -nc '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro worker policy: no control-plane / worktree-boundary / run_on_main violation"}}'
+  jq -nc --arg role "$role" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro " + $role + " policy: no control-plane violation or role-scoped boundary violation"}}'
   exit 0
 }
 
@@ -159,20 +186,22 @@ if [ "$tool_name" = "Bash" ]; then
   #    subcommands. These are the explicit "operator/Planner/Orchestrator
   #    role" surfaces; a Worker calling them corrupts the plan/queue state
   #    machine even if the call would otherwise succeed.
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+(submit|complete|add-task|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish)(\s|$)'; then
-    deny "maestro plan control-plane API is Planner/operator-owned, not Worker-callable"
-  fi
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+(plan\s+)?resolve-conflict(\s|$)'; then
-    deny "maestro resolve-conflict is operator-only (Worker resolves conflicts via the dispatched task, not the CLI)"
-  fi
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+queue\s+write(\s|$)'; then
-    deny "maestro queue write is Orchestrator/operator-owned"
-  fi
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+verify\s+write(\s|$)'; then
-    deny "maestro verify write is Planner-owned"
-  fi
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+agent\s+(exec|launch)(\s|$)'; then
-    deny "maestro agent exec/launch is operator-only (direct pane messaging bypasses the daemon dispatch path: no lease, fencing, or dedupe)"
+  if [ "$role" = "worker" ]; then
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+(submit|complete|add-task|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish)(\s|$)'; then
+      deny "maestro plan control-plane API is Planner/operator-owned, not Worker-callable"
+    fi
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+(plan\s+)?resolve-conflict(\s|$)'; then
+      deny "maestro resolve-conflict is operator-only (Worker resolves conflicts via the dispatched task, not the CLI)"
+    fi
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+queue\s+write(\s|$)'; then
+      deny "maestro queue write is Orchestrator/operator-owned"
+    fi
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+verify\s+write(\s|$)'; then
+      deny "maestro verify write is Planner-owned"
+    fi
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+agent\s+(exec|launch)(\s|$)'; then
+      deny "maestro agent exec/launch is operator-only (direct pane messaging bypasses the daemon dispatch path: no lease, fencing, or dedupe)"
+    fi
   fi
 
   # 1b. Block environment tampering that aims to bypass the daemon's
@@ -190,18 +219,23 @@ if [ "$tool_name" = "Bash" ]; then
   # 2. Worker is in worktree mode → daemon owns staging, commits, merges,
   #    publish. Direct git mutations from the worker pane bypass
   #    auto_commit and integration recovery.
-  _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
-  if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
-      deny "git mutation blocked in worktree mode (daemon owns staging, commits, merges, and publish recovery)"
+  if [ "$role" = "worker" ]; then
+    _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
+    if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
+      if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
+        deny "git mutation blocked in worktree mode (daemon owns staging, commits, merges, and publish recovery)"
+      fi
     fi
   fi
 
-  # 3. git push is always Worker-prohibited regardless of cwd. The daemon
+  # 3. git push is always Maestro-agent-prohibited regardless of cwd. The daemon
   #    publishes via merge_publish/publish_completed; any direct push from
-  #    a Worker pane indicates a control-plane bypass attempt.
+  #    an agent pane indicates a control-plane bypass attempt.
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+push(\s|$)'; then
-    deny "git push blocked for Worker (daemon owns publish via merge_publish / publish_completed)"
+    if [ "$role" = "worker" ]; then
+      deny "git push blocked for Worker (daemon owns publish via merge_publish / publish_completed)"
+    fi
+    deny "git push blocked for $role (daemon owns publish via merge_publish / publish_completed)"
   fi
 
   # 4. .maestro/ control plane is daemon-owned. Block command-position
@@ -219,7 +253,7 @@ if [ "$tool_name" = "Bash" ]; then
   #    at command-start boundaries only — payload data inside quoted
   #    arguments is not scanned, mirroring the design choice to delegate
   #    generic destructive-command defense to the global hook.
-  if [ "$run_on_main" = "1" ]; then
+  if [ "$role" = "worker" ] && [ "$run_on_main" = "1" ]; then
     # Common file-mutating verbs at command position.
     if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/[A-Za-z0-9_./-]+/)?(cp|mv|rm|mkdir|rmdir|touch|chmod|chown|chgrp|ln|install)\b'; then
       deny "RUN_ON_MAIN: file-mutating command blocked (read-only verification mode)"
@@ -247,7 +281,7 @@ if [ "$tool_name" = "Bash" ]; then
   #    plain allow — no rewrite needed. Bare `yarn` (optionally with
   #    flags only, e.g. `yarn --frozen-lockfile`) is yarn-classic's
   #    install spelling and is matched separately.
-  if [ "$run_on_main" = "0" ]; then
+  if [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
     _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
     if [ "$_already_unsandboxed" != "true" ]; then
       if echo "$cmd" | grep -qE '(^|[;|&(])\s*(pnpm|npm|yarn|bun)\s+(install|isolated-install|i|ci|add|update|up|upgrade|dedupe|rebuild|prune|import|link|unlink|remove|rm|un|uninstall)(\s|$)' || \
@@ -266,8 +300,8 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ] || [ "$tool_name" = "
   file_path="$(echo "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""')"
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
-  # 1. RUN_ON_MAIN: read-only verification mode forbids all Write/Edit.
-  if [ "$run_on_main" = "1" ]; then
+  # 1. RUN_ON_MAIN: read-only verification mode forbids all Worker Write/Edit.
+  if [ "$role" = "worker" ] && [ "$run_on_main" = "1" ]; then
     deny "RUN_ON_MAIN: Write/Edit blocked while task runs against main branch (read-only verification mode)"
   fi
 
@@ -290,7 +324,7 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ] || [ "$tool_name" = "
   #    worker.md uses `mktemp` to stage long summaries off the Bash
   #    argv before invoking `maestro result write --summary-file`).
   worker_cwd="$(pwd -P 2>/dev/null || echo "")"
-  if [ -n "$worker_cwd" ] && echo "$worker_cwd" | grep -qF '/.maestro/worktrees/'; then
+  if [ "$role" = "worker" ] && [ -n "$worker_cwd" ] && echo "$worker_cwd" | grep -qF '/.maestro/worktrees/'; then
     # Resolve file_path to its eventual absolute realpath.
     _wt_check="$file_path"
     case "$file_path" in

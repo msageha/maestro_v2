@@ -68,7 +68,7 @@ func TestPolicyChecker_HookSettings_ValidJSON(t *testing.T) {
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
 
-	settings, err := pc.HookSettings("/path/to/script.sh")
+	settings, err := pc.HookSettings("/path/to/script.sh", "worker")
 	if err != nil {
 		t.Fatalf("HookSettings failed: %v", err)
 	}
@@ -94,23 +94,39 @@ func TestPolicyChecker_HookSettings_ValidJSON(t *testing.T) {
 
 	// Check matcher
 	group := preToolUse[0].(map[string]interface{})
-	if group["matcher"] != "^(Bash|Write|Edit|MultiEdit|NotebookEdit)$" {
-		t.Errorf("matcher = %q, want %q", group["matcher"], "^(Bash|Write|Edit|MultiEdit|NotebookEdit)$")
+	if group["matcher"] != ".*" {
+		t.Errorf("matcher = %q, want %q", group["matcher"], ".*")
 	}
 }
 
-func TestPolicyChecker_HookSettings_ContainsScriptPath(t *testing.T) {
+func TestPolicyChecker_HookSettings_CommandsIncludeQuotedPathAndRole(t *testing.T) {
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
-	scriptPath := "/custom/path/to/worker-policy.sh"
+	scriptPath := "/custom/path/it' has spaces; $HOME/worker-policy.sh"
 
-	settings, err := pc.HookSettings(scriptPath)
-	if err != nil {
-		t.Fatalf("HookSettings failed: %v", err)
+	for _, role := range []string{"worker", "planner", "orchestrator"} {
+		t.Run(role, func(t *testing.T) {
+			settings, err := pc.HookSettings(scriptPath, role)
+			if err != nil {
+				t.Fatalf("HookSettings failed: %v", err)
+			}
+
+			var parsed hookSettingsJSON
+			if err := json.Unmarshal([]byte(settings), &parsed); err != nil {
+				t.Fatalf("settings is not valid JSON: %v\nsettings: %s", err, settings)
+			}
+			if got := parsed.Hooks.PreToolUse[0].Hooks[0].Command; got != shellQuote(scriptPath)+" "+role {
+				t.Errorf("command = %q, want %q", got, shellQuote(scriptPath)+" "+role)
+			}
+		})
 	}
+}
 
-	if !strings.Contains(settings, scriptPath) {
-		t.Errorf("settings should contain script path %q\nsettings: %s", scriptPath, settings)
+func TestPolicyChecker_HookSettings_InvalidRole(t *testing.T) {
+	dir := t.TempDir()
+	pc := NewPolicyChecker(dir)
+	if _, err := pc.HookSettings("/tmp/test-hook.sh", "bogus"); err == nil {
+		t.Fatal("HookSettings should reject invalid role")
 	}
 }
 
@@ -166,21 +182,25 @@ func TestHookScript_OutputsValidDenyJSON(t *testing.T) {
 	}
 }
 
-func TestBuildLaunchArgs_WorkerNoSettingsInBuildLaunchArgs(t *testing.T) {
-	// Worker args from buildLaunchArgs should NOT include --settings.
-	// Workers get a single merged --settings (Notification + PreToolUse) in Launch().
-	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
-	if err != nil {
-		t.Fatalf("buildLaunchArgs: %v", err)
-	}
-	joined := strings.Join(args, " ")
+func TestBuildLaunchArgs_NoSettingsInBuildLaunchArgs(t *testing.T) {
+	// buildLaunchArgs stays pure. Claude-code roles get their policy --settings
+	// later in the launch path via applyAgentPolicy.
+	for _, role := range []string{"worker", "planner", "orchestrator"} {
+		t.Run(role, func(t *testing.T) {
+			args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Fatalf("buildLaunchArgs: %v", err)
+			}
+			joined := strings.Join(args, " ")
 
-	if strings.Contains(joined, "--settings") {
-		t.Error("worker buildLaunchArgs should NOT include --settings (merged in Launch)")
+			if strings.Contains(joined, "--settings") {
+				t.Errorf("%s buildLaunchArgs should NOT include --settings (added in Launch)", role)
+			}
+		})
 	}
 }
 
-func TestHookSettings_WorkerOnlyPreToolUse(t *testing.T) {
+func TestHookSettings_PreToolUseOnly(t *testing.T) {
 	// Post-2026-05-06 P1 #1: HookSettings must emit ONLY PreToolUse.
 	// Notification / Stop suppression has been removed because Claude
 	// Code merges `--settings` hooks rather than replacing them, so
@@ -188,7 +208,7 @@ func TestHookSettings_WorkerOnlyPreToolUse(t *testing.T) {
 	// ~/.claude responsibility.
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
-	settings, err := pc.HookSettings("/tmp/test-hook.sh")
+	settings, err := pc.HookSettings("/tmp/test-hook.sh", "worker")
 	if err != nil {
 		t.Fatalf("HookSettings error: %v", err)
 	}
@@ -208,18 +228,31 @@ func TestHookSettings_WorkerOnlyPreToolUse(t *testing.T) {
 	}
 }
 
-func TestBuildLaunchArgs_NonWorkerNoPreToolUseHook(t *testing.T) {
-	// Orchestrator and planner should NOT have PreToolUse hook settings
-	for _, role := range []string{"orchestrator", "planner"} {
-		args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
-		if err != nil {
-			t.Fatalf("buildLaunchArgs(%s): %v", role, err)
-		}
-		joined := strings.Join(args, " ")
+func TestApplyAgentPolicy_AllClaudeRolesGetPreToolUseHook(t *testing.T) {
+	for _, role := range []string{"worker", "planner", "orchestrator"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			maestroDir := filepath.Join(t.TempDir(), ".maestro")
+			args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Fatalf("buildLaunchArgs(%s): %v", role, err)
+			}
+			args, err = applyAgentPolicy(maestroDir, role, args)
+			if err != nil {
+				t.Fatalf("applyAgentPolicy(%s): %v", role, err)
+			}
 
-		if strings.Contains(joined, "PreToolUse") {
-			t.Errorf("role=%s should not have PreToolUse hook settings", role)
-		}
+			settings := launchArgValue(t, args, "--settings")
+			if !strings.Contains(settings, `"PreToolUse"`) {
+				t.Fatalf("role=%s should have PreToolUse hook settings; args=%v", role, args)
+			}
+			if !strings.Contains(settings, `"matcher":".*"`) {
+				t.Fatalf("role=%s settings should match all tools; settings=%s", role, settings)
+			}
+			if !strings.Contains(settings, "worker-policy.sh' "+role) {
+				t.Fatalf("role=%s settings should invoke worker-policy.sh with role argument; settings=%s", role, settings)
+			}
+		})
 	}
 }
 
@@ -303,9 +336,10 @@ func makeBashInput(command string) string {
 }
 
 // runHookScript executes the hook script with the given JSON input and returns stdout.
-func runHookScript(t *testing.T, scriptPath, inputJSON string) string {
+func runHookScript(t *testing.T, scriptPath, inputJSON string, scriptArgs ...string) string {
 	t.Helper()
-	cmd := exec.Command("bash", scriptPath)
+	args := append([]string{scriptPath}, scriptArgs...)
+	cmd := exec.Command("bash", args...)
 	cmd.Stdin = strings.NewReader(inputJSON)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -456,6 +490,103 @@ func TestHookScript_ReturnsExplicitAllow(t *testing.T) {
 	}
 }
 
+func TestHookScript_PlannerRolePolicy(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir worktree: %v", err)
+	}
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowBash := []struct {
+		name string
+		cmd  string
+	}{
+		{"plan submit", "maestro plan submit --tasks-file -"},
+		{"queue write", "maestro queue write planner --type command --command-id cmd_1"},
+	}
+	for _, tc := range allowBash {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(tc.cmd), "planner")
+			if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, `"permissionDecision":"deny"`) {
+				t.Errorf("planner command %q should be allowed, got: %s", tc.cmd, out)
+			}
+		})
+	}
+
+	denyBash := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"git push", "git push origin main", `"permissionDecision":"deny"`},
+		{"role env manipulation", "env -u MAESTRO_AGENT_ROLE maestro plan submit --tasks-file -", "role-environment manipulation"},
+		{".maestro redirect", "echo x > .maestro/state/x", ".maestro/ control-plane"},
+	}
+	for _, tc := range denyBash {
+		t.Run(tc.name, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(tc.cmd), "planner")
+			if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, tc.want) {
+				t.Errorf("planner command %q should be denied with %q, got: %s", tc.cmd, tc.want, out)
+			}
+		})
+	}
+
+	writeMaestro := `{"tool_name":"Write","tool_input":{"file_path":".maestro/state/x","content":"x"}}`
+	out := runHookScript(t, scriptPath, writeMaestro, "planner")
+	if !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("planner Write to .maestro/state should be denied, got: %s", out)
+	}
+
+	outsideWorktree := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":%q,"content":"package foo"}}`, filepath.Join(projectDir, "internal", "foo.go"))
+	out = runHookScriptInDir(t, scriptPath, outsideWorktree, worktreeDir, "planner")
+	if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "WT001") {
+		t.Errorf("planner Write outside fake worktree should skip WT001 and allow, got: %s", out)
+	}
+}
+
+func TestHookScript_OrchestratorRolePolicy(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	out := runHookScript(t, scriptPath, makeBashInput("maestro queue write planner --type command --command-id cmd_1"), "orchestrator")
+	if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("orchestrator queue write should be allowed, got: %s", out)
+	}
+
+	out = runHookScript(t, scriptPath, makeBashInput("git push origin main"), "orchestrator")
+	if !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("orchestrator git push should be denied, got: %s", out)
+	}
+}
+
+func TestHookScript_UnknownRoleFallsBackToWorkerPolicy(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	out := runHookScript(t, scriptPath, makeBashInput("maestro plan submit --tasks-file -"), "bogus")
+	if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "Planner/operator-owned") {
+		t.Errorf("unknown role should fall back to worker policy and deny plan submit, got: %s", out)
+	}
+}
+
 func TestHookScript_S3_ContainsJqCheck(t *testing.T) {
 	if !strings.Contains(hookScript, "command -v jq") {
 		t.Error("hook script should contain jq availability check")
@@ -575,9 +706,10 @@ func TestHookScript_WriteHookScript_SafeWithSpecialChars(t *testing.T) {
 }
 
 // runHookScriptInDir runs the hook script with stdin input from a specific working directory.
-func runHookScriptInDir(t *testing.T, scriptPath, inputJSON, dir string) string {
+func runHookScriptInDir(t *testing.T, scriptPath, inputJSON, dir string, scriptArgs ...string) string {
 	t.Helper()
-	cmd := exec.Command("bash", scriptPath)
+	args := append([]string{scriptPath}, scriptArgs...)
+	cmd := exec.Command("bash", args...)
 	cmd.Stdin = strings.NewReader(inputJSON)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()

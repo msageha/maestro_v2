@@ -90,7 +90,7 @@ var allowedToolsByRole = map[string][]string{
 // `permissions.disableBypassPermissionsMode: "disable"`, in which case
 // claude silently downgrades to default mode (observed 2026-07-03 via
 // ~/.claude/remote-settings.json). Unattended operation must therefore not
-// rely on this flag alone — the Worker PreToolUse hook's explicit `allow`
+// rely on this flag alone — the agent PreToolUse hook's explicit `allow`
 // decisions and the workerDisallowedTools blocks are the mechanisms that
 // keep panes prompt-free when the downgrade happens.
 const dangerousPermissionBypassFlag = "--dangerously-skip-permissions"
@@ -137,11 +137,9 @@ func Launch(maestroDir string) error {
 	args = appendWorkspaceReadAllowances(args, maestroDir, role)
 	args = appendResolvedMaestroBashAllowances(args, role, maestroPath)
 
-	if role == "worker" {
-		args, err = applyWorkerPolicy(maestroDir, args)
-		if err != nil {
-			return err
-		}
+	args, err = applyAgentPolicy(maestroDir, role, args)
+	if err != nil {
+		return err
 	}
 
 	// Resolve claude to an absolute path to avoid PATH-hijacking attacks.
@@ -614,16 +612,17 @@ func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime st
 	return agentID, role, agentModel, agentRuntime, nil
 }
 
-// applyWorkerPolicy appends the worker-specific policy hook settings to the
-// CLI args. HookSettings produces merged JSON containing both Notification
-// disablement and PreToolUse policy hook.
-func applyWorkerPolicy(maestroDir string, args []string) ([]string, error) {
+// applyAgentPolicy appends the role-specific policy hook settings to the CLI
+// args for claude-code managed roles. The hook script filename remains
+// worker-policy.sh for compatibility, but it now serves worker, planner, and
+// orchestrator panes.
+func applyAgentPolicy(maestroDir string, role string, args []string) ([]string, error) {
 	pc := NewPolicyChecker(maestroDir)
 	scriptPath, err := pc.WriteHookScript()
 	if err != nil {
 		return nil, fmt.Errorf("write policy hook script: %w", err)
 	}
-	hookSettings, err := pc.HookSettings(scriptPath)
+	hookSettings, err := pc.HookSettings(scriptPath, role)
 	if err != nil {
 		return nil, fmt.Errorf("build policy hook settings: %w", err)
 	}

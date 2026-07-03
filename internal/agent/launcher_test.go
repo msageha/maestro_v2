@@ -552,6 +552,34 @@ func TestBuildLaunchArgs_DangerousPermissionBypassForAllManagedRoles(t *testing.
 	}
 }
 
+func TestApplyAgentPolicy_AllClaudeRoles(t *testing.T) {
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			maestroDir := filepath.Join(t.TempDir(), ".maestro")
+			args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Fatalf("buildLaunchArgs: %v", err)
+			}
+			args, err = applyAgentPolicy(maestroDir, role, args)
+			if err != nil {
+				t.Fatalf("applyAgentPolicy: %v", err)
+			}
+
+			settings := launchArgValue(t, args, "--settings")
+			if !strings.Contains(settings, `"PreToolUse"`) {
+				t.Fatalf("settings missing PreToolUse: %s", settings)
+			}
+			if !strings.Contains(settings, `"matcher":".*"`) {
+				t.Fatalf("settings must match all tools: %s", settings)
+			}
+			if !strings.Contains(settings, "worker-policy.sh' "+role) {
+				t.Fatalf("settings must invoke hook with role %q: %s", role, settings)
+			}
+		})
+	}
+}
+
 func TestAppendWorkspaceReadAllowances_PlannerAddsAbsoluteMaestroDir(t *testing.T) {
 	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
