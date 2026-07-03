@@ -69,11 +69,20 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 // hook running in Maestro panes scope it themselves at the user /
 // project settings layer.
 type hookSettingsJSON struct {
-	Hooks hookSettingsHooks `json:"hooks"`
+	Hooks   hookSettingsHooks    `json:"hooks"`
+	Sandbox *hookSettingsSandbox `json:"sandbox,omitempty"`
 }
 
 type hookSettingsHooks struct {
 	PreToolUse []hookMatcherGroup `json:"PreToolUse,omitempty"`
+}
+
+type hookSettingsSandbox struct {
+	Filesystem *hookSettingsSandboxFilesystem `json:"filesystem,omitempty"`
+}
+
+type hookSettingsSandboxFilesystem struct {
+	AllowWrite []string `json:"allowWrite,omitempty"`
 }
 
 type hookMatcherGroup struct {
@@ -93,14 +102,25 @@ type hookEntry struct {
 // rationale. This produces a single --settings flag so that the existing argv
 // plumbing stays simple.
 //
-// Sandbox settings are intentionally omitted: passing sandbox config via
-// --settings overrides the user's global sandbox.enabled:false and prevents
-// the /sandbox command from working. See launcher.go buildLaunchArgs for details.
+// Sandbox settings add only filesystem.allowWrite entries for Maestro-managed
+// toolchain caches. Claude Code merges sandbox keys individually and merges
+// filesystem.allowWrite additively (verified 2026-07-03/04), so omitting
+// sandbox.enabled preserves the user / managed layer's value: this payload does
+// not start the sandbox on non-sandbox machines and does not affect /sandbox
+// there. In org-managed environments sandbox.enabled is already forced, so the
+// extra writable cache paths prevent common toolchain EPERM failures and
+// complement buildLaunchEnvForAgent, which points cache env vars at
+// <maestroDir>/cache.
 func (pc *PolicyChecker) HookSettings(scriptPath, role string) (string, error) {
 	if !knownRoles[role] {
 		return "", fmt.Errorf("unknown policy role %q", role)
 	}
 	settings := hookSettingsJSON{}
+	if allowWrite := pc.sandboxFilesystemAllowWrite(); len(allowWrite) > 0 {
+		settings.Sandbox = &hookSettingsSandbox{
+			Filesystem: &hookSettingsSandboxFilesystem{AllowWrite: allowWrite},
+		}
+	}
 	// Match every tool. When managed settings downgrade
 	// --dangerously-skip-permissions to default permission mode, any tool call
 	// outside the operator machine's allowlists prompts. The hook script
@@ -125,6 +145,35 @@ func (pc *PolicyChecker) HookSettings(scriptPath, role string) (string, error) {
 		return "", fmt.Errorf("marshal hook settings: %w", err)
 	}
 	return string(b), nil
+}
+
+func (pc *PolicyChecker) sandboxFilesystemAllowWrite() []string {
+	if pc.maestroDir == "" {
+		return nil
+	}
+	var paths []string
+	add := func(path string) {
+		if path == "" {
+			return
+		}
+		path = filepath.Clean(path)
+		for _, existing := range paths {
+			if existing == path {
+				return
+			}
+		}
+		paths = append(paths, path)
+	}
+
+	if abs, err := filepath.Abs(pc.maestroDir); err == nil {
+		add(filepath.Join(abs, "cache"))
+		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+			add(filepath.Join(resolved, "cache"))
+		}
+	}
+	add("~/.cache")
+	add("~/Library/Caches")
+	return paths
 }
 
 func shellQuote(s string) string {

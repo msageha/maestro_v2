@@ -122,6 +122,84 @@ func TestPolicyChecker_HookSettings_CommandsIncludeQuotedPathAndRole(t *testing.
 	}
 }
 
+func TestPolicyChecker_HookSettings_SandboxFilesystemAllowWrite(t *testing.T) {
+	dir := t.TempDir()
+	pc := NewPolicyChecker(dir)
+	settings, err := pc.HookSettings("/tmp/test-hook.sh", "worker")
+	if err != nil {
+		t.Fatalf("HookSettings failed: %v", err)
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(settings), &parsed); err != nil {
+		t.Fatalf("settings is not valid JSON: %v\nsettings: %s", err, settings)
+	}
+	if jsonObjectHasKey(parsed, "enabled") {
+		t.Fatalf("HookSettings must not emit sandbox.enabled or any enabled key, got: %s", settings)
+	}
+
+	sandbox, ok := parsed["sandbox"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings missing sandbox object: %s", settings)
+	}
+	filesystem, ok := sandbox["filesystem"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings missing sandbox.filesystem object: %s", settings)
+	}
+	rawAllowWrite, ok := filesystem["allowWrite"].([]any)
+	if !ok {
+		t.Fatalf("settings missing sandbox.filesystem.allowWrite array: %s", settings)
+	}
+	var allowWrite []string
+	for _, raw := range rawAllowWrite {
+		v, ok := raw.(string)
+		if !ok {
+			t.Fatalf("allowWrite contains non-string value %T: %v", raw, raw)
+		}
+		allowWrite = append(allowWrite, v)
+	}
+
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	want := []string{filepath.Join(absDir, "cache")}
+	if resolved, err := filepath.EvalSymlinks(absDir); err == nil && resolved != absDir {
+		want = append(want, filepath.Join(resolved, "cache"))
+	}
+	want = append(want, "~/.cache", "~/Library/Caches")
+
+	if len(allowWrite) != len(want) {
+		t.Fatalf("allowWrite length = %d, want %d\nallowWrite=%v\nwant=%v", len(allowWrite), len(want), allowWrite, want)
+	}
+	for i := range want {
+		if allowWrite[i] != want[i] {
+			t.Errorf("allowWrite[%d] = %q, want %q", i, allowWrite[i], want[i])
+		}
+	}
+}
+
+func jsonObjectHasKey(v any, key string) bool {
+	switch x := v.(type) {
+	case map[string]any:
+		for k, child := range x {
+			if k == key {
+				return true
+			}
+			if jsonObjectHasKey(child, key) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range x {
+			if jsonObjectHasKey(child, key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func TestPolicyChecker_HookSettings_InvalidRole(t *testing.T) {
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
@@ -142,7 +220,7 @@ func TestHookScript_ContainsMaestroSpecificChecks(t *testing.T) {
 		text string
 	}{
 		{"maestro plan control plane", "maestro plan control-plane API is Planner/operator-owned"},
-		{"maestro plan resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
+		{"maestro plan resolve-conflict", "maestro resolve-conflict is operator-only"},
 		{"maestro queue write", "maestro queue write is Orchestrator/operator-owned"},
 		{"maestro verify write", "maestro verify write is Planner-owned"},
 		{"maestro agent exec/launch", "maestro agent exec/launch is operator-only"},
@@ -346,6 +424,40 @@ func runHookScript(t *testing.T, scriptPath, inputJSON string, scriptArgs ...str
 		t.Fatalf("hook script failed: %v, output: %s", err, out)
 	}
 	return string(out)
+}
+
+type decodedHookOutput struct {
+	HookSpecificOutput struct {
+		PermissionDecision string         `json:"permissionDecision"`
+		UpdatedInput       map[string]any `json:"updatedInput"`
+	} `json:"hookSpecificOutput"`
+}
+
+func decodeHookOutput(t *testing.T, out string) decodedHookOutput {
+	t.Helper()
+	var decoded decodedHookOutput
+	if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+		t.Fatalf("invalid hook JSON %q: %v", out, err)
+	}
+	return decoded
+}
+
+func assertHookUnsandboxed(t *testing.T, out, wantCommand string) {
+	t.Helper()
+	decoded := decodeHookOutput(t, out)
+	if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Fatalf("decision = %q, want allow; output=%s", decoded.HookSpecificOutput.PermissionDecision, out)
+	}
+	ui := decoded.HookSpecificOutput.UpdatedInput
+	if ui == nil {
+		t.Fatalf("expected updatedInput with dangerouslyDisableSandbox, got none: %s", out)
+	}
+	if v, ok := ui["dangerouslyDisableSandbox"].(bool); !ok || !v {
+		t.Fatalf("updatedInput.dangerouslyDisableSandbox = %v, want true", ui["dangerouslyDisableSandbox"])
+	}
+	if got, _ := ui["command"].(string); got != wantCommand {
+		t.Fatalf("updatedInput.command = %q, want original command %q", got, wantCommand)
+	}
 }
 
 // --- S1: D002 Recursive delete outside project root ---
@@ -1961,16 +2073,112 @@ func TestHookScript_SBX_DenyRulesStillWinOverRewrite(t *testing.T) {
 	}
 }
 
-// TestHookScript_SBX_RewriteGatedOnRunOnMain pins (statically) that the
-// unsandboxed rewrite only fires in normal mode: run_on_main tasks keep the
-// OS sandbox as an extra mutation barrier against the main worktree.
-func TestHookScript_SBX_RewriteGatedOnRunOnMain(t *testing.T) {
-	idx := strings.Index(hookScript, "allow_unsandboxed\n")
-	if idx == -1 {
-		t.Fatal("hook script should invoke allow_unsandboxed")
+func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
 	}
-	gate := strings.LastIndex(hookScript[:idx], `[ "$run_on_main" = "0" ]`)
-	if gate == -1 {
-		t.Error("allow_unsandboxed invocation must be gated on run_on_main=0")
+
+	for _, role := range []string{"worker", "planner", "orchestrator"} {
+		t.Run(role+"_result_write", func(t *testing.T) {
+			cmd := "maestro result write --summary x"
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), role)
+			assertHookUnsandboxed(t, out, cmd)
+		})
+	}
+
+	for _, cmd := range []string{
+		"maestro version",
+		"/opt/maestro/bin/maestro version",
+		"env PATH=/opt/maestro/bin FOO=bar maestro version",
+		"echo ready && maestro version",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd))
+			assertHookUnsandboxed(t, out, cmd)
+		})
+	}
+}
+
+func TestHookScript_SBX_MaestroDeniedRulesStillWinOverRewrite(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	for _, cmd := range []string{
+		"maestro plan submit --tasks-file x",
+		"/opt/maestro/bin/maestro plan submit --tasks-file x",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd))
+			decoded := decodeHookOutput(t, out)
+			if decoded.HookSpecificOutput.PermissionDecision != "deny" {
+				t.Fatalf("worker control-plane maestro call should be denied, got: %s", out)
+			}
+			if decoded.HookSpecificOutput.UpdatedInput != nil {
+				t.Fatalf("denied command must not carry updatedInput, got: %s", out)
+			}
+		})
+	}
+}
+
+func TestHookScript_SBX_MaestroMentionAsDataNotRewritten(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	cmd := `echo "run maestro later"`
+	out := runHookScript(t, scriptPath, makeBashInput(cmd))
+	decoded := decodeHookOutput(t, out)
+	if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Fatalf("expected allow, got: %s", out)
+	}
+	if decoded.HookSpecificOutput.UpdatedInput != nil {
+		t.Fatalf("maestro mention as quoted data must not be rewritten, got: %s", out)
+	}
+}
+
+func TestHookScript_SBX_RunOnMainAllowsMaestroResultWriteUnsandboxed(t *testing.T) {
+	scriptPath, env := runOnMainBashEnv(t, "1")
+	cmdText := "maestro result write --summary x"
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(makeBashInput(cmdText))
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	assertHookUnsandboxed(t, string(out), cmdText)
+}
+
+func TestHookScript_SBX_RunOnMainMutationDenyStillWinsBeforeMaestroRewrite(t *testing.T) {
+	scriptPath, env := runOnMainBashEnv(t, "1")
+	cmdText := "mkdir out && maestro result write --summary x"
+
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(makeBashInput(cmdText))
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	decoded := decodeHookOutput(t, string(out))
+	if decoded.HookSpecificOutput.PermissionDecision != "deny" {
+		t.Fatalf("run_on_main mutation must be denied before maestro rewrite, got: %s", out)
+	}
+	if decoded.HookSpecificOutput.UpdatedInput != nil {
+		t.Fatalf("denied run_on_main mutation must not carry updatedInput, got: %s", out)
 	}
 }

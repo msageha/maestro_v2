@@ -55,12 +55,16 @@ set -euo pipefail
 #     EPERMs dependency extraction, and the post-failure unsandboxed
 #     retry wedges on an approval prompt when managed settings disable
 #     bypassPermissions. See allow_unsandboxed below.
+#   - Maestro CLI calls are also rewritten to run outside the OS
+#     sandbox for all roles. They connect to the daemon over a Unix
+#     domain socket, and sandbox.network.allowUnixSockets is macOS-only;
+#     running the CLI unsandboxed is the portable macOS/Linux fix.
 #   - planner / orchestrator: only Bash role-environment manipulation
 #     (#1b), git push (#3), and .maestro/ control-plane redirects (#4) are
 #     denied. Write/Edit only denies .maestro/ control-plane paths. The
 #     worker-only maestro subcommand matrix (#1), worktree git deny (#2),
 #     RUN_ON_MAIN (#5), package-manager unsandbox rewrite (#6), and WT001 are
-#     intentionally skipped.
+#     intentionally skipped; the maestro CLI unsandbox rewrite still applies.
 #
 # Anything outside that surface is delegated to the global hook.
 #
@@ -141,7 +145,8 @@ allow() {
 # tests (and any future naive grep over hook output) classify decisions by
 # that substring, and this is an *allow* decision.
 allow_unsandboxed() {
-  echo "$input" | jq -c '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)","updatedInput":(.tool_input + {"dangerouslyDisableSandbox":true})}}'
+  local reason="${1:-maestro policy: Bash command runs unsandboxed}"
+  echo "$input" | jq -c --arg reason "$reason" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":$reason,"updatedInput":(.tool_input + {"dangerouslyDisableSandbox":true})}}'
   exit 0
 }
 
@@ -181,25 +186,26 @@ fi
 # --- Bash command checks ---
 if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
+  maestro_cmd_prefix='(^|;|\||&&|&)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^;|&[:space:]]+[[:space:]]+)*(env[[:space:]]+(((-u[[:space:]]+[A-Za-z_][A-Za-z0-9_]*)|(-[A-Za-z0-9]+)|([A-Za-z_][A-Za-z0-9_]*=[^;|&[:space:]]+))[[:space:]]+)*)?(/[A-Za-z0-9_./-]+/)?maestro'
 
   # 1. Worker must not invoke daemon-owned maestro CLI control-plane
   #    subcommands. These are the explicit "operator/Planner/Orchestrator
   #    role" surfaces; a Worker calling them corrupts the plan/queue state
   #    machine even if the call would otherwise succeed.
   if [ "$role" = "worker" ]; then
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+(submit|complete|add-task|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish)(\s|$)'; then
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+plan[[:space:]]+(submit|complete|add-task|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish)([[:space:]]|$)"; then
       deny "maestro plan control-plane API is Planner/operator-owned, not Worker-callable"
     fi
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+(plan\s+)?resolve-conflict(\s|$)'; then
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+(plan[[:space:]]+)?resolve-conflict([[:space:]]|$)"; then
       deny "maestro resolve-conflict is operator-only (Worker resolves conflicts via the dispatched task, not the CLI)"
     fi
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+queue\s+write(\s|$)'; then
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+queue[[:space:]]+write([[:space:]]|$)"; then
       deny "maestro queue write is Orchestrator/operator-owned"
     fi
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+verify\s+write(\s|$)'; then
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+verify[[:space:]]+write([[:space:]]|$)"; then
       deny "maestro verify write is Planner-owned"
     fi
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+agent\s+(exec|launch)(\s|$)'; then
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+agent[[:space:]]+(exec|launch)([[:space:]]|$)"; then
       deny "maestro agent exec/launch is operator-only (direct pane messaging bypasses the daemon dispatch path: no lease, fencing, or dedupe)"
     fi
   fi
@@ -212,7 +218,7 @@ if [ "$tool_name" = "Bash" ]; then
   #     maestro-specific role-impersonation guard, not a generic
   #     environment-restriction rule.
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(env(\s+[^;|&[:space:]]+)*\s+(-u\s+)?(MAESTRO_AGENT_ROLE|TMUX_PANE)|unset\s+(MAESTRO_AGENT_ROLE|TMUX_PANE)|((MAESTRO_AGENT_ROLE|TMUX_PANE)=))' && \
-     echo "$cmd" | grep -qE '(^|;|\||&&).*maestro\s+'; then
+     echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+"; then
     deny "maestro invocation with role-environment manipulation blocked (do not unset / rewrite MAESTRO_AGENT_ROLE or TMUX_PANE before calling maestro)"
   fi
 
@@ -272,22 +278,27 @@ if [ "$tool_name" = "Bash" ]; then
     fi
   fi
 
-  # 6. OS-sandbox escape for package-manager mutations (see the
-  #    allow_unsandboxed comment for the full root-cause analysis).
-  #    Runs LAST in the Bash branch so every maestro deny rule above has
-  #    already passed; gated on run_on_main=0 so read-only verification
-  #    tasks keep the sandbox as an extra mutation barrier. A call that
-  #    already carries dangerouslyDisableSandbox falls through to the
-  #    plain allow — no rewrite needed. Bare `yarn` (optionally with
-  #    flags only, e.g. `yarn --frozen-lockfile`) is yarn-classic's
-  #    install spelling and is matched separately.
-  if [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
-    _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
-    if [ "$_already_unsandboxed" != "true" ]; then
+  # 6. OS-sandbox rewrites. This runs LAST in the Bash branch so every
+  #    maestro deny rule above has already passed. Package-manager mutation
+  #    rewrites remain worker-only and gated on run_on_main=0 so read-only
+  #    verification tasks keep the sandbox as an extra mutation barrier.
+  #    Maestro CLI calls are different: `maestro result write` is how a
+  #    run_on_main Worker reports its result, and the UDS connect must happen
+  #    outside the sandbox on macOS and Linux. A command that already carries
+  #    dangerouslyDisableSandbox falls through to the plain allow — no rewrite
+  #    needed. Bare `yarn` (optionally with flags only, e.g.
+  #    `yarn --frozen-lockfile`) is yarn-classic's install spelling and is
+  #    matched separately.
+  _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
+  if [ "$_already_unsandboxed" != "true" ]; then
+    if [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
       if echo "$cmd" | grep -qE '(^|[;|&(])\s*(pnpm|npm|yarn|bun)\s+(install|isolated-install|i|ci|add|update|up|upgrade|dedupe|rebuild|prune|import|link|unlink|remove|rm|un|uninstall)(\s|$)' || \
          echo "$cmd" | grep -qE '(^|[;|&(])\s*yarn(\s+-[^;|&]*)?\s*($|[;|&)])'; then
-        allow_unsandboxed
+        allow_unsandboxed "maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)"
       fi
+    fi
+    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
+      allow_unsandboxed "maestro $role policy: maestro CLI command runs unsandboxed so its Unix-domain-socket daemon connection is outside Claude Code's OS sandbox"
     fi
   fi
 fi

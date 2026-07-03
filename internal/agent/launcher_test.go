@@ -1358,6 +1358,59 @@ func TestBuildLaunchEnvForAgent_DefaultsGOCACHE(t *testing.T) {
 	})
 }
 
+func TestBuildLaunchEnvForAgent_DefaultsToolchainCaches(t *testing.T) {
+	t.Run("defaults_point_under_maestro_cache", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		envMap := envSliceToMap(env)
+		wants := map[string]string{
+			"XDG_CACHE_HOME":   filepath.Join(envMap["MAESTRO_DIR"], "cache", "xdg"),
+			"CARGO_HOME":       filepath.Join(envMap["MAESTRO_DIR"], "cache", "cargo"),
+			"PIP_CACHE_DIR":    filepath.Join(envMap["MAESTRO_DIR"], "cache", "pip"),
+			"GRADLE_USER_HOME": filepath.Join(envMap["MAESTRO_DIR"], "cache", "gradle"),
+			"PUB_CACHE":        filepath.Join(envMap["MAESTRO_DIR"], "cache", "pub"),
+		}
+		for key, want := range wants {
+			if got := envMap[key]; got != want {
+				t.Errorf("%s = %q, want %q", key, got, want)
+			}
+		}
+	})
+
+	t.Run("operator_overrides_win", func(t *testing.T) {
+		maestroDir := t.TempDir()
+		env, err := buildLaunchEnvForAgent(
+			[]string{
+				"PATH=/usr/bin",
+				"XDG_CACHE_HOME=/shared/xdg",
+				"CARGO_HOME=/shared/cargo",
+				"PIP_CACHE_DIR=/shared/pip",
+				"GRADLE_USER_HOME=/shared/gradle",
+				"PUB_CACHE=/shared/pub",
+			},
+			"worker", maestroDir)
+		if err != nil {
+			t.Fatalf("buildLaunchEnvForAgent: %v", err)
+		}
+		envMap := envSliceToMap(env)
+		wants := map[string]string{
+			"XDG_CACHE_HOME":   "/shared/xdg",
+			"CARGO_HOME":       "/shared/cargo",
+			"PIP_CACHE_DIR":    "/shared/pip",
+			"GRADLE_USER_HOME": "/shared/gradle",
+			"PUB_CACHE":        "/shared/pub",
+		}
+		for key, want := range wants {
+			if got := envMap[key]; got != want {
+				t.Errorf("%s = %q, want operator override %q", key, got, want)
+			}
+		}
+	})
+}
+
 func envSliceToMap(env []string) map[string]string {
 	m := make(map[string]string, len(env))
 	for _, e := range env {

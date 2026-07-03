@@ -1181,6 +1181,26 @@ func buildLaunchEnvForAgent(base []string, role, maestroDir string) ([]string, e
 		env = setEnv(env, "MISE_CACHE_DIR", filepath.Join(canonicalDir, "cache", "mise"))
 	}
 
+	// Move common toolchain caches to Maestro-managed, sandbox-writable
+	// locations under .maestro/cache. This mirrors the GOCACHE rationale:
+	// sandboxed agents should not fall back to user cache directories outside
+	// their allowed write roots, while explicit operator env still wins.
+	if !envHasKey(env, "XDG_CACHE_HOME") {
+		env = setEnv(env, "XDG_CACHE_HOME", filepath.Join(canonicalDir, "cache", "xdg"))
+	}
+	if !envHasKey(env, "CARGO_HOME") {
+		env = setEnv(env, "CARGO_HOME", filepath.Join(canonicalDir, "cache", "cargo"))
+	}
+	if !envHasKey(env, "PIP_CACHE_DIR") {
+		env = setEnv(env, "PIP_CACHE_DIR", filepath.Join(canonicalDir, "cache", "pip"))
+	}
+	if !envHasKey(env, "GRADLE_USER_HOME") {
+		env = setEnv(env, "GRADLE_USER_HOME", filepath.Join(canonicalDir, "cache", "gradle"))
+	}
+	if !envHasKey(env, "PUB_CACHE") {
+		env = setEnv(env, "PUB_CACHE", filepath.Join(canonicalDir, "cache", "pub"))
+	}
+
 	// Pin TMPDIR to a Maestro-managed writable directory. macOS sandboxed
 	// child processes (claude-code, codex) routinely fail `mktemp` against
 	// the inherited /var/folders/.../T TMPDIR with `Operation not
