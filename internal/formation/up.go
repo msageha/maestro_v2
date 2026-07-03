@@ -49,6 +49,15 @@ func RunUp(opts UpOptions) (err error) {
 	// fully isolated and the shared-server races vanish structurally.
 	tmux.SetTmuxSocket(tmux.BuildMaestroSocketName(opts.Config.Project.Name, opts.MaestroDir))
 
+	// Guard: refuse to destroy a running session unless --force is set
+	if tmux.SessionExists() && !opts.Force {
+		return ErrSessionExists
+	}
+
+	if err := preflightEnvironment(opts.MaestroDir); err != nil {
+		return err
+	}
+
 	// Initialize tmux debug logger for session lifecycle diagnostics.
 	tmuxLog, tmuxLogErr := initTmuxDebugLog(opts.MaestroDir)
 	if tmuxLogErr != nil {
@@ -59,11 +68,6 @@ func RunUp(opts UpOptions) (err error) {
 			err = errors.Join(err, fmt.Errorf("close tmux debug log: %w", cerr))
 		}
 	}()
-
-	// Guard: refuse to destroy a running session unless --force is set
-	if tmux.SessionExists() && !opts.Force {
-		return ErrSessionExists
-	}
 
 	// Always reset state on startup
 	if err := resetFormation(opts.MaestroDir); err != nil {

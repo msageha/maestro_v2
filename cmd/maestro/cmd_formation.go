@@ -99,12 +99,11 @@ func runUp(args []string) error {
 	}
 
 	if err := formation.RunUp(opts); err != nil {
-		// "Session already exists" is returned BEFORE any resource is created,
-		// and the existing session/daemon belong to a healthy running formation.
-		// Running CleanupOnFailure here would kill that live session + daemon —
-		// i.e. a plain re-run of `maestro up` would destroy the formation this
-		// guard is meant to protect. Surface the guidance and leave it intact.
-		if errors.Is(err, formation.ErrSessionExists) {
+		// These errors are returned BEFORE any resource is created.
+		// Running CleanupOnFailure for ErrSessionExists would kill a healthy
+		// live formation; running it for preflight failures would add noisy
+		// teardown errors when no tmux session or daemon exists yet.
+		if skipRunUpCleanup(err) {
 			return fmt.Errorf("maestro up: %w", err)
 		}
 		// Clean up any partially-created resources (tmux session, daemon)
@@ -127,6 +126,12 @@ func runUp(args []string) error {
 		}
 	}
 	return nil
+}
+
+func skipRunUpCleanup(err error) bool {
+	return errors.Is(err, formation.ErrSessionExists) ||
+		errors.Is(err, formation.ErrSandboxedLaunch) ||
+		errors.Is(err, formation.ErrPreflightFailed)
 }
 
 // printAttachHint surfaces the attach commands so operators do not need to

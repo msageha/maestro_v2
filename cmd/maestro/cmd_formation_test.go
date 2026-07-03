@@ -2,10 +2,13 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/formation"
 )
 
 func gitInit(t *testing.T, dir string) {
@@ -179,6 +182,29 @@ func TestRunUp_FlagParsing(t *testing.T) {
 				if !errors.As(err, &ce) {
 					t.Fatalf("expected CLIError, got %T: %v", err, err)
 				}
+			}
+		})
+	}
+}
+
+func TestSkipRunUpCleanup(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"session exists", fmt.Errorf("maestro up: %w", formation.ErrSessionExists), true},
+		{"preflight failed", fmt.Errorf("maestro up: %w", formation.ErrPreflightFailed), true},
+		{"sandboxed launch", fmt.Errorf("maestro up: %w", formation.ErrSandboxedLaunch), true},
+		{"partial startup failure", fmt.Errorf("create formation: boom"), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := skipRunUpCleanup(tt.err); got != tt.want {
+				t.Fatalf("skipRunUpCleanup(%v) = %v, want %v", tt.err, got, tt.want)
 			}
 		})
 	}
