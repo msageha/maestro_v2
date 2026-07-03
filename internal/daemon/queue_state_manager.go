@@ -161,7 +161,7 @@ type deferredWork struct {
 	runOnIntegrationPreMerges []runOnIntegrationPreMergeItem
 	worktreePublishes         []worktreePublishItem
 	worktreeCleanups          []worktreeCleanupItem
-	abGroups                  []abGroupWorkItem // A/B candidate groups observed in the queue snapshot
+	abGroups                  []abGroupWorkItem   // A/B candidate groups observed in the queue snapshot
 	cancelledCommandIDs       map[string]struct{} // in-memory set of cancel-requested commands for Phase B dispatch guard
 }
 

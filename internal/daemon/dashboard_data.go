@@ -1,8 +1,8 @@
 package daemon
 
 import (
-	"bytes"
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"io"
 	"os"

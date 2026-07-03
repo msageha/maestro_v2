@@ -8,8 +8,8 @@ import "github.com/msageha/maestro_v2/internal/model"
 // files can reuse the embedding without duplicating the surface.
 type stubResolver struct{}
 
-func (stubResolver) GetWorkerPath(string, string) (string, error)   { return "", nil }
-func (stubResolver) EnsureWorkerWorktree(string, string) error      { return nil }
+func (stubResolver) GetWorkerPath(string, string) (string, error) { return "", nil }
+func (stubResolver) EnsureWorkerWorktree(string, string) error    { return nil }
 func (stubResolver) EnsureCandidateWorktree(string, string) (string, string, error) {
 	return "", "", nil
 }

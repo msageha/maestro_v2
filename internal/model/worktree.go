@@ -186,11 +186,11 @@ type ABSelectionMarker struct {
 }
 
 type WorktreeCommandState struct {
-	SchemaVersion int               `yaml:"schema_version"`
-	FileType      string            `yaml:"file_type"`
-	CommandID     string            `yaml:"command_id"`
-	Integration   IntegrationState  `yaml:"integration"`
-	Workers       []WorktreeState   `yaml:"workers"`
+	SchemaVersion int              `yaml:"schema_version"`
+	FileType      string           `yaml:"file_type"`
+	CommandID     string           `yaml:"command_id"`
+	Integration   IntegrationState `yaml:"integration"`
+	Workers       []WorktreeState  `yaml:"workers"`
 	// Candidates tracks A/B candidate worktrees (task-scoped, see
 	// CandidateWorktree). Kept — with their worktrees and branches — for
 	// audit until command cleanup removes them; group resolution does NOT
@@ -200,8 +200,8 @@ type WorktreeCommandState struct {
 	// run borrowing the integration worktree. Set before the first git
 	// mutation, cleared after the worktree is restored to PreSHA. Startup
 	// Reconcile restores and clears a stale marker after a daemon crash.
-	ABSelection *ABSelectionMarker `yaml:"ab_selection,omitempty"`
-	MergedPhases  map[string]string `yaml:"merged_phases,omitempty"` // phase_id -> merged_at (tracks which phases have been merged)
+	ABSelection  *ABSelectionMarker `yaml:"ab_selection,omitempty"`
+	MergedPhases map[string]string  `yaml:"merged_phases,omitempty"` // phase_id -> merged_at (tracks which phases have been merged)
 	// CommitFailedWorkers tracks worker IDs whose auto-commit failed during a phase merge.
 	// Publish-to-base is blocked while this list is non-empty so unmerged worker changes
 	// are never silently published.

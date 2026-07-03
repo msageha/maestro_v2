@@ -204,7 +204,7 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 	// against them. Paths BOTH candidates touched are excluded (no clear
 	// ownership). Extraction failures degrade to a neutral cross layer.
 	total := len(verifyCmds)
-	overlays := make([][]string, len(candidates))      // files overlaid ONTO candidate i (opponent's tests)
+	overlays := make([][]string, len(candidates)) // files overlaid ONTO candidate i (opponent's tests)
 	opponentBranch := make([]string, len(candidates))
 	if len(candidates) == 2 && total > 0 {
 		sets := make([][]string, 2)
