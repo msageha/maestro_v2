@@ -332,6 +332,138 @@ func TestStepBlockedPaneTimeout_FailsTaskAtScanTickGranularity(t *testing.T) {
 	}
 }
 
+func TestStepBlockedPaneTimeout_UnrecoverableUsesShorterThreshold(t *testing.T) {
+	t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "60")
+	t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "30")
+	tracker := paneactivity.New(nil)
+	clock := &fixedClock{now: time.Unix(1_700_000_000, 0).UTC()}
+	qh := newQueueHandlerForPaneActivityTest(t, tracker, clock)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "results"), 0o750); err != nil {
+		t.Fatalf("mkdir results: %v", err)
+	}
+	qh.maestroDir = dir
+	qh.lockMap = lock.NewMutexMap()
+
+	ordinaryPrompt := "│ Do you want to proceed?\n│ ❯ 1. Yes\n│   2. No\n"
+	unrecoverablePrompt := "Bash command (unsandboxed)\nDo you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	qh.paneFinder = func(agentID string) (string, error) { return agentID, nil }
+	qh.paneCapture = func(paneTarget string) (string, error) {
+		switch paneTarget {
+		case "worker1":
+			return ordinaryPrompt, nil
+		case "worker2":
+			return unrecoverablePrompt, nil
+		default:
+			return "", nil
+		}
+	}
+
+	since := clock.now.Add(-45 * time.Second).UTC()
+	_ = tracker.ObserveVerdict("worker1", ordinaryPrompt, time.Minute, since)
+	_ = tracker.ObserveVerdict("worker2", unrecoverablePrompt, time.Minute, since)
+
+	owner := "daemon:1"
+	leaseFuture := clock.now.Add(time.Hour).Format(time.RFC3339)
+	ordinaryQueue := &taskQueueEntry{
+		Queue: model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks: []model.Task{{
+				ID:             "task_ordinary",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &leaseFuture,
+				LeaseEpoch:     1,
+				UpdatedAt:      clock.now.Add(-time.Minute).Format(time.RFC3339),
+				CommandID:      "cmd_ordinary",
+			}},
+		},
+	}
+	unrecoverableQueue := &taskQueueEntry{
+		Queue: model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks: []model.Task{{
+				ID:             "task_unrecoverable",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &leaseFuture,
+				LeaseEpoch:     1,
+				UpdatedAt:      clock.now.Add(-time.Minute).Format(time.RFC3339),
+				CommandID:      "cmd_unrecoverable",
+			}},
+		},
+	}
+	s := &scanState{
+		tasks: map[string]*taskQueueEntry{
+			"/tmp/worker1.yaml": ordinaryQueue,
+			"/tmp/worker2.yaml": unrecoverableQueue,
+		},
+		taskDirty: map[string]bool{},
+	}
+
+	qh.stepBlockedPaneTimeout(s)
+
+	if got := ordinaryQueue.Queue.Tasks[0].Status; got != model.StatusInProgress {
+		t.Fatalf("ordinary blocked task status = %s, want in_progress before normal threshold", got)
+	}
+	if got := unrecoverableQueue.Queue.Tasks[0].Status; got != model.StatusFailed {
+		t.Fatalf("unrecoverable blocked task status = %s, want failed at short threshold", got)
+	}
+	if s.taskDirty["/tmp/worker1.yaml"] {
+		t.Errorf("ordinary blocked task must not be marked dirty before normal threshold")
+	}
+	if !s.taskDirty["/tmp/worker2.yaml"] {
+		t.Errorf("unrecoverable blocked task must be marked dirty after fast fail")
+	}
+}
+
+func TestBlockedPaneUnrecoverableFailAfterEnvAndClamp(t *testing.T) {
+	t.Run("default", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 30*time.Second {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 30s", got)
+		}
+	})
+	t.Run("env_override", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "60")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "15")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 15*time.Second {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 15s", got)
+		}
+	})
+	t.Run("invalid_falls_back_to_default", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "60")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "not-a-number")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 30*time.Second {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 30s", got)
+		}
+	})
+	t.Run("non_positive_falls_back_to_default", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "60")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "0")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 30*time.Second {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 30s", got)
+		}
+	})
+	t.Run("clamped_to_normal_threshold", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "20")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "120")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 20*time.Second {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 20s clamp", got)
+		}
+	})
+	t.Run("normal_kill_switch_clamps_to_zero", func(t *testing.T) {
+		t.Setenv("MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC", "0")
+		t.Setenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC", "15")
+		if got := blockedPaneUnrecoverableFailAfter(); got != 0 {
+			t.Fatalf("blockedPaneUnrecoverableFailAfter = %s, want 0s clamp", got)
+		}
+	})
+}
+
 // TestStepBlockedPaneTimeout_FailsImmediatelyOnTerminalError pins the
 // post-2026-05-06 P0 fix: a worker pane showing a runtime terminal-error
 // frame (Claude API 4xx, content filter, …) must be failed at scan-tick

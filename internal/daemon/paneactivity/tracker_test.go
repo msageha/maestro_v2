@@ -700,6 +700,88 @@ func TestTracker_BlockedSince_ClearedOnNonBlocked(t *testing.T) {
 	}
 }
 
+func TestTracker_BlockedClass_UnrecoverablePrompts(t *testing.T) {
+	t0 := time.Now().UTC()
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{
+			name: "unsandboxed_command_tail_prompt",
+			content: "some output\n" +
+				"Bash command (unsandboxed)\n" +
+				"Do you want to proceed?\n" +
+				"❯ 1. Yes\n" +
+				"  2. No\n",
+		},
+		{
+			name: "protected_path_edit_prompt",
+			content: "Edit operation requested.\n" +
+				"│ Do you want to make this edit to /foo? │\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := New(nil)
+			if v := tr.ObserveVerdict("worker1", tc.content, time.Minute, t0); v != VerdictBlocked {
+				t.Fatalf("ObserveVerdict = %s, want blocked", v)
+			}
+			if _, ok := tr.BlockedSince("worker1"); !ok {
+				t.Fatalf("BlockedSince must be set")
+			}
+			if got := tr.BlockedClass("worker1"); got != "unrecoverable" {
+				t.Fatalf("BlockedClass = %q, want unrecoverable", got)
+			}
+		})
+	}
+}
+
+func TestTracker_BlockedClass_OrdinaryBlockedAndNonBlocked(t *testing.T) {
+	tr := New(regexp.MustCompile(`Thinking`))
+	t0 := time.Now().UTC()
+
+	ordinaryBlocked := "Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	if v := tr.ObserveVerdict("worker1", ordinaryBlocked, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("ordinary blocked prompt must yield VerdictBlocked, got %s", v)
+	}
+	if _, ok := tr.BlockedSince("worker1"); !ok {
+		t.Fatalf("BlockedSince must be set for ordinary blocked prompt")
+	}
+	if got := tr.BlockedClass("worker1"); got != "" {
+		t.Fatalf("ordinary blocked prompt BlockedClass = %q, want empty", got)
+	}
+
+	if v := tr.ObserveVerdict("worker1", "✻ Thinking…", time.Minute, t0.Add(time.Minute)); v != VerdictActive {
+		t.Fatalf("active observation must yield VerdictActive, got %s", v)
+	}
+	if got := tr.BlockedClass("worker1"); got != "" {
+		t.Fatalf("non-blocked active pane BlockedClass = %q, want empty", got)
+	}
+}
+
+func TestTracker_BlockedClass_ClearedOnNonBlocked(t *testing.T) {
+	tr := New(regexp.MustCompile(`Thinking`))
+	t0 := time.Now().UTC()
+
+	unrecoverableBlocked := "Bash command (unsandboxed)\nDo you want to proceed?\n❯ 1. Yes\n  2. No\n"
+	if v := tr.ObserveVerdict("worker1", unrecoverableBlocked, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("unrecoverable blocked prompt must yield VerdictBlocked, got %s", v)
+	}
+	if got := tr.BlockedClass("worker1"); got != "unrecoverable" {
+		t.Fatalf("BlockedClass = %q, want unrecoverable", got)
+	}
+
+	if v := tr.ObserveVerdict("worker1", "✻ Thinking…", time.Minute, t0.Add(time.Minute)); v != VerdictActive {
+		t.Fatalf("active observation must yield VerdictActive, got %s", v)
+	}
+	if _, ok := tr.BlockedSince("worker1"); ok {
+		t.Fatalf("BlockedSince must be cleared after non-blocked observation")
+	}
+	if got := tr.BlockedClass("worker1"); got != "" {
+		t.Fatalf("BlockedClass = %q, want empty after non-blocked observation", got)
+	}
+}
+
 // TestTracker_ObserveVerdict_BlockedDetectorDisablable pins that
 // SetBlockedPattern(nil) disables the override — useful for callers
 // that want to measure raw busy/hash signals.

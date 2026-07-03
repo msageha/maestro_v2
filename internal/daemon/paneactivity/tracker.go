@@ -207,6 +207,10 @@ type Tracker struct {
 	// the threshold, the in-flight task is failed so Planner / Orchestrator
 	// can route around it instead of waiting 30 min for the back-stop.
 	blockedSince map[string]time.Time
+	// blockedClass records the current blocked prompt subclass for each
+	// agent. It is updated on every blocked observation while blockedSince
+	// remains stamped to the first observation in the current run.
+	blockedClass map[string]string
 	// hintLogState throttles the per-agent
 	// `pane_blocked_prompt_hint_unmatched` DEBUG log. The hint regex is
 	// deliberately broad (anything that looks like a prompt marker —
@@ -333,6 +337,13 @@ var defaultBlockedTailRegex = regexp.MustCompile(
 		// "Bash command " prefix is required so prose containing
 		// "(unsandboxed)" alone does not match.
 		`|(Bash command \(unsandboxed\))`)
+
+// unrecoverableBlockedRegex matches prompt literals that cannot be cleared
+// by auto-approval when bypassPermissions is disabled by managed policy:
+// protected-path edit confirmations and unsandboxed-command approvals.
+// The queue scanner uses this subclass to fail on a shorter timeout so the
+// daemon can repair/replan instead of waiting on operator-only prompts.
+var unrecoverableBlockedRegex = regexp.MustCompile(`(?m)(make this edit to )|(Bash command \(unsandboxed\))`)
 
 // blockedHintRegex matches surface symptoms of an interactive prompt
 // even when the strict patterns above did not fire. Used purely for a
@@ -487,6 +498,7 @@ func New(busyRegex *regexp.Regexp) *Tracker {
 		snapshots:       make(map[string]Snapshot),
 		uncertainStreak: make(map[string]int),
 		blockedSince:    make(map[string]time.Time),
+		blockedClass:    make(map[string]string),
 		hintLogState:    make(map[string]hintLogEntry),
 		busyRegex:       busyRegex,
 		blockedRegex:    defaultBlockedRegex,
@@ -531,6 +543,20 @@ func classifyBlockedHint(content string) string {
 	// Lowercase for stability against case variation. The hint patterns
 	// are ASCII / known glyphs so ToLower is safe and cheap.
 	return strings.ToLower(m)
+}
+
+func classifyBlockedPrompt(content, tail string) string {
+	for _, m := range unrecoverableBlockedRegex.FindAllString(content, -1) {
+		if m == "make this edit to " {
+			return "unrecoverable"
+		}
+	}
+	for _, m := range unrecoverableBlockedRegex.FindAllString(tail, -1) {
+		if m == "Bash command (unsandboxed)" {
+			return "unrecoverable"
+		}
+	}
+	return ""
 }
 
 // SetBlockedPattern replaces the regex used to detect blocked
@@ -752,8 +778,8 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	if terminalErrorRegex.MatchString(content) {
 		t.mu.Lock()
 		delete(t.uncertainStreak, agentID)
-		// Keep BlockedSince untouched — this verdict has its own
-		// recovery path in the queue scanner, independent of the
+		// Keep BlockedSince / BlockedClass untouched — this verdict has
+		// its own recovery path in the queue scanner, independent of the
 		// blocked-pane timeout machinery.
 		t.mu.Unlock()
 		attrs := []any{
@@ -783,6 +809,9 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	if contextBudgetExhaustedRegex.MatchString(tailForBudget) {
 		t.mu.Lock()
 		delete(t.uncertainStreak, agentID)
+		// Keep BlockedSince / BlockedClass untouched for consistency with
+		// the terminal-error path; context exhaustion has its own
+		// immediate failure path in the queue scanner.
 		t.mu.Unlock()
 		attrs := []any{
 			"agent_id", agentID,
@@ -839,6 +868,8 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 			t.blockedSince[agentID] = now
 			blockedSince = now
 		}
+		blockedClass := classifyBlockedPrompt(content, tailForBlocked)
+		t.blockedClass[agentID] = blockedClass
 		t.mu.Unlock()
 		// Surface the detection so operators see why a pane was kept
 		// active despite no forward progress. The queue scanner enforces
@@ -862,6 +893,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 	// blocked observation starts fresh. Cheap when nothing was set.
 	t.mu.Lock()
 	delete(t.blockedSince, agentID)
+	delete(t.blockedClass, agentID)
 	t.mu.Unlock()
 	// Diagnostic when a strict-match miss leaves obvious prompt symptoms
 	// in the captured content. Reports of 2026-05-04 found a real
@@ -979,6 +1011,7 @@ func (t *Tracker) ForgetAgent(agentID string) {
 	delete(t.snapshots, agentID)
 	delete(t.uncertainStreak, agentID)
 	delete(t.blockedSince, agentID)
+	delete(t.blockedClass, agentID)
 }
 
 // BlockedSince reports the wall-clock timestamp of the FIRST observation
@@ -993,6 +1026,17 @@ func (t *Tracker) BlockedSince(agentID string) (time.Time, bool) {
 	defer t.mu.RUnlock()
 	ts, ok := t.blockedSince[agentID]
 	return ts, ok
+}
+
+// BlockedClass returns the classification of the current blocked prompt
+// for agentID: "unrecoverable" for prompts that cannot be cleared without
+// operator action when bypassPermissions is disabled (unsandboxed-command
+// and protected-path-edit confirmations), or "" for an ordinary blocked
+// prompt / when the agent is not blocked. Pairs with BlockedSince.
+func (t *Tracker) BlockedClass(agentID string) string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.blockedClass[agentID]
 }
 
 // LastSnapshot returns the most recently recorded snapshot for agentID.

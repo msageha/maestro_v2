@@ -100,11 +100,18 @@ func (qh *QueueHandler) stepBlockedPaneTimeout(s *scanState) {
 		if !ok {
 			continue
 		}
+		blockedClass := qh.paneActivity.BlockedClass(agentID)
+		effectiveThreshold := threshold
+		if blockedClass == "unrecoverable" {
+			if ut := blockedPaneUnrecoverableFailAfter(); ut < effectiveThreshold {
+				effectiveThreshold = ut
+			}
+		}
 		blockedFor := now.Sub(since)
-		if blockedFor < threshold {
+		if blockedFor < effectiveThreshold {
 			qh.log(LogLevelDebug,
-				"blocked_pane_below_threshold worker=%s blocked_for=%s threshold=%s",
-				agentID, blockedFor.Round(time.Second), threshold)
+				"blocked_pane_below_threshold worker=%s blocked_for=%s threshold=%s class=%s",
+				agentID, blockedFor.Round(time.Second), effectiveThreshold, blockedClass)
 			continue
 		}
 		for i := range tq.Queue.Tasks {
@@ -113,9 +120,9 @@ func (qh *QueueHandler) stepBlockedPaneTimeout(s *scanState) {
 				continue
 			}
 			qh.log(LogLevelWarn,
-				"task_failed_blocked_pane_timeout id=%s worker=%s epoch=%d blocked_for=%s threshold=%s "+
+				"task_failed_blocked_pane_timeout id=%s worker=%s epoch=%d blocked_for=%s threshold=%s class=%s "+
 					"(scan-tick path; not waiting for lease expiry)",
-				task.ID, agentID, task.LeaseEpoch, blockedFor.Round(time.Second), threshold)
+				task.ID, agentID, task.LeaseEpoch, blockedFor.Round(time.Second), effectiveThreshold, blockedClass)
 			if qh.failTaskBlockedPane(task, queueFile, agentID, blockedFor) {
 				s.taskDirty[queueFile] = true
 				if recovErr := qh.recoverWorkerPaneAfterBlocked(agentID); recovErr != nil {
@@ -141,6 +148,8 @@ func (qh *QueueHandler) stepBlockedPaneTimeout(s *scanState) {
 // prompt before the daemon decides to route around the worker.
 const defaultBlockedPaneFailAfter = 3 * time.Minute
 
+const defaultBlockedPaneUnrecoverableFailAfter = 30 * time.Second
+
 // blockedPaneFailAfter returns the blocked-pane fail timeout, honouring
 // the MAESTRO_BLOCKED_PANE_FAIL_AFTER_SEC environment variable (positive
 // integer seconds). Returns 0 to disable the early-fail behaviour entirely
@@ -161,6 +170,27 @@ func blockedPaneFailAfter() time.Duration {
 		return defaultBlockedPaneFailAfter
 	}
 	return time.Duration(secs) * time.Second
+}
+
+// blockedPaneUnrecoverableFailAfter returns the fail timeout for blocked
+// prompt classes that managed-policy workers cannot clear via auto-approval.
+// MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC accepts positive integer
+// seconds; invalid or non-positive values fall back to the default. The value
+// is clamped to blockedPaneFailAfter so the unrecoverable path is never slower
+// than the ordinary blocked-pane timeout.
+func blockedPaneUnrecoverableFailAfter() time.Duration {
+	threshold := defaultBlockedPaneUnrecoverableFailAfter
+	raw := os.Getenv("MAESTRO_BLOCKED_PANE_UNRECOVERABLE_FAIL_AFTER_SEC")
+	if raw != "" {
+		secs, err := strconv.Atoi(raw)
+		if err == nil && secs > 0 {
+			threshold = time.Duration(secs) * time.Second
+		}
+	}
+	if normal := blockedPaneFailAfter(); threshold > normal {
+		return normal
+	}
+	return threshold
 }
 
 // failTaskBlockedPane transitions an in-progress task to Failed because
