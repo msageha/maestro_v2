@@ -43,6 +43,10 @@ set -euo pipefail
 #   - In worktree mode the daemon owns staging/commit/merge/push;
 #     direct git mutations from the Worker pane silently desync
 #     auto-commit and integration.
+#   - Protected IDE/runtime config paths (.vscode, .idea, .claude, .codex,
+#     .gemini, .git/hooks) cannot be written from Bash by any role. Claude Code
+#     confirms before writing these paths; in downgraded permission mode that
+#     confirmation wedges the pane, so the hook fast-fails instead.
 #   - RUN_ON_MAIN (read-only verification against main) — Write/Edit
 #     and Bash mutations are blocked while the @run_on_main pane flag
 #     is set. The flag is set/cleared by the daemon per-dispatch.
@@ -61,7 +65,8 @@ set -euo pipefail
 #     running the CLI unsandboxed is the portable macOS/Linux fix.
 #   - planner / orchestrator: only Bash role-environment manipulation
 #     (#1b), git push (#3), and .maestro/ control-plane redirects (#4) are
-#     denied. Write/Edit only denies .maestro/ control-plane paths. The
+#     denied. Bash protected-path writes (#7) are also denied for all roles.
+#     Write/Edit only denies .maestro/ control-plane paths. The
 #     worker-only maestro subcommand matrix (#1), worktree git deny (#2),
 #     RUN_ON_MAIN (#5), package-manager unsandbox rewrite (#6), and WT001 are
 #     intentionally skipped; the maestro CLI unsandbox rewrite still applies.
@@ -253,6 +258,24 @@ if [ "$tool_name" = "Bash" ]; then
   fi
   if echo "$cmd" | grep -qE '(^|[;|&(])\s*[^|]*>\s*\.maestro/(state|queue|results|locks|logs|hooks|config\.yaml|dashboard\.md|verify\.yaml)'; then
     deny ".maestro/ control-plane redirect blocked (daemon-owned)"
+  fi
+
+  # 7. Claude Code hard-protects IDE/runtime config directories and prompts
+  #    before Write/Edit/Bash writes to them. In downgraded permission mode
+  #    that prompt wedges the pane, and neither PreToolUse allow nor
+  #    permissions.allow can short-circuit it. Fast-fail command-position Bash
+  #    writes so the daemon can repair/replan. Reads such as
+  #    `cat .vscode/settings.json` remain allowed.
+  protected_config_path='["'\'']?(\./)?([^[:space:];|&<>]*/)?(\.(vscode|idea|claude|codex|gemini)|\.git/hooks)/'
+  protected_path_reason="protected-path Bash write blocked (.vscode/.idea/.claude/.codex/.gemini/.git-hooks are IDE/runtime config dirs Claude Code confirms before writing; in downgraded permission mode that confirmation wedges the pane. Do not write these paths from a task — drop them from the task scope). This is a fast-fail so the daemon can repair/replan instead of the pane stalling."
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(echo|printf|tee|cat|cp|mv|rsync|install|ln|sed|gsed|perl|dd|truncate)([[:space:]]|$)[^;|&]*>{1,2}[[:space:]]*${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(tee|cp|mv|rsync|install|ln)[[:space:]]+([^[:space:];|&<>]+[[:space:]]+)*${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*[^|]*>{1,2}[[:space:]]*${protected_config_path}"; then
+    deny "$protected_path_reason"
   fi
 
   # 5. RUN_ON_MAIN: read-only verification mode. Block mutating commands

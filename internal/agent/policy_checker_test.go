@@ -914,6 +914,113 @@ func TestHookScript_BlocksMaestroAgentSubcommands(t *testing.T) {
 	}
 }
 
+func TestHookScript_P3_BlocksProtectedConfigBashWrites(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	tests := []struct {
+		name            string
+		role            string
+		cmd             string
+		wantDecision    string
+		wantUnsandboxed bool
+	}{
+		{
+			name:         "vscode redirect",
+			cmd:          "echo x > .vscode/settings.json",
+			wantDecision: "deny",
+		},
+		{
+			name:         "idea append redirect",
+			cmd:          "echo x >> ./.idea/workspace.xml",
+			wantDecision: "deny",
+		},
+		{
+			name:         "claude tee",
+			cmd:          "echo x | tee .claude/settings.json",
+			wantDecision: "deny",
+		},
+		{
+			name:         "codex cp",
+			cmd:          "cp foo .codex/config.toml",
+			wantDecision: "deny",
+		},
+		{
+			name:         "nested gemini redirect",
+			cmd:          "printf x > sub/pkg/.gemini/y",
+			wantDecision: "deny",
+		},
+		{
+			name:         "git hooks redirect",
+			cmd:          "echo x > .git/hooks/pre-commit",
+			wantDecision: "deny",
+		},
+		{
+			name:         "vscode read allowed",
+			cmd:          "cat .vscode/settings.json",
+			wantDecision: "allow",
+		},
+		{
+			name:            "protected path as maestro summary data",
+			cmd:             `maestro result write --summary "I edited .vscode/settings.json"`,
+			wantDecision:    "allow",
+			wantUnsandboxed: true,
+		},
+		{
+			name:         "vscodex is not vscode",
+			cmd:          "echo x > .vscodex/foo",
+			wantDecision: "allow",
+		},
+		{
+			name:         "non dot vscode name allowed",
+			cmd:          "echo x > src/vscode-thing.txt",
+			wantDecision: "allow",
+		},
+		{
+			name:         "planner vscode redirect",
+			role:         "planner",
+			cmd:          "echo x > .vscode/settings.json",
+			wantDecision: "deny",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			role := tc.role
+			if role == "" {
+				role = "worker"
+			}
+			out := runHookScript(t, scriptPath, makeBashInput(tc.cmd), role)
+			decoded := decodeHookOutput(t, out)
+			if decoded.HookSpecificOutput.PermissionDecision != tc.wantDecision {
+				t.Fatalf("decision = %q, want %q; output=%s", decoded.HookSpecificOutput.PermissionDecision, tc.wantDecision, out)
+			}
+			if tc.wantDecision == "deny" {
+				if !strings.Contains(out, "protected-path Bash write blocked") {
+					t.Fatalf("deny reason should explain protected-path fast-fail, got: %s", out)
+				}
+				if decoded.HookSpecificOutput.UpdatedInput != nil {
+					t.Fatalf("denied protected-path command must not carry updatedInput, got: %s", out)
+				}
+				return
+			}
+			if strings.Contains(out, "protected-path Bash write blocked") {
+				t.Fatalf("allowed command must not trip protected-path rule, got: %s", out)
+			}
+			if tc.wantUnsandboxed {
+				assertHookUnsandboxed(t, out, tc.cmd)
+			} else if decoded.HookSpecificOutput.UpdatedInput != nil {
+				t.Fatalf("command should be plain allow without updatedInput, got: %s", out)
+			}
+		})
+	}
+}
+
 // --- WT001: Worktree boundary enforcement ---
 
 func TestHookScript_WT001_DeniesWriteOutsideWorktree(t *testing.T) {
