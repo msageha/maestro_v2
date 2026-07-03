@@ -1695,3 +1695,150 @@ func TestHookScript_RunOnMain_BashAllowsWhenUnflagged(t *testing.T) {
 		t.Errorf("RUN_ON_MAIN must not fire when @run_on_main is unset, got: %s", out)
 	}
 }
+
+// --- SBX: package-manager OS-sandbox escape (allow + updatedInput) ---
+//
+// Claude Code's built-in Bash sandbox write-denies `**/.vscode/**` (and
+// sibling IDE/VCS config globs) at every depth, so package managers
+// extracting a dependency that ships a `.vscode/` directory fail with
+// EPERM mid-install. The hook rewrites such commands to run unsandboxed
+// BEFORE execution (allow + updatedInput.dangerouslyDisableSandbox) —
+// the post-failure retry path wedges on an approval prompt when managed
+// settings disable bypassPermissions. See worker_policy_hook.sh.
+
+func TestHookScript_SBX_PackageManagerCommandsRewrittenUnsandboxed(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	commands := []string{
+		"pnpm install",
+		"pnpm install --frozen-lockfile",
+		"pnpm add ./srcpkg-1.0.0.tgz",
+		"pnpm i",
+		"npm ci",
+		"npm install --no-audit",
+		"npm uninstall left-pad",
+		"yarn install",
+		"yarn add react",
+		"yarn",
+		"yarn --frozen-lockfile",
+		"bun install",
+		"bun add zod",
+		"cd pkg && pnpm install",
+	}
+	for _, cmd := range commands {
+		out := runHookScript(t, scriptPath, makeBashInput(cmd))
+		var decoded struct {
+			HookSpecificOutput struct {
+				PermissionDecision string         `json:"permissionDecision"`
+				UpdatedInput       map[string]any `json:"updatedInput"`
+			} `json:"hookSpecificOutput"`
+		}
+		if err := json.Unmarshal([]byte(out), &decoded); err != nil {
+			t.Fatalf("command %q: invalid hook JSON %q: %v", cmd, out, err)
+		}
+		if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+			t.Errorf("command %q: decision = %q, want allow", cmd, decoded.HookSpecificOutput.PermissionDecision)
+			continue
+		}
+		ui := decoded.HookSpecificOutput.UpdatedInput
+		if ui == nil {
+			t.Errorf("command %q: expected updatedInput with dangerouslyDisableSandbox, got none: %s", cmd, out)
+			continue
+		}
+		if v, ok := ui["dangerouslyDisableSandbox"].(bool); !ok || !v {
+			t.Errorf("command %q: updatedInput.dangerouslyDisableSandbox = %v, want true", cmd, ui["dangerouslyDisableSandbox"])
+		}
+		if got, _ := ui["command"].(string); got != cmd {
+			t.Errorf("command %q: updatedInput.command = %q — original command must be preserved", cmd, got)
+		}
+	}
+}
+
+func TestHookScript_SBX_NonPackageManagerCommandsNotRewritten(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	commands := []string{
+		"echo hello",
+		"go test ./...",
+		"pnpm run build", // run scripts are not dependency extraction
+		"pnpm test",
+		"npm run lint",
+		"yarn build",        // subcommand not in the mutation family
+		"cat yarn.lock",     // mentions yarn only as data
+		"echo pnpm install", // echo is at command position; pnpm install is argv data
+	}
+	for _, cmd := range commands {
+		out := runHookScript(t, scriptPath, makeBashInput(cmd))
+		if !strings.Contains(out, `"permissionDecision":"allow"`) {
+			t.Errorf("command %q: expected plain allow, got: %s", cmd, out)
+		}
+		if strings.Contains(out, "updatedInput") {
+			t.Errorf("command %q: must NOT be rewritten unsandboxed, got: %s", cmd, out)
+		}
+	}
+}
+
+func TestHookScript_SBX_AlreadyUnsandboxedInputNotRewritten(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"pnpm install","dangerouslyDisableSandbox":true}}`
+	out := runHookScript(t, scriptPath, input)
+	if !strings.Contains(out, `"permissionDecision":"allow"`) {
+		t.Errorf("expected allow for already-unsandboxed input, got: %s", out)
+	}
+	if strings.Contains(out, "updatedInput") {
+		t.Errorf("already-unsandboxed input must fall through to plain allow, got: %s", out)
+	}
+}
+
+func TestHookScript_SBX_DenyRulesStillWinOverRewrite(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// git push is Worker-prohibited; a compound command that also contains
+	// a package-manager install must still be denied, not rewritten.
+	out := runHookScript(t, scriptPath, makeBashInput("pnpm install && git push origin main"))
+	if !strings.Contains(out, `"permissionDecision":"deny"`) {
+		t.Errorf("compound command with git push must be denied, got: %s", out)
+	}
+	if strings.Contains(out, "updatedInput") {
+		t.Errorf("denied command must not carry updatedInput, got: %s", out)
+	}
+}
+
+// TestHookScript_SBX_RewriteGatedOnRunOnMain pins (statically) that the
+// unsandboxed rewrite only fires in normal mode: run_on_main tasks keep the
+// OS sandbox as an extra mutation barrier against the main worktree.
+func TestHookScript_SBX_RewriteGatedOnRunOnMain(t *testing.T) {
+	idx := strings.Index(hookScript, "allow_unsandboxed\n")
+	if idx == -1 {
+		t.Fatal("hook script should invoke allow_unsandboxed")
+	}
+	gate := strings.LastIndex(hookScript[:idx], `[ "$run_on_main" = "0" ]`)
+	if gate == -1 {
+		t.Error("allow_unsandboxed invocation must be gated on run_on_main=0")
+	}
+}

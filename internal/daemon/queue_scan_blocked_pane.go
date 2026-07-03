@@ -258,10 +258,13 @@ const terminalErrorSummaryFmt = "runtime_terminal_error: worker %s pane emitted 
 // placeholders are the worker (agent) ID and the elapsed blocked-for
 // duration.
 const blockedPaneTimeoutSummaryFmt = "blocked_pane_timeout: worker %s pane has been wedged on a runtime confirmation/approval " +
-	"prompt for %s, longer than the daemon's blocked-pane timeout. Auto-failed to keep the iteration moving. Most common cause: " +
-	"a task touched a runtime-protected path (e.g. .claude/, ~/.claude/, .codex/, .gemini/) which the underlying CLI insists on " +
-	"confirming before each edit, even with --dangerously-skip-permissions. Fix: drop the protected path from the task's " +
-	"expected_paths and edit content, OR add auto-approval / allowlists in the operator's ~/.claude side."
+	"prompt for %s, longer than the daemon's blocked-pane timeout. Auto-failed to keep the iteration moving. Most common causes: " +
+	"(a) a task touched a runtime-protected path (e.g. .claude/, ~/.claude/, .codex/, .gemini/, .vscode/, .idea/) which the " +
+	"underlying CLI insists on confirming before each edit, even with --dangerously-skip-permissions (managed settings can " +
+	"disable bypassPermissions entirely, downgrading the worker to default mode); (b) a command failed inside the OS sandbox " +
+	"(EPERM on a protected glob such as **/.vscode/**) and the runtime asked for approval to retry it unsandboxed. Fix: drop " +
+	"the protected path from the task's expected_paths and edit content, OR add auto-approval / allowlists in the operator's " +
+	"~/.claude side. Package-manager installs are already auto-escaped from the sandbox by the worker policy hook."
 
 // failTaskTerminalError transitions an in-progress task to Failed because
 // the worker pane displayed a runtime terminal-error frame (Claude API 4xx,

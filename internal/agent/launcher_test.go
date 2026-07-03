@@ -754,6 +754,25 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	if !strings.Contains(joined, "Bash(maestro agent:*)") {
 		t.Error("worker disallowedTools should contain Bash(maestro agent:*)")
 	}
+
+	// IDE-config directories are hard-protected by Claude Code (confirmation
+	// prompt that no hook allow can short-circuit when bypassPermissions is
+	// disabled by managed settings); blocking Edit/Write at the tool level
+	// converts the would-be pane wedge into an immediate failure.
+	for _, ide := range []string{
+		"Edit(**/.vscode/**)",
+		"Write(**/.vscode/**)",
+		"MultiEdit(**/.vscode/**)",
+		"NotebookEdit(**/.vscode/**)",
+		"Edit(**/.idea/**)",
+		"Write(**/.idea/**)",
+		"MultiEdit(**/.idea/**)",
+		"NotebookEdit(**/.idea/**)",
+	} {
+		if !strings.Contains(joined, ide) {
+			t.Errorf("worker disallowedTools should contain %q", ide)
+		}
+	}
 }
 
 func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {

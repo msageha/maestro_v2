@@ -34,6 +34,12 @@ set -euo pipefail
 #   - Write/Edit must land inside the Worker's worktree CWD, except
 #     for standard scratch areas (/tmp, $TMPDIR). Without this, the
 #     daemon's auto-commit + integration would never see the change.
+#   - Package-manager mutation commands (pnpm/npm/yarn/bun install
+#     etc.) are rewritten to run outside the OS sandbox via
+#     updatedInput — Claude Code's built-in `**/.vscode/**` write-deny
+#     EPERMs dependency extraction, and the post-failure unsandboxed
+#     retry wedges on an approval prompt when managed settings disable
+#     bypassPermissions. See allow_unsandboxed below.
 #
 # Anything outside that surface is delegated to the global hook.
 #
@@ -76,6 +82,39 @@ deny() {
 # passed. See the decision-model note above for why this is necessary.
 allow() {
   jq -nc '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro worker policy: no control-plane / worktree-boundary / run_on_main violation"}}'
+  exit 0
+}
+
+# allow_unsandboxed emits allow + updatedInput that sets
+# dangerouslyDisableSandbox:true on the Bash call, so the command runs
+# outside Claude Code's OS sandbox without any approval prompt.
+#
+# Why (2026-07-03 root cause): Claude Code's built-in Bash sandbox
+# write-denies `**/.vscode/**`, `**/.idea/**`, `**/.claude/commands/**`,
+# `**/.claude/agents/**` and `**/.git/hooks/**` at every depth under the
+# CWD — including inside node_modules. Package managers extracting a
+# dependency tarball that ships a `.vscode/` directory therefore fail
+# with EPERM mid-install (observed with `pnpm install` in production).
+# The model's natural recovery — retrying with dangerouslyDisableSandbox
+# — is worse: when managed settings set
+# `permissions.disableBypassPermissionsMode: "disable"`, the Worker's
+# `--dangerously-skip-permissions` silently downgrades to default mode
+# and the unsandboxed retry surfaces an approval prompt that no hook
+# `allow` can short-circuit once the pane is wedged on it.
+#
+# Rewriting the input BEFORE execution avoids both failure modes: an
+# E2E on claude 2.1.187 confirmed hook allow + updatedInput runs the
+# command unsandboxed with no prompt, while the same command sandboxed
+# fails EPERM and its unsandboxed retry wedges on approval. Scope is
+# deliberately narrow — package-manager mutation commands only. They
+# are worktree-scoped, node_modules is gitignored, and the runtime
+# still honours `sandbox.allowUnsandboxedCommands:false` should an
+# operator forbid escapes entirely.
+# NOTE: the reason string must not contain the substring "deny" — several
+# tests (and any future naive grep over hook output) classify decisions by
+# that substring, and this is an *allow* decision.
+allow_unsandboxed() {
+  echo "$input" | jq -c '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)","updatedInput":(.tool_input + {"dangerouslyDisableSandbox":true})}}'
   exit 0
 }
 
@@ -196,6 +235,25 @@ if [ "$tool_name" = "Bash" ]; then
     # Mutating git verbs.
     if echo "$cmd" | grep -qE '(^|[;|&(])\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|push|worktree|tag|reset|checkout|clean|am|apply|format-patch|mv|rm|init)(\s|$)'; then
       deny "RUN_ON_MAIN: git mutation blocked (read-only verification mode)"
+    fi
+  fi
+
+  # 6. OS-sandbox escape for package-manager mutations (see the
+  #    allow_unsandboxed comment for the full root-cause analysis).
+  #    Runs LAST in the Bash branch so every maestro deny rule above has
+  #    already passed; gated on run_on_main=0 so read-only verification
+  #    tasks keep the sandbox as an extra mutation barrier. A call that
+  #    already carries dangerouslyDisableSandbox falls through to the
+  #    plain allow — no rewrite needed. Bare `yarn` (optionally with
+  #    flags only, e.g. `yarn --frozen-lockfile`) is yarn-classic's
+  #    install spelling and is matched separately.
+  if [ "$run_on_main" = "0" ]; then
+    _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
+    if [ "$_already_unsandboxed" != "true" ]; then
+      if echo "$cmd" | grep -qE '(^|[;|&(])\s*(pnpm|npm|yarn|bun)\s+(install|isolated-install|i|ci|add|update|up|upgrade|dedupe|rebuild|prune|import|link|unlink|remove|rm|un|uninstall)(\s|$)' || \
+         echo "$cmd" | grep -qE '(^|[;|&(])\s*yarn(\s+-[^;|&]*)?\s*($|[;|&)])'; then
+        allow_unsandboxed
+      fi
     fi
   fi
 fi

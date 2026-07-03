@@ -85,6 +85,14 @@ var allowedToolsByRole = map[string][]string{
 	// worker: unrestricted (empty means all tools allowed)
 }
 
+// dangerousPermissionBypassFlag requests bypassPermissions mode for every
+// agent. Note it is best-effort, not guaranteed: managed settings can set
+// `permissions.disableBypassPermissionsMode: "disable"`, in which case
+// claude silently downgrades to default mode (observed 2026-07-03 via
+// ~/.claude/remote-settings.json). Unattended operation must therefore not
+// rely on this flag alone — the Worker PreToolUse hook's explicit `allow`
+// decisions and the workerDisallowedTools blocks are the mechanisms that
+// keep panes prompt-free when the downgrade happens.
 const dangerousPermissionBypassFlag = "--dangerously-skip-permissions"
 
 // Launch reads tmux user variables for the current pane and launches the
@@ -786,6 +794,27 @@ var workerDisallowedTools = []string{
 	"Write(**/.gemini/**)",
 	"MultiEdit(**/.gemini/**)",
 	"NotebookEdit(**/.gemini/**)",
+	// IDE-config directories (.vscode / .idea) are hard-protected by
+	// Claude Code itself: in every permission mode except
+	// bypassPermissions a Write/Edit into them surfaces a confirmation
+	// prompt that neither permissions.allow rules nor a PreToolUse
+	// `allow` decision can short-circuit (verified on claude 2.1.187,
+	// 2026-07-03). Managed settings can disable bypassPermissions
+	// entirely (`permissions.disableBypassPermissionsMode`), in which
+	// case the Worker's --dangerously-skip-permissions silently
+	// downgrades to default mode and the prompt wedges the pane until
+	// the blocked-pane timeout fails the task. Blocking at the tool
+	// level converts that stall into an immediate "Tool not allowed"
+	// failure the repair / replan path can act on — the same rationale
+	// as the runtime-config blocks above.
+	"Edit(**/.vscode/**)",
+	"Write(**/.vscode/**)",
+	"MultiEdit(**/.vscode/**)",
+	"NotebookEdit(**/.vscode/**)",
+	"Edit(**/.idea/**)",
+	"Write(**/.idea/**)",
+	"MultiEdit(**/.idea/**)",
+	"NotebookEdit(**/.idea/**)",
 	// .maestro/ is the daemon's own state directory; Workers must never
 	// write into the control-plane subtrees. Each subtree is blocked
 	// individually so that .maestro/worktrees/<worker>/ — the Worker's

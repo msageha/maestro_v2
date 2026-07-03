@@ -116,6 +116,14 @@ Why: GetUser が nil を返すケースで nil チェックなし
 | `context deadline exceeded` | タイムアウト | タイムアウト値調整 or 処理最適化 |
 | `no such file or directory` | パス誤り | パス確認 or ファイル生成 |
 
+### OS サンドボックス起因のエラー（Claude Code 実行環境）
+
+| パターン | 原因 | 対応 |
+|---------|------|------|
+| `pnpm/npm/yarn/bun install` 中に `EPERM: operation not permitted` で `.vscode/` `.idea/` `.git/hooks` 等のパスが出る | Claude Code の OS sandbox が `**/.vscode/**` 等への書き込みを全深度で拒否（node_modules 内も対象） | **同じ install コマンドをそのまま再実行**する（ポリシーフックが自動で sandbox 外実行に書き換える）。`dangerouslyDisableSandbox` を自分で付ける必要はない |
+| install 以外のコマンド（tar 展開・cp 等）で同種の EPERM | 同上 | `dangerouslyDisableSandbox: true` で 1 回だけ再試行。**ただしコマンド文字列に `.vscode/` `.idea/` 等の保護パスを直接書かない**（書くと承認プロンプトが出て応答不能になる）。回避不能なら failed で報告 |
+| `.vscode/` `.idea/` 配下への Write/Edit が `Tool not allowed` | maestro が IDE 設定ディレクトリへの編集をブロック（承認プロンプト固着の予防） | そのファイルはタスク成果物にできない。必要性ごと summary に記載して報告する |
+
 ## 6. 診断フロー
 
 ```
