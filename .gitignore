@@ -30,3 +30,6 @@ coverage.html
 credentials.*
 *.pem
 *.secret
+
+# セッション引き継ぎ (コミット不要)
+SESSION_HANDOFF.md
