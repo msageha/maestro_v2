@@ -719,6 +719,11 @@ func TestTracker_BlockedClass_UnrecoverablePrompts(t *testing.T) {
 			content: "Edit operation requested.\n" +
 				"│ Do you want to make this edit to /foo? │\n",
 		},
+		{
+			name: "protected_path_edit_prompt_case_spacing_variant",
+			content: "Edit operation requested.\n" +
+				"│ Do you want to Make this edit to/foo? │\n",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

@@ -33,6 +33,12 @@ const backpressureWriteDeadline = 1 * time.Second
 // to be safe across platforms.
 const maxUnixSocketPathLen = 104
 
+// MaxUnixSocketPathLen returns the conservative AF_UNIX socket path limit used
+// by Maestro path validation.
+func MaxUnixSocketPathLen() int {
+	return maxUnixSocketPathLen
+}
+
 // ErrUnixSocketUnavailable marks environments where AF_UNIX sockets cannot be
 // created, usually because a sandbox or container blocks socket bind.
 var ErrUnixSocketUnavailable = errors.New("unix domain sockets unavailable")

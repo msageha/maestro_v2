@@ -221,9 +221,13 @@ if [ "$tool_name" = "Bash" ]; then
   #     and TMUX_PANE; clearing or rewriting them in front of a maestro
   #     invocation lets a Worker forge a CLI-role call. This is a
   #     maestro-specific role-impersonation guard, not a generic
-  #     environment-restriction rule.
+  #     environment-restriction rule. This guard must stay broad because
+  #     the daemon trusts the env-declared caller role; unlike rules #1/#4,
+  #     command-position anchoring is deliberately NOT used here. A role-env
+  #     rewrite plus any mention of `maestro` is suspicious, including
+  #     `sh -c 'maestro ...'` subshell strings.
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(env(\s+[^;|&[:space:]]+)*\s+(-u\s+)?(MAESTRO_AGENT_ROLE|TMUX_PANE)|unset\s+(MAESTRO_AGENT_ROLE|TMUX_PANE)|((MAESTRO_AGENT_ROLE|TMUX_PANE)=))' && \
-     echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+"; then
+     echo "$cmd" | grep -qE 'maestro[[:space:]]+'; then
     deny "maestro invocation with role-environment manipulation blocked (do not unset / rewrite MAESTRO_AGENT_ROLE or TMUX_PANE before calling maestro)"
   fi
 
@@ -267,14 +271,31 @@ if [ "$tool_name" = "Bash" ]; then
   #    writes so the daemon can repair/replan. Reads such as
   #    `cat .vscode/settings.json` remain allowed.
   protected_config_path='["'\'']?(\./)?([^[:space:];|&<>]*/)?(\.(vscode|idea|claude|codex|gemini)|\.git/hooks)/'
+  protected_redirect='(>{1,2}|>\|)'
   protected_path_reason="protected-path Bash write blocked (.vscode/.idea/.claude/.codex/.gemini/.git-hooks are IDE/runtime config dirs Claude Code confirms before writing; in downgraded permission mode that confirmation wedges the pane. Do not write these paths from a task — drop them from the task scope). This is a fast-fail so the daemon can repair/replan instead of the pane stalling."
-  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(echo|printf|tee|cat|cp|mv|rsync|install|ln|sed|gsed|perl|dd|truncate)([[:space:]]|$)[^;|&]*>{1,2}[[:space:]]*${protected_config_path}"; then
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(echo|printf|tee|cat|cp|mv|rsync|install|ln|sed|gsed|perl|dd|truncate)([[:space:]]|$)[^;|&]*${protected_redirect}[[:space:]]*${protected_config_path}"; then
     deny "$protected_path_reason"
   fi
   if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(tee|cp|mv|rsync|install|ln)[[:space:]]+([^[:space:];|&<>]+[[:space:]]+)*${protected_config_path}"; then
     deny "$protected_path_reason"
   fi
-  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*[^|]*>{1,2}[[:space:]]*${protected_config_path}"; then
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*dd[[:space:]][^;|&]*(^|[[:space:]])of=${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  # In-place editors write their later path arguments. We distinguish -i /
+  # --in-place so read-only forms such as `sed -n p .vscode/x` remain allowed;
+  # if a future editor syntax is ambiguous, fast-fail an in-place-shaped
+  # protected-path command rather than risk a protected-path approval wedge.
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*(sed|gsed)[[:space:]]+([^;|&]*[[:space:]])?(-[A-Za-z]*i[A-Za-z]*|--in-place)(=|[[:space:]]|$)[^;|&]*${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*perl[[:space:]]+[^;|&]*-[A-Za-z]*i[A-Za-z]*([^[:space:]]*)?[[:space:]][^;|&]*${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*truncate[[:space:]][^;|&]*${protected_config_path}"; then
+    deny "$protected_path_reason"
+  fi
+  if echo "$cmd" | grep -qE "(^|[;|&(])[[:space:]]*[^|]*${protected_redirect}[[:space:]]*${protected_config_path}"; then
     deny "$protected_path_reason"
   fi
 
@@ -311,7 +332,12 @@ if [ "$tool_name" = "Bash" ]; then
   #    dangerouslyDisableSandbox falls through to the plain allow — no rewrite
   #    needed. Bare `yarn` (optionally with flags only, e.g.
   #    `yarn --frozen-lockfile`) is yarn-classic's install spelling and is
-  #    matched separately.
+  #    matched separately. Maestro unsandboxing exists so the UDS connect()
+  #    works on all OSes; a command with shell expansion is either not a plain
+  #    maestro call or is a potential denyRead bypass, so it stays sandboxed.
+  #    On this machine allowAllUnixSockets lets even the sandboxed connect
+  #    succeed; the rare portability cost is accepted to preserve the
+  #    secret-read barrier.
   _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
   if [ "$_already_unsandboxed" != "true" ]; then
     if [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
@@ -320,7 +346,13 @@ if [ "$tool_name" = "Bash" ]; then
         allow_unsandboxed "maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)"
       fi
     fi
-    if echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
+    _maestro_has_shell_expansion="0"
+    if echo "$cmd" | grep -qE '(\$\(|`|<\(|>\()' || \
+       echo "$cmd" | grep -qE '(^|[;|&(])[[:space:]]*eval([[:space:]]|$)' || \
+       echo "$cmd" | grep -qE '(^|[;|&(])[[:space:]]*(/[A-Za-z0-9_./-]+/)?(sh|bash)[[:space:]]+(-[A-Za-z]*[[:space:]]+)*-c([[:space:]]|$)'; then
+      _maestro_has_shell_expansion="1"
+    fi
+    if [ "$_maestro_has_shell_expansion" = "0" ] && echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
       allow_unsandboxed "maestro $role policy: maestro CLI command runs unsandboxed so its Unix-domain-socket daemon connection is outside Claude Code's OS sandbox"
     fi
   fi

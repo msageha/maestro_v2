@@ -849,6 +849,8 @@ func TestHookScript_D009_BlocksMaestroRoleEnvironmentBypass(t *testing.T) {
 		{"env role assignment", "env MAESTRO_AGENT_ROLE=cli maestro queue write --type command", true},
 		{"inline role assignment", "MAESTRO_AGENT_ROLE=cli maestro verify write --command-id cmd_1", true},
 		{"chained unset TMUX_PANE", "unset TMUX_PANE; maestro plan retry-publish --command-id cmd_1", true},
+		{"env role assignment before subshell maestro", "env MAESTRO_AGENT_ROLE=cli sh -c 'maestro queue write x'", true},
+		{"inline role assignment before bash -c maestro", `MAESTRO_AGENT_ROLE=cli bash -c "maestro plan submit"`, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -866,6 +868,15 @@ func TestHookScript_D009_BlocksMaestroRoleEnvironmentBypass(t *testing.T) {
 				t.Errorf("expected role-env or maestro-plan deny for %q, got: %s", tc.cmd, output)
 			}
 		})
+	}
+
+	output := runHookScriptInDir(t, scriptPath, makeBashInput(`maestro result write --summary "role stuff"`), dir)
+	decoded := decodeHookOutput(t, output)
+	if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Fatalf("legitimate result write mentioning role text should allow, got: %s", output)
+	}
+	if strings.Contains(output, "role-environment manipulation") {
+		t.Fatalf("role-env guard must not fire without role-env manipulation, got: %s", output)
 	}
 }
 
@@ -936,8 +947,38 @@ func TestHookScript_P3_BlocksProtectedConfigBashWrites(t *testing.T) {
 			wantDecision: "deny",
 		},
 		{
+			name:         "vscode clobber redirect",
+			cmd:          "echo x >| .vscode/settings.json",
+			wantDecision: "deny",
+		},
+		{
 			name:         "idea append redirect",
 			cmd:          "echo x >> ./.idea/workspace.xml",
+			wantDecision: "deny",
+		},
+		{
+			name:         "vscode dd of target",
+			cmd:          "dd if=/dev/null of=.vscode/x",
+			wantDecision: "deny",
+		},
+		{
+			name:         "vscode sed in place",
+			cmd:          "sed -i 's/a/b/' .vscode/x",
+			wantDecision: "deny",
+		},
+		{
+			name:         "vscode gsed in place",
+			cmd:          "gsed -i 's/a/b/' .vscode/x",
+			wantDecision: "deny",
+		},
+		{
+			name:         "claude perl in place",
+			cmd:          "perl -pi -e 's/a/b/' .claude/x",
+			wantDecision: "deny",
+		},
+		{
+			name:         "idea truncate target",
+			cmd:          "truncate -s0 .idea/workspace.xml",
 			wantDecision: "deny",
 		},
 		{
@@ -963,6 +1004,11 @@ func TestHookScript_P3_BlocksProtectedConfigBashWrites(t *testing.T) {
 		{
 			name:         "vscode read allowed",
 			cmd:          "cat .vscode/settings.json",
+			wantDecision: "allow",
+		},
+		{
+			name:         "vscode sed read allowed",
+			cmd:          "sed -n p .vscode/x",
 			wantDecision: "allow",
 		},
 		{
@@ -2206,6 +2252,39 @@ func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testin
 		t.Run(cmd, func(t *testing.T) {
 			out := runHookScript(t, scriptPath, makeBashInput(cmd))
 			assertHookUnsandboxed(t, out, cmd)
+		})
+	}
+}
+
+func TestHookScript_SBX_MaestroCommandsWithShellExpansionStaySandboxed(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	plainUnsandboxed := "maestro result write --summary-file /tmp/x"
+	out := runHookScript(t, scriptPath, makeBashInput(plainUnsandboxed))
+	assertHookUnsandboxed(t, out, plainUnsandboxed)
+
+	for _, cmd := range []string{
+		`maestro result write --summary "$(cat /etc/hosts)"`,
+		"maestro result write --summary `cat /etc/hosts`",
+		"maestro result write --summary-file <(cat /etc/hosts)",
+		"maestro result write --summary-file >(cat >/tmp/x)",
+		`bash -c "maestro result write --summary x"`,
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd))
+			decoded := decodeHookOutput(t, out)
+			if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+				t.Fatalf("decision = %q, want allow; output=%s", decoded.HookSpecificOutput.PermissionDecision, out)
+			}
+			if decoded.HookSpecificOutput.UpdatedInput != nil {
+				t.Fatalf("maestro command with shell expansion/form must stay sandboxed, got: %s", out)
+			}
 		})
 	}
 }

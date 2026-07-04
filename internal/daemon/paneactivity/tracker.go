@@ -340,10 +340,15 @@ var defaultBlockedTailRegex = regexp.MustCompile(
 
 // unrecoverableBlockedRegex matches prompt literals that cannot be cleared
 // by auto-approval when bypassPermissions is disabled by managed policy:
-// protected-path edit confirmations and unsandboxed-command approvals.
+// protected-path edit confirmations.
 // The queue scanner uses this subclass to fail on a shorter timeout so the
 // daemon can repair/replan instead of waiting on operator-only prompts.
-var unrecoverableBlockedRegex = regexp.MustCompile(`(?m)(make this edit to )|(Bash command \(unsandboxed\))`)
+var unrecoverableBlockedRegex = regexp.MustCompile(`(?im)make this edit to ?`)
+
+// unrecoverableUnsandboxedBlockedRegex matches the unsandboxed Bash approval
+// banner. It is evaluated against the pane tail only because old scrollback can
+// legitimately mention this phrase after the prompt has cleared.
+var unrecoverableUnsandboxedBlockedRegex = regexp.MustCompile(`(?im)Bash command \(unsandboxed\)`)
 
 // blockedHintRegex matches surface symptoms of an interactive prompt
 // even when the strict patterns above did not fire. Used purely for a
@@ -546,15 +551,11 @@ func classifyBlockedHint(content string) string {
 }
 
 func classifyBlockedPrompt(content, tail string) string {
-	for _, m := range unrecoverableBlockedRegex.FindAllString(content, -1) {
-		if m == "make this edit to " {
-			return "unrecoverable"
-		}
+	if unrecoverableBlockedRegex.MatchString(content) {
+		return "unrecoverable"
 	}
-	for _, m := range unrecoverableBlockedRegex.FindAllString(tail, -1) {
-		if m == "Bash command (unsandboxed)" {
-			return "unrecoverable"
-		}
+	if unrecoverableUnsandboxedBlockedRegex.MatchString(tail) {
+		return "unrecoverable"
 	}
 	return ""
 }

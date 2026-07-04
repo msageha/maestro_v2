@@ -32,6 +32,66 @@ func TestPreflightEnvironment_HappyPath(t *testing.T) {
 	}
 }
 
+func TestPreflightEnvironment_DoesNotRemoveRealSocketPath(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not on PATH: %v", err)
+	}
+
+	maestroDir, err := os.MkdirTemp("", "m-preflight-real-socket-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(maestroDir) })
+
+	socketPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		t.Fatalf("SocketPath: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Remove(socketPath) })
+	if err := os.MkdirAll(filepath.Dir(socketPath), 0o700); err != nil {
+		t.Fatalf("mkdir socket dir: %v", err)
+	}
+	const marker = "live daemon placeholder"
+	if err := os.WriteFile(socketPath, []byte(marker), 0o600); err != nil {
+		t.Fatalf("write dummy socket path file: %v", err)
+	}
+
+	if err := preflightEnvironment(maestroDir); err != nil {
+		if errors.Is(err, uds.ErrUnixSocketUnavailable) {
+			t.Skipf("unix domain sockets unavailable in this environment: %v", err)
+		}
+		t.Fatalf("preflightEnvironment returned error: %v", err)
+	}
+	got, err := os.ReadFile(socketPath)
+	if err != nil {
+		t.Fatalf("real socket path was removed or became unreadable: %v", err)
+	}
+	if string(got) != marker {
+		t.Fatalf("real socket path content changed: got %q, want %q", got, marker)
+	}
+}
+
+func TestPreflightProbeSocketPathFallsBackWhenSiblingTooLong(t *testing.T) {
+	t.Parallel()
+
+	realSocketPath := filepath.Join(
+		string(os.PathSeparator),
+		strings.Repeat("a", uds.MaxUnixSocketPathLen()),
+		uds.DefaultSocketName,
+	)
+	probePath, err := preflightProbeSocketPath(realSocketPath)
+	if err != nil {
+		t.Fatalf("preflightProbeSocketPath: %v", err)
+	}
+	if filepath.Dir(probePath) != filepath.Clean(os.TempDir()) {
+		t.Fatalf("probe dir = %q, want os.TempDir %q (path %q)", filepath.Dir(probePath), filepath.Clean(os.TempDir()), probePath)
+	}
+	if len(probePath) > uds.MaxUnixSocketPathLen() {
+		t.Fatalf("fallback probe path too long: %d > %d (%s)", len(probePath), uds.MaxUnixSocketPathLen(), probePath)
+	}
+}
+
 func TestClassifyPreflightProbeErr_SandboxUnavailable(t *testing.T) {
 	t.Parallel()
 
