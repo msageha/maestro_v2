@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -18,11 +19,17 @@ func TestBus_DroppedCount(t *testing.T) {
 	started := make(chan struct{})
 	block := make(chan struct{})
 
+	var once sync.Once
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
-		select {
-		case started <- struct{}{}:
-		default:
-		}
+		// The handler may run again for buffered events still pending when
+		// close(block) unblocks the first call. Signal `started` only once:
+		// the test's `<-started` receive happens exactly once, so a second
+		// blocking send here would hang forever (and did, under -race,
+		// before this fix — see bus.go's unsub(), which drops the
+		// subscription from the map but does not close sub.ch, so the
+		// goroutine keeps delivering already-buffered events until Close's
+		// context cancellation is observed).
+		once.Do(func() { started <- struct{}{} })
 		<-block
 	})
 	defer unsub()
@@ -57,11 +64,10 @@ func TestBus_DroppedByType(t *testing.T) {
 	started := make(chan struct{})
 	block := make(chan struct{})
 
+	var once sync.Once
 	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
-		select {
-		case started <- struct{}{}:
-		default:
-		}
+		// See the comment in TestBus_DroppedCount: signal `started` only once.
+		once.Do(func() { started <- struct{}{} })
 		<-block
 	})
 	defer unsub1()
