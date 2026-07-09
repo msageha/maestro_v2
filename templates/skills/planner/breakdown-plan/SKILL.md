@@ -50,11 +50,13 @@ definition_of_abort:
 
 | レベル                  | 用途                         | persona_hint           |
 | ----------------------- | ---------------------------- | ---------------------- |
-| 1-2 remember/understand | 情報収集・調査               | researcher             |
+| 1-2 remember/understand | 定型コード、ドキュメント     | implementer            |
 | 3 apply                 | 既知パターンの適用実装       | implementer            |
-| 4 analyze               | 構造分析・影響範囲調査       | researcher / architect |
+| 4 analyze               | 調査・構造分析・影響範囲特定 | researcher / architect |
 | 5 evaluate              | レビュー・品質検証           | quality-assurance      |
 | 6 create                | 新規設計・アーキテクチャ策定 | architect              |
+
+対応は planner.md §「Bloom's Taxonomy」の表と同一（推奨であり強制ではない。調査目的のタスクはレベルに関わらず `researcher` を優先）。
 
 ## Worker Persona 割り当て基準
 

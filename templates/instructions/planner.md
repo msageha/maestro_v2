@@ -75,7 +75,7 @@ PLAN
 
 `verify.enabled: true` または `ab_test.enabled: true` の場合、各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
 
-> **言語非依存**: 本ドキュメントのコード例は具体性のため Go コマンドで書かれているが、Maestro は対象リポジトリの言語に依存しない。Node なら `tsc --noEmit` / `npm test`、Python なら `ruff check` / `pytest -q`、Rust なら `cargo build` / `cargo test`、Ruby なら `rspec` 等を同じ category に置けばよい (下表「カテゴリ振り分けの目安」参照)。Daemon は marker file (go.mod, package.json, pyproject.toml, ...) からプロジェクト言語を自動判定する。polyglot リポジトリで誤判定される場合は環境変数 `MAESTRO_PROJECT_LANGUAGE` でオーバーライドできる。
+> **言語非依存**: 本ドキュメントのコード例は具体性のため Go コマンドで書かれているが、Maestro は対象リポジトリの言語に依存しない。Node なら `tsc --noEmit` / `npm test`、Python なら `ruff check` / `pytest -q`、Rust なら `cargo build` / `cargo test`、Ruby なら `rspec` 等を同じ category に置けばよい (下表「カテゴリ振り分けの目安」参照)。Daemon 側の言語自動判定は存在しない — 検証コマンドは運用者または Planner が verify.yaml に明示的に書いたものだけが実行される。
 
 ```
 # 例: Go プロジェクトの場合
@@ -318,6 +318,33 @@ reason: consecutive_failures=3 reached threshold=3
 ```
 
 → 新タスク投入停止 → 全タスクが terminal になるまで待つ → `maestro plan complete` で trip 理由を含めて報告。
+
+### 通知 kind 一覧
+
+Daemon が Planner に送る通知はすべて `[maestro] kind:<kind> ...` 形式。多くのメッセージは本文に `next_action:` を含むため、**迷ったらメッセージ内の next_action に従う**。上記 3 種以外の kind:
+
+| kind                                     | 意味                                                                                                              | 推奨アクション                                                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `awaiting_fill_stall`                    | `awaiting_fill` 通知後、`plan submit --phase` が来ないまま watchdog しきい値（デフォルト 5 分）が経過した再通知   | メッセージ内 next_action に従いフェーズへタスクを投入する。投入不能なら `plan request-cancel`。3 回連続で進捗が無いと daemon が command を失敗終端する |
+| `fill_timeout`                           | deferred フェーズの fill deadline が超過し、フェーズが `timed_out` に遷移した                                     | 当該フェーズへの投入はもうできない。残タスクが terminal になったら `plan complete` でタイムアウトを含めて報告する                                      |
+| `re_fill`                                | R0b: フェーズの filling が固着し `awaiting_fill` に巻き戻された                                                   | `plan submit --phase <name>` でタスクを再投入する                                                                                                      |
+| `re_evaluate`                            | R4: 完了判定（can_complete）が失敗し結果が quarantine された                                                      | dashboard / results で状態を再確認し、`plan complete` を再要求するか失敗として報告する                                                                 |
+| `paused_for_replan`                      | 修復上限到達・非リトライ失敗・verify タスクの exit 1 failed 等で、自動 repair が打ち切られた                      | メッセージ内 next_action に従う（修復タスク発行 → 再検証、または `plan complete` で failed 報告）。§「問題発見時の修正ループ」参照                     |
+| `verify_outcome_changed`                 | Worker は completed を報告したが、daemon の verify がタスクを `repair_pending` に回した                           | Worker 報告の `task_result` は stale として扱い、スケジュール済み repair タスクの結果を待つ                                                            |
+| `phase_diagnosis`                        | フェーズ完了時の自己診断（informational）                                                                         | 診断内容を次フェーズ設計の参考にする。即時アクションは不要なことが多い                                                                                 |
+| `cascade_revival_pending`                | 依存先が repair で実質 completed になったのに、cascade cancel された後続タスクが `cancelled` のまま残っている     | メッセージに列挙されたタスクを `plan add-retry-task` で復活させる                                                                                      |
+| `worktree_stalled`                       | integration の進行が `stall_timeout_minutes` を超えて停滞している                                                 | dashboard を確認し `maestro plan recover --command-id <id>` を第一選択として実行する                                                                   |
+| `worker_resolving_stalled`               | 競合解決タスクが `resolving` のまま長時間停滞（解決タスクが報告していない可能性）                                 | メッセージ内 next_action に従う（worker pane / queue を確認し、編集が揃っていれば `plan recover` → 必要時 `resume-merge`）                             |
+| `worktree_config_violation`              | `auto_commit` / `auto_merge` 無効運用で integration が未マージのままタイムアウト超過（daemon は強制マージしない） | オペレーター対応が必要。状況を要約して `plan complete` 等で報告する                                                                                    |
+| `ab_verifier_weak`                       | A/B 候補選抜が弱い機械シグナル（verify snapshot 無し等）のまま確定した                                            | 次の command では `maestro verify write` で build / test を含む snapshot を必ず書く                                                                    |
+| `merge_conflict` / `conflict_resolution` | フェーズ境界マージの競合                                                                                          | §「マージ競合解決 (merge_conflict signal)」の手順に従う                                                                                                |
+| `conflict_escalation`                    | 競合解決の最大リトライ（2 回）到達                                                                                | `plan complete` で失敗として報告する                                                                                                                   |
+| `commit_failed`                          | Worker 変更の自動コミット失敗                                                                                     | §「コミット失敗ハンドリング (commit_failed)」の手順に従う                                                                                              |
+| `publish_conflict`                       | integration → base の publish で内容競合                                                                          | §「Publish Conflict Recovery (publish_conflict)」の手順に従う                                                                                          |
+| `publish_completed`                      | publish 成功（informational）                                                                                     | 原則何もしない。§「Publish 完了通知 (publish_completed)」参照                                                                                          |
+| `publish_quarantined`                    | publish 失敗が quarantine しきい値に到達（自動リトライ枯渇）                                                      | オペレーター介入が必要な旨を含めて `plan complete` で報告する（`retry-publish` は publish 系 quarantine のみ可）                                       |
+
+> **補足**: 内部シグナル `publish_failed` は Planner には配送されない（daemon が自動リトライを管理し、枯渇時に `publish_quarantined` として届く）。未知の kind を受信した場合は dashboard で状況を確認し、対処不能なら `plan complete` で報告する。
 
 ---
 

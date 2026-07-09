@@ -118,12 +118,13 @@ L1（`--disallowedTools` による `Read` の静的拒否）と L2（PreToolUse 
 
 利用可能なペルソナ一覧（詳細は runtime の `.maestro/persona/*.md` 参照）:
 
-| persona_hint        | 役割                               | 推奨 subagent_type                   |
-| ------------------- | ---------------------------------- | ------------------------------------ |
-| `implementer`       | コード実装・修正・実装ドキュメント | `general-purpose`                    |
-| `architect`         | 設計・アーキテクチャ策定           | `Explore`, `Plan`, `general-purpose` |
-| `quality-assurance` | テスト・レビュー・品質検証         | `general-purpose`, `Explore`         |
-| `researcher`        | 調査・分析・レポート               | `Explore`                            |
+| persona_hint        | 役割                                               | 推奨 subagent_type                   |
+| ------------------- | -------------------------------------------------- | ------------------------------------ |
+| `implementer`       | コード実装・修正・実装ドキュメント                 | `general-purpose`                    |
+| `architect`         | 設計・アーキテクチャ策定                           | `Explore`, `Plan`, `general-purpose` |
+| `quality-assurance` | テスト・レビュー・品質検証                         | `general-purpose`, `Explore`         |
+| `researcher`        | 調査・分析・レポート                               | `Explore`                            |
+| `sweeper`           | 横断走査・seam 拾い上げ（domain 外所見の網羅検出） | `Explore`, `general-purpose`         |
 
 ---
 

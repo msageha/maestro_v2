@@ -93,6 +93,24 @@ maestro queue write planner --type command --content "<指示内容>"
 
 → stdout にコマンド ID が返る（例: `cmd_1771722000_a3f2b7c1`）。エラー時は stderr にメッセージが出力される（backpressure 超過等）。エラーが発生した場合はユーザーに報告する。
 
+**Planner 向けスキルの注入（`--skill-refs`）**:
+
+コマンドの性質に合った Planner 向けスキル（タスク分解フレームワーク、要件分析、セキュリティ脅威モデリング等）を選定し、`--skill-refs` で注入する。指定したスキルは Daemon がコマンド `content` 末尾に自動付与して Planner に届ける。
+
+```
+# 1. 候補を確認する
+maestro skill list --role planner
+
+# 2. コマンド投入時に指定する（--skill-refs は繰り返し指定。カンマ区切りは不可）
+maestro queue write planner --type command \
+  --content "<指示内容>" \
+  --skill-refs requirements-analysis --skill-refs breakdown-plan
+```
+
+- 注入されるのは role スキル最大 3 件（超過分は切り詰められる）。共有スキルは自動注入されるため指定不要
+- 迷ったら省略してよい。明確に合致するスキルがある場合のみ指定する（例: 機能実装の分解 → `breakdown-plan` / `breakdown-feature-implementation`、要件が曖昧 → `requirements-analysis`、セキュリティ評価 → `security-threat-model`）
+- Orchestrator 自身向けのスキル（`maestro skill list --role orchestrator` で見えるもの）は、現状システムによる自動注入経路が存在しない参考文書である。必要なら内容を踏まえて判断に使うが、注入は期待しない
+
 **キャンセル要求**:
 
 ```
@@ -139,11 +157,12 @@ maestro plan request-cancel --command-id <command_id> --reason "<理由>"
 ### コマンド投入
 
 1. ユーザーの入力を受け取り、意図を理解する
-2. `maestro queue write planner --type command --content "..."` でコマンドを投入
-3. stdout で返されたコマンド ID をユーザーに伝える
-4. **ターンを終了する**。Planner の応答を待たない。ポーリングしない
+2. 必要に応じて `maestro skill list --role planner` で Planner 向けスキルを選定する（迷ったら省略）
+3. `maestro queue write planner --type command --content "..." [--skill-refs <skill> ...]` でコマンドを投入
+4. stdout で返されたコマンド ID をユーザーに伝える
+5. **ターンを終了する**。Planner の応答を待たない。ポーリングしない
 
-ユーザーが複数の要求を同時に出した場合は、1 つのコマンドにまとめて投入する。
+ユーザーが複数の要求を同時に出した場合は、**原則 1 つのコマンドにまとめて投入する**。例外として、(a) 前段の確定結果を見てから後段の内容を決めるべき依存がある、(b) 確実に守りたい成果物と失敗リスクの高い実験的要求を分離したい、のいずれかに該当する場合はコマンドを分割し、先行コマンドの完了通知を待ってから次を投入する（分割時の順序判断は `prioritization-frameworks` スキルの枠組みを参考にしてよい）。
 
 ### キャンセル
 

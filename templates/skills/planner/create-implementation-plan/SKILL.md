@@ -59,6 +59,10 @@ definition_of_abort:
 
 ## 5. bloom_level 連携
 
-- **1-2**: 既存パターン再現 → `implementer`
-- **3-4**: 応用・分析 → `implementer`/`researcher`
-- **5-6**: 評価・創造 → `architect`/`researcher`
+planner.md §「Bloom's Taxonomy」の表と同一（推奨であり強制ではない）:
+
+- **1-2**: 定型コード・ドキュメント → `implementer`
+- **3**: 既知パターンの適用 → `implementer`
+- **4**: 調査・影響範囲分析 → `researcher` / `architect`
+- **5**: 評価・レビュー・検証 → `quality-assurance`
+- **6**: 新規設計・アーキテクチャ策定 → `architect`

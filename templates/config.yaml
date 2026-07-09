@@ -463,6 +463,10 @@ admission_control:
 # dispatch する (daemon_startup.go: review_coordinator.go)。利用するモデルを
 # models に並べる必要がある (空のままでは review が走らない)。
 #
+# 注意 (現状の配線): レビュー結果 (findings) は
+# `.maestro/state/reviews/<task_id>.yaml` に監査ログとして保存されるのみで、
+# Planner / Worker の判断に自動反映する経路は未実装。advisory 用途と考えること。
+#
 # コードレビューは典型的なソフトウェア開発ワークフローを想定した機能で、
 # 研究・ドキュメント系のリポジトリでは出力が雑音になりやすいため、テンプレートの
 # デフォルトは `false`。ソフトウェア開発でレビューを回したい場合のみ true にする。
@@ -485,6 +489,9 @@ review:
 
 # --- Evolution ---
 # 進化的品質改善機能。
+# 注意 (現状テレメトリのみ): 選択されうる変異戦略のログ出力のみで、Worker への
+# 変異指示の実適用・生存選択 (SelectSurvivors) は未配線。enabled にしても
+# タスクの実行結果は変わらない (docs/requirements/11-future-extensions.md 参照)。
 evolution:
   # enabled: 進化機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -501,6 +508,10 @@ evolution:
 
 # --- Bandit (Adaptive Model Selection) ---
 # UCB1 ベースの適応的モデル選択機能。
+# 注意 (現状の実効性): モデル選択への配線自体はあるが、統計は非永続で daemon
+# 再起動ごとに warm-up (trace_data_requirement + min_samples_before_use) が
+# ゼロに戻る。warm-up 未達では静的な BloomLevel→model マッピングに
+# フォールバックするため、実運用ではほぼ静的選択のままになる。
 bandit:
   # enabled: バンディット機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -559,6 +570,11 @@ ab_test:
 # security / performance) に運用者または Planner が明示的に書く形に統一されて
 # おり、書かれたカテゴリだけが critical (weight 1.0) として実行されます。
 # 本セクションは EnsembleVerifier の起動可否と自動リトライ回数のみ制御します。
+#
+# 注意 (現状実質不活性): EnsembleVerifier は verify runner に接続されるものの、
+# perspective を投入する production 経路が存在せず常に空。そのため enabled に
+# しても verify.yaml のカテゴリが従来どおり critical として実行されるだけで、
+# 重み付き集約は発生しない。max_auto_retries も現状は起動ログに出るのみ。
 extended_verification:
   # enabled: 拡張検証の有効化フラグ (opt-in)。`verify.enabled` と連動して
   # 動作する。研究/ドキュメント系プロジェクトでは不要なため default false。
@@ -570,6 +586,10 @@ extended_verification:
 
 # --- Search ---
 # 探索ベース最適化 (Alpha-Beta, Thompson Sampling)。
+# 注意 (現状テレメトリのみ): UCT / Thompson の計算は報酬蓄積・ログに使われる
+# だけで実 dispatch を駆動しない (worker 割当は dispatch 前に確定する)。
+# 例外として A/B 選抜の機械的 Tie 解消 (C-4-4) のみ稼働
+# (docs/requirements/11-future-extensions.md 参照)。
 search:
   # enabled: 探索機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -592,6 +612,11 @@ search:
 
 # --- Self-Improvement ---
 # プロンプト・ペルソナの自己改善機能。
+# 注意 (現状書き込み専用): enabled にすると失敗結果からエラー Fingerprint DB
+# (state/fingerprint_db.json) への記録・永続化が行われるが、記録を参照して
+# リトライ戦略やプロンプトを変える経路 (Query / SuggestStrategy) に production
+# 呼び出しが無く、学習ループは閉じていない。targets / exclude_targets も
+# 現状は起動ログに出力されるのみ。
 self_improvement:
   # enabled: 自己改善機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -608,6 +633,9 @@ self_improvement:
 
 # --- Complexity ---
 # 適応的計算深度制御。
+# 注意 (現状テレメトリのみ): dispatch 時にタスクの複雑度レベルを機械算出して
+# ログ・queue エントリに記録するが、算出結果はサブタスク分解深度にも機能
+# on/off にも接続されていない。enabled にしても実行挙動は変わらない。
 complexity:
   # enabled: 複雑度適応の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -629,6 +657,12 @@ complexity:
 # 既定値。空 ({}) にすると daemon は Evaluator の内蔵デフォルトプロファイル
 # を使用する。
 # 標準キー: simple / standard / complex / critical
+#
+# 注意 (現状テレメトリのみ): プロファイルの算出・分類はタスク単位でログされる
+# が、算出結果を機能 on/off に接続する実ゲーティングは未配線
+# (IsFeatureEnabled に production 呼び出しが無い)。各機能の発火は上記の
+# グローバル enabled フラグ (bandit.enabled 等) でのみ決まるため、本セクション
+# を書き換えても挙動は変わらない (REQUIREMENTS.md §5 C-8 の注記参照)。
 feature_profiles:
   simple:
     # cross_agent_review: クロスエージェントレビューの有効化
