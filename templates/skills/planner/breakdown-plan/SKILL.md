@@ -12,11 +12,11 @@ priority: 5
 
 コマンドを以下の階層で分解する:
 
-| レベル | 粒度 | 目安 |
-|--------|------|------|
-| Epic | ユーザー価値単位 | 1コマンド = 1 Epic |
-| Feature | 機能単位 | Phase に対応 |
-| Task | Worker が1回で完了できる作業単位 | 30分以内 |
+| レベル  | 粒度                             | 目安               |
+| ------- | -------------------------------- | ------------------ |
+| Epic    | ユーザー価値単位                 | 1コマンド = 1 Epic |
+| Feature | 機能単位                         | Phase に対応       |
+| Task    | Worker が1回で完了できる作業単位 | 30分以内           |
 
 ## INVEST 基準
 
@@ -36,7 +36,7 @@ name: 簡潔な作業名（動詞+目的語）
 purpose: 全体における役割（他タスクとの関係）
 content: 具体的な作業手順（ステップ形式推奨）
 acceptance_criteria: 完了条件（検証可能な形式）
-blocked_by: [同一フェーズ内の依存タスクname]  # なければ []
+blocked_by: [同一フェーズ内の依存タスクname] # なければ []
 bloom_level: 1-6
 persona_hint: implementer | researcher | architect | quality-assurance
 required: true
@@ -48,22 +48,22 @@ definition_of_abort:
 
 ## Bloom's Taxonomy 判定
 
-| レベル | 用途 | persona_hint |
-|--------|------|-------------|
-| 1-2 remember/understand | 情報収集・調査 | researcher |
-| 3 apply | 既知パターンの適用実装 | implementer |
-| 4 analyze | 構造分析・影響範囲調査 | researcher / architect |
-| 5 evaluate | レビュー・品質検証 | quality-assurance |
-| 6 create | 新規設計・アーキテクチャ策定 | architect |
+| レベル                  | 用途                         | persona_hint           |
+| ----------------------- | ---------------------------- | ---------------------- |
+| 1-2 remember/understand | 情報収集・調査               | researcher             |
+| 3 apply                 | 既知パターンの適用実装       | implementer            |
+| 4 analyze               | 構造分析・影響範囲調査       | researcher / architect |
+| 5 evaluate              | レビュー・品質検証           | quality-assurance      |
+| 6 create                | 新規設計・アーキテクチャ策定 | architect              |
 
 ## Worker Persona 割り当て基準
 
-| persona_hint | 用途 |
-|---|---|
-| researcher | コードベース調査、依存関係分析、技術調査 |
-| architect | 設計判断、API設計、データモデル策定 |
-| implementer | コード実装、設定変更、テスト作成 |
-| quality-assurance | テスト実行、レビュー、セキュリティ検証 |
+| persona_hint      | 用途                                     |
+| ----------------- | ---------------------------------------- |
+| researcher        | コードベース調査、依存関係分析、技術調査 |
+| architect         | 設計判断、API設計、データモデル策定      |
+| implementer       | コード実装、設定変更、テスト作成         |
+| quality-assurance | テスト実行、レビュー、セキュリティ検証   |
 
 ## 並列実行判断基準
 

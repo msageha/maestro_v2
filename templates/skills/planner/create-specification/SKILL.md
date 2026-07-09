@@ -17,13 +17,13 @@ PRDの要件をWorkerが実装可能な技術仕様に変換する。
 
 ## 要件分類体系
 
-| プレフィックス | 分類 | 説明 |
-|---|---|---|
-| `REQ-xxx` | 機能要件 | 実装すべき振る舞い |
-| `SEC-xxx` | セキュリティ | 認証・認可・入力検証 |
-| `CON-xxx` | 制約条件 | 技術的制約・互換性 |
-| `GUD-xxx` | ガイドライン | 規約・命名規則 |
-| `PAT-xxx` | パターン | 採用する設計パターン |
+| プレフィックス | 分類         | 説明                 |
+| -------------- | ------------ | -------------------- |
+| `REQ-xxx`      | 機能要件     | 実装すべき振る舞い   |
+| `SEC-xxx`      | セキュリティ | 認証・認可・入力検証 |
+| `CON-xxx`      | 制約条件     | 技術的制約・互換性   |
+| `GUD-xxx`      | ガイドライン | 規約・命名規則       |
+| `PAT-xxx`      | パターン     | 採用する設計パターン |
 
 ## Given-When-Then
 
@@ -42,12 +42,12 @@ REQ-001: Given: 前提条件 When: 操作 Then: 期待結果
 
 ## Maestroタスク設計への適用
 
-| 仕様書要素 | タスクフィールド |
-|----------|-----------------|
-| `REQ-xxx` + GWT | `content` + `acceptance_criteria` |
-| `SEC-xxx` / `CON-xxx` | `constraints` |
-| `GUD-xxx` / `PAT-xxx` | `content`内の実装指針 |
-| テスト基準 | verificationの`content` |
+| 仕様書要素            | タスクフィールド                  |
+| --------------------- | --------------------------------- |
+| `REQ-xxx` + GWT       | `content` + `acceptance_criteria` |
+| `SEC-xxx` / `CON-xxx` | `constraints`                     |
+| `GUD-xxx` / `PAT-xxx` | `content`内の実装指針             |
+| テスト基準            | verificationの`content`           |
 
 ## 注意事項
 

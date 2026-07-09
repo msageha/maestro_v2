@@ -1,0 +1,169 @@
+[tools]
+go = "1.26.5"
+golangci-lint = "2.10.1"
+prek = "0.4.8"
+actionlint = "1.7.12"
+dprint = "0.55.1"
+
+[env]
+# `mise.local.toml` (git 管理外) を併置すると、ローカルだけの値で上書きできる。
+#
+# 例:
+# MY_VAR = "value"
+# _.file = ".env"
+
+[tasks.docs]
+description = "Sync the task list embedded in README.md with mise.toml"
+run = "mise generate task-docs --inject --output README.md"
+
+[tasks.check-deps]
+description = "tmux/go/claude/jq の依存チェック"
+run = '''
+missing=0
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "error: tmux is not installed"
+  echo "  macOS:         brew install tmux"
+  echo "  Ubuntu/Debian: sudo apt install tmux"
+  missing=1
+fi
+if ! command -v go >/dev/null 2>&1; then
+  echo "error: go is not installed"
+  echo "  macOS:         brew install go"
+  echo "  Ubuntu/Debian: sudo apt install golang"
+  echo "  Or visit: https://go.dev/dl/"
+  missing=1
+fi
+if ! command -v claude >/dev/null 2>&1; then
+  echo "error: claude (Claude Code CLI) is not installed"
+  echo "  Install via: npm install -g @anthropic-ai/claude-code"
+  missing=1
+fi
+if ! command -v jq >/dev/null 2>&1; then
+  echo "error: jq is not installed"
+  echo "  macOS:         brew install jq"
+  echo "  Ubuntu/Debian: sudo apt install jq"
+  missing=1
+fi
+if [ "$missing" -ne 0 ]; then
+  echo ""
+  echo "error: Missing dependencies. Please install them and retry."
+  exit 1
+fi
+echo "All dependencies found."
+'''
+
+[tasks.build]
+description = "Go バイナリをビルド"
+run = "go build -o maestro ./cmd/maestro/"
+
+[tasks.install]
+description = "ビルドしてインストール（MAESTRO_INSTALL_DIR > ~/bin > /usr/local/bin）"
+depends = ["check-deps", "build"]
+run = '''
+INSTALL_DIR="${MAESTRO_INSTALL_DIR:-}"
+if [ -z "$INSTALL_DIR" ]; then
+  if [ -d "$HOME/bin" ]; then
+    INSTALL_DIR="$HOME/bin"
+  else
+    INSTALL_DIR="/usr/local/bin"
+  fi
+fi
+mkdir -p "$INSTALL_DIR"
+mv maestro "$INSTALL_DIR/maestro"
+chmod +x "$INSTALL_DIR/maestro"
+echo "Installed maestro to $INSTALL_DIR/maestro"
+echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR" || \
+  echo "warning: $INSTALL_DIR is not in your PATH. Add: export PATH=\"$INSTALL_DIR:\$PATH\""
+'''
+
+[tasks.clean]
+description = "ビルド成果物を削除"
+run = "rm -f maestro coverage.out coverage.html"
+
+[tasks.test]
+description = "全テストを実行"
+run = "go test ./..."
+
+[tasks.test-v]
+description = "全テストを verbose で実行"
+run = "go test -v ./..."
+
+[tasks.test-race]
+description = "Race detector 付きでテスト"
+run = "go test -race ./..."
+
+[tasks.test-cover]
+description = "カバレッジレポートを生成"
+run = '''
+go test -coverprofile=coverage.out ./...
+go tool cover -html=coverage.out -o coverage.html
+echo "coverage.html generated"
+'''
+
+[tasks.lint]
+description = "golangci-lint を実行"
+run = "golangci-lint run ./..."
+
+[tasks.lint-fix]
+description = "golangci-lint の自動修正を適用"
+run = "golangci-lint run --fix ./..."
+
+[tasks.format]
+description = "gofmt + goimports でフォーマット"
+run = "golangci-lint fmt ./..."
+
+[tasks.all]
+description = "lint → test → build を実行"
+depends = ["lint", "test", "build"]
+
+[tasks.docker-build]
+description = "Docker 開発環境イメージをビルド"
+run = "docker build -t maestro-env:latest -f docker/Dockerfile ."
+
+[tasks.docker-run]
+description = "指定ディレクトリで maestro を起動 (DIR=/path/to/repo mise run docker-run)"
+run = '''
+DIR="${DIR:-$PWD}"
+mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
+GIT_USER_NAME="$(git config --global user.name 2>/dev/null || true)"
+GIT_USER_EMAIL="$(git config --global user.email 2>/dev/null || true)"
+docker run --rm -it \
+  -v "$DIR:$DIR" \
+  -v "$HOME/.claude:/root/.claude" \
+  -v "$HOME/.codex:/root/.codex" \
+  -v "$HOME/.gemini:/root/.gemini" \
+  -e "GIT_USER_NAME=$GIT_USER_NAME" \
+  -e "GIT_USER_EMAIL=$GIT_USER_EMAIL" \
+  -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
+  -e "OPENAI_API_KEY=$OPENAI_API_KEY" \
+  -e "GOOGLE_API_KEY=$GOOGLE_API_KEY" \
+  -w "$DIR" \
+  maestro-env:latest
+'''
+
+[tasks.docker-shell]
+description = "指定ディレクトリで bash を起動 (DIR=/path/to/repo mise run docker-shell)"
+run = '''
+DIR="${DIR:-$PWD}"
+mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.gemini"
+GIT_USER_NAME="$(git config --global user.name 2>/dev/null || true)"
+GIT_USER_EMAIL="$(git config --global user.email 2>/dev/null || true)"
+docker run --rm -it \
+  -v "$DIR:$DIR" \
+  -v "$HOME/.claude:/root/.claude" \
+  -v "$HOME/.codex:/root/.codex" \
+  -v "$HOME/.gemini:/root/.gemini" \
+  -e "GIT_USER_NAME=$GIT_USER_NAME" \
+  -e "GIT_USER_EMAIL=$GIT_USER_EMAIL" \
+  -e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" \
+  -e "OPENAI_API_KEY=$OPENAI_API_KEY" \
+  -e "GOOGLE_API_KEY=$GOOGLE_API_KEY" \
+  -w "$DIR" \
+  maestro-env:latest bash
+'''
+
+[hooks]
+postinstall = "prek install"
+
+[settings]
+lockfile = true

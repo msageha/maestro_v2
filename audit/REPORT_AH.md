@@ -12,17 +12,17 @@
 
 ## 0. サマリ判定
 
-| ID | 観点 | 判定 |
-|----|------|------|
-| A1 | Orchestrator に最小指示で自律 LLM Orchestration が回るか | **問題なし** (1 件 nit) |
-| A2 | Orchestrator / Planner / Worker の責務分離が設計通りか | **問題あり** (2 件 — 既存 REPORT_C のフォロー) |
-| A3 | daemon 側で処理すべきことが Agent に流れていないか (責務漏出) | **問題あり** (3 件) |
-| A4 | Agent に過剰な責務が押し付けられていないか | **問題あり** (2 件) |
-| A5 | ユーザー介入が必要な箇所が想定範囲に収まっているか | **問題なし** (1 件 nit) |
-| H1 | instructions と実コード (CLI / daemon) の挙動乖離 | **問題あり** (4 件) |
-| H2 | config.yaml 全キーと参照箇所の突合 (未参照キー / 未定義参照) | **問題あり** (1 件 critical: doc default 値が code default と矛盾) |
-| H3 | README / dashboard.md template と現行挙動の差分 | **問題あり** (1 件 critical: verify shell 構文の説明が逆転) |
-| H4 | MEMORY.md の「撤去済み」項目の実コード残骸チェック | **要確認** (1 件 — `fallback.Manager` 構造体は残存だが配線は無効) |
+| ID | 観点                                                          | 判定                                                               |
+| -- | ------------------------------------------------------------- | ------------------------------------------------------------------ |
+| A1 | Orchestrator に最小指示で自律 LLM Orchestration が回るか      | **問題なし** (1 件 nit)                                            |
+| A2 | Orchestrator / Planner / Worker の責務分離が設計通りか        | **問題あり** (2 件 — 既存 REPORT_C のフォロー)                     |
+| A3 | daemon 側で処理すべきことが Agent に流れていないか (責務漏出) | **問題あり** (3 件)                                                |
+| A4 | Agent に過剰な責務が押し付けられていないか                    | **問題あり** (2 件)                                                |
+| A5 | ユーザー介入が必要な箇所が想定範囲に収まっているか            | **問題なし** (1 件 nit)                                            |
+| H1 | instructions と実コード (CLI / daemon) の挙動乖離             | **問題あり** (4 件)                                                |
+| H2 | config.yaml 全キーと参照箇所の突合 (未参照キー / 未定義参照)  | **問題あり** (1 件 critical: doc default 値が code default と矛盾) |
+| H3 | README / dashboard.md template と現行挙動の差分               | **問題あり** (1 件 critical: verify shell 構文の説明が逆転)        |
+| H4 | MEMORY.md の「撤去済み」項目の実コード残骸チェック            | **要確認** (1 件 — `fallback.Manager` 構造体は残存だが配線は無効)  |
 
 合計 finding 数: **AH-1 〜 AH-15 (15 件)**。
 
@@ -35,12 +35,12 @@
 
 ### 重大度凡例
 
-| Severity | 意味 |
-|----------|------|
-| **critical** | 文書の指示通り行動すると壊れる、または安全前提が崩壊する |
-| **major** | 責務境界の混乱で運用ミス / 重複作業 / LLM トークン浪費を誘発 |
-| **minor** | 死語化した記述・冗長な指示。LLM の判断は壊さないが noise |
-| **nit** | 表現上の改善余地のみ |
+| Severity     | 意味                                                         |
+| ------------ | ------------------------------------------------------------ |
+| **critical** | 文書の指示通り行動すると壊れる、または安全前提が崩壊する     |
+| **major**    | 責務境界の混乱で運用ミス / 重複作業 / LLM トークン浪費を誘発 |
+| **minor**    | 死語化した記述・冗長な指示。LLM の判断は壊さないが noise     |
+| **nit**      | 表現上の改善余地のみ                                         |
 
 ---
 
@@ -169,7 +169,7 @@
     > `直接 exec のみ。;`、`&&`、`||`、バッククオート、`$(`、`${`、パイプ、リダイレクト、改行は禁止（`sh -c` / `bash -c` も拒否）。必要ならスクリプトファイルを呼ぶ形にする。
   - 実装: `internal/model/verify.go:41-51` / `:105-135`
     - `var unsupportedCommandChars = []string{"\n", "\r"}` のみ
-    - コメント:「Shell metacharacters (`;`, `&&`, `||`, “ ` “, `$(`, `${`, `|`, `<`, `>`) used to be rejected ... but verify commands now run under `bash -c`」
+    - コメント:「Shell metacharacters (`;`, `&&`, `||`, “ `“,` $(`, `${`,`|`,`<`,`>`) used to be rejected ... but verify commands now run under`bash -c`」
     - `ParseVerifyCommand` は `Args: []string{"bash", "-c", trimmed}` を返す
 - **問題**: README は「`bash -c` を拒否」と明記しているが、現行コードは **`bash -c` で実行する** (2026-05-06 P0-1 / P1-1 redesign 参照: `verify.go:54-56`)。README の指示に従ってスクリプトに切り出すのは現状不要。Planner LLM が README を真に受けると、すでに動作する `verify.yaml` の shell 構文を冗長なスクリプトに書き換える誤回帰を起こす。
 - **重大度**: critical (ユーザ向けドキュメントが実装と逆転している)
@@ -267,15 +267,15 @@
 
 > MEMORY.md の以下を実コードで個別検証した。
 
-| MEMORY 項目 | 文書主張 | 実コード | 判定 |
-|------|------|------|------|
-| `policy_hook_bash_only.md` | F-025 Go 移植は撤回済み。Go ラッパや shadow を再導入しない | `internal/agent/worker_policy_hook.sh` 単体 (内蔵 bash) のみ。`policy_checker.go` は script を `WriteHookScript` で書き出すだけ。Go ラッパなし | **整合** |
-| `commit_policy_removed.md` | sensitive-file/expected_paths/max_files/message_pattern などの gate は撤去済み | `internal/model/config_types.go:224` (`(Removed) CommitPolicyConfig`)、`config_load.go:147-157` で stale block surfacing、`templates/config.yaml:365-368` で「Removed」コメント。残骸の grep 結果はコメント・テスト・diagnostic のみ | **整合** |
-| `fallback_degraded_mode_removed.md` | worker をブラックリスト化する機能は再導入しない | `internal/daemon/fallback/manager.go` (構造体 + Logic は **完全に残存**)、`internal/daemon/handler_registry.go:57-62` (`SetFallbackManager`) も残存。**しかし `SetFallbackManager` は production の wiring 経路で呼ばれない** (grep `SetFallbackManager` で test / 定義以外 0 件)。`d.fallbackMgr` は常に nil なので `result_write_handler.go:337` の `h.fallbackMgr()` も nil を返す | **要確認** (下記 AH-15 / 構造は dead だが残存) |
-| `verify_disabled_is_normal_mode.md` | env 必須ガードを再導入しない | `templates/config.yaml:432-438` で `verify.enabled: false` がデフォルト、`internal/daemon/dashboard_data.go:132` で `verifyStatusDisabled = "disabled (verify.enabled=false in config.yaml)"`。env ガード残骸なし | **整合** |
-| `setup_repair_template_overwrite.md` | instructions/skills/persona/maestro.md/dashboard.md は binary に紐付く | `internal/setup/init.go:100` のコメント参照 | **整合 (確認は限定的)** |
-| `tmux_per_instance_socket_isolation.md` | tmux server を maestro instance ごとに socket 分離 | `internal/tmux/` の実装を確認 (詳細レビュー範囲外) | **未確認** (探索範囲超え) |
-| `agent_tmpdir_force_override.md` | agent 起動時の TMPDIR は強制上書き | `internal/agent/launcher.go:145-148` (`buildLaunchEnvForAgent`) で `MAESTRO_AGENT_TMPDIR_OVERRIDE` 経由 | **整合** (`templates/config.yaml:19-22` でも env override 存在を文書化) |
+| MEMORY 項目                             | 文書主張                                                                       | 実コード                                                                                                                                                                                                                                                                                                                                                                              | 判定                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| `policy_hook_bash_only.md`              | F-025 Go 移植は撤回済み。Go ラッパや shadow を再導入しない                     | `internal/agent/worker_policy_hook.sh` 単体 (内蔵 bash) のみ。`policy_checker.go` は script を `WriteHookScript` で書き出すだけ。Go ラッパなし                                                                                                                                                                                                                                        | **整合**                                                                |
+| `commit_policy_removed.md`              | sensitive-file/expected_paths/max_files/message_pattern などの gate は撤去済み | `internal/model/config_types.go:224` (`(Removed) CommitPolicyConfig`)、`config_load.go:147-157` で stale block surfacing、`templates/config.yaml:365-368` で「Removed」コメント。残骸の grep 結果はコメント・テスト・diagnostic のみ                                                                                                                                                  | **整合**                                                                |
+| `fallback_degraded_mode_removed.md`     | worker をブラックリスト化する機能は再導入しない                                | `internal/daemon/fallback/manager.go` (構造体 + Logic は **完全に残存**)、`internal/daemon/handler_registry.go:57-62` (`SetFallbackManager`) も残存。**しかし `SetFallbackManager` は production の wiring 経路で呼ばれない** (grep `SetFallbackManager` で test / 定義以外 0 件)。`d.fallbackMgr` は常に nil なので `result_write_handler.go:337` の `h.fallbackMgr()` も nil を返す | **要確認** (下記 AH-15 / 構造は dead だが残存)                          |
+| `verify_disabled_is_normal_mode.md`     | env 必須ガードを再導入しない                                                   | `templates/config.yaml:432-438` で `verify.enabled: false` がデフォルト、`internal/daemon/dashboard_data.go:132` で `verifyStatusDisabled = "disabled (verify.enabled=false in config.yaml)"`。env ガード残骸なし                                                                                                                                                                     | **整合**                                                                |
+| `setup_repair_template_overwrite.md`    | instructions/skills/persona/maestro.md/dashboard.md は binary に紐付く         | `internal/setup/init.go:100` のコメント参照                                                                                                                                                                                                                                                                                                                                           | **整合 (確認は限定的)**                                                 |
+| `tmux_per_instance_socket_isolation.md` | tmux server を maestro instance ごとに socket 分離                             | `internal/tmux/` の実装を確認 (詳細レビュー範囲外)                                                                                                                                                                                                                                                                                                                                    | **未確認** (探索範囲超え)                                               |
+| `agent_tmpdir_force_override.md`        | agent 起動時の TMPDIR は強制上書き                                             | `internal/agent/launcher.go:145-148` (`buildLaunchEnvForAgent`) で `MAESTRO_AGENT_TMPDIR_OVERRIDE` 経由                                                                                                                                                                                                                                                                               | **整合** (`templates/config.yaml:19-22` でも env override 存在を文書化) |
 
 #### AH-15 [minor] `internal/daemon/fallback/manager.go` 一式は production からは到達不能だが構造体・wiring が残存
 
@@ -298,28 +298,28 @@
 
 ### 即修正候補 (docs を真に受けると壊れる / 誤回帰を起こす)
 
-| ID | 概要 | 重大度 |
-|----|------|--------|
-| AH-9 | `README.md:144-147` の verify 構文制約が逆転 (`bash -c` 拒否 → 実装は `bash -c` で実行) | critical |
+| ID    | 概要                                                                                                                                 | 重大度   |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------ | -------- |
+| AH-9  | `README.md:144-147` の verify 構文制約が逆転 (`bash -c` 拒否 → 実装は `bash -c` で実行)                                              | critical |
 | AH-12 | `templates/maestro.md:91-94` と `templates/instructions/worker.md` の L2 hook 担当範囲表が `worker_policy_hook.sh:5-17` の実装と矛盾 | critical |
-| AH-13 | `templates/config.yaml:57` の `awaiting_fill_stall_notify_minutes: 5` が code default 30 と矛盾 (false stall 再導入) | major |
-| AH-2 | `templates/maestro.md:7-13` / `planner.md:15-21` の許可ツール記述が launcher.go のサブコマンド列挙より過大 | minor |
-| AH-3 | `launcher.go:74` / `:909` の `Bash(maestro queue read:*)` が CLI 未実装 (`cmd_queue.go:14-24`) | major |
-| AH-10 | `planner.md:32-34` の Read 可能ファイル一覧が `launcher.go:80-83` の `Read(.maestro/**)` より狭い | minor |
+| AH-13 | `templates/config.yaml:57` の `awaiting_fill_stall_notify_minutes: 5` が code default 30 と矛盾 (false stall 再導入)                 | major    |
+| AH-2  | `templates/maestro.md:7-13` / `planner.md:15-21` の許可ツール記述が launcher.go のサブコマンド列挙より過大                           | minor    |
+| AH-3  | `launcher.go:74` / `:909` の `Bash(maestro queue read:*)` が CLI 未実装 (`cmd_queue.go:14-24`)                                       | major    |
+| AH-10 | `planner.md:32-34` の Read 可能ファイル一覧が `launcher.go:80-83` の `Read(.maestro/**)` より狭い                                    | minor    |
 
 ### 設計議論が必要 (即修正は影響範囲が広い)
 
-| ID | 概要 | 重大度 |
-|----|------|--------|
-| AH-4 | worker.md の `--summary-file` レシピが Worker に sandbox-aware tmpdir 知識を要求 | major |
-| AH-5 | planner.md の shell quoting 詳説が Planner に shell 知識を要求 (CLI 構造化入力化の検討) | major |
-| AH-6 | worker.md の `--files-changed` 自己申告制を daemon 自動算出に置き換える検討 | major |
-| AH-7 | planner.md の verification round カウンタを Planner LLM 内部で持たせず daemon 通知ベースに | major |
-| AH-8 | persona/researcher.md と skill/source-grounded-response/SKILL.md のトークン重複 | minor |
-| AH-15 | `internal/daemon/fallback/` パッケージごと削除するか deprecated 明示するか | minor |
-| AH-1 | orchestrator.md の許可ツール記述が 3 重複している (圧縮検討) | nit |
-| AH-11 | persona injection の missing-ref policy 設計 (silent skip 固定 vs warn/error) | nit |
-| AH-14 | dashboard.md template と daemon 生成出力のフォーマット差 | nit |
+| ID    | 概要                                                                                       | 重大度 |
+| ----- | ------------------------------------------------------------------------------------------ | ------ |
+| AH-4  | worker.md の `--summary-file` レシピが Worker に sandbox-aware tmpdir 知識を要求           | major  |
+| AH-5  | planner.md の shell quoting 詳説が Planner に shell 知識を要求 (CLI 構造化入力化の検討)    | major  |
+| AH-6  | worker.md の `--files-changed` 自己申告制を daemon 自動算出に置き換える検討                | major  |
+| AH-7  | planner.md の verification round カウンタを Planner LLM 内部で持たせず daemon 通知ベースに | major  |
+| AH-8  | persona/researcher.md と skill/source-grounded-response/SKILL.md のトークン重複            | minor  |
+| AH-15 | `internal/daemon/fallback/` パッケージごと削除するか deprecated 明示するか                 | minor  |
+| AH-1  | orchestrator.md の許可ツール記述が 3 重複している (圧縮検討)                               | nit    |
+| AH-11 | persona injection の missing-ref policy 設計 (silent skip 固定 vs warn/error)              | nit    |
+| AH-14 | dashboard.md template と daemon 生成出力のフォーマット差                                   | nit    |
 
 ---
 

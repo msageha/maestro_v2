@@ -15,12 +15,14 @@
 - [C-1-3] 適応度評価の拡張: 既存 Fitness 関数（S1-2）の辞書式4軸に「コード品質スコア」軸を追加する [MAY]。品質スコアは静的解析ツール（lint 警告数、循環的複雑度等）の機械的出力に基づき算出し、LLM 判定に依存しない。
 
 **研究対応**:
+
 - ShinkaEvolve: LLM を変異演算子として活用し、diff/full/cross の3種変異パッチを生成。島モデルによる集団管理
 - Darwin Gödel Machine (DGM): アーカイブベース選択により、過去の成功パターンを stepping stone として保持
 
 **統合方法**: 既存 worktree を進化島として再利用し、Fitness 関数（S1-2）を適応度関数として活用する。なお B-1 (Multi-rollout) は廃止済みのため、並列候補生成ではなく逐次的な変異・評価サイクルで運用する。
 
 **Anti-Requirements 整合**:
+
 - §6-1 準拠: Fitness 関数は機械的評価のみ。コード品質スコアも静的解析ツール出力に限定し、LLM による上書きを禁止する
 - §6-3 準拠: 変異候補の合成（Frankenstein マージ）は行わない。Winner-takes-all 原則を維持する
 - §6-6 準拠: verify.yaml が定義済みの場合のみ進化的サイクルを発動する
@@ -34,12 +36,14 @@
 - [C-4-3] Alpha-Beta 枝刈り: Fitness 関数（S1-2）のスコアに基づき、一定閾値を下回るブランチを早期に打ち切る [MAY]。リソース消費を抑制しつつ、有望な候補に計算資源を集中させる。
 
 **研究対応**:
+
 - AB-MCTS: 「Wider or Deeper?」を Thompson Sampling で動的選択。Alpha-Beta 枝刈りによる低ポテンシャルブランチの早期削減
 - AI Scientist v2: Progressive Agentic Tree Search による複数実験パスの並列探索
 
 **統合方法**: 単一 worktree 上で逐次的に候補を展開する木構造探索として実装する (B-1 Multi-rollout は廃止のため並列展開ではない)。Planner が探索戦略（展開・枝刈り判断）を管理する。
 
 **Anti-Requirements 整合**:
+
 - §6-4 準拠: 探索ノード（Worker）間の直接通信を禁止する。全てのノード間情報伝達は Planner（Hub）経由の Hub-and-Spoke 型とする
 - §6-3 準拠: 探索結果の合成（Frankenstein マージ）を禁止する。最終選択は Winner-takes-all で1つの worktree を丸ごと採用する
 - §6-6 準拠: verify.yaml 未定義のタスクには探索的実装を適用しない

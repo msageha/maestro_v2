@@ -6,7 +6,7 @@
 
 ```
 maestro/
-├── Makefile                           # ビルド・インストール（check-deps + go build + install。旧 install.sh の代替）
+├── mise.toml                          # ビルド・インストール（check-deps + go build + install タスク。旧 install.sh / Makefile の代替）
 ├── cmd/
 │   └── maestro/
 │       ├── main.go                    # エントリポイント（サブコマンドルーティング）

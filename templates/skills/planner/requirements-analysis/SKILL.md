@@ -19,10 +19,10 @@ priority: 15
 
 ### 1. 目的・背景
 
-| 項目 | 内容 |
-|------|------|
-| **目標** | 達成目標と成果指標 |
-| **対象** | 利用者・利用シナリオ |
+| 項目     | 内容                  |
+| -------- | --------------------- |
+| **目標** | 達成目標と成果指標    |
+| **対象** | 利用者・利用シナリオ  |
 | **価値** | 提供する価値（1-2文） |
 
 ### 2. 成功指標
@@ -37,6 +37,7 @@ AS A [ロール] I WANT [機能] SO THAT [価値]
 ```
 
 各ストーリーに付与:
+
 - **Acceptance Criteria**: 検証可能な完了条件
 - **優先度**: Must / Should / Could
 
@@ -47,13 +48,13 @@ AS A [ロール] I WANT [機能] SO THAT [価値]
 
 ## Maestroタスク設計への対応
 
-| PRD要素 | タスクフィールド |
-|---------|-----------------|
-| User Story | `purpose` |
-| Acceptance Criteria | `acceptance_criteria` |
-| Out of Scope | `constraints` |
-| 優先度 | フェーズ分割・順序 |
-| 成功指標 | verificationの`content` |
+| PRD要素             | タスクフィールド        |
+| ------------------- | ----------------------- |
+| User Story          | `purpose`               |
+| Acceptance Criteria | `acceptance_criteria`   |
+| Out of Scope        | `constraints`           |
+| 優先度              | フェーズ分割・順序      |
+| 成功指標            | verificationの`content` |
 
 ## 作成手順
 

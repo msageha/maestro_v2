@@ -10,13 +10,13 @@
 
 ## 0. サマリ判定 (5 項目別)
 
-| ID | 観点 | 判定 |
-|----|------|------|
-| C1 | instructions が Agent に状態管理 / ID 採番 / lease_epoch 管理 を要求していないか | **問題あり** (4 件) |
-| C2 | Worker / Planner prompt に daemon 領域作業が紛れ込んでいないか | **問題あり** (4 件) |
-| C3 | Worker self-verify / commit / publish のうち daemon 肩代わり可能領域 | **問題あり** (3 件) |
-| C4 | retry / cancel / quarantine / paused_for_replan の遷移を Agent が判断する余地 | **問題あり** (4 件) |
-| C5 | L1 / L2 二層防御が実コードで実装されているか、文書だけの規約か | **要確認 (重大なドリフト 2 件 + 部分実装 1 件)** |
+| ID | 観点                                                                             | 判定                                             |
+| -- | -------------------------------------------------------------------------------- | ------------------------------------------------ |
+| C1 | instructions が Agent に状態管理 / ID 採番 / lease_epoch 管理 を要求していないか | **問題あり** (4 件)                              |
+| C2 | Worker / Planner prompt に daemon 領域作業が紛れ込んでいないか                   | **問題あり** (4 件)                              |
+| C3 | Worker self-verify / commit / publish のうち daemon 肩代わり可能領域             | **問題あり** (3 件)                              |
+| C4 | retry / cancel / quarantine / paused_for_replan の遷移を Agent が判断する余地    | **問題あり** (4 件)                              |
+| C5 | L1 / L2 二層防御が実コードで実装されているか、文書だけの規約か                   | **要確認 (重大なドリフト 2 件 + 部分実装 1 件)** |
 
 合計 finding 数: **18 件** (要件 10 件以上を満たす)。
 
@@ -24,12 +24,12 @@
 
 ## 1. 重大度凡例
 
-| Severity | 意味 |
-|----------|------|
-| **critical** | 文書と実装が乖離して安全性 / 状態整合の前提が崩壊しうる |
+| Severity     | 意味                                                         |
+| ------------ | ------------------------------------------------------------ |
+| **critical** | 文書と実装が乖離して安全性 / 状態整合の前提が崩壊しうる      |
 | **major**    | 責務境界の混乱で運用ミス / 重複作業 / LLM トークン浪費を誘発 |
-| **minor**    | 死語化した記述・冗長な指示。LLM の判断は壊さないが noise |
-| **nit**      | 表現上の改善余地 |
+| **minor**    | 死語化した記述・冗長な指示。LLM の判断は壊さないが noise     |
+| **nit**      | 表現上の改善余地                                             |
 
 ---
 
@@ -255,34 +255,34 @@
 
 ### 6.1 L1 (`launcher.go` `--disallowedTools`) の実装確認 ✓ 部分一致
 
-| 文書宣言 (worker.md / maestro.md) | 実装 (`launcher.go:721-780`) | 判定 |
-|---|---|---|
-| `tmux kill-server`, `tmux kill-session`, `tmux kill-pane`, `tmux kill-window` | 全て列挙 (`:722-725`) | 一致 |
-| D009 復旧 API (`maestro plan unquarantine` / `resume-merge` / `resolve-conflict`) | `:728-731` 列挙 + 旧名 `maestro resolve-conflict` (`:734`) | 一致 |
-| `.maestro/` 制御プレーン Read | `:736-742` (state/queue/results/locks/logs/config.yaml/dashboard.md) | 一致 |
-| `.claude/.codex/.gemini` 配下 Edit/Write 全面禁止 | `:749-760` で `Edit/Write/MultiEdit/NotebookEdit` 4 種を 3 ディレクトリそれぞれにブロック | 一致 |
+| 文書宣言 (worker.md / maestro.md)                                                 | 実装 (`launcher.go:721-780`)                                                              | 判定 |
+| --------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ---- |
+| `tmux kill-server`, `tmux kill-session`, `tmux kill-pane`, `tmux kill-window`     | 全て列挙 (`:722-725`)                                                                     | 一致 |
+| D009 復旧 API (`maestro plan unquarantine` / `resume-merge` / `resolve-conflict`) | `:728-731` 列挙 + 旧名 `maestro resolve-conflict` (`:734`)                                | 一致 |
+| `.maestro/` 制御プレーン Read                                                     | `:736-742` (state/queue/results/locks/logs/config.yaml/dashboard.md)                      | 一致 |
+| `.claude/.codex/.gemini` 配下 Edit/Write 全面禁止                                 | `:749-760` で `Edit/Write/MultiEdit/NotebookEdit` 4 種を 3 ディレクトリそれぞれにブロック | 一致 |
 
 ### 6.2 L2 (`worker_policy_hook.sh`) の実装確認 — 重大ドリフト発見
 
 実コードは `internal/agent/worker_policy_hook.sh:90-303` を精査。各カテゴリの実装有無:
 
-| 文書宣言 (`maestro.md:91-99` / `worker.md:31`) | hook 実装 | 判定 |
-|---|---|---|
-| Tier1 D001 (`rm -rf /`, `rm -rf ~`) | **未実装** (`:7-13` で「intentionally NOT duplicated here」と明示) | **ドリフト** |
-| Tier1 D002 (プロジェクト外 rm -rf) | **未実装** | **ドリフト** |
-| Tier1 D003 (`git push --force`) | **部分実装**: `git push` 自体を `:135` で全 deny。`--force` 検査ではなく全否定 | 一致 (より厳しい) |
-| Tier1 D004 (`git reset --hard`, `git checkout -- .`, `git clean -f`) | worktree 内 (`:127`) で `restore` を deny。reset / checkout / clean は **未列挙** (worktree 外なら抜ける) | **ドリフト** |
-| Tier1 D005 (`sudo`, `su`, システム `chmod`) | **未実装** | **ドリフト** |
-| Tier1 D006 (`kill`, `killall`, `pkill`, tmux kill 系) | tmux kill 系のみ L1 で blocked。**bash `kill`/`killall`/`pkill` は未実装** | **部分実装** |
-| Tier1 D007 (`mkfs`, `dd if=`, `fdisk`, `diskutil eraseDisk`) | **未実装** | **ドリフト** |
-| Tier1 D008 (`curl|bash`, `wget -O-|sh`) | **未実装** | **ドリフト** |
-| Tier1 D009 復旧 API | `:97-108` で `maestro plan submit/complete/...` `queue write` `verify write` `resolve-conflict` を deny | 一致 |
-| Tier1 B001-B004 (パイプ→sh / `bash -c` / `eval`) | **未実装** | **ドリフト** |
-| Tier2 (10 ファイル超削除 / プロジェクト外変更 / 未知 URL) | **未実装** (Worker prompt 側の自律判断のみ) | **ドリフト** |
-| `.maestro/` Bash redirect | `:140-148` で実装 | 一致 |
-| RUN_ON_MAIN 時 mutating | `:154-171` で実装 | 一致 |
-| WT001 worktree 境界 (Write/Edit が `working_dir` 外) | `:194-298` で実装 | 一致 |
-| macOS `/System/`, `/Library/`, `/Applications/`, `/usr/`, `/bin/`, `/sbin/` の Write/Edit 禁止 | **未実装** (worker.md:522-525 で hook 強制と明記しているが実体なし) | **ドリフト** |
+| 文書宣言 (`maestro.md:91-99` / `worker.md:31`)                                                 | hook 実装                                                                                                 | 判定              |
+| ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ----------------- |
+| Tier1 D001 (`rm -rf /`, `rm -rf ~`)                                                            | **未実装** (`:7-13` で「intentionally NOT duplicated here」と明示)                                        | **ドリフト**      |
+| Tier1 D002 (プロジェクト外 rm -rf)                                                             | **未実装**                                                                                                | **ドリフト**      |
+| Tier1 D003 (`git push --force`)                                                                | **部分実装**: `git push` 自体を `:135` で全 deny。`--force` 検査ではなく全否定                            | 一致 (より厳しい) |
+| Tier1 D004 (`git reset --hard`, `git checkout -- .`, `git clean -f`)                           | worktree 内 (`:127`) で `restore` を deny。reset / checkout / clean は **未列挙** (worktree 外なら抜ける) | **ドリフト**      |
+| Tier1 D005 (`sudo`, `su`, システム `chmod`)                                                    | **未実装**                                                                                                | **ドリフト**      |
+| Tier1 D006 (`kill`, `killall`, `pkill`, tmux kill 系)                                          | tmux kill 系のみ L1 で blocked。**bash `kill`/`killall`/`pkill` は未実装**                                | **部分実装**      |
+| Tier1 D007 (`mkfs`, `dd if=`, `fdisk`, `diskutil eraseDisk`)                                   | **未実装**                                                                                                | **ドリフト**      |
+| Tier1 D008 (`curl                                                                              | bash`,`wget -O-                                                                                           | sh`)              |
+| Tier1 D009 復旧 API                                                                            | `:97-108` で `maestro plan submit/complete/...` `queue write` `verify write` `resolve-conflict` を deny   | 一致              |
+| Tier1 B001-B004 (パイプ→sh / `bash -c` / `eval`)                                               | **未実装**                                                                                                | **ドリフト**      |
+| Tier2 (10 ファイル超削除 / プロジェクト外変更 / 未知 URL)                                      | **未実装** (Worker prompt 側の自律判断のみ)                                                               | **ドリフト**      |
+| `.maestro/` Bash redirect                                                                      | `:140-148` で実装                                                                                         | 一致              |
+| RUN_ON_MAIN 時 mutating                                                                        | `:154-171` で実装                                                                                         | 一致              |
+| WT001 worktree 境界 (Write/Edit が `working_dir` 外)                                           | `:194-298` で実装                                                                                         | 一致              |
+| macOS `/System/`, `/Library/`, `/Applications/`, `/usr/`, `/bin/`, `/sbin/` の Write/Edit 禁止 | **未実装** (worker.md:522-525 で hook 強制と明記しているが実体なし)                                       | **ドリフト**      |
 
 **結論**: 文書 (`maestro.md:91-99`, `worker.md:31`, `worker.md:522-525`) は「Tier1 D001-D009, B001-B004, macOS システムディレクトリ」を L2 hook で動的拒否すると**断言**しているが、実体は worker_policy_hook.sh:5-17 のコメントどおり **maestro orchestration 制約のみ**。Tier1 の半数と Tier2 の全パターンが「文書だけの規約」状態。
 
@@ -349,31 +349,31 @@
 
 これらは `templates/instructions/*.md`, `templates/maestro.md` の編集だけで解消可能 (本タスクでは編集禁止)。
 
-| ID | 概要 |
-|----|------|
-| C1-1 | worker.md §lease_epoch ライフサイクル を「配信値をそのまま CLI に渡すだけ」へ縮約 |
-| C1-4 | planner.md の definition_of_abort 必須化を任意化 (default 補完に委ねる) |
-| C2-1 | worker.md §`--summary` vs `--summary-file` の「rm/-rf/Users 誤検知」前提記述を削除 |
-| C2-2 | worker.md §`--files-changed` の git status 強制を削除 (descriptive metadata のみ) |
-| C3-1 | worker.md `__system_commit` 受信時保険記述を削除 |
-| C3-2 | planner.md §Continuous Mode の `__system_commit` 自動挿入記述を worktree 標準視点に reframe |
+| ID   | 概要                                                                                             |
+| ---- | ------------------------------------------------------------------------------------------------ |
+| C1-1 | worker.md §lease_epoch ライフサイクル を「配信値をそのまま CLI に渡すだけ」へ縮約                |
+| C1-4 | planner.md の definition_of_abort 必須化を任意化 (default 補完に委ねる)                          |
+| C2-1 | worker.md §`--summary` vs `--summary-file` の「rm/-rf/Users 誤検知」前提記述を削除               |
+| C2-2 | worker.md §`--files-changed` の git status 強制を削除 (descriptive metadata のみ)                |
+| C3-1 | worker.md `__system_commit` 受信時保険記述を削除                                                 |
+| C3-2 | planner.md §Continuous Mode の `__system_commit` 自動挿入記述を worktree 標準視点に reframe      |
 | C4-2 | planner.md §verification ループ上限 (2 ラウンド規則) を daemon `max_repair_count` 一元化に揃える |
-| C4-3 | planner.md §quarantine 解除 を Planner instruction から削除し orchestrator.md に集約 |
-| C5-1 | maestro.md / worker.md の L2 hook 責任範囲表を「maestro 制御プレーン特化」に書き換え |
+| C4-3 | planner.md §quarantine 解除 を Planner instruction から削除し orchestrator.md に集約             |
+| C5-1 | maestro.md / worker.md の L2 hook 責任範囲表を「maestro 制御プレーン特化」に書き換え             |
 
 ### 7.2 設計議論が必要 (実装変更を伴う)
 
-| ID | 概要 |
-|----|------|
+| ID   | 概要                                                                                    |
+| ---- | --------------------------------------------------------------------------------------- |
 | C1-2 | Worker の exit code 判定を `非0 → ターン終了` に集約するか daemon が fencing 詳細を隠す |
-| C1-3 | `task heartbeat` を opt-in にするか busy_detector 一本化 |
-| C2-3 | verify.yaml の strict YAML decode + bash quoting 制約を daemon 側で吸収 |
-| C2-4 | `plan add-task` の `--content-file -` 系 ergonomics を CLI 側で改善 |
-| C3-3 | worker.md `git` 禁止表を positive list に再構成 |
-| C4-1 | `repair_pending` 自動補修と Planner の `add-retry-task` を排他にして責務分離 |
-| C4-4 | Continuous Mode の next iteration 起動責務を daemon 側に寄せるかの再設計 |
-| C5-2 | bash `kill`/`killall`/`pkill` の L1/L2 への追加 |
-| C5-3 | `validateRunOnMainContent` の再実装 or コメント更新 |
+| C1-3 | `task heartbeat` を opt-in にするか busy_detector 一本化                                |
+| C2-3 | verify.yaml の strict YAML decode + bash quoting 制約を daemon 側で吸収                 |
+| C2-4 | `plan add-task` の `--content-file -` 系 ergonomics を CLI 側で改善                     |
+| C3-3 | worker.md `git` 禁止表を positive list に再構成                                         |
+| C4-1 | `repair_pending` 自動補修と Planner の `add-retry-task` を排他にして責務分離            |
+| C4-4 | Continuous Mode の next iteration 起動責務を daemon 側に寄せるかの再設計                |
+| C5-2 | bash `kill`/`killall`/`pkill` の L1/L2 への追加                                         |
+| C5-3 | `validateRunOnMainContent` の再実装 or コメント更新                                     |
 
 ---
 
@@ -399,11 +399,11 @@
 
 ### 観点別件数
 
-| 観点 | 件数 |
-|------|------|
-| C1 | 4 (C1-1 ~ C1-4) |
-| C2 | 4 (C2-1 ~ C2-4) |
-| C3 | 3 (C3-1 ~ C3-3) |
-| C4 | 4 (C4-1 ~ C4-4) |
-| C5 | 3 (C5-1 ~ C5-3) |
-| 合計 | 18 |
+| 観点 | 件数            |
+| ---- | --------------- |
+| C1   | 4 (C1-1 ~ C1-4) |
+| C2   | 4 (C2-1 ~ C2-4) |
+| C3   | 3 (C3-1 ~ C3-3) |
+| C4   | 4 (C4-1 ~ C4-4) |
+| C5   | 3 (C5-1 ~ C5-3) |
+| 合計 | 18              |

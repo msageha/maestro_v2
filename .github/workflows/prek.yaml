@@ -1,0 +1,33 @@
+name: prek
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prek:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Install mise
+        run: curl https://mise.run | sh
+
+      - name: Run prek
+        env:
+          # mise の GitHub API アクセス (リリース取得・SLSA 検証) を認証付きにして
+          # ランナー共有 IP の無認証 rate limit (60 req/h) を回避する
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          export PATH="$HOME/.local/bin:$PATH"
+          mise install
+          mise exec -- prek run --all-files

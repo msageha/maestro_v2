@@ -12,12 +12,12 @@ priority: 10
 
 エラーを以下の 4 カテゴリに分類し、対応方針を決定する:
 
-| カテゴリ | 例 | retry_safe | 典型的対応 |
-|---------|-----|-----------|----------|
-| **環境要因** | ポート競合、ディスク不足、依存サービス停止、ネットワークタイムアウト | `true` | 環境修復後にリトライ |
-| **ロジック不具合** | nil pointer、境界値エラー、型不一致、無限ループ | `false` | コード修正が必要 |
-| **仕様不一致** | API レスポンス形式の変更、期待値と実測値の乖離、未定義動作 | `false` | 仕様確認→コード修正 |
-| **リソース制約** | メモリ不足、タイムアウト、ファイルディスクリプタ枯渇 | 状況依存 | 設定調整またはアルゴリズム改善 |
+| カテゴリ           | 例                                                                   | retry_safe | 典型的対応                     |
+| ------------------ | -------------------------------------------------------------------- | ---------- | ------------------------------ |
+| **環境要因**       | ポート競合、ディスク不足、依存サービス停止、ネットワークタイムアウト | `true`     | 環境修復後にリトライ           |
+| **ロジック不具合** | nil pointer、境界値エラー、型不一致、無限ループ                      | `false`    | コード修正が必要               |
+| **仕様不一致**     | API レスポンス形式の変更、期待値と実測値の乖離、未定義動作           | `false`    | 仕様確認→コード修正            |
+| **リソース制約**   | メモリ不足、タイムアウト、ファイルディスクリプタ枯渇                 | 状況依存   | 設定調整またはアルゴリズム改善 |
 
 ## 2. retry_safe フラグの判断ロジック
 
@@ -51,6 +51,7 @@ priority: 10
 3. **Why**: なぜ起きたか（直接原因を 1 文で）
 
 **例:**
+
 ```
 What: "nil pointer dereference" in handler
 Where: internal/auth/handler.go:42 Login()
@@ -74,6 +75,7 @@ Why: GetUser が nil を返すケースで nil チェックなし
 ```
 
 **例:**
+
 ```
 [変更理由] UserService に GetByEmail メソッドを追加しようとした
 [注意事項] エラー: ロジック不具合
@@ -90,39 +92,39 @@ Why: GetUser が nil を返すケースで nil チェックなし
 
 ### ビルド・コンパイルエラー
 
-| パターン | 原因 | 対応 |
-|---------|------|------|
-| `undefined: X` | import 不足 or シンボル未定義 | import 追加 or 定義追加 |
-| `cannot use X as Y` | 型不一致 | 型変換 or interface 確認 |
-| `imported and not used` | 不要 import | import 削除 |
-| `declared and not used` | 未使用変数 | `_` に変更 or 削除 |
-| `missing method X` | interface 未実装 | メソッド追加 |
+| パターン                | 原因                          | 対応                     |
+| ----------------------- | ----------------------------- | ------------------------ |
+| `undefined: X`          | import 不足 or シンボル未定義 | import 追加 or 定義追加  |
+| `cannot use X as Y`     | 型不一致                      | 型変換 or interface 確認 |
+| `imported and not used` | 不要 import                   | import 削除              |
+| `declared and not used` | 未使用変数                    | `_` に変更 or 削除       |
+| `missing method X`      | interface 未実装              | メソッド追加             |
 
 ### テストエラー
 
-| パターン | 原因 | 対応 |
-|---------|------|------|
-| `expected X but got Y` | アサーション失敗 | 期待値 or 実装を確認 |
-| `test timed out` | 無限ループ or デッドロック | ロジック確認（retry_safe: false） |
-| `panic: runtime error` | nil 参照 or 範囲外アクセス | nil チェック or 境界確認 |
-| `connection refused` | テスト用サーバー未起動 | セットアップ確認（retry_safe: true） |
+| パターン               | 原因                       | 対応                                 |
+| ---------------------- | -------------------------- | ------------------------------------ |
+| `expected X but got Y` | アサーション失敗           | 期待値 or 実装を確認                 |
+| `test timed out`       | 無限ループ or デッドロック | ロジック確認（retry_safe: false）    |
+| `panic: runtime error` | nil 参照 or 範囲外アクセス | nil チェック or 境界確認             |
+| `connection refused`   | テスト用サーバー未起動     | セットアップ確認（retry_safe: true） |
 
 ### ランタイムエラー
 
-| パターン | 原因 | 対応 |
-|---------|------|------|
-| `permission denied` | ファイル権限 | chmod or パス確認 |
-| `address already in use` | ポート競合 | ポート変更 or プロセス確認（retry_safe: true） |
-| `context deadline exceeded` | タイムアウト | タイムアウト値調整 or 処理最適化 |
-| `no such file or directory` | パス誤り | パス確認 or ファイル生成 |
+| パターン                    | 原因         | 対応                                           |
+| --------------------------- | ------------ | ---------------------------------------------- |
+| `permission denied`         | ファイル権限 | chmod or パス確認                              |
+| `address already in use`    | ポート競合   | ポート変更 or プロセス確認（retry_safe: true） |
+| `context deadline exceeded` | タイムアウト | タイムアウト値調整 or 処理最適化               |
+| `no such file or directory` | パス誤り     | パス確認 or ファイル生成                       |
 
 ### OS サンドボックス起因のエラー（Claude Code 実行環境）
 
-| パターン | 原因 | 対応 |
-|---------|------|------|
-| `pnpm/npm/yarn/bun install` 中に `EPERM: operation not permitted` で `.vscode/` `.idea/` `.git/hooks` 等のパスが出る | Claude Code の OS sandbox が `**/.vscode/**` 等への書き込みを全深度で拒否（node_modules 内も対象） | **同じ install コマンドをそのまま再実行**する（ポリシーフックが自動で sandbox 外実行に書き換える）。`dangerouslyDisableSandbox` を自分で付ける必要はない |
-| install 以外のコマンド（tar 展開・cp 等）で同種の EPERM | 同上 | `dangerouslyDisableSandbox: true` で 1 回だけ再試行。**ただしコマンド文字列に `.vscode/` `.idea/` 等の保護パスを直接書かない**（書くと承認プロンプトが出て応答不能になる）。回避不能なら failed で報告 |
-| `.vscode/` `.idea/` 配下への Write/Edit が `Tool not allowed` | maestro が IDE 設定ディレクトリへの編集をブロック（承認プロンプト固着の予防） | そのファイルはタスク成果物にできない。必要性ごと summary に記載して報告する |
+| パターン                                                                                                             | 原因                                                                                               | 対応                                                                                                                                                                                                   |
+| -------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `pnpm/npm/yarn/bun install` 中に `EPERM: operation not permitted` で `.vscode/` `.idea/` `.git/hooks` 等のパスが出る | Claude Code の OS sandbox が `**/.vscode/**` 等への書き込みを全深度で拒否（node_modules 内も対象） | **同じ install コマンドをそのまま再実行**する（ポリシーフックが自動で sandbox 外実行に書き換える）。`dangerouslyDisableSandbox` を自分で付ける必要はない                                               |
+| install 以外のコマンド（tar 展開・cp 等）で同種の EPERM                                                              | 同上                                                                                               | `dangerouslyDisableSandbox: true` で 1 回だけ再試行。**ただしコマンド文字列に `.vscode/` `.idea/` 等の保護パスを直接書かない**（書くと承認プロンプトが出て応答不能になる）。回避不能なら failed で報告 |
+| `.vscode/` `.idea/` 配下への Write/Edit が `Tool not allowed`                                                        | maestro が IDE 設定ディレクトリへの編集をブロック（承認プロンプト固着の予防）                      | そのファイルはタスク成果物にできない。必要性ごと summary に記載して報告する                                                                                                                            |
 
 ## 6. 診断フロー
 

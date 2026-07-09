@@ -8,15 +8,15 @@
 
 ## サマリ
 
-| 観点 | 判定 | 主要な根拠 |
-|---|---|---|
-| F1: race condition | **問題なし (低リスクの観測点 1 件あり)** | mutex 保護は包括的。`task_heartbeat_handler` は scanMu.RLock を取得して TOCTOU を閉じる。`paneactivity.Tracker` の `hintLogState` だけが ForgetAgent で消されないが、agentID 数が config で固定されているため実質的な leak ではない |
-| F2: context 漏れ | **問題あり (中)** | UDS の `Server.processRequest` / handler 群が context を受け取らないため、daemon shutdown 中の長時間 handler は totalDuration まで完走待ち。`SessionRecoverer.RecoverSession` も `time.Sleep` ベースで context cancel を観測しない (バウンド ≤7s) |
-| F3: error wrap / log 漏れ | **問題なし** | `fmt.Errorf` 使用 448 件のうち 384 件が `%w` 採用 (約 86%)。残りは sentinel error 定義 / boundary check / プロセス境界など `%w` 不要の文脈。daemon ループ側の握り潰しは確認できず |
-| F4: lease_epoch / fencing | **問題あり (低)** | `task_heartbeat_handler` は `Epoch < 0` を validation で弾くが、`daemonapi.ResultWriteParams` 側のバリデータ (`ValidateResultWriteRequest`) は `LeaseEpoch` の正値性を検証しない。実害は fencing で必ずミスマッチして拒否されるため低だが、エラーメッセージが `queue=N, request=-1` で操作者に分かりにくい |
-| F5: recovery loop 脱出条件 | **問題あり (低)** | `escalateAwaitingFillStall` で `ApplyPhaseTransition` が失敗した場合に FireCount を delete してしまうため、次回の escalate に再度 threshold × 3 ≒ 15min かかる。バウンドはあるがリカバリ遅延の余地。publish_quarantined / blocked_pane / mergeFailureQuarantine は脱出条件確認済み |
-| F6: retry lineage active 2 本 | **問題なし** | Planner add-retry-task は `lockWorkerQueues(ALL workers)` + `state:<commandID>` を保持し queue X を Cancelled にしてから release。daemon auto-retry の validateFencing は `queue:<reporter>` lock を経由して queue X の status を読むため、Plan が cancel した後の入場では FENCING_REJECT_STATUS で拒否される。invariant は lock 順序で守られている |
-| F7: tmux socket 分離 / worktree cleanup / git fallback | **問題なし** | `BuildMaestroSocketName` は `sha256(canonicalDir)[:8]` で per-checkout 分離。`gitAddAllWithUnstattableFallback` は `gitAddAllAttemptLimit=5` で bounded、`gitWorktreeAddWithUnstattableFallback` は `--no-checkout` + skip-worktree で bounded |
+| 観点                                                   | 判定                                     | 主要な根拠                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------ | ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F1: race condition                                     | **問題なし (低リスクの観測点 1 件あり)** | mutex 保護は包括的。`task_heartbeat_handler` は scanMu.RLock を取得して TOCTOU を閉じる。`paneactivity.Tracker` の `hintLogState` だけが ForgetAgent で消されないが、agentID 数が config で固定されているため実質的な leak ではない                                                                                                                 |
+| F2: context 漏れ                                       | **問題あり (中)**                        | UDS の `Server.processRequest` / handler 群が context を受け取らないため、daemon shutdown 中の長時間 handler は totalDuration まで完走待ち。`SessionRecoverer.RecoverSession` も `time.Sleep` ベースで context cancel を観測しない (バウンド ≤7s)                                                                                                   |
+| F3: error wrap / log 漏れ                              | **問題なし**                             | `fmt.Errorf` 使用 448 件のうち 384 件が `%w` 採用 (約 86%)。残りは sentinel error 定義 / boundary check / プロセス境界など `%w` 不要の文脈。daemon ループ側の握り潰しは確認できず                                                                                                                                                                   |
+| F4: lease_epoch / fencing                              | **問題あり (低)**                        | `task_heartbeat_handler` は `Epoch < 0` を validation で弾くが、`daemonapi.ResultWriteParams` 側のバリデータ (`ValidateResultWriteRequest`) は `LeaseEpoch` の正値性を検証しない。実害は fencing で必ずミスマッチして拒否されるため低だが、エラーメッセージが `queue=N, request=-1` で操作者に分かりにくい                                          |
+| F5: recovery loop 脱出条件                             | **問題あり (低)**                        | `escalateAwaitingFillStall` で `ApplyPhaseTransition` が失敗した場合に FireCount を delete してしまうため、次回の escalate に再度 threshold × 3 ≒ 15min かかる。バウンドはあるがリカバリ遅延の余地。publish_quarantined / blocked_pane / mergeFailureQuarantine は脱出条件確認済み                                                                  |
+| F6: retry lineage active 2 本                          | **問題なし**                             | Planner add-retry-task は `lockWorkerQueues(ALL workers)` + `state:<commandID>` を保持し queue X を Cancelled にしてから release。daemon auto-retry の validateFencing は `queue:<reporter>` lock を経由して queue X の status を読むため、Plan が cancel した後の入場では FENCING_REJECT_STATUS で拒否される。invariant は lock 順序で守られている |
+| F7: tmux socket 分離 / worktree cleanup / git fallback | **問題なし**                             | `BuildMaestroSocketName` は `sha256(canonicalDir)[:8]` で per-checkout 分離。`gitAddAllWithUnstattableFallback` は `gitAddAllAttemptLimit=5` で bounded、`gitWorktreeAddWithUnstattableFallback` は `--no-checkout` + skip-worktree で bounded                                                                                                      |
 
 ### 件数 (重大度別)
 
@@ -106,11 +106,11 @@
   > s.mu.RLock()
   > handler, ok := s.handlers[req.Command]
   > s.mu.RUnlock()
-  > 
+  >
   > if !ok {
   >     return ErrorResponse(...)
   > }
-  > 
+  >
   > return handler(req)
   > ```
 - 補足: 各 handler 内では context を内製しているケースもある (例: `plan/retry.go:saveStateWithContext`)。だが `Server.ctx` (daemon shutdown) は handler に伝わらないため、長時間 I/O (state save / yaml AtomicWrite / git ops 等) に対して **daemon 側からの cancellation が効かない**
@@ -356,20 +356,20 @@ MEMORY.md の `retry chain は predecessor あたり active 1 本まで` (`retry
 
 MEMORY.md 項目を主要なものから確認:
 
-| 項目 | 状態 | 根拠 |
-|---|---|---|
-| `retry chain は predecessor あたり active 1 本まで` | **維持** | F6 セクションで詳述 |
-| `retry enqueue 後は original task を即 cancelled-superseded` | **維持** | `result_write_phase_b.go:194-215` `applyTaskStateProgression` で `retryScheduled=true` 時に `state.TaskStates[taskID] = StatusCancelled` を直接 set。`repair_pending` 経由しない |
-| `confirmation prompt 検出時は lease を維持` | **維持** | `paneactivity/tracker.go:651-663` に `VerdictBlocked` 定義、`extend, do not release` のコメントあり |
-| `blocked prompt は VerdictBlocked、MarkProgress を呼ばない` | **維持** | `tracker.go:731-733` `Keep BlockedSince untouched` コメント |
-| `tmux pane capture は main + alternate screen 両方` | **維持** | `queue_handler.go:233-249` の `capturePaneJoinedFromTmux` 説明 |
-| `awaiting_fill_stall は 3 連続 fire + wall-clock 15min で escalate` | **維持** (注: 本レポート F5-1 で escalate 失敗時の delete タイミングのみ要改善) | `queue_scan_phase_a_phase.go:530-569` 定数定義 |
-| `failed phase でも全 task terminal なら merge を回す` | **維持** | `phaseTasksAllTerminal` (`queue_scan_helpers.go:219-240`) が phase status による skip を行わない |
-| `tmux server を maestro instance ごとに socket 分離` | **維持** | F7 セクションで詳述 |
-| `git add -A の Operation not permitted は worktree-local exclude で吸収` | **維持** | F7 セクションで詳述 |
-| `git worktree add も unstattable fallback 適用` | **維持** | F7 セクションで詳述 |
-| `up -f は in_progress command を quarantine/lost_commands/ に退避` | 未確認 (本監査対象外) | — |
-| `Worker context >=97% used で fast-fail` | 未確認 (本監査対象外) | — |
+| 項目                                                                     | 状態                                                                            | 根拠                                                                                                                                                                             |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `retry chain は predecessor あたり active 1 本まで`                      | **維持**                                                                        | F6 セクションで詳述                                                                                                                                                              |
+| `retry enqueue 後は original task を即 cancelled-superseded`             | **維持**                                                                        | `result_write_phase_b.go:194-215` `applyTaskStateProgression` で `retryScheduled=true` 時に `state.TaskStates[taskID] = StatusCancelled` を直接 set。`repair_pending` 経由しない |
+| `confirmation prompt 検出時は lease を維持`                              | **維持**                                                                        | `paneactivity/tracker.go:651-663` に `VerdictBlocked` 定義、`extend, do not release` のコメントあり                                                                              |
+| `blocked prompt は VerdictBlocked、MarkProgress を呼ばない`              | **維持**                                                                        | `tracker.go:731-733` `Keep BlockedSince untouched` コメント                                                                                                                      |
+| `tmux pane capture は main + alternate screen 両方`                      | **維持**                                                                        | `queue_handler.go:233-249` の `capturePaneJoinedFromTmux` 説明                                                                                                                   |
+| `awaiting_fill_stall は 3 連続 fire + wall-clock 15min で escalate`      | **維持** (注: 本レポート F5-1 で escalate 失敗時の delete タイミングのみ要改善) | `queue_scan_phase_a_phase.go:530-569` 定数定義                                                                                                                                   |
+| `failed phase でも全 task terminal なら merge を回す`                    | **維持**                                                                        | `phaseTasksAllTerminal` (`queue_scan_helpers.go:219-240`) が phase status による skip を行わない                                                                                 |
+| `tmux server を maestro instance ごとに socket 分離`                     | **維持**                                                                        | F7 セクションで詳述                                                                                                                                                              |
+| `git add -A の Operation not permitted は worktree-local exclude で吸収` | **維持**                                                                        | F7 セクションで詳述                                                                                                                                                              |
+| `git worktree add も unstattable fallback 適用`                          | **維持**                                                                        | F7 セクションで詳述                                                                                                                                                              |
+| `up -f は in_progress command を quarantine/lost_commands/ に退避`       | 未確認 (本監査対象外)                                                           | —                                                                                                                                                                                |
+| `Worker context >=97% used で fast-fail`                                 | 未確認 (本監査対象外)                                                           | —                                                                                                                                                                                |
 
 崩れている対策は検出されなかった。F5-1 はあくまで「失敗時のリカバリ遅延」であり、3 連続 fire + wall-clock 15min の invariant は守られている。
 
@@ -379,26 +379,26 @@ MEMORY.md 項目を主要なものから確認:
 
 ### すぐ修正すべき (即修正 / minor)
 
-| ID | 内容 | 修正の方向性 |
-|---|---|---|
+| ID   | 内容                                                         | 修正の方向性                                                                 |
+| ---- | ------------------------------------------------------------ | ---------------------------------------------------------------------------- |
 | F4-1 | `ValidateResultWriteRequest` に `LeaseEpoch >= 0` 検証を追加 | heartbeat 側 (`task_heartbeat_handler.go:97-99`) と対称化。10 行未満のパッチ |
-| F1-1 | `Bus.Close` の `closeWg` コメントの contract 訂正 | 「callers can verify」の節を消すか `WaitDone()` 公開メソッドを追加 |
-| F1-2 | `Tracker.ForgetAgent` で `hintLogState` も削除 | 1 行追加。現行は実害なしだが defensive clean-up |
+| F1-1 | `Bus.Close` の `closeWg` コメントの contract 訂正            | 「callers can verify」の節を消すか `WaitDone()` 公開メソッドを追加           |
+| F1-2 | `Tracker.ForgetAgent` で `hintLogState` も削除               | 1 行追加。現行は実害なしだが defensive clean-up                              |
 
 ### 設計議論が必要 (major / 仕様変更)
 
-| ID | 内容 | 議論ポイント |
-|---|---|---|
-| F2-1 | UDS handler 群への context 伝搬 | `uds.Handler` シグネチャを `func(ctx, *Request) *Response` に変更すると全 handler の修正 + 各 handler 内で context.Done を観測するロジック追加が必要。daemon shutdown 時間短縮効果と修正コストのトレードオフ |
+| ID   | 内容                                                       | 議論ポイント                                                                                                                                                                                                                                                                        |
+| ---- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F2-1 | UDS handler 群への context 伝搬                            | `uds.Handler` シグネチャを `func(ctx, *Request) *Response` に変更すると全 handler の修正 + 各 handler 内で context.Done を観測するロジック追加が必要。daemon shutdown 時間短縮効果と修正コストのトレードオフ                                                                        |
 | F5-1 | `escalateAwaitingFillStall` の FireCount delete タイミング | phase transition 失敗時に FireCount を保つと、次 scan で即 escalate を再試行できる。失敗が瞬間的な I/O glitch ならむしろ有利。ただし persistent error (sandbox / disk full) の場合は scan tick ごとに escalate が走り log spam するため、retry budget や exponential backoff が必要 |
 
 ### 範囲外 (本監査では検証完了せず)
 
-| 項目 | 理由 |
-|---|---|
+| 項目                                               | 理由                                                                         |
+| -------------------------------------------------- | ---------------------------------------------------------------------------- |
 | daemon shutdown timeout 中の goroutine leak の実測 | `runtime.Stack(buf, true)` でダンプされる goroutine の所属を実機確認する必要 |
-| `up -f` archive 機構 | F7 観点には触れたが詳細未確認 |
-| Worker context fast-fail (97%) | F1 観点に間接的に該当するが本監査では未検証 |
+| `up -f` archive 機構                               | F7 観点には触れたが詳細未確認                                                |
+| Worker context fast-fail (97%)                     | F1 観点に間接的に該当するが本監査では未検証                                  |
 
 ---
 

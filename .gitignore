@@ -1,35 +1,41 @@
-# Build binary
+# ホワイトリスト方式: すべて無視し、`!` で許可したものだけを追跡する
+*
+
+!/.dockerignore
+!/.github/
+!/.github/**
+!/.gitignore
+!/.golangci.yaml
+!/.pre-commit-config.yaml
+!/README.md
+!/audit/
+!/audit/**
+!/cmd/
+!/cmd/**
+!/docker/
+!/docker/**
+!/docs/
+!/docs/**
+!/dprint.json
+!/go.mod
+!/go.sum
+!/internal/
+!/internal/**
+!/mise.lock
+!/mise.toml
+!/renovate.json
+!/templates/
+!/templates/**
+
+# 許可リスト配下でも無視するもの（ビルド成果物・機密ファイル・ランタイム生成物）
 /maestro
-
-# Test binaries
 *.test
-
-# Test coverage
 coverage.out
 coverage.html
-
-# Maestro runtime directories
-.maestro/logs/
-.maestro/locks/
-.maestro/state/
-.maestro/queue/
-.maestro/results/
-.maestro/worktrees/
-.maestro/dead_letters/
-.maestro/quarantine/
-
-# Maestro runtime files
-.maestro/dashboard.md
-.maestro/daemon.pid
-.maestro/daemon.sock
-.maestro/config.yaml.bak
-
-# Sensitive files
 .env
 *.key
 credentials.*
 *.pem
 *.secret
-
-# セッション引き継ぎ (コミット不要)
 SESSION_HANDOFF.md
+.maestro/

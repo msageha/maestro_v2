@@ -8,15 +8,15 @@
 
 ## サマリ
 
-| 観点 | 判定 | 主要な根拠 |
-|---|---|---|
-| E1: assertion 不在 / 常に true | **問題あり (低〜中)** | 5 件 (path-coverage 専用 / no-panic 専用テスト) |
-| E2: 実装側を真に検証していない (mock 過剰) | **問題なし** | mock は `internal/testutil/mocks` と test 内部 `mockPaneIO` に隔離。`Calls` カウント検証も実施 (`result_handler_test.go` 等) |
-| E3: 実装側のテスト用ハック | **要確認 (低)** | production 側に test-only seam が 2 箇所 (`testPublishResetHook`, `startupReconcileHook`)。設計上は許容範囲だが production runtime に test 専用フィールドが露出 |
-| E4: flaky 兆候 | **問題あり (中)** | 性能アサート 6 件が時間ベース。`time.Sleep` でのポーリング待機 1 件あり |
-| E5: fixture / golden file の orphan | **問題なし** | testdata は 1 ファイル (`internal/tmux/testdata/inputrecorder/main.go`) のみで参照済 |
-| E6: skip 放置 | **問題なし** | skip 30 件すべて環境ガード (バイナリ / OS / FS / 権限 / 環境変数)。永続放置 TODO は 0 件 |
-| E7: integration / unit の境界 | **問題あり (中)** | build tag `integration` を持つテストと、ファイル名に `integration` を含むが build tag を持たないテストが共存。`go test ./...` で重 integration テストが暗黙に走る |
+| 観点                                       | 判定                  | 主要な根拠                                                                                                                                                        |
+| ------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| E1: assertion 不在 / 常に true             | **問題あり (低〜中)** | 5 件 (path-coverage 専用 / no-panic 専用テスト)                                                                                                                   |
+| E2: 実装側を真に検証していない (mock 過剰) | **問題なし**          | mock は `internal/testutil/mocks` と test 内部 `mockPaneIO` に隔離。`Calls` カウント検証も実施 (`result_handler_test.go` 等)                                      |
+| E3: 実装側のテスト用ハック                 | **要確認 (低)**       | production 側に test-only seam が 2 箇所 (`testPublishResetHook`, `startupReconcileHook`)。設計上は許容範囲だが production runtime に test 専用フィールドが露出   |
+| E4: flaky 兆候                             | **問題あり (中)**     | 性能アサート 6 件が時間ベース。`time.Sleep` でのポーリング待機 1 件あり                                                                                           |
+| E5: fixture / golden file の orphan        | **問題なし**          | testdata は 1 ファイル (`internal/tmux/testdata/inputrecorder/main.go`) のみで参照済                                                                              |
+| E6: skip 放置                              | **問題なし**          | skip 30 件すべて環境ガード (バイナリ / OS / FS / 権限 / 環境変数)。永続放置 TODO は 0 件                                                                          |
+| E7: integration / unit の境界              | **問題あり (中)**     | build tag `integration` を持つテストと、ファイル名に `integration` を含むが build tag を持たないテストが共存。`go test ./...` で重 integration テストが暗黙に走る |
 
 ### 件数 (重大度別)
 
@@ -97,7 +97,7 @@
   > // If we get here without a race condition panic, the test passes
   > ```
 - 原因仮説: ConcurrentReader/Writer の同期検証を `-race` フラグの instrument 機能に委ねている。
-- 影響: 通常の `go test` (race フラグなし) ではこのテストは無条件 PASS。CI で `make test-race` を回さない限り回帰検知できない。`Makefile:75-76` に `test-race` ターゲットは存在するが、デフォルト `make test` には含まれない。
+- 影響: 通常の `go test` (race フラグなし) ではこのテストは無条件 PASS。CI で `mise run test-race` を回さない限り回帰検知できない。`mise.toml` に `test-race` タスクは存在するが、デフォルト `mise run test` には含まれない。
 - 対応: テスト名末尾に `_RaceOnly` 等の prefix を付け、ドキュメントに「-race 必須」と明示する。または assertion を追加 (Record の戻り値、IsConsecutiveDuplicate の決定的呼び出し等で具体的検証)。
 
 ### E1-5 (nit)
@@ -331,34 +331,34 @@ orphan な fixture / golden file は存在しない。
 
 ### Skip 一覧 (全 30 件、すべて環境ガード)
 
-| ID | file | 行 | 条件 |
-|---|---|---|---|
-| S01 | `internal/plan/state_fuzz_test.go` | 49 | seed が 1MiB YAML budget 超過時 (fuzz seed scope 制御) |
-| S02 | `internal/lock/gc_test.go` | 109 | symlink 非対応 FS |
-| S03 | `internal/formation/process_manager_test.go` | 59 | `start time not available on this platform` (Linux 以外?) |
-| S04 | `internal/agent/launcher_test.go` | 611 | symlink 不可 |
-| S05 | `internal/agent/orchestrator_integration_test.go` | 26 | `claude` CLI 不在 |
-| S06 | `internal/agent/orchestrator_integration_test.go` | 82 | `MAESTRO_INTEGRATION` 未設定 |
-| S07 | `internal/agent/policy_checker_test.go` | 288 | `jq` 不在 |
-| S08 | `internal/agent/policy_checker_test.go` | 736 | `/tmp` 不可 |
-| S09 | `internal/agent/policy_checker_test.go` | 961 | macOS 以外 (case-insensitive FS test) |
-| S10 | `internal/daemon/daemon_startup_test.go` | 100 | UDS 不可 |
-| S11 | `internal/daemon/integration_test.go` | 1720 | `testing.Short()` |
-| S12 | `internal/daemon/reconcile/reconcile_repair_test.go` | 1147 | running as root |
-| S13-17 | `internal/daemon/verify_runner_real_test.go` | 610, 655, 692, 786, 935 | `git not available` |
-| S18 | `internal/daemon/worktree/merge_publish_test.go` | 263 | windows symlink semantics |
-| S19 | `internal/daemon/worktree/path_guard_test.go` | 37 | windows symlink semantics |
-| S20 | `internal/daemon/worktree/cleanup_gc_test.go` | 623 | windows symlink semantics |
-| S21 | `internal/daemon/worktree/cleanup_gc_test.go` | 667 | windows symlink semantics |
-| S22 | `internal/daemon/worktree/manager_sync_commit_test.go` | 555 | running as root |
-| S23 | `internal/model/model_test.go` | 912 | templates/config.yaml 不在 (非標準位置) |
-| S24 | `internal/uds/uds_test.go` | 58 | UDS 不可 |
-| S25 | `internal/uds/uds_fuzz_test.go` | 35 | seed scope 外 |
-| S26 | `internal/uds/client_test.go` | 112 | running as root |
-| S27 | `internal/uds/server_test.go` | 122 | tmp dir path too long |
-| S28 | `internal/tmux/session_test.go` | 55 | tmux 不在 |
-| S29 | `internal/tmux/session_test.go` | 66 | tmux server 不可 |
-| S30 | `internal/tmux/session_test.go` | 98 | symlink 不可 |
+| ID     | file                                                   | 行                      | 条件                                                      |
+| ------ | ------------------------------------------------------ | ----------------------- | --------------------------------------------------------- |
+| S01    | `internal/plan/state_fuzz_test.go`                     | 49                      | seed が 1MiB YAML budget 超過時 (fuzz seed scope 制御)    |
+| S02    | `internal/lock/gc_test.go`                             | 109                     | symlink 非対応 FS                                         |
+| S03    | `internal/formation/process_manager_test.go`           | 59                      | `start time not available on this platform` (Linux 以外?) |
+| S04    | `internal/agent/launcher_test.go`                      | 611                     | symlink 不可                                              |
+| S05    | `internal/agent/orchestrator_integration_test.go`      | 26                      | `claude` CLI 不在                                         |
+| S06    | `internal/agent/orchestrator_integration_test.go`      | 82                      | `MAESTRO_INTEGRATION` 未設定                              |
+| S07    | `internal/agent/policy_checker_test.go`                | 288                     | `jq` 不在                                                 |
+| S08    | `internal/agent/policy_checker_test.go`                | 736                     | `/tmp` 不可                                               |
+| S09    | `internal/agent/policy_checker_test.go`                | 961                     | macOS 以外 (case-insensitive FS test)                     |
+| S10    | `internal/daemon/daemon_startup_test.go`               | 100                     | UDS 不可                                                  |
+| S11    | `internal/daemon/integration_test.go`                  | 1720                    | `testing.Short()`                                         |
+| S12    | `internal/daemon/reconcile/reconcile_repair_test.go`   | 1147                    | running as root                                           |
+| S13-17 | `internal/daemon/verify_runner_real_test.go`           | 610, 655, 692, 786, 935 | `git not available`                                       |
+| S18    | `internal/daemon/worktree/merge_publish_test.go`       | 263                     | windows symlink semantics                                 |
+| S19    | `internal/daemon/worktree/path_guard_test.go`          | 37                      | windows symlink semantics                                 |
+| S20    | `internal/daemon/worktree/cleanup_gc_test.go`          | 623                     | windows symlink semantics                                 |
+| S21    | `internal/daemon/worktree/cleanup_gc_test.go`          | 667                     | windows symlink semantics                                 |
+| S22    | `internal/daemon/worktree/manager_sync_commit_test.go` | 555                     | running as root                                           |
+| S23    | `internal/model/model_test.go`                         | 912                     | templates/config.yaml 不在 (非標準位置)                   |
+| S24    | `internal/uds/uds_test.go`                             | 58                      | UDS 不可                                                  |
+| S25    | `internal/uds/uds_fuzz_test.go`                        | 35                      | seed scope 外                                             |
+| S26    | `internal/uds/client_test.go`                          | 112                     | running as root                                           |
+| S27    | `internal/uds/server_test.go`                          | 122                     | tmp dir path too long                                     |
+| S28    | `internal/tmux/session_test.go`                        | 55                      | tmux 不在                                                 |
+| S29    | `internal/tmux/session_test.go`                        | 66                      | tmux server 不可                                          |
+| S30    | `internal/tmux/session_test.go`                        | 98                      | symlink 不可                                              |
 
 ### 評価
 
@@ -398,7 +398,7 @@ internal/plan/state_integration_test.go:1
 - 原因仮説: 過去にファイル別で build tag を導入していたが、新規 integration test 追加時に build tag をつけ忘れた / Scenario 23-29 のように quality gate を直接呼ぶテストを `integration_test.go` という名前にしただけで build tag を入れなかった。
 - 影響:
   1. `go test ./...` のデフォルト走行で、整合性検証用の integration test が走り、unit test 走行時間を膨らませる。
-  2. `make test-race` のようなレースモードで重 integration が走り、本来 race 検出の対象でないテストの flaky 性が顕在化しやすい (例: E4-5)。
+  2. `mise run test-race` のようなレースモードで重 integration が走り、本来 race 検出の対象でないテストの flaky 性が顕在化しやすい (例: E4-5)。
   3. 新規開発者が「どれが unit でどれが integration か」を判断する基準が曖昧。
 - 対応:
   - **要設計議論**: integration の定義を明文化し、(a) 外部依存 (git / claude / tmux) を要するもの、(b) daemon scaffold を立ち上げて end-to-end 経路を検証するもの、を区別。後者を `//go:build integration` に揃えるか、別ディレクトリ (`internal/daemon/integration/`) に物理的に分離する。
@@ -424,25 +424,25 @@ internal/plan/state_integration_test.go:1
 
 ### すぐ強化すべき (low-cost、影響範囲が局所的)
 
-| ID | finding | 想定対応コスト |
-|---|---|---|
-| E1-2 | `TestOsProcessManager_Signal_NegativePID` を `_DoesNotPanic` に改名 / 具体 assertion 追加 | 1h |
-| E1-3 | `TestHasOtherMaestroSessions_NoTmuxServer` を skip ガード化 | 1h |
-| E1-5 | `_ = strings.TrimSpace` の削除 + 不要 import 削除 | 10min |
-| E1-1 | `TestExecute_ModeClear_Success` を `_DoesNotPanic` 改名 | 1h |
-| E4-2, E4-3 | 100ms / 10ms 性能アサートを `os.Getenv("MAESTRO_TEST_PERF_RELAX")` で緩和可能に | 2h |
-| E4-4 | `bridge_dropped_count` メトリクスを追加して fixed-sleep を排除 | 4h |
+| ID         | finding                                                                                   | 想定対応コスト |
+| ---------- | ----------------------------------------------------------------------------------------- | -------------- |
+| E1-2       | `TestOsProcessManager_Signal_NegativePID` を `_DoesNotPanic` に改名 / 具体 assertion 追加 | 1h             |
+| E1-3       | `TestHasOtherMaestroSessions_NoTmuxServer` を skip ガード化                               | 1h             |
+| E1-5       | `_ = strings.TrimSpace` の削除 + 不要 import 削除                                         | 10min          |
+| E1-1       | `TestExecute_ModeClear_Success` を `_DoesNotPanic` 改名                                   | 1h             |
+| E4-2, E4-3 | 100ms / 10ms 性能アサートを `os.Getenv("MAESTRO_TEST_PERF_RELAX")` で緩和可能に           | 2h             |
+| E4-4       | `bridge_dropped_count` メトリクスを追加して fixed-sleep を排除                            | 4h             |
 
 ### 設計議論が必要 (構造変更を伴う)
 
-| ID | finding | 議論ポイント |
-|---|---|---|
-| E1-4 | `-race` 必須テストの命名規則 / Makefile 統合 | `go test ./...` で race build を要求するか、テスト名で `_RaceOnly` を分離するか |
-| E3-1, E3-2 | production 構造体への test seam 露出 | build tag による分離 vs interface 注入 vs 現状維持 |
-| E4-1 | event hook performance test の deterministic 化 | events パッケージに synchronous mode を入れるか、CI 緩和 env で許容するか |
-| E4-6 | uds client retry test の deterministic 化 | mock listener / network simulator の導入 |
-| E7-1 | integration test の build tag 規約統一 | 物理ディレクトリ分離 vs build tag 統一。CI matrix の見直しも要 |
-| E7-2 | `orchestrator_integration_test.go` のファイル分割 | E7-1 と一括で対応 |
+| ID         | finding                                           | 議論ポイント                                                                    |
+| ---------- | ------------------------------------------------- | ------------------------------------------------------------------------------- |
+| E1-4       | `-race` 必須テストの命名規則 / mise task 統合     | `go test ./...` で race build を要求するか、テスト名で `_RaceOnly` を分離するか |
+| E3-1, E3-2 | production 構造体への test seam 露出              | build tag による分離 vs interface 注入 vs 現状維持                              |
+| E4-1       | event hook performance test の deterministic 化   | events パッケージに synchronous mode を入れるか、CI 緩和 env で許容するか       |
+| E4-6       | uds client retry test の deterministic 化         | mock listener / network simulator の導入                                        |
+| E7-1       | integration test の build tag 規約統一            | 物理ディレクトリ分離 vs build tag 統一。CI matrix の見直しも要                  |
+| E7-2       | `orchestrator_integration_test.go` のファイル分割 | E7-1 と一括で対応                                                               |
 
 ---
 

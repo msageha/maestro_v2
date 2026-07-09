@@ -9,24 +9,24 @@
 
 ## 観点別サマリ
 
-| 観点 | 結論 | 件数 |
-|------|------|------|
-| 1. 未参照シンボル / オーファンファイル | 問題あり | 12 件 (critical 2 / major 4 / minor 5 / nit 1) |
-| 2. DRY 違反 | 問題あり | 2 件 (major 1 / minor 1) |
-| 3. 固定値化された feature flag/experimental gate | 問題あり | 1 件 (minor 1) |
-| 4. MEMORY.md 撤去済み残骸 | 問題あり (ただし観点1と重複) | 5 章中 1 章 |
-| 5. 使われていない config キー、env var | 問題なし (撤去ガイダンスは適切) | 0 件 |
+| 観点                                             | 結論                            | 件数                                           |
+| ------------------------------------------------ | ------------------------------- | ---------------------------------------------- |
+| 1. 未参照シンボル / オーファンファイル           | 問題あり                        | 12 件 (critical 2 / major 4 / minor 5 / nit 1) |
+| 2. DRY 違反                                      | 問題あり                        | 2 件 (major 1 / minor 1)                       |
+| 3. 固定値化された feature flag/experimental gate | 問題あり                        | 1 件 (minor 1)                                 |
+| 4. MEMORY.md 撤去済み残骸                        | 問題あり (ただし観点1と重複)    | 5 章中 1 章                                    |
+| 5. 使われていない config キー、env var           | 問題なし (撤去ガイダンスは適切) | 0 件                                           |
 
 合計 critical: 2 / major: 5 / minor: 7 / nit: 1 = **15 件**
 
 ## 重大度ラベル定義
 
-| ラベル | 定義 |
-|--------|------|
+| ラベル   | 定義                                                                                                                             |
+| -------- | -------------------------------------------------------------------------------------------------------------------------------- |
 | critical | 死コードのインポート/型継続が、新たな機能追加時の混乱や誤接続を招く規模 (パッケージ規模、または常に nil な dependency injection) |
-| major | 重要 API のうち production 参照が 0 で、今後の意図しない再生・分岐の温床 |
-| minor | 単独関数・ヘルパが production 参照 0 で、即削除可能 |
-| nit | 純コメント/プレースホルダ、即削除可能で副作用なし |
+| major    | 重要 API のうち production 参照が 0 で、今後の意図しない再生・分岐の温床                                                         |
+| minor    | 単独関数・ヘルパが production 参照 0 で、即削除可能                                                                              |
+| nit      | 純コメント/プレースホルダ、即削除可能で副作用なし                                                                                |
 
 ---
 
@@ -266,33 +266,33 @@
 
 ### 即削除可能 (副作用範囲が局所、テストも同時削除可)
 
-| ID | 対象 | 種別 |
-|----|------|------|
-| D1-1 | `internal/daemon/scheduler` パッケージ全体 + テスト | パッケージ |
-| D1-3 | `internal/model/fingerprint.go` の `ConsecutiveFailureTracker` infra | 関数群 |
-| D1-4 | `internal/model/featuregate.go` の `ValidateProfileLevel` / `DefaultFeatureProfiles` / `IsFeatureEnabled` | 関数群 |
-| D1-5 | `internal/model/runtime.go: ValidateRuntime` | 関数 |
-| D1-7 | `internal/daemon/lease_manager.go` の `LeaseManagerOption` / `LeaseInfo` / `WithLeaseManagerClock` | alias |
-| D1-8 | `internal/daemon/dispatch_envelope.go` (placeholder file) | ファイル |
-| D1-12 | `internal/model/review.go: IsTerminalReviewStatus` | 関数 |
+| ID    | 対象                                                                                                      | 種別       |
+| ----- | --------------------------------------------------------------------------------------------------------- | ---------- |
+| D1-1  | `internal/daemon/scheduler` パッケージ全体 + テスト                                                       | パッケージ |
+| D1-3  | `internal/model/fingerprint.go` の `ConsecutiveFailureTracker` infra                                      | 関数群     |
+| D1-4  | `internal/model/featuregate.go` の `ValidateProfileLevel` / `DefaultFeatureProfiles` / `IsFeatureEnabled` | 関数群     |
+| D1-5  | `internal/model/runtime.go: ValidateRuntime`                                                              | 関数       |
+| D1-7  | `internal/daemon/lease_manager.go` の `LeaseManagerOption` / `LeaseInfo` / `WithLeaseManagerClock`        | alias      |
+| D1-8  | `internal/daemon/dispatch_envelope.go` (placeholder file)                                                 | ファイル   |
+| D1-12 | `internal/model/review.go: IsTerminalReviewStatus`                                                        | 関数       |
 
 ### 削除可能だが範囲が広い・他箇所への影響あり
 
-| ID | 対象 | 影響範囲 |
-|----|------|---------|
-| D1-2 | `internal/daemon/fallback` package + 結線インフラ全体 | `daemon.go`, `queue_handler.go`, `handler_registry.go`, `result_write_handler.go`, `api_factory.go`, `daemon_startup.go` の修正必要 |
-| D1-6 | `DefaultFitnessThresholds` 関数 | `FitnessThresholds` 型自体は別箇所で使われている可能性、削除前に調査 |
-| D1-11 | `IsActiveStatus`, `IsPausedStatus` (`model/status.go`) | 削除可能だが status ヘルパは future use を意識した API surface のため要設計議論 |
+| ID    | 対象                                                   | 影響範囲                                                                                                                            |
+| ----- | ------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------- |
+| D1-2  | `internal/daemon/fallback` package + 結線インフラ全体  | `daemon.go`, `queue_handler.go`, `handler_registry.go`, `result_write_handler.go`, `api_factory.go`, `daemon_startup.go` の修正必要 |
+| D1-6  | `DefaultFitnessThresholds` 関数                        | `FitnessThresholds` 型自体は別箇所で使われている可能性、削除前に調査                                                                |
+| D1-11 | `IsActiveStatus`, `IsPausedStatus` (`model/status.go`) | 削除可能だが status ヘルパは future use を意識した API surface のため要設計議論                                                     |
 
 ### 要設計議論
 
-| ID | 対象 | 議論点 |
-|----|------|-------|
-| D1-9 | `model.LoadOrDefaultVerifyConfig` (no ForProject) | `LoadOrDefaultVerifyConfigForProject` への統合とテスト書き換え方針 |
-| D1-10 | `DefaultVerifyConfigForProject` の dead parameter | パラメータ削除 or 関数自体の削除 |
-| D2-1 | `NormalizeError` 二重実装 | 採用する正規化規則の選定 (regex 違いがあるため、実装 A の正規化を実装 B に持ち込むべきか) |
-| D2-2 | Clock の triple-hop alias | callsite 50+ への波及検証 |
-| D3-1 | `Fallback` config block の互換性運用 | YAML 後方互換性 (現在は適切な deprecation message があるため、別途議論) |
+| ID    | 対象                                              | 議論点                                                                                    |
+| ----- | ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| D1-9  | `model.LoadOrDefaultVerifyConfig` (no ForProject) | `LoadOrDefaultVerifyConfigForProject` への統合とテスト書き換え方針                        |
+| D1-10 | `DefaultVerifyConfigForProject` の dead parameter | パラメータ削除 or 関数自体の削除                                                          |
+| D2-1  | `NormalizeError` 二重実装                         | 採用する正規化規則の選定 (regex 違いがあるため、実装 A の正規化を実装 B に持ち込むべきか) |
+| D2-2  | Clock の triple-hop alias                         | callsite 50+ への波及検証                                                                 |
+| D3-1  | `Fallback` config block の互換性運用              | YAML 後方互換性 (現在は適切な deprecation message があるため、別途議論)                   |
 
 ---
 

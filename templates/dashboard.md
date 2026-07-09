@@ -4,14 +4,14 @@
 
 ## Formation Status
 
-| Component | Status |
-|-----------|--------|
+| Component | Status  |
+| --------- | ------- |
 | Daemon    | unknown |
 
 ## Queue Depth
 
 | Queue | Pending | In Progress |
-|-------|---------|-------------|
+| ----- | ------- | ----------- |
 
 ## Recent Activity
 

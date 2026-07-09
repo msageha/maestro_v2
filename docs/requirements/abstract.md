@@ -12,11 +12,11 @@
 User → Orchestrator (Opus) → Planner (Opus) → Workers 1-N (Sonnet/Opus)
 ```
 
-| 層 | 責務 | モデル |
-|---|---|---|
-| Orchestrator | ユーザー IF。指示を構造化し下流に渡す | Opus |
-| Planner | Five Questions フレームワークでタスク分解・Worker 割当・結果統合 | Opus |
-| Worker | 割り当てられたタスクを実行し結果を報告 | Sonnet (L1-L3) / Opus (L4-L6) |
+| 層           | 責務                                                             | モデル                        |
+| ------------ | ---------------------------------------------------------------- | ----------------------------- |
+| Orchestrator | ユーザー IF。指示を構造化し下流に渡す                            | Opus                          |
+| Planner      | Five Questions フレームワークでタスク分解・Worker 割当・結果統合 | Opus                          |
+| Worker       | 割り当てられたタスクを実行し結果を報告                           | Sonnet (L1-L3) / Opus (L4-L6) |
 
 ### 通信方式
 
@@ -39,25 +39,25 @@ Agent（Claude Code セッション）の責務はビジネスロジックに限
 
 ## ドキュメント構成
 
-| ファイル | 内容 | 対象読者 |
-|---|---|---|
-| [abstract.md](abstract.md) | 本ドキュメント。全体概要 | 全員 |
+| ファイル                   | 内容                     | 対象読者 |
+| -------------------------- | ------------------------ | -------- |
+| [abstract.md](abstract.md) | 本ドキュメント。全体概要 | 全員     |
 
 ### 章別ファイル
 
-| 章 | ファイル | 内容 |
-|---|---|---|
-| §1 | [01-system-overview.md](01-system-overview.md) | 3 層構造、Bloom's Taxonomy、Five Questions、Agent の責務原則、通信方式、配信保証モデル、単一 Go バイナリアーキテクチャ |
-| §2 | [02-user-flow.md](02-user-flow.md) | インストールから実行までの手順 |
-| §3 | [03-file-structure.md](03-file-structure.md) | リポジトリ構造（Go プロジェクト）と `.maestro/` ディレクトリ構造 |
-| §4 | [04-yaml-schema.md](04-yaml-schema.md) | ID 体系、config / queue / results / state の全スキーマ |
-| §5 | [05-script-responsibilities.md](05-script-responsibilities.md) | 各サブコマンドの責務・インターフェース・処理フロー（Planner が使用するのは `plan submit` / `plan complete` / `plan add-retry-task` の 3 サブコマンド。他の `plan` サブコマンド（`request-cancel`, `rebuild`）はインフラ / オペレーター / reconciliation 用。キャンセルは Orchestrator が `queue write --type cancel-request` で要求し、デーモンが内部処理する。`add-retry-task` は `--retry-of` で失敗タスクを置換し、推移的にキャンセルされた依存タスクをデーモンが自動復旧する方式。Phase-Contract Model で段階的計画に対応） |
-| §6 | [06-execution-flow.md](06-execution-flow.md) | フェーズ A-D の全ステップ（インストール → 起動 → 実行サイクル → クリーンアップ） |
-| §7 | [07-error-handling.md](07-error-handling.md) | タスク失敗、デーモン異常、ビジー検知、配信失敗、クラッシュリカバリ、YAML 肥大化 |
-| §8 | [08-tmux-sendkeys.md](08-tmux-sendkeys.md) | agent_executor への集約理由 |
-| §9 | [09-safety-rules.md](09-safety-rules.md) | Tier 1 絶対禁止 / Tier 2 停止報告 / Tier 3 安全デフォルト / プロンプトインジェクション防御 |
-| §10 | [10-continuous-mode.md](10-continuous-mode.md) | イテレーションループ（Execute→Commit→Evaluate→Decide）、デーモン主導のシステムコミットタスク自動挿入、イテレーションカウンタ、暴走防止 |
-| §11 | [11-future-extensions.md](11-future-extensions.md) | マルチプロバイダー対応、YAML 移行基準、動的スケーリング、Web UI |
+| 章  | ファイル                                                       | 内容                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| --- | -------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| §1  | [01-system-overview.md](01-system-overview.md)                 | 3 層構造、Bloom's Taxonomy、Five Questions、Agent の責務原則、通信方式、配信保証モデル、単一 Go バイナリアーキテクチャ                                                                                                                                                                                                                                                                                                                                                                                                          |
+| §2  | [02-user-flow.md](02-user-flow.md)                             | インストールから実行までの手順                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| §3  | [03-file-structure.md](03-file-structure.md)                   | リポジトリ構造（Go プロジェクト）と `.maestro/` ディレクトリ構造                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| §4  | [04-yaml-schema.md](04-yaml-schema.md)                         | ID 体系、config / queue / results / state の全スキーマ                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| §5  | [05-script-responsibilities.md](05-script-responsibilities.md) | 各サブコマンドの責務・インターフェース・処理フロー（Planner が使用するのは `plan submit` / `plan complete` / `plan add-retry-task` の 3 サブコマンド。他の `plan` サブコマンド（`request-cancel`, `rebuild`）はインフラ / オペレーター / reconciliation 用。キャンセルは Orchestrator が `queue write --type cancel-request` で要求し、デーモンが内部処理する。`add-retry-task` は `--retry-of` で失敗タスクを置換し、推移的にキャンセルされた依存タスクをデーモンが自動復旧する方式。Phase-Contract Model で段階的計画に対応） |
+| §6  | [06-execution-flow.md](06-execution-flow.md)                   | フェーズ A-D の全ステップ（インストール → 起動 → 実行サイクル → クリーンアップ）                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| §7  | [07-error-handling.md](07-error-handling.md)                   | タスク失敗、デーモン異常、ビジー検知、配信失敗、クラッシュリカバリ、YAML 肥大化                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| §8  | [08-tmux-sendkeys.md](08-tmux-sendkeys.md)                     | agent_executor への集約理由                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| §9  | [09-safety-rules.md](09-safety-rules.md)                       | Tier 1 絶対禁止 / Tier 2 停止報告 / Tier 3 安全デフォルト / プロンプトインジェクション防御                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| §10 | [10-continuous-mode.md](10-continuous-mode.md)                 | イテレーションループ（Execute→Commit→Evaluate→Decide）、デーモン主導のシステムコミットタスク自動挿入、イテレーションカウンタ、暴走防止                                                                                                                                                                                                                                                                                                                                                                                          |
+| §11 | [11-future-extensions.md](11-future-extensions.md)             | マルチプロバイダー対応、YAML 移行基準、動的スケーリング、Web UI                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 
 ## システム構成図
 
@@ -81,7 +81,7 @@ Agent（Claude Code セッション）の責務はビジネスロジックに限
 │  CLI subcommands: setup, up, attach, down, status, queue write,         │
 │    result write, plan, task heartbeat, verify write, agent launch/exec, │
 │    worker standby, skill, persona, dashboard                            │
-│  Build: Makefile (check-deps + go build + install target)              │
+│  Build: mise task (check-deps + go build + install)                     │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 

@@ -3,23 +3,24 @@
 **監査対象**: maestro_v2 の `internal/` 配下プロダクションコード (test ファイル除外)。
 **監査スタンス**: 修正は行わない (Read のみ)。コード断片の提案を含めない (タスク制約)。
 **メトリクス取得方法**:
-- 関数長は `^func ... {` から対応する閉じ `}` までを brace tracking で算出 (`ACTUAL_LINES`)。`^func ` 単純距離 heuristic は package level 定数を含むため使わない。
+
+- 関数長は `^func ... {` から対応する閉じ `}` までを brace tracking で算出 (`ACTUAL_LINES`)。`^func` 単純距離 heuristic は package level 定数を含むため使わない。
 - 引数数は `^func ... ( ... )` の `,` 区切り個数で近似 (型パラメータの `[T comparable]` 等で過大計上の可能性あり)。
 - magic number は `[0-9]+\s*\*\s*time\.(Second|Minute|Hour)` および inline if-比較を grep。
 - magic string は `filepath.Join(maestroDir, "<dir>", ...)` 形式の頻度を grep。
-**日付**: 2026-05-08
+  **日付**: 2026-05-08
 
 ---
 
 ## 0. サマリ判定 (5 項目別)
 
-| ID | 観点 | 判定 |
-|----|------|------|
-| G1 | 関数が長すぎる / 責務過多 | **問題あり** (8 件) |
-| G2 | パッケージ間の循環依存・抽象漏れ | **問題なし (循環なし) + 要確認 (構造的肥大 1 件)** |
-| G3 | 命名が実装と乖離 | **要確認** (3 件) |
-| G4 | magic number / magic string の点在 | **問題あり** (5 件) |
-| G5 | 早期 return 連鎖で本流が圧迫されている | **問題あり** (3 件) |
+| ID | 観点                                   | 判定                                               |
+| -- | -------------------------------------- | -------------------------------------------------- |
+| G1 | 関数が長すぎる / 責務過多              | **問題あり** (8 件)                                |
+| G2 | パッケージ間の循環依存・抽象漏れ       | **問題なし (循環なし) + 要確認 (構造的肥大 1 件)** |
+| G3 | 命名が実装と乖離                       | **要確認** (3 件)                                  |
+| G4 | magic number / magic string の点在     | **問題あり** (5 件)                                |
+| G5 | 早期 return 連鎖で本流が圧迫されている | **問題あり** (3 件)                                |
 
 合計 finding 数: **20 件** (G1=8, G2=1+1, G3=3, G4=5, G5=3)。
 
@@ -27,12 +28,12 @@
 
 ## 1. 重大度凡例
 
-| Severity | 意味 |
-|----------|------|
+| Severity     | 意味                                                                   |
+| ------------ | ---------------------------------------------------------------------- |
 | **critical** | バグ温床。条件分岐の取りこぼしや race を生みやすく、可読性低下が致命的 |
-| **major**    | 将来の改修コスト増・テスト被覆度低下を招く |
-| **minor**    | 局所的な可読性問題 |
-| **nit**      | 表現・命名の改善余地のみ |
+| **major**    | 将来の改修コスト増・テスト被覆度低下を招く                             |
+| **minor**    | 局所的な可読性問題                                                     |
+| **nit**      | 表現・命名の改善余地のみ                                               |
 
 ---
 
@@ -332,39 +333,39 @@
 
 ### 8.1 すぐ着手可能 (機械的または局所変更で完結)
 
-| ID | 概要 | アプローチ |
-|----|------|-----------|
-| G1-2 | `Complete` (246 行) を pre-hook chain + executeCompleteSteps に再構成 | hook を順次呼ぶ pattern (intent / idempotency / paused-replan auto-cancel / can-complete) |
-| G1-4 | `collectExpiredTaskBusyChecks` のループ内 verdict 分岐をメソッド化 | inner-loop body を `handleExpiredTaskWithVerdict` に切り出し |
-| G1-5 | `collectPendingTaskDispatches` 引数を struct に集約 + gate チェーン化 | `dispatchContext` struct と `[]gateFn` の宣言的列挙 |
-| G1-7 | `stepAwaitingFillWatchdog` の二重ループ内側を関数化 | `evaluatePhaseAwaitingFill` / `firePhaseStallSignal` の分離 |
-| G1-8 | `collectWorktreePhaseMerges` を phase 単位の判定 + merge item builder に分割 | `shouldMergePhase` / `buildMergeItems` |
-| G3-1 | `validateRunOnMainContent` の dead-call 削除 / コメント更新 | function 削除 or 命名変更 |
-| G3-2 | `Tracker.ObserveVerdict` のリネーム | `RecordAndEvaluateVerdict` 等 |
-| G4-1 | `.maestro/` サブディレクトリ名の constants 化 | `pathutil` package に集約 |
-| G4-2 | `bufferSec` の magic 30/90 を const 化 | `preemptiveRenewalBufferSec` / `preemptiveRenewalMinBufferSec` |
-| G4-3 | `daemon.NumCPU` cap の magic 8/32 を const 化 | `minScanWorkers` / `maxScanWorkers` |
-| G4-5 | log trim 長の定数を集約 | observability パッケージに集約 |
-| G5-2 | `collectPendingTaskDispatches` の gate チェーンを宣言化 | G1-5 と同じ |
-| G5-3 | `Complete` の冒頭 4 連 early-return を hook 化 | G1-2 と同じ |
+| ID   | 概要                                                                         | アプローチ                                                                                |
+| ---- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| G1-2 | `Complete` (246 行) を pre-hook chain + executeCompleteSteps に再構成        | hook を順次呼ぶ pattern (intent / idempotency / paused-replan auto-cancel / can-complete) |
+| G1-4 | `collectExpiredTaskBusyChecks` のループ内 verdict 分岐をメソッド化           | inner-loop body を `handleExpiredTaskWithVerdict` に切り出し                              |
+| G1-5 | `collectPendingTaskDispatches` 引数を struct に集約 + gate チェーン化        | `dispatchContext` struct と `[]gateFn` の宣言的列挙                                       |
+| G1-7 | `stepAwaitingFillWatchdog` の二重ループ内側を関数化                          | `evaluatePhaseAwaitingFill` / `firePhaseStallSignal` の分離                               |
+| G1-8 | `collectWorktreePhaseMerges` を phase 単位の判定 + merge item builder に分割 | `shouldMergePhase` / `buildMergeItems`                                                    |
+| G3-1 | `validateRunOnMainContent` の dead-call 削除 / コメント更新                  | function 削除 or 命名変更                                                                 |
+| G3-2 | `Tracker.ObserveVerdict` のリネーム                                          | `RecordAndEvaluateVerdict` 等                                                             |
+| G4-1 | `.maestro/` サブディレクトリ名の constants 化                                | `pathutil` package に集約                                                                 |
+| G4-2 | `bufferSec` の magic 30/90 を const 化                                       | `preemptiveRenewalBufferSec` / `preemptiveRenewalMinBufferSec`                            |
+| G4-3 | `daemon.NumCPU` cap の magic 8/32 を const 化                                | `minScanWorkers` / `maxScanWorkers`                                                       |
+| G4-5 | log trim 長の定数を集約                                                      | observability パッケージに集約                                                            |
+| G5-2 | `collectPendingTaskDispatches` の gate チェーンを宣言化                      | G1-5 と同じ                                                                               |
+| G5-3 | `Complete` の冒頭 4 連 early-return を hook 化                               | G1-2 と同じ                                                                               |
 
 ### 8.2 設計議論が必要 (公開 API / アルゴリズム invariant に踏み込む)
 
-| ID | 概要 | 議論ポイント |
-|----|------|------------|
-| G1-1 | `collectWorktreePublishAndCleanup` (355 行) の 5 ステップ + integration status switch 分割 | state machine の論理的境界をどう切るか |
-| G1-3 | `ObserveVerdict` の 4 fast path を rule list 化 | precedence の implicit→explicit 化に伴うテスト影響 |
-| G1-6 | `EnsureWorkerWorktree` の rollback stack 化 | atomicity 保証を保てるか |
-| G2-1 | `QueueHandler` の責務分割 (40 フィールド / 148 メソッド / 20 ファイル) | 公開 API 範囲、テストの mock 戦略 |
-| G3-3 | `lease.Manager` / `worktree.Manager` 等の generic 型名 | パッケージ命名規則の方針 |
-| G4-4 | hard-coded duration vs config 駆動の方針整理 | config schema 拡張可否 |
-| G5-1 | `EnsureWorkerWorktree` の rollback 集約 | G1-6 と同じ |
+| ID   | 概要                                                                                       | 議論ポイント                                       |
+| ---- | ------------------------------------------------------------------------------------------ | -------------------------------------------------- |
+| G1-1 | `collectWorktreePublishAndCleanup` (355 行) の 5 ステップ + integration status switch 分割 | state machine の論理的境界をどう切るか             |
+| G1-3 | `ObserveVerdict` の 4 fast path を rule list 化                                            | precedence の implicit→explicit 化に伴うテスト影響 |
+| G1-6 | `EnsureWorkerWorktree` の rollback stack 化                                                | atomicity 保証を保てるか                           |
+| G2-1 | `QueueHandler` の責務分割 (40 フィールド / 148 メソッド / 20 ファイル)                     | 公開 API 範囲、テストの mock 戦略                  |
+| G3-3 | `lease.Manager` / `worktree.Manager` 等の generic 型名                                     | パッケージ命名規則の方針                           |
+| G4-4 | hard-coded duration vs config 駆動の方針整理                                               | config schema 拡張可否                             |
+| G5-1 | `EnsureWorkerWorktree` の rollback 集約                                                    | G1-6 と同じ                                        |
 
 ---
 
 ## 9. グラウンディング上の注意
 
-- 関数行数は brace tracking で算出した `ACTUAL_LINES` を使用している (前段で `^func ` 距離 heuristic が package level 定数で過大計上したため)。
+- 関数行数は brace tracking で算出した `ACTUAL_LINES` を使用している (前段で `^func` 距離 heuristic が package level 定数で過大計上したため)。
 - 引数 6 個以上の function 列挙は signature 内 `,` で count しただけの近似値。`map[string]interface{}` のような型に内包される `,` は含まれないため一部過小計上の可能性あり。
 - 「QueueHandler 148 メソッド」は `^func (qh *QueueHandler)` の単純 grep 結果。ジェネリックメソッド・受信値違いで漏れる可能性は無い (Go ではメソッド表現がこの 1 形式に固定)。
 - 確認できなかった事項 (= 推定):
@@ -384,11 +385,11 @@
 
 ### 観点別件数
 
-| 観点 | 件数 |
-|------|------|
-| G1 | 8 (G1-1 ~ G1-8) |
-| G2 | 1 (G2-1) + 「循環なし」判定 |
-| G3 | 3 (G3-1 ~ G3-3) |
-| G4 | 5 (G4-1 ~ G4-5) |
-| G5 | 3 (G5-1 ~ G5-3) |
-| 合計 | 20 |
+| 観点 | 件数                        |
+| ---- | --------------------------- |
+| G1   | 8 (G1-1 ~ G1-8)             |
+| G2   | 1 (G2-1) + 「循環なし」判定 |
+| G3   | 3 (G3-1 ~ G3-3)             |
+| G4   | 5 (G4-1 ~ G4-5)             |
+| G5   | 3 (G5-1 ~ G5-3)             |
+| 合計 | 20                          |

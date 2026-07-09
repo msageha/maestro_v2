@@ -3,7 +3,7 @@
 ## フェーズ A: インストール → セットアップ（手動・1 回）
 
 ```
-① make install
+① mise run install
    ├── check-deps: tmux, go, claude, jq
    ├── go build で単一バイナリをビルド
    └── バイナリを配置（実行権限付与）

@@ -21,12 +21,12 @@ priority: 20
 
 ## 2. 出力種別
 
-| 種別 | 含める内容 |
-|---|---|
-| README | 利用者が次に実行するコマンド、設定、制約 |
-| CHANGELOG | Added / Changed / Fixed / Removed / Security |
-| Release notes | ユーザー影響、互換性、移行要否 |
-| Migration guide | 旧手順、新手順、注意点、検証方法 |
+| 種別            | 含める内容                                   |
+| --------------- | -------------------------------------------- |
+| README          | 利用者が次に実行するコマンド、設定、制約     |
+| CHANGELOG       | Added / Changed / Fixed / Removed / Security |
+| Release notes   | ユーザー影響、互換性、移行要否               |
+| Migration guide | 旧手順、新手順、注意点、検証方法             |
 
 ## 3. 書き方
 

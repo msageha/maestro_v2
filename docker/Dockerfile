@@ -3,7 +3,7 @@
 # 任意のリポジトリをホストと同じパスにマウントして maestro を実行する用途。
 #
 # ビルド: docker build -t maestro-env -f docker/Dockerfile .
-# 実行:   make docker-run DIR=/path/to/repo
+# 実行:   DIR=/path/to/repo mise run docker-run
 # ──────────────────────────────────────────────────────────────────────────────
 
 FROM ubuntu:24.04
