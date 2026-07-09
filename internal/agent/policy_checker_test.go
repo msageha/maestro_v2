@@ -2128,7 +2128,6 @@ func TestHookScript_SBX_PackageManagerCommandsRewrittenUnsandboxed(t *testing.T)
 		"yarn --frozen-lockfile",
 		"bun install",
 		"bun add zod",
-		"cd pkg && pnpm install",
 	}
 	for _, cmd := range commands {
 		out := runHookScript(t, scriptPath, makeBashInput(cmd))
@@ -2249,7 +2248,6 @@ func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testin
 		"maestro version",
 		"/opt/maestro/bin/maestro version",
 		"env PATH=/opt/maestro/bin FOO=bar maestro version",
-		"echo ready && maestro version",
 	} {
 		t.Run(cmd, func(t *testing.T) {
 			out := runHookScript(t, scriptPath, makeBashInput(cmd))
@@ -2287,6 +2285,60 @@ func TestHookScript_SBX_MaestroCommandsWithShellExpansionStaySandboxed(t *testin
 			if decoded.HookSpecificOutput.UpdatedInput != nil {
 				t.Fatalf("maestro command with shell expansion/form must stay sandboxed, got: %s", out)
 			}
+		})
+	}
+}
+
+// --- Fix C: unsandbox rewrites are single-command only ---
+//
+// The rewrite sets dangerouslyDisableSandbox on the ENTIRE Bash argv, so a
+// compound command such as `cat /etc/hosts; maestro result write ...` would
+// run its non-maestro half outside the sandbox too, bypassing the sandbox's
+// denyRead secret barrier. Any connector (;, &, |, newline) must keep the
+// command sandboxed; the plain allow still lets it run.
+func TestHookScript_FixC_CompoundCommandsStaySandboxed(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	for _, cmd := range []string{
+		"cat /etc/hosts; maestro result write --summary y",
+		"cat /etc/hosts && maestro result write --summary y",
+		"maestro result write --summary y | tee /tmp/out",
+		"maestro version &",
+		"cat /etc/hosts\nmaestro result write --summary y",
+		"echo ready && maestro version",
+		"cd pkg && pnpm install",
+		"cat /etc/hosts; pnpm install",
+		"pnpm install\ncat /etc/hosts",
+		// A connector inside a quoted payload is indistinguishable from
+		// syntax at glob level; staying sandboxed is the fail-safe side.
+		`maestro result write --summary "a; b"`,
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd))
+			decoded := decodeHookOutput(t, out)
+			if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+				t.Fatalf("decision = %q, want allow; output=%s", decoded.HookSpecificOutput.PermissionDecision, out)
+			}
+			if decoded.HookSpecificOutput.UpdatedInput != nil {
+				t.Fatalf("compound command must stay sandboxed (no unsandbox rewrite), got: %s", out)
+			}
+		})
+	}
+
+	// Control: the single-command spellings are still rewritten.
+	for _, cmd := range []string{
+		"maestro result write --summary y",
+		"pnpm install",
+	} {
+		t.Run("single "+cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd))
+			assertHookUnsandboxed(t, out, cmd)
 		})
 	}
 }

@@ -741,6 +741,38 @@ func TestTracker_BlockedClass_UnrecoverablePrompts(t *testing.T) {
 	}
 }
 
+// TestTracker_BlockedClass_ScrollbackEditPromptNotUnrecoverable pins Fix E:
+// the "make this edit to" literal classifies as unrecoverable from the pane
+// TAIL only. Scrollback can legitimately retain the phrase from an
+// already-cleared prompt (or quoted task text); classifying on it would fail
+// a healthy in-flight task on the shortened unrecoverable timeout.
+func TestTracker_BlockedClass_ScrollbackEditPromptNotUnrecoverable(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+
+	// The edit-prompt literal sits deeper than activeTailLines above the
+	// bottom; the pane is blocked on an ORDINARY prompt in the tail.
+	content := "│ Do you want to make this edit to /foo? │\n" +
+		strings.Repeat("build output line\n", activeTailLines+2) +
+		"Do you want to proceed?\n❯ 1. Yes\n  2. No\n"
+
+	if v := tr.ObserveVerdict("worker1", content, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("ObserveVerdict = %s, want blocked", v)
+	}
+	if got := tr.BlockedClass("worker1"); got != "" {
+		t.Fatalf("BlockedClass = %q, want empty (scrollback-only edit prompt must not classify unrecoverable)", got)
+	}
+
+	// The same literal inside the tail still classifies unrecoverable.
+	tailContent := "some output\n│ Do you want to make this edit to /foo? │\n❯ 1. Yes\n  2. No\n"
+	if v := tr.ObserveVerdict("worker2", tailContent, time.Minute, t0); v != VerdictBlocked {
+		t.Fatalf("ObserveVerdict = %s, want blocked", v)
+	}
+	if got := tr.BlockedClass("worker2"); got != "unrecoverable" {
+		t.Fatalf("BlockedClass = %q, want unrecoverable for tail edit prompt", got)
+	}
+}
+
 func TestTracker_BlockedClass_OrdinaryBlockedAndNonBlocked(t *testing.T) {
 	tr := New(regexp.MustCompile(`Thinking`))
 	t0 := time.Now().UTC()

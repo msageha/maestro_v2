@@ -63,6 +63,10 @@ set -euo pipefail
 #     sandbox for all roles. They connect to the daemon over a Unix
 #     domain socket, and sandbox.network.allowUnixSockets is macOS-only;
 #     running the CLI unsandboxed is the portable macOS/Linux fix.
+#   - Both unsandbox rewrites are restricted to SINGLE commands (Fix C):
+#     a compound command (`;`, `&`, `|`, newline anywhere in the argv)
+#     stays sandboxed, because the rewrite would drop the sandbox for the
+#     non-package-manager / non-maestro half too (denyRead bypass).
 #   - Maestro lifecycle commands (`maestro down/up/daemon/shutdown/stop`)
 #     are operator-only for every role (#3b): RunDown executes locally
 #     (tmux.KillSession + daemon SIGTERM) with no daemon-side role gate,
@@ -396,7 +400,20 @@ if [ "$tool_name" = "Bash" ]; then
   #    secret-read barrier.
   _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
   if [ "$_already_unsandboxed" != "true" ]; then
-    if [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
+    # The rewrite disables the OS sandbox for the ENTIRE Bash argv, so it
+    # must only ever apply to a single command: in a compound command such
+    # as `cat /etc/hosts; maestro result write ...` the non-maestro half
+    # would run unsandboxed too, bypassing the sandbox's denyRead secret
+    # barrier (Fix C). Any connector (;, &, |, newline) keeps the whole
+    # command sandboxed. Connectors inside quoted payloads also match —
+    # regex/glob-level parsing cannot tell data from syntax — and that
+    # false positive is the deliberate fail-safe direction: the command
+    # still runs, just inside the sandbox.
+    _cmd_is_compound="0"
+    case "$cmd" in
+      *';'*|*'&'*|*'|'*|*$'\n'*) _cmd_is_compound="1" ;;
+    esac
+    if [ "$_cmd_is_compound" = "0" ] && [ "$role" = "worker" ] && [ "$run_on_main" = "0" ]; then
       if echo "$cmd" | grep -qE '(^|[;|&(])\s*(pnpm|npm|yarn|bun)\s+(install|isolated-install|i|ci|add|update|up|upgrade|dedupe|rebuild|prune|import|link|unlink|remove|rm|un|uninstall)(\s|$)' || \
          echo "$cmd" | grep -qE '(^|[;|&(])\s*yarn(\s+-[^;|&]*)?\s*($|[;|&)])'; then
         allow_unsandboxed "maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)"
@@ -408,7 +425,7 @@ if [ "$tool_name" = "Bash" ]; then
        echo "$cmd" | grep -qE '(^|[;|&(])[[:space:]]*(/[A-Za-z0-9_./-]+/)?(sh|bash)[[:space:]]+(-[A-Za-z]*[[:space:]]+)*-c([[:space:]]|$)'; then
       _maestro_has_shell_expansion="1"
     fi
-    if [ "$_maestro_has_shell_expansion" = "0" ] && echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
+    if [ "$_cmd_is_compound" = "0" ] && [ "$_maestro_has_shell_expansion" = "0" ] && echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
       allow_unsandboxed "maestro $role policy: maestro CLI command runs unsandboxed so its Unix-domain-socket daemon connection is outside Claude Code's OS sandbox"
     fi
   fi

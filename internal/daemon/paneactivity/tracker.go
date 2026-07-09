@@ -343,6 +343,10 @@ var defaultBlockedTailRegex = regexp.MustCompile(
 // protected-path edit confirmations.
 // The queue scanner uses this subclass to fail on a shorter timeout so the
 // daemon can repair/replan instead of waiting on operator-only prompts.
+// It is evaluated against the pane tail only (Fix E): scrollback can
+// legitimately contain "make this edit to" from an already-cleared prompt
+// (or quoted task text), and classifying on stale scrollback would fail a
+// healthy in-flight task on the shortened unrecoverable timeout.
 var unrecoverableBlockedRegex = regexp.MustCompile(`(?im)make this edit to ?`)
 
 // unrecoverableUnsandboxedBlockedRegex matches the unsandboxed Bash approval
@@ -550,8 +554,8 @@ func classifyBlockedHint(content string) string {
 	return strings.ToLower(m)
 }
 
-func classifyBlockedPrompt(content, tail string) string {
-	if unrecoverableBlockedRegex.MatchString(content) {
+func classifyBlockedPrompt(tail string) string {
+	if unrecoverableBlockedRegex.MatchString(tail) {
 		return "unrecoverable"
 	}
 	if unrecoverableUnsandboxedBlockedRegex.MatchString(tail) {
@@ -869,7 +873,7 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 			t.blockedSince[agentID] = now
 			blockedSince = now
 		}
-		blockedClass := classifyBlockedPrompt(content, tailForBlocked)
+		blockedClass := classifyBlockedPrompt(tailForBlocked)
 		t.blockedClass[agentID] = blockedClass
 		t.mu.Unlock()
 		// Surface the detection so operators see why a pane was kept
