@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/daemon/verification"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/pathutil"
@@ -42,12 +43,15 @@ type RealVerifyRunner struct {
 	// construction (PhaseCManager is built later in daemon startup) without
 	// racing the verify-execution goroutines.
 	ensembleVerifierMu sync.RWMutex
-	// ensembleVerifier carries the configured Phase C-3 perspectives. When
-	// non-nil, Run augments the verify.yaml-derived categories with any
-	// perspective whose Commands aren't already represented and lets the
-	// perspective Weight decide whether a failure is critical (>=1.0;
-	// fail-fast) or advisory (<1.0; logged but does not fail the run). nil
-	// preserves the legacy fail-fast behaviour for every category.
+	// ensembleVerifier carries the configured Phase C-3 perspectives
+	// (extended_verification.perspective_weights, keyed by verify.yaml
+	// category name). When non-nil, Run (a) lets a perspective's Weight
+	// decide whether the matching category's failure is critical (>=1.0;
+	// fail-fast) or advisory (<1.0; logged but does not fail the run),
+	// (b) re-executes a failed command once per novel failure fingerprint
+	// within the MaxAutoRetries budget (ShouldRetry), and (c) reports the
+	// weighted ensemble score over the categories that ran (Aggregate).
+	// nil preserves the legacy fail-fast behaviour for every category.
 	ensembleVerifier *verification.Verifier
 }
 
@@ -216,6 +220,20 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 
 	var advisoryFailures []string
 
+	// C-3 ensemble state for this run: per-category results feed the
+	// weighted aggregation, and the auto-retry budget re-executes a failed
+	// command once when its failure fingerprint is novel for the run
+	// (ShouldRetry) — a bounded flake absorber that never retries the same
+	// failure twice.
+	ensemble := r.getEnsembleVerifier()
+	maxAutoRetries := 0
+	if ensemble != nil {
+		maxAutoRetries = ensemble.MaxAutoRetries()
+	}
+	var seenFailureFPs []string
+	retriesUsed := 0
+	var categoryResults []verification.PerspectiveResult
+
 	for _, cat := range categories {
 		categoryFailed := false
 		for _, cmd := range cat.cmds {
@@ -279,6 +297,30 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 				}
 			}
 
+			// C-3 ensemble auto-retry: re-execute a failed command once when
+			// its failure fingerprint is novel for this run and the retry
+			// budget allows. Repeat failures (same fingerprint) are never
+			// retried, so a deterministic failure costs at most one extra
+			// execution while a transient flake gets a second chance.
+			if failed && ensemble != nil && retriesUsed < maxAutoRetries {
+				probe := fmt.Sprintf("category=%s command=%q exit=%d output_tail=%q",
+					cat.name, cmd, exitCode, tailBytes(output, r.maxOutputBytes))
+				if fp, _ := learnings.ComputeErrorFingerprint(probe); fp != "" &&
+					ensemble.ShouldRetry(verification.AggregatedResult{Passed: false}, fp, seenFailureFPs) {
+					seenFailureFPs = append(seenFailureFPs, fp)
+					retriesUsed++
+					r.logger.Info("verify_runner_auto_retry",
+						"task_id", taskID, "command_id", commandID,
+						"category", cat.name, "command", cmd,
+						"retry", retriesUsed, "max_auto_retries", maxAutoRetries, "fingerprint", fp)
+					retryCtx, retryCancel := context.WithTimeout(ctx, r.commandTimeout)
+					output, exitCode, runErr = r.runner(retryCtx, runDir, cmd)
+					timedOut = errors.Is(retryCtx.Err(), context.DeadlineExceeded)
+					retryCancel()
+					failed = timedOut || runErr != nil || exitCode != 0
+				}
+			}
+
 			if !failed {
 				r.logger.Debug("verify_runner_command_passed",
 					"task_id", taskID, "command_id", commandID,
@@ -322,6 +364,24 @@ func (r *RealVerifyRunner) runFiltered(ctx context.Context, taskID, commandID, w
 				"task_id", taskID, "command_id", commandID,
 				"category", cat.name, "weight", cat.weight, "advisory", cat.advisory)
 		}
+		categoryResults = append(categoryResults, verification.PerspectiveResult{
+			Name:   cat.name,
+			Passed: !categoryFailed,
+		})
+	}
+
+	// Weighted ensemble aggregation over the categories that ran. Reaching
+	// this point means no critical category failed (those return early), so
+	// agg.Passed is always true here; the weighted score quantifies how much
+	// advisory signal degraded and is surfaced for operators / downstream
+	// consumers.
+	if ensemble != nil && len(categoryResults) > 0 {
+		agg := ensemble.Aggregate(categoryResults)
+		r.logger.Info("verify_runner_ensemble_aggregate",
+			"task_id", taskID, "command_id", commandID,
+			"score", agg.TotalScore, "max_weight", agg.MaxScore,
+			"passed", agg.Passed, "categories", len(categoryResults),
+			"auto_retries_used", retriesUsed)
 	}
 
 	if len(advisoryFailures) > 0 {
@@ -348,10 +408,12 @@ type verifyCategory struct {
 }
 
 // buildVerifyCategories converts the verify.yaml-derived configuration
-// into the verifyCategory slice consumed by the runner. Every category
-// listed in verify.yaml runs at the critical weight (1.0): verify.yaml
-// is the single source of truth — if a category is listed, it is
-// critical; if absent, it does not run.
+// into the verifyCategory slice consumed by the runner. verify.yaml stays
+// the single source of truth for WHAT runs — if a category is listed, it
+// runs; if absent, it does not. The ensemble verifier's perspectives (from
+// extended_verification.perspective_weights) decide HOW a listed category's
+// failure is treated: weight >= 1.0 (or no perspective — the default) keeps
+// it critical/fail-fast, 0 < weight < 1.0 demotes it to advisory.
 func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []verifyCategory {
 	cfgCategories := []struct {
 		name string
@@ -365,19 +427,50 @@ func (r *RealVerifyRunner) buildVerifyCategories(cfg *model.VerifyConfig) []veri
 		{"performance", cfg.Performance},
 	}
 
+	weights := r.perspectiveWeights()
 	out := make([]verifyCategory, 0, len(cfgCategories))
 	for _, c := range cfgCategories {
 		if len(c.cmds) == 0 {
 			continue
 		}
+		weight := defaultCategoryCriticalWeight
+		if w, ok := weights[c.name]; ok && w > 0 {
+			weight = w
+		}
 		out = append(out, verifyCategory{
 			name:     c.name,
 			cmds:     c.cmds,
-			weight:   defaultCategoryCriticalWeight,
-			advisory: false,
+			weight:   weight,
+			advisory: weight < defaultCategoryCriticalWeight,
 		})
 	}
 	return out
+}
+
+// perspectiveWeights snapshots the ensemble verifier's per-category weights,
+// or nil when no verifier / no perspectives are configured (every category
+// then runs critical — the legacy behaviour).
+func (r *RealVerifyRunner) perspectiveWeights() map[string]float64 {
+	v := r.getEnsembleVerifier()
+	if v == nil {
+		return nil
+	}
+	ps := v.Perspectives()
+	if len(ps) == 0 {
+		return nil
+	}
+	m := make(map[string]float64, len(ps))
+	for _, p := range ps {
+		m[p.Name] = p.Weight
+	}
+	return m
+}
+
+// getEnsembleVerifier returns the wired verifier under the mutex.
+func (r *RealVerifyRunner) getEnsembleVerifier() *verification.Verifier {
+	r.ensembleVerifierMu.RLock()
+	defer r.ensembleVerifierMu.RUnlock()
+	return r.ensembleVerifier
 }
 
 // defaultCategoryCriticalWeight is the threshold at which a category

@@ -161,6 +161,13 @@ func (a ABTestConfig) EffectiveCrossTestPatterns() []string {
 type ExtendedVerificationConfig struct {
 	Enabled        *bool `yaml:"enabled,omitempty"`
 	MaxAutoRetries *int  `yaml:"max_auto_retries,omitempty"`
+	// PerspectiveWeights assigns a weight to a verify.yaml category name
+	// (build/lint/typecheck/test/security/performance). Weight >= 1.0 keeps
+	// the category critical (its failure fails the run, the default for
+	// unlisted categories); 0 < weight < 1.0 demotes it to advisory (its
+	// failure is recorded and lowers the ensemble score but does not fail
+	// the run). Non-positive weights are ignored at wiring time.
+	PerspectiveWeights map[string]float64 `yaml:"perspective_weights,omitempty"`
 }
 
 // EffectiveEnabled returns Enabled, defaulting to false when unset.

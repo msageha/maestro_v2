@@ -162,9 +162,27 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
 		m.EnsembleVerifier.SetMaxAutoRetries(cfg.ExtendedVerification.EffectiveMaxAutoRetries())
+		// Perspectives are named after verify.yaml categories and carry the
+		// operator-supplied weight only — the commands themselves come from
+		// verify.yaml at run time (RealVerifyRunner.buildVerifyCategories
+		// looks the weight up by category name). Non-positive weights are
+		// dropped so a config typo cannot silently zero out a category.
+		perspectives := make([]verification.Perspective, 0, len(cfg.ExtendedVerification.PerspectiveWeights))
+		for name, weight := range cfg.ExtendedVerification.PerspectiveWeights {
+			if weight <= 0 {
+				log(LogLevelWarn, "ensemble perspective %q has non-positive weight %v; ignored (category stays critical)", name, weight)
+				continue
+			}
+			perspectives = append(perspectives, verification.Perspective{Name: name, Weight: weight})
+		}
+		if len(perspectives) > 0 {
+			if err := m.EnsembleVerifier.SetPerspectives(perspectives); err != nil {
+				log(LogLevelWarn, "ensemble perspectives rejected: %v", err)
+			}
+		}
 		log(LogLevelInfo,
-			"ensemble verifier initialized (verify.yaml-driven; language-specific auto-injection removed) max_auto_retries=%d",
-			m.EnsembleVerifier.MaxAutoRetries())
+			"ensemble verifier initialized (verify.yaml-driven; weights from extended_verification.perspective_weights) perspectives=%d max_auto_retries=%d",
+			len(m.EnsembleVerifier.Perspectives()), m.EnsembleVerifier.MaxAutoRetries())
 	}
 
 	// C-4 Exploratory Search

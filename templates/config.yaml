@@ -581,9 +581,20 @@ extended_verification:
   # 動作する。研究/ドキュメント系プロジェクトでは不要なため default false。
   # type: *bool | default: false | range: true/false
   enabled: false
-  # max_auto_retries: 自動リトライの最大回数
-  # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
+  # max_auto_retries: verify 実行中の自動リトライ予算。失敗した verify
+  # コマンドは、その失敗 fingerprint が同一 run 内で初見の場合に限り 1 回
+  # 再実行される (決定的な失敗は同じ fingerprint になるため再試行されず、
+  # 一過性の flake だけを吸収する)。0 でリトライ無効。
+  # type: *int | default: 2 (DefaultMaxAutoRetries) | range: >= 0
   max_auto_retries: 2
+  # perspective_weights: verify.yaml カテゴリ名 (build/lint/typecheck/test/
+  # security/performance) → 重み。1.0 以上 (または未指定) は critical
+  # (失敗で run が fail、デフォルト)。0 < weight < 1.0 は advisory (失敗は
+  # 記録・スコア低下のみで run は fail しない)。0 以下は無視される。
+  # type: map[string]float64 | default: {} (全カテゴリ critical)
+  # perspective_weights:
+  #   security: 0.5
+  #   performance: 0.5
 
 # --- Search ---
 # 探索ベース最適化 (Alpha-Beta, Thompson Sampling)。
