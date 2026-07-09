@@ -47,6 +47,56 @@ func TestLatestDescendant_MultiHop(t *testing.T) {
 	}
 }
 
+// TestLatestDescendant_MultipleDescendantsDeterministic is the regression
+// test for the non-deterministic reverse-lineage inversion: when a corrupted
+// state file maps two successors to the same predecessor, the walk must
+// always pick the lexicographically greatest (= most recently minted)
+// successor instead of following map iteration order.
+func TestLatestDescendant_MultipleDescendantsDeterministic(t *testing.T) {
+	t.Parallel()
+	lineage := map[string]string{
+		"task_0000000100_aa": "task_0000000001_00",
+		"task_0000000200_bb": "task_0000000001_00",
+	}
+	for i := 0; i < 100; i++ {
+		if got := LatestDescendant("task_0000000001_00", lineage); got != "task_0000000200_bb" {
+			t.Fatalf("iteration %d: LatestDescendant = %q, want %q (latest successor)", i, got, "task_0000000200_bb")
+		}
+	}
+
+	// The chosen branch must keep walking: the winning successor's own
+	// descendant is the final answer.
+	chained := map[string]string{
+		"task_0000000100_aa": "task_0000000001_00",
+		"task_0000000200_bb": "task_0000000001_00",
+		"task_0000000300_cc": "task_0000000200_bb",
+	}
+	for i := 0; i < 100; i++ {
+		if got := LatestDescendant("task_0000000001_00", chained); got != "task_0000000300_cc" {
+			t.Fatalf("iteration %d: LatestDescendant chained = %q, want %q", i, got, "task_0000000300_cc")
+		}
+	}
+}
+
+// TestResolveBlockedByViaLineage_Deterministic covers the same inversion
+// tie-break for the cascade-recovery dependency rewrite path.
+func TestResolveBlockedByViaLineage_Deterministic(t *testing.T) {
+	t.Parallel()
+	lineage := map[string]string{
+		"task_0000000100_aa": "task_0000000001_00",
+		"task_0000000200_bb": "task_0000000001_00",
+	}
+	for i := 0; i < 100; i++ {
+		resolved, err := resolveBlockedByViaLineage([]string{"task_0000000001_00"}, lineage)
+		if err != nil {
+			t.Fatalf("resolveBlockedByViaLineage: %v", err)
+		}
+		if len(resolved) != 1 || resolved[0] != "task_0000000200_bb" {
+			t.Fatalf("iteration %d: resolved = %v, want [task_0000000200_bb]", i, resolved)
+		}
+	}
+}
+
 func TestLatestDescendant_CycleDefense(t *testing.T) {
 	t.Parallel()
 	// Corrupted state: a -> b, b -> a (a 2-cycle). Walk must terminate.

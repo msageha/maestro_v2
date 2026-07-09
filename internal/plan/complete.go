@@ -9,11 +9,10 @@ import (
 	"sort"
 	"strings"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // CompleteOptions holds the configuration for completing a command.
@@ -657,7 +656,7 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 		}
 
 		var rf model.TaskResultFile
-		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &rf); err != nil {
 			partialErrors = append(partialErrors, fmt.Errorf("parse %s: %w", path, err))
 			continue
 		}
@@ -731,7 +730,7 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 	}
 
 	var wcs model.WorktreeCommandState
-	if err := yamlv3.Unmarshal(data, &wcs); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &wcs); err != nil {
 		return fmt.Errorf("parse worktree state: %w", err)
 	}
 

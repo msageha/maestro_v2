@@ -107,9 +107,11 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 		return nil, fmt.Errorf("read state %s: %w", commandID, err)
 	}
 
-	// First pass: unmarshal to detect schema_version for migration
+	// First pass: unmarshal to detect schema_version for migration.
+	// SafeUnmarshal enforces anchor/alias limits (billion-laughs defence)
+	// before the on-disk bytes are expanded.
 	var raw map[string]interface{}
-	if err := yamlv3.Unmarshal(data, &raw); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &raw); err != nil {
 		return nil, fmt.Errorf("parse state %s: %w", commandID, errors.Join(errYAMLCorrupted, err))
 	}
 
@@ -143,6 +145,8 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 		slogc().Info("loadAndParseState: migrated state", "command_id", commandID, "from_version", schemaVersion, "to_version", currentSchemaVersion)
 	}
 
+	// data was already validated by SafeUnmarshal above (or re-marshaled
+	// internally after migration), so the plain decode is safe here.
 	var state model.CommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
 		return nil, fmt.Errorf("parse state %s: %w", commandID, errors.Join(errYAMLCorrupted, err))

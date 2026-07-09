@@ -106,7 +106,7 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string, lockMap *lo
 			return nil, fmt.Errorf("read queue file %s: %w", name, err)
 		}
 		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 			slogc().Warn("loadOriginalTasksFromQueue: skipping corrupt queue file", "file", name, "error", err)
 			continue
 		}
@@ -152,7 +152,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 				return
 			}
 			var tq model.TaskQueue
-			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 				return
 			}
 			var kept []model.Task

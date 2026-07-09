@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -509,4 +510,87 @@ func TestAddTask_IdempotencyDedup_NonEmptyWorkerModel(t *testing.T) {
 	if result2.Model == "" {
 		t.Error("dedup result Model should not be empty")
 	}
+}
+
+// --- P-F6: persisted-file reads must go through yamlutil.SafeUnmarshal ---
+
+// yamlAliasBomb builds a document whose alias nesting exceeds
+// yamlutil.MaxAliasDepth, standing in for a billion-laughs payload.
+func yamlAliasBomb(header string) []byte {
+	var sb strings.Builder
+	sb.WriteString(header)
+	sb.WriteString("lol0: &lol0 [\"lol\"]\n")
+	for i := 1; i <= yamlutil.MaxAliasDepth+1; i++ {
+		fmt.Fprintf(&sb, "lol%d: &lol%d [*lol%d, *lol%d]\n", i, i, i-1, i-1)
+	}
+	return []byte(sb.String())
+}
+
+func requireYAMLSafetyError(t *testing.T, err error, site string) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s: expected yaml safety error for alias bomb, got nil", site)
+	}
+	if !strings.Contains(err.Error(), "yaml safety") {
+		t.Fatalf("%s: expected 'yaml safety' error, got: %v", site, err)
+	}
+}
+
+func TestLoadAndParseState_RejectsYAMLBomb(t *testing.T) {
+	maestroDir := t.TempDir()
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	path, err := sm.StatePath("cmd_bomb")
+	if err != nil {
+		t.Fatalf("StatePath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	bomb := yamlAliasBomb("schema_version: 1\nfile_type: state_command\ncommand_id: cmd_bomb\n")
+	if err := os.WriteFile(path, bomb, 0o600); err != nil {
+		t.Fatalf("write bomb: %v", err)
+	}
+	_, err = sm.loadAndParseState(path, "cmd_bomb")
+	requireYAMLSafetyError(t, err, "loadAndParseState")
+}
+
+func TestCheckWorktreePublished_RejectsYAMLBomb(t *testing.T) {
+	maestroDir := t.TempDir()
+	dir := filepath.Join(maestroDir, "state", "worktrees")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "cmd_bomb.yaml"), yamlAliasBomb(""), 0o600); err != nil {
+		t.Fatalf("write bomb: %v", err)
+	}
+	cfg := model.Config{}
+	cfg.Worktree.Enabled = true
+	err := checkWorktreePublished(maestroDir, "cmd_bomb", cfg)
+	requireYAMLSafetyError(t, err, "checkWorktreePublished")
+}
+
+func TestReadCompleteIntent_RejectsYAMLBomb(t *testing.T) {
+	maestroDir := t.TempDir()
+	dir := filepath.Join(maestroDir, "intents")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(completeIntentPath(maestroDir, "cmd_bomb"), yamlAliasBomb(""), 0o600); err != nil {
+		t.Fatalf("write bomb: %v", err)
+	}
+	_, err := readCompleteIntent(maestroDir, "cmd_bomb")
+	requireYAMLSafetyError(t, err, "readCompleteIntent")
+}
+
+func TestReadModifyWriteQueue_RejectsYAMLBomb(t *testing.T) {
+	maestroDir := t.TempDir()
+	queueFile := workerQueuePath(maestroDir, "worker1")
+	if err := os.MkdirAll(filepath.Dir(queueFile), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(queueFile, yamlAliasBomb(""), 0o600); err != nil {
+		t.Fatalf("write bomb: %v", err)
+	}
+	err := readModifyWriteQueue(maestroDir, "worker1", func(tq *model.TaskQueue) {})
+	requireYAMLSafetyError(t, err, "readModifyWriteQueue")
 }

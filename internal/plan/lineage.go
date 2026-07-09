@@ -15,6 +15,26 @@ import (
 // model.DependencyCascadeCancelPrefix convention used at the phase level.
 const CascadeBlockedReasonPrefix = "blocked_dependency_terminal:"
 
+// buildSuccessorMap inverts retryLineage (successor newID -> predecessor
+// oldID) into a predecessor -> successor map. validateRetryRequest normally
+// keeps at most one active successor per predecessor, but a corrupted or
+// hand-edited state file can encode several; naive inversion would then pick
+// whichever entry map iteration visited last, making lineage resolution
+// non-deterministic across runs. The tie-break selects the lexicographically
+// greatest successor ID: task IDs embed a zero-padded unix timestamp
+// (task_<ts>_<rand>), so the greatest ID is the most recently minted
+// successor.
+func buildSuccessorMap(retryLineage map[string]string) map[string]string {
+	successor := make(map[string]string, len(retryLineage))
+	for newID, oldID := range retryLineage {
+		if cur, ok := successor[oldID]; ok && cur >= newID {
+			continue
+		}
+		successor[oldID] = newID
+	}
+	return successor
+}
+
 // LatestDescendant walks forward through retry_lineage to find the latest
 // descendant of taskID. The lineage map is keyed by retry/successor task
 // ID with the predecessor as the value (newID -> oldID); LatestDescendant
@@ -29,10 +49,7 @@ func LatestDescendant(taskID string, retryLineage map[string]string) string {
 	if len(retryLineage) == 0 {
 		return taskID
 	}
-	successor := make(map[string]string, len(retryLineage))
-	for newID, oldID := range retryLineage {
-		successor[oldID] = newID
-	}
+	successor := buildSuccessorMap(retryLineage)
 	cur := taskID
 	visited := map[string]bool{cur: true}
 	for {

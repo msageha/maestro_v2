@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -58,7 +56,7 @@ func readDeferredComplete(maestroDir, commandID string) (*deferredComplete, erro
 		return nil, err
 	}
 	var dc deferredComplete
-	if err := yamlv3.Unmarshal(data, &dc); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &dc); err != nil {
 		return nil, fmt.Errorf("parse deferred complete: %w", err)
 	}
 	if dc.SchemaVersion != deferredCompleteSchemaVersion || dc.FileType != "deferred_plan_complete" || dc.CommandID == "" {

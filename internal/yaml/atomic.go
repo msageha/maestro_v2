@@ -246,5 +246,13 @@ func copyFile(src, dst string) error {
 	// Both tmpName and dst are controlled by the caller; copyFile is a
 	// helper for known-good paths in the maestroDir layout (state, queue,
 	// etc.). gosec G703 cannot apply here.
-	return os.Rename(tmpName, dst) //nolint:gosec // controlled paths
+	if err := os.Rename(tmpName, dst); err != nil { //nolint:gosec // controlled paths
+		return err
+	}
+
+	// Fsync the parent directory so the rename metadata is durable before the
+	// caller proceeds to replace the original file. Without this a crash
+	// between the .bak rename and the main rename could lose both the .bak
+	// directory entry and the original content.
+	return syncDir(dir)
 }

@@ -269,11 +269,9 @@ func findCascadeCandidates(state *model.CommandState, failedTaskID string) []str
 
 func resolveBlockedByViaLineage(blockedBy []string, lineage map[string]string) ([]string, error) {
 	// Build reverse lineage map once (O(m)) instead of per-element (was O(n*m)).
-	// lineage maps new -> old, reverse maps old -> new.
-	reverseLineage := make(map[string]string, len(lineage))
-	for newID, oldID := range lineage {
-		reverseLineage[oldID] = newID
-	}
+	// lineage maps new -> old; buildSuccessorMap inverts it deterministically
+	// (latest successor wins) so resolution does not depend on map iteration order.
+	reverseLineage := buildSuccessorMap(lineage)
 
 	resolved := make([]string, len(blockedBy))
 	for i, dep := range blockedBy {

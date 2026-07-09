@@ -8,10 +8,9 @@ import (
 	"strings"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // RebuildOptions holds the configuration for rebuilding command state from worker results.
@@ -85,7 +84,7 @@ func Rebuild(opts RebuildOptions) error {
 		}
 
 		var rf model.TaskResultFile
-		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &rf); err != nil {
 			slogc().Warn("rebuild: skipping corrupt result file", "file", name, "error", err)
 			skippedFiles++
 			continue
@@ -211,7 +210,7 @@ func detectPhantomPlannedTasks(maestroDir, commandID string, taskStates map[stri
 			return nil, fmt.Errorf("read queue %s (aborting phantom scan; a hidden queue could hold the scanned tasks): %w", name, err)
 		}
 		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 			return nil, fmt.Errorf("parse queue %s (aborting phantom scan; a hidden queue could hold the scanned tasks): %w", name, err)
 		}
 		for _, t := range tq.Tasks {

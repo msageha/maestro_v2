@@ -722,6 +722,33 @@ func TestBus_SubscribeCoalescedBurst(t *testing.T) {
 	}
 }
 
+// TestBus_SubscribeCoalescedContextCancelNoLeak is the regression test for
+// the SubscribeCoalesced goroutine leak: cancelling the parent context
+// without calling Close must let the subscriber goroutine exit. Before the
+// fix, the ctx.Done branch drained sub.sig with a blocking `for range`,
+// which only terminates when Close closes the channel — the goroutine (and
+// any pending buffered signal) leaked forever. The package-level
+// goleak.VerifyTestMain also guards this test.
+func TestBus_SubscribeCoalescedContextCancelNoLeak(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	bus := NewBus(ctx, 10)
+
+	unsub := bus.SubscribeCoalesced(EventQueueWritten, func() {})
+	defer unsub()
+	// Also cover the regular subscriber path for parity.
+	unsub2 := bus.Subscribe(EventQueueWritten, func(Event) {})
+	defer unsub2()
+
+	// Leave a pending coalesced signal in the buffer so the drain path is
+	// exercised, then cancel without Close.
+	bus.Publish(EventQueueWritten, map[string]interface{}{"file": "leak.yaml"})
+	cancel()
+
+	require.Eventually(t, func() bool {
+		return bus.activeGoroutines.Load() == 0
+	}, 3*time.Second, 5*time.Millisecond, "subscriber goroutines did not exit after context cancel")
+}
+
 func TestBus_SubscribeCoalescedAfterClose(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
 	bus.Close()

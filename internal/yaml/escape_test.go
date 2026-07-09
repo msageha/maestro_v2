@@ -153,6 +153,188 @@ func TestSanitizeDoubleQuoteEscapes(t *testing.T) {
 	}
 }
 
+// TestSanitizeDoubleQuoteEscapes_BlockScalarPreserved is the regression test
+// for the block scalar corruption bug: lines inside a block scalar that look
+// like double-quoted values (leading indent then a quote) must be copied
+// verbatim — YAML performs no escape processing there, so doubling the
+// backslash silently changes the delivered content (\d became \\d).
+func TestSanitizeDoubleQuoteEscapes_BlockScalarPreserved(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantValue string
+	}{
+		{
+			name:      "regex in quoted line inside literal block",
+			input:     "content: |\n  \"match " + bs + `d+ digits"` + "\n",
+			wantValue: "\"match " + bs + "d+ digits\"\n",
+		},
+		{
+			name:      "windows path in quoted line inside literal block",
+			input:     "content: |\n  run \"C:" + bs + "Users" + bs + `temp" now` + "\n",
+			wantValue: "run \"C:" + bs + "Users" + bs + "temp\" now\n",
+		},
+		{
+			name:      "strip chomping variant",
+			input:     "content: |-\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"",
+		},
+		{
+			name:      "keep chomping variant",
+			input:     "content: |+\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"\n",
+		},
+		{
+			name:      "folded block scalar",
+			input:     "content: >-\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"",
+		},
+		{
+			name:      "explicit indentation indicator",
+			input:     "content: |2\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"\n",
+		},
+		{
+			name:      "comment after block header",
+			input:     "content: | # note\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"\n",
+		},
+		{
+			name:      "anchored block scalar",
+			input:     "content: &a |\n  \"" + bs + "d\"\n",
+			wantValue: "\"" + bs + "d\"\n",
+		},
+		{
+			name:      "blank lines inside block",
+			input:     "content: |\n  \"" + bs + "d\"\n\n  tail\n",
+			wantValue: "\"" + bs + "d\"\n\ntail\n",
+		},
+		{
+			name:      "block scalar at end of input without trailing newline",
+			input:     "content: |\n  \"" + bs + "d\"",
+			wantValue: "\"" + bs + "d\"",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sanitized := SanitizeDoubleQuoteEscapes([]byte(tt.input))
+			if string(sanitized) != tt.input {
+				t.Errorf("block scalar content was modified:\n  input:  %q\n  output: %q", tt.input, string(sanitized))
+			}
+			var out contentHolder
+			if err := yamlv3.Unmarshal(sanitized, &out); err != nil {
+				t.Fatalf("parse after sanitisation: %v", err)
+			}
+			if out.Content != tt.wantValue {
+				t.Errorf("Content = %q, want %q", out.Content, tt.wantValue)
+			}
+		})
+	}
+}
+
+// TestSanitizeDoubleQuoteEscapes_BlockScalarBoundary verifies that sanitisation
+// resumes after the block scalar ends: broken escapes in double-quoted values
+// outside the block are still repaired.
+func TestSanitizeDoubleQuoteEscapes_BlockScalarBoundary(t *testing.T) {
+	type doc struct {
+		Content string `yaml:"content"`
+		Other   string `yaml:"other"`
+	}
+	tests := []struct {
+		name        string
+		input       string
+		wantContent string
+		wantOther   string
+	}{
+		{
+			name: "sibling key after block still sanitised",
+			input: "content: |\n  \"regex " + bs + "d here\"\n" +
+				"other: " + `"bad ` + bs + `! escape"` + "\n",
+			wantContent: "\"regex " + bs + "d here\"\n",
+			wantOther:   "bad " + bs + "! escape",
+		},
+		{
+			name: "nested block under sequence entry",
+			input: "tasks:\n" +
+				"  - name: t1\n" +
+				"    content: |\n" +
+				"      grep \"" + bs + "d+\" file\n" +
+				"    purpose: p\n" +
+				"other: " + `"x` + bs + `!y"` + "\n",
+			wantOther: "x" + bs + "!y",
+		},
+		{
+			name:        "empty block scalar followed by sibling",
+			input:       "content: |\nother: " + `"a` + bs + `!b"` + "\n",
+			wantContent: "",
+			wantOther:   "a" + bs + "!b",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sanitized := SanitizeDoubleQuoteEscapes([]byte(tt.input))
+			var out doc
+			if err := yamlv3.Unmarshal(sanitized, &out); err != nil {
+				t.Fatalf("parse after sanitisation: %v\ninput:     %q\nsanitized: %q", err, tt.input, string(sanitized))
+			}
+			if tt.wantContent != "" && out.Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", out.Content, tt.wantContent)
+			}
+			if out.Other != tt.wantOther {
+				t.Errorf("Other = %q, want %q", out.Other, tt.wantOther)
+			}
+		})
+	}
+}
+
+// TestSanitizeDoubleQuoteEscapes_PipeNotBlockScalar verifies that '|' and '>'
+// characters that do not open a block scalar are still processed normally.
+func TestSanitizeDoubleQuoteEscapes_PipeNotBlockScalar(t *testing.T) {
+	tests := []struct {
+		name      string
+		input     string
+		wantValue string
+	}{
+		{
+			name:      "pipe inside plain scalar",
+			input:     "content: a | b\nother: \"c\"\n",
+			wantValue: "a | b",
+		},
+		{
+			name:      "pipe inside double-quoted value with broken escape after",
+			input:     "content: \"a | " + bs + "! b\"\n",
+			wantValue: "a | " + bs + "! b",
+		},
+		{
+			name:      "gt inside plain scalar",
+			input:     "content: a > b\n",
+			wantValue: "a > b",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sanitized := SanitizeDoubleQuoteEscapes([]byte(tt.input))
+			var out contentHolder
+			if err := yamlv3.Unmarshal(sanitized, &out); err != nil {
+				t.Fatalf("parse after sanitisation: %v\nsanitized: %q", err, string(sanitized))
+			}
+			if out.Content != tt.wantValue {
+				t.Errorf("Content = %q, want %q", out.Content, tt.wantValue)
+			}
+		})
+	}
+
+	// "a:|" is a plain scalar, not a block scalar header (no space after ':').
+	// The indented double-quoted value on the next line must still be
+	// sanitised — misdetecting ":|" would skip it verbatim.
+	glued := "a:|\n  next: " + `"x` + bs + `!y"` + "\n"
+	sanitized := string(SanitizeDoubleQuoteEscapes([]byte(glued)))
+	want := "a:|\n  next: " + `"x` + bs + bs + `!y"` + "\n"
+	if sanitized != want {
+		t.Errorf("glued colon-pipe: got %q, want %q", sanitized, want)
+	}
+}
+
 func TestSanitizeDoubleQuoteEscapes_NoOp(t *testing.T) {
 	// Valid YAML should pass through unchanged.
 	validInputs := []string{

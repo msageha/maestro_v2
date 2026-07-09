@@ -245,9 +245,21 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 					fn()
 				}()
 			case <-b.ctx.Done():
-				for range sub.sig { //nolint:revive // intentional drain loop
+				// Drain only what is currently buffered, then exit — same
+				// pattern as Subscribe. A blocking `for range sub.sig` would
+				// park here until Close() closes the channel, leaking the
+				// goroutine for callers that cancel the context without
+				// pairing it with Close.
+				for {
+					select {
+					case _, ok := <-sub.sig:
+						if !ok {
+							return
+						}
+					default:
+						return
+					}
 				}
-				return
 			}
 		}
 	}()

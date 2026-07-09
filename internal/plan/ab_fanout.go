@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -143,7 +141,7 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 		return fmt.Sprintf("ab fan-out skipped for %s: read canonical queue: %v", tr.TaskID, err)
 	}
 	var canonTQ model.TaskQueue
-	if err := yamlv3.Unmarshal(canonBytes, &canonTQ); err != nil {
+	if err := yamlutil.SafeUnmarshal(canonBytes, &canonTQ); err != nil {
 		return fmt.Sprintf("ab fan-out skipped for %s: parse canonical queue: %v", tr.TaskID, err)
 	}
 	var canon *model.Task
@@ -172,7 +170,7 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	}
 	var shadowTQ model.TaskQueue
 	if len(shadowBytes) > 0 {
-		if err := yamlv3.Unmarshal(shadowBytes, &shadowTQ); err != nil {
+		if err := yamlutil.SafeUnmarshal(shadowBytes, &shadowTQ); err != nil {
 			return fmt.Sprintf("ab fan-out skipped for %s: parse shadow queue: %v", tr.TaskID, err)
 		}
 	} else {

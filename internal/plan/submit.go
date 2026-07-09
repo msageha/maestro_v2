@@ -10,10 +10,9 @@ import (
 	"strings"
 	"syscall"
 
-	yaml "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // SubmitOptions holds the configuration for a plan submission operation.
@@ -485,7 +484,7 @@ func runOnMainCrossCommandWarnings(maestroDir, commandID string, tasks []TaskInp
 			continue
 		}
 		var ws model.WorktreeCommandState
-		if yaml.Unmarshal(data, &ws) != nil {
+		if yamlutil.SafeUnmarshal(data, &ws) != nil {
 			continue
 		}
 		if ws.Integration.Status != model.IntegrationStatusPublished {

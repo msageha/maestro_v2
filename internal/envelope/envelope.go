@@ -74,25 +74,27 @@ var zeroWidthChars = strings.NewReplacer(
 )
 
 // SanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
-// envelope fields.  It performs the following transformations:
-//  1. Applies NFKC Unicode normalization to canonicalize homoglyphs and
-//     compatibility characters.
+// envelope fields.  It performs the following transformations, in order:
+//  1. Replaces newline (\n), U+2028 (Line Separator), and U+2029
+//     (Paragraph Separator) with a space to prevent header injection, and
+//     strips control characters (U+0000–U+001F) except tab (\t).
 //  2. Removes zero-width and invisible formatting characters that could
 //     bypass pattern matching.
-//  3. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
+//  3. Applies NFKC Unicode normalization to canonicalize homoglyphs and
+//     compatibility characters.
+//  4. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
-//  4. Replaces newline (\n), U+2028 (Line Separator), and U+2029
-//     (Paragraph Separator) with a space to prevent header injection.
-//  5. Strips control characters (U+0000–U+001F) except tab (\t).
+//
+// The "[maestro]" escape MUST run last. Every earlier step removes or maps
+// characters, so running the escape earlier lets inputs like "[mae\x01stro]"
+// (control char stripped afterwards) or fullwidth "［maestro］" (NFKC-mapped
+// afterwards) reassemble into a literal "[maestro]" after the escape pass.
 //
 // Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS/PERSONA) are
 // sanitized separately via SanitizeUserContent before system sections are
 // appended, to avoid escaping the system's own markers.
 func SanitizeEnvelopeField(s string) string {
-	s = norm.NFKC.String(s)
-	s = zeroWidthChars.Replace(s)
-	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
-	return strings.Map(func(r rune) rune {
+	s = strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\u2028' || r == '\u2029' {
 			return ' '
 		}
@@ -101,6 +103,9 @@ func SanitizeEnvelopeField(s string) string {
 		}
 		return r
 	}, s)
+	s = zeroWidthChars.Replace(s)
+	s = norm.NFKC.String(s)
+	return strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 }
 
 // SanitizeEnvelopeBody neutralises prompt-injection vectors in user-supplied
@@ -113,20 +118,31 @@ func SanitizeEnvelopeField(s string) string {
 //     of being replaced with a space.
 //   - \n and \t are preserved; all other control characters are dropped.
 //
-// The other defences (NFKC normalization, zero-width character removal,
-// "[maestro]" escaping) are identical to SanitizeEnvelopeField.
+// The other defences (control-char strip, zero-width character removal, NFKC
+// normalization, "[maestro]" escaping) run in the same order as
+// SanitizeEnvelopeField, with the "[maestro]" escape last for the same
+// reassembly-attack reason.
 //
 // Use this only for fields whose envelope slot is textual content the agent
 // needs to read as prose. Do NOT use on header-shaped fields (IDs, purpose,
 // comma-joined lists) — those must stay on a single line to keep the
 // "key: value" envelope format parseable.
 func SanitizeEnvelopeBody(s string) string {
-	s = norm.NFKC.String(s)
-	s = zeroWidthChars.Replace(s)
-	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
+	s = normalizeBodyText(s)
+	return strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
+}
+
+// normalizeBodyText applies the character-level defences shared by
+// SanitizeEnvelopeBody and SanitizeUserContent: line-terminator
+// normalization, control-char stripping (preserving \n and \t), zero-width
+// character removal, and NFKC normalization. It performs no pattern escaping,
+// so callers must apply their pattern passes ("[maestro]", boundary markers)
+// AFTER this function — never before — to prevent stripped/normalized
+// characters from reassembling an escaped pattern.
+func normalizeBodyText(s string) string {
 	// Normalize CRLF first so the \r pass below does not double-insert \n.
 	s = strings.ReplaceAll(s, "\r\n", "\n")
-	return strings.Map(func(r rune) rune {
+	s = strings.Map(func(r rune) rune {
 		switch r {
 		case '\n', '\t':
 			return r
@@ -138,6 +154,8 @@ func SanitizeEnvelopeBody(s string) string {
 		}
 		return r
 	}, s)
+	s = zeroWidthChars.Replace(s)
+	return norm.NFKC.String(s)
 }
 
 // boundaryMarkerPatterns matches system section boundary markers case-insensitively
@@ -161,7 +179,14 @@ var boundaryMarkerPatterns = []struct {
 //
 // Matching is case-insensitive and tolerates variable whitespace between
 // tokens to prevent bypass via "--- begin learnings" or "---  BEGIN  SKILLS".
+//
+// The character-level normalization (control-char strip, zero-width removal,
+// NFKC) runs BEFORE the marker escaping. Build/BuildBody re-apply the same
+// normalization later in the pipeline, so escaping first would let inputs
+// like "--- BEGIN\x01 LEARNINGS" or fullwidth "ＢＥＧＩＮ ＬＥＡＲＮＩＮＧＳ"
+// slip past the patterns here and reassemble into a live marker downstream.
 func SanitizeUserContent(s string) string {
+	s = normalizeBodyText(s)
 	for _, bm := range boundaryMarkerPatterns {
 		s = bm.re.ReplaceAllString(s, bm.replacement)
 	}
@@ -178,6 +203,18 @@ func sanitizeField(s string, maxBytes int) string {
 // newlines in the field are preserved.
 func sanitizeBodyField(s string, maxBytes int) string {
 	return SanitizeEnvelopeBody(TruncateUTF8Bytes(s, maxBytes))
+}
+
+// headerSafeID returns id unchanged when it matches the canonical generated
+// ID format (model.GenerateID). Envelope headers and footer command lines
+// embed IDs via Fprintf, so a non-canonical ID — which should never occur,
+// but is not enforced at every call site — is defensively sanitized to keep
+// those lines single-line and free of "[maestro]" forgeries.
+func headerSafeID(id string) string {
+	if model.ValidateID(id) {
+		return id
+	}
+	return sanitizeField(id, MaxGenericFieldBytes)
 }
 
 // --- Typestate types for enforced sanitization pipeline ---
@@ -260,8 +297,10 @@ func (tc TruncatedContent) BuildBody() string {
 // Format matches spec §5.8.1 (Worker task envelope).
 func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, workerID string, leaseEpoch, attempt int) string {
 	var sb strings.Builder
+	taskID := headerSafeID(task.ID)
+	commandID := headerSafeID(task.CommandID)
 	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
-		task.ID, task.CommandID, leaseEpoch, attempt)
+		taskID, commandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
 	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeField(task.Purpose, MaxPurposeBytes))
@@ -304,7 +343,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	fmt.Fprintf(&sb, "skill_refs: %s\n", skillRefsStr)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
-		workerID, task.ID, task.CommandID, leaseEpoch)
+		workerID, taskID, commandID, leaseEpoch)
 	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
 	return sb.String()
 }
@@ -315,13 +354,14 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 // Format matches spec §5.8.1 (Planner command envelope).
 func BuildPlannerEnvelope(cmd model.Command, enrichedContent SanitizedContent, leaseEpoch, attempt int) string {
 	var sb strings.Builder
+	commandID := headerSafeID(cmd.ID)
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
-		cmd.ID, leaseEpoch, attempt)
+		commandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).BuildBody())
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
-	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
+	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", commandID)
+	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", commandID)
 	return sb.String()
 }
 

@@ -5,10 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	yaml "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // hasIntegrationCleanedUp reports whether the command's integration was
@@ -444,7 +443,7 @@ func validateRunOnMainPublishGate(worktreeStatePath, commandID string) error {
 			commandID, err)}
 	}
 	var ws model.WorktreeCommandState
-	if err := yaml.Unmarshal(data, &ws); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &ws); err != nil {
 		return &planValidationError{Msg: fmt.Sprintf(
 			"cannot inject run_on_main task into command %s: worktree state is unparsable (%v). Retry once the daemon has settled the integration state.",
 			commandID, err)}
@@ -651,7 +650,7 @@ func findPhaseForWorker(state *model.CommandState, maestroDir string, workerID s
 		return -1
 	}
 	var tq model.TaskQueue
-	if err := yaml.Unmarshal(data, &tq); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 		return -1
 	}
 	workerTaskIDs := make(map[string]struct{})
@@ -698,7 +697,7 @@ func lookupTaskAssignment(maestroDir string, taskID string, workers model.Worker
 			continue
 		}
 		var tq model.TaskQueue
-		if err := yaml.Unmarshal(data, &tq); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 			continue
 		}
 		for _, task := range tq.Tasks {

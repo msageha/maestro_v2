@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -43,7 +41,7 @@ func readModifyWriteResultFile(maestroDir string, modifyFn func(rf *model.Comman
 	var rf model.CommandResultFile
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err == nil {
-		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
+		if perr := yamlutil.SafeUnmarshal(data, &rf); perr != nil {
 			return fmt.Errorf("parse existing result file: %w", perr)
 		}
 	}
@@ -79,7 +77,7 @@ func readModifyWriteCommandQueue(maestroDir string, modifyFn func(cq *model.Comm
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	switch {
 	case err == nil:
-		if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &cq); err != nil {
 			return fmt.Errorf("parse planner queue: %w", err)
 		}
 	case errors.Is(err, os.ErrNotExist):
@@ -108,7 +106,7 @@ func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *
 	var tq model.TaskQueue
 	data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 	if err == nil {
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 			return fmt.Errorf("parse existing queue %s: %w", workerID, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {

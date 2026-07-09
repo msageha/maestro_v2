@@ -7,11 +7,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/contract"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // WorkerAssignment represents the result of assigning a task to a specific worker.
@@ -320,7 +319,7 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 			// os.ErrNotExist → treat as empty queue (pendingCount=0)
 		} else {
 			var tq model.TaskQueue
-			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 				return nil, fmt.Errorf("parse queue file %s: %w", queueFile, err)
 			}
 			for _, task := range tq.Tasks {

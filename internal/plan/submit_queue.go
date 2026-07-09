@@ -8,8 +8,6 @@ import (
 	"sort"
 	"syscall"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -205,7 +203,7 @@ func rollbackQueueEntriesLocked(maestroDir string, tasks []TaskInput, nameToID m
 			}
 
 			var tq model.TaskQueue
-			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			if err := yamlutil.SafeUnmarshal(data, &tq); err != nil {
 				return fmt.Errorf("parse queue %s: %w", workerID, err)
 			}
 
@@ -298,7 +296,7 @@ func checkCommandNotCancelled(maestroDir string, commandID string) error {
 	}
 
 	var cq model.CommandQueue
-	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &cq); err != nil {
 		return fmt.Errorf("parse planner queue: %w", err)
 	}
 

@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -125,7 +123,7 @@ func readCompleteIntent(maestroDir, commandID string) (*completeIntent, error) {
 		return nil, err
 	}
 	var intent completeIntent
-	if err := yamlv3.Unmarshal(data, &intent); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &intent); err != nil {
 		return nil, fmt.Errorf("parse intent: %w", err)
 	}
 	// Structural validation (including status fields to prevent invalid values
