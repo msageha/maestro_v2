@@ -29,38 +29,49 @@ const (
 	gitErrorPermanent
 )
 
-// gitErrorPattern maps a substring pattern to its error classification.
+// gitErrorPattern maps a compiled pattern to its error classification.
 type gitErrorPattern struct {
-	pattern string
+	pattern *regexp.Regexp
 	class   gitErrorClass
 }
 
 // gitErrorPatterns is the ordered error classification table.
-// The first matching pattern wins. Permanent patterns are listed first to
-// prevent false transient matches (e.g. "invalid" must not be overridden).
-// "Connection timed out" (transient) must precede generic "timeout" (permanent).
+// The first matching pattern wins.
+//
+// Ordering rules:
+//   - Specific transient lock-contention patterns come first. Their shapes
+//     (a literal `.lock` path component, git's "cannot lock ref" phrasing)
+//     are narrow enough not to shadow corruption errors, and a lock message
+//     that also happens to contain a broad permanent keyword (e.g.
+//     "invalid" in a ref name) must stay retryable.
+//   - Broad permanent patterns (corruption / invalid state) follow.
+//   - "Connection timed out" (transient) must precede generic "timeout"
+//     (permanent).
+//
+// Patterns are deliberately specific: a bare "lock" substring would
+// misclassify permanent errors mentioning package-lock.json / flock /
+// deadlock as transient and burn the retry budget on them.
 var gitErrorPatterns = []gitErrorPattern{
-	// Permanent: repository corruption / invalid state
-	{"bad object", gitErrorPermanent},
-	{"corrupt", gitErrorPermanent},
-	{"fatal: not a git repository", gitErrorPermanent},
-	{"invalid", gitErrorPermanent},
-
 	// Transient: git lock contention
-	{"lock", gitErrorTransient},
-	{"Unable to create", gitErrorTransient},
-	{".lock", gitErrorTransient},
-	{"Another git process seems to be running", gitErrorTransient},
+	{regexp.MustCompile(`\.lock\b`), gitErrorTransient},
+	{regexp.MustCompile(`cannot lock ref`), gitErrorTransient},
+	{regexp.MustCompile(`Another git process seems to be running`), gitErrorTransient},
+
+	// Permanent: repository corruption / invalid state
+	{regexp.MustCompile(`bad object`), gitErrorPermanent},
+	{regexp.MustCompile(`corrupt`), gitErrorPermanent},
+	{regexp.MustCompile(`fatal: not a git repository`), gitErrorPermanent},
+	{regexp.MustCompile(`\binvalid\b`), gitErrorPermanent},
 
 	// Transient: network errors
-	{"Connection timed out", gitErrorTransient},
-	{"Connection refused", gitErrorTransient},
-	{"Could not resolve host", gitErrorTransient},
-	{"Connection reset by peer", gitErrorTransient},
+	{regexp.MustCompile(`Connection timed out`), gitErrorTransient},
+	{regexp.MustCompile(`Connection refused`), gitErrorTransient},
+	{regexp.MustCompile(`Could not resolve host`), gitErrorTransient},
+	{regexp.MustCompile(`Connection reset by peer`), gitErrorTransient},
 
 	// Permanent: generic timeout — must follow "Connection timed out" to
 	// avoid masking the more specific transient pattern.
-	{"timeout", gitErrorPermanent},
+	{regexp.MustCompile(`\btimeout\b`), gitErrorPermanent},
 }
 
 // classifyGitError determines whether a git error is transient (retryable) or permanent.
@@ -79,7 +90,7 @@ func classifyGitError(err error) gitErrorClass {
 
 	msg := err.Error()
 	for _, p := range gitErrorPatterns {
-		if strings.Contains(msg, p.pattern) {
+		if p.pattern.MatchString(msg) {
 			return p.class
 		}
 	}
@@ -198,6 +209,24 @@ func (wm *Manager) gitTimeout() time.Duration {
 	return time.Duration(wm.config.EffectiveGitTimeout()) * time.Second
 }
 
+// subprocessWaitDelay bounds how long an exec.Cmd's I/O pipes may stay open
+// after the process exits or its context is cancelled. Without it,
+// CombinedOutput/Output block until every fd-inheriting grandchild (git
+// hooks, `sh -c` verify children) closes the pipe — a lingering grandchild
+// then wedges the operation far beyond its timeout because
+// exec.CommandContext only kills the direct child.
+const subprocessWaitDelay = 5 * time.Second
+
+// gitEnv returns the environment for git subprocesses: the daemon's own
+// environment with the message locale pinned to C. Error classification and
+// idempotency checks (classifyGitError, isUnstattableMessage, "not a working
+// tree", "not found", ...) substring-match git's English messages, so a
+// non-English daemon locale must never leak into git output. Appending is
+// sufficient: exec.Cmd keeps the last value for duplicate keys.
+func gitEnv() []string {
+	return append(os.Environ(), "LC_ALL=C", "LANG=C")
+}
+
 // gitExec is the shared git execution helper. All git operations go through
 // this method to ensure consistent timeout and error handling.
 // dir specifies the working directory; if empty, projectRoot is used.
@@ -221,6 +250,8 @@ func (wm *Manager) gitExecCombined(dir string, args ...string) ([]byte, error) {
 	} else {
 		cmd.Dir = wm.projectRoot
 	}
+	cmd.Env = gitEnv()
+	cmd.WaitDelay = subprocessWaitDelay
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -250,6 +281,8 @@ func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
 	} else {
 		cmd.Dir = wm.projectRoot
 	}
+	cmd.Env = gitEnv()
+	cmd.WaitDelay = subprocessWaitDelay
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
@@ -263,11 +296,23 @@ func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
 
 // gitRun executes a git command in the project root.
 func (wm *Manager) gitRun(args ...string) error {
-	output, err := wm.gitExecCombined("", args...)
-	if err != nil {
-		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(output)))
+	return wm.gitRunInDir("", args...)
+}
+
+// gitRunRawInDir executes a git command in a specific directory (projectRoot
+// when dir is empty) and returns the RAW combined output alongside the
+// standard error. The error embeds only the sanitized output (paths stripped
+// to …/<basename>, truncated); the raw string exists for internal parsing —
+// the unstattable fallbacks extract file paths from git's stderr, and the
+// sanitized form mangles nested paths (`a/b/c.env` → `a…/c.env`) into
+// non-existent targets. Callers MUST NOT propagate the raw output into
+// returned errors or logs.
+func (wm *Manager) gitRunRawInDir(dir string, args ...string) (rawOutput string, err error) {
+	output, execErr := wm.gitExecCombined(dir, args...)
+	if execErr != nil {
+		return string(output), fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), execErr, sanitizeGitStderr(string(output)))
 	}
-	return nil
+	return string(output), nil
 }
 
 // gitOutput executes a git command and returns stdout.
@@ -285,11 +330,8 @@ func (wm *Manager) gitOutput(args ...string) (string, error) {
 
 // gitRunInDir executes a git command in a specific directory.
 func (wm *Manager) gitRunInDir(dir string, args ...string) error {
-	output, err := wm.gitExecCombined(dir, args...)
-	if err != nil {
-		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(output)))
-	}
-	return nil
+	_, err := wm.gitRunRawInDir(dir, args...)
+	return err
 }
 
 // gitOutputInDir executes a git command in a specific directory and returns stdout.
@@ -370,15 +412,20 @@ func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID str
 	excludedAlready := make(map[string]struct{})
 	var lastErr error
 	for attempt := 1; attempt <= gitAddAllAttemptLimit; attempt++ {
-		err := wm.gitRunInDir(dir, "add", "-A")
+		// Detection and path extraction run on the RAW combined output:
+		// the sanitized error mangles nested paths (`a/b/c.env` →
+		// `a…/c.env`) and its 256-byte truncation can cut a path (or the
+		// classification keywords) mid-way, which would make the fallback
+		// exclude non-existent paths.
+		rawOut, err := wm.gitRunRawInDir(dir, "add", "-A")
 		if err == nil {
 			return nil
 		}
 		lastErr = err
-		if !isUnstattableError(err) {
+		if !isUnstattableMessage(rawOut) {
 			return err
 		}
-		paths := extractUnstattablePaths(err.Error())
+		paths := extractUnstattablePaths(rawOut)
 		if len(paths) == 0 {
 			return err
 		}
@@ -411,10 +458,10 @@ func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID str
 		gitAddAllAttemptLimit, lastErr)
 }
 
-// isUnstattableError reports whether the error text matches the canonical
-// git "unable to stat ...: Operation not permitted / Permission denied"
-// failure mode. We pattern-match the message because git does not expose
-// a stable error code for it.
+// isUnstattableMessage reports whether the git output matches the canonical
+// "unable to stat ...: Operation not permitted / Permission denied" failure
+// mode. We pattern-match the message because git does not expose a stable
+// error code for it.
 //
 // Two phrasings are recognised:
 //   - `git add -A`: "unable to stat '<path>': Operation not permitted"
@@ -425,11 +472,11 @@ func (wm *Manager) gitAddAllWithUnstattableFallback(dir, commandID, workerID str
 // the daemon process" (typically a sandbox / SIP / quarantine rule denying
 // access to a tracked file like `.env.example`). The recovery is the same
 // in both cases: skip the file and continue.
-func isUnstattableError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
+//
+// Fallback handlers apply it to the RAW git output (see gitRunRawInDir):
+// sanitizeGitStderr's truncation could otherwise cut the classification
+// keywords out of a long error message.
+func isUnstattableMessage(msg string) bool {
 	if !strings.Contains(msg, "unable to stat") &&
 		!strings.Contains(msg, "just-written file") {
 		return false
@@ -520,12 +567,14 @@ func extractUnstattablePaths(msg string) []string {
 //
 // Behaviour:
 //   - First attempt: run the command verbatim. Success → return nil.
-//   - Failure with isUnstattableError: clean up partial directory,
-//     extract offending paths from the error message, retry with
-//     `--no-checkout` so the worktree exists at all. Then mark each
-//     offending path with `update-index --skip-worktree` and run
-//     `git checkout-index -a -f` for the remainder. Final
-//     `appendToGitInfoExclude` keeps the path out of future `git add`.
+//   - Failure with an unstattable message: clean up partial directory,
+//     extract offending paths from the RAW git output, retry with
+//     `--no-checkout` so the worktree exists at all. Then populate the
+//     per-worktree index via `git read-tree HEAD`, mark each offending
+//     path with `update-index --skip-worktree` and run
+//     `git checkout-index -a -f` for the remainder (see
+//     materializeNoCheckoutWorktree). `appendToGitInfoExclude` keeps the
+//     paths out of future `git add`.
 //   - Any other failure: caller's normal error path.
 //
 // Returns the path argument so the caller can apply branch / state
@@ -533,11 +582,14 @@ func extractUnstattablePaths(msg string) []string {
 func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addArgs []string) error {
 	worktreePath := worktreePathFromArgs(addArgs)
 
-	addErr := wm.gitRun(addArgs...)
+	// Detection and path extraction use the RAW combined output — the
+	// sanitized error mangles nested paths (`a/b/c.env` → `a…/c.env`) and
+	// its truncation may cut the message mid-path (see gitRunRawInDir).
+	rawAddOut, addErr := wm.gitRunRawInDir("", addArgs...)
 	if addErr == nil {
 		return nil
 	}
-	if !isUnstattableError(addErr) {
+	if !isUnstattableMessage(rawAddOut) {
 		return addErr
 	}
 
@@ -577,7 +629,7 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 		}
 	}
 
-	denied := extractUnstattablePathsForWorktreeAdd(addErr.Error())
+	denied := extractUnstattablePathsForWorktreeAdd(rawAddOut)
 	wm.Log(core.LogLevelWarn,
 		"worktree_add_unstattable_fallback command=%s path=%s denied_paths=%v "+
 			"(retrying with --no-checkout; deny-pattern tracked files will be skip-worktree-marked)",
@@ -601,49 +653,8 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 		return fmt.Errorf("worktree add --no-checkout fallback also failed: %w (original: %s)", err, addErr.Error())
 	}
 
-	// Mark each denied path skip-worktree so the next checkout-index
-	// pass does not try to materialise it; also write to .git/info/exclude
-	// so subsequent `git add -A` (run by the worker / commit pipeline)
-	// does not re-trip on the same path.
-	for _, p := range denied {
-		if uErr := wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p); uErr != nil {
-			wm.Log(core.LogLevelDebug,
-				"worktree_add_skip_worktree_failed command=%s path=%s error=%v "+
-					"(may not be tracked yet — checkout-index will surface real issues if any)",
-				commandID, p, uErr)
-		}
-	}
-	if appendErr := appendToGitInfoExclude(worktreePath, commandID, denied); appendErr != nil {
-		wm.Log(core.LogLevelDebug,
-			"worktree_add_exclude_append_failed command=%s error=%v",
-			commandID, appendErr)
-	}
-
-	// Materialise the remaining tracked files. checkout-index honors
-	// skip-worktree, so denied paths are bypassed cleanly. -a is "all
-	// tracked", -f overwrites any leftover content from the partial
-	// first attempt.
-	if coErr := wm.gitRunInDir(worktreePath, "checkout-index", "-a", "-f"); coErr != nil {
-		// If checkout-index also surfaced unstattable paths, append
-		// them and retry once. Otherwise let the caller see it.
-		if isUnstattableError(coErr) {
-			extra := extractUnstattablePaths(coErr.Error())
-			for _, p := range extra {
-				_ = wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p)
-			}
-			_ = appendToGitInfoExclude(worktreePath, commandID, extra)
-			if retryErr := wm.gitRunInDir(worktreePath, "checkout-index", "-a", "-f"); retryErr != nil {
-				wm.Log(core.LogLevelWarn,
-					"worktree_add_checkout_index_retry_failed command=%s path=%s error=%v "+
-						"(worktree exists but some tracked files are not materialised; worker should still be able to operate on remaining files)",
-					commandID, worktreePath, retryErr)
-			}
-		} else {
-			wm.Log(core.LogLevelWarn,
-				"worktree_add_checkout_index_failed command=%s path=%s error=%v "+
-					"(worktree exists but content materialisation failed; investigate manually)",
-				commandID, worktreePath, coErr)
-		}
+	if err := wm.materializeNoCheckoutWorktree(commandID, worktreePath, denied); err != nil {
+		return fmt.Errorf("%w (original checkout failure: %s)", err, addErr.Error())
 	}
 
 	wm.Log(core.LogLevelInfo,
@@ -651,6 +662,74 @@ func (wm *Manager) gitWorktreeAddWithUnstattableFallback(commandID string, addAr
 			"(worktree usable; deny-pattern files left out of working copy and excluded from future `git add`)",
 		commandID, worktreePath, denied)
 	return nil
+}
+
+// materializeNoCheckoutWorktree turns a `git worktree add --no-checkout`
+// worktree into a usable working copy:
+//
+//  1. `git read-tree HEAD` populates the per-worktree index. --no-checkout
+//     leaves the index EMPTY, so without this step the skip-worktree marks
+//     below have no entries to annotate and `checkout-index -a -f`
+//     materialises NOTHING — the worktree would contain only `.git`, and
+//     the worker commit pipeline's `git add -A` would then stage the
+//     deletion of every tracked file.
+//  2. Mark the known denied paths --skip-worktree and append them to the
+//     repo-shared .git/info/exclude so `checkout-index` and later
+//     `git add` runs bypass them.
+//  3. `git checkout-index -a -f` materialises the remaining tracked files,
+//     absorbing newly surfaced unstattable paths up to
+//     gitAddAllAttemptLimit.
+//
+// Fail-fast: any unrecovered failure is returned so the caller rolls the
+// worktree back instead of dispatching a worker against an empty or
+// unmaterialised tree.
+func (wm *Manager) materializeNoCheckoutWorktree(commandID, worktreePath string, denied []string) error {
+	if err := wm.gitRunInDir(worktreePath, "read-tree", "HEAD"); err != nil {
+		return fmt.Errorf("worktree add --no-checkout fallback: populate index from HEAD: %w", err)
+	}
+
+	skipWorktree := func(paths []string) {
+		for _, p := range paths {
+			if uErr := wm.gitRunInDir(worktreePath, "update-index", "--skip-worktree", "--", p); uErr != nil {
+				wm.Log(core.LogLevelDebug,
+					"worktree_add_skip_worktree_failed command=%s path=%s error=%v "+
+						"(may not be tracked — checkout-index will surface real issues if any)",
+					commandID, p, uErr)
+			}
+		}
+		if appendErr := appendToGitInfoExclude(worktreePath, commandID, paths); appendErr != nil {
+			wm.Log(core.LogLevelDebug,
+				"worktree_add_exclude_append_failed command=%s error=%v",
+				commandID, appendErr)
+		}
+	}
+	skipWorktree(denied)
+
+	// checkout-index honors skip-worktree, so denied paths are bypassed
+	// cleanly. -a is "all tracked", -f overwrites any leftover content from
+	// the partial first attempt.
+	var coErr error
+	for attempt := 1; attempt <= gitAddAllAttemptLimit; attempt++ {
+		var rawOut string
+		rawOut, coErr = wm.gitRunRawInDir(worktreePath, "checkout-index", "-a", "-f")
+		if coErr == nil {
+			return nil
+		}
+		if !isUnstattableMessage(rawOut) {
+			return fmt.Errorf("worktree add --no-checkout fallback: checkout-index: %w", coErr)
+		}
+		extra := extractUnstattablePathsForWorktreeAdd(rawOut)
+		if len(extra) == 0 {
+			return fmt.Errorf("worktree add --no-checkout fallback: checkout-index failed with unstattable paths that could not be extracted: %w", coErr)
+		}
+		wm.Log(core.LogLevelWarn,
+			"worktree_add_checkout_index_unstattable command=%s path=%s paths=%v attempt=%d "+
+				"(skip-worktree-marking newly surfaced denied paths and retrying)",
+			commandID, worktreePath, extra, attempt)
+		skipWorktree(extra)
+	}
+	return fmt.Errorf("worktree add --no-checkout fallback: checkout-index: exceeded %d unstattable-fallback attempts: %w",
+		gitAddAllAttemptLimit, coErr)
 }
 
 // worktreePathFromArgs returns the worktree path from a `git worktree
@@ -681,6 +760,21 @@ func worktreePathFromArgs(args []string) string {
 		return a
 	}
 	return ""
+}
+
+// localBranchExists probes refs/heads/<branch>. Exit 0 → (true, nil);
+// exit 1 → (false, nil); any other failure (exec fault, repo corruption) is
+// returned as an error — callers deciding whether a later `branch -D` is
+// safe must then assume the branch may pre-exist and skip deletion.
+func (wm *Manager) localBranchExists(branch string) (bool, error) {
+	err := wm.gitRun("show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	if err == nil {
+		return true, nil
+	}
+	if gitExitCode(err) == 1 {
+		return false, nil
+	}
+	return false, err
 }
 
 // branchCreatedByWorktreeAddArgs returns the branch name a `git worktree add`

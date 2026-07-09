@@ -157,3 +157,34 @@ func TestCleanupCommand_RemovesCandidates(t *testing.T) {
 		t.Error("candidate branch should be removed by command cleanup")
 	}
 }
+
+// Regression (W-G6): a failed candidate `worktree add -b` against a
+// PRE-EXISTING branch must not delete that branch on the error path.
+func TestEnsureCandidateWorktree_PreservesPreexistingBranchOnFailure(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	commandID := "cmd_g6_cand"
+	taskID := "task_g6"
+
+	branch := candidateBranch(commandID, taskID)
+	if err := wm.gitRun("branch", branch, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	wantSHA, err := wm.gitOutput("rev-parse", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := wm.EnsureCandidateWorktree(commandID, taskID); err == nil {
+		t.Fatal("expected candidate worktree add against a pre-existing branch to fail")
+	}
+
+	gotSHA, err := wm.gitOutput("rev-parse", branch)
+	if err != nil {
+		t.Fatalf("pre-existing candidate branch must survive the failed attempt: %v", err)
+	}
+	if strings.TrimSpace(gotSHA) != strings.TrimSpace(wantSHA) {
+		t.Errorf("pre-existing branch moved: %s -> %s", strings.TrimSpace(wantSHA), strings.TrimSpace(gotSHA))
+	}
+}

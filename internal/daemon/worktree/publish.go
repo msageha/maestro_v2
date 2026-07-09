@@ -31,6 +31,13 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
+	// Reserve the integration worktree: an in-flight A/B selection releases
+	// wm.mu during its external verify runs, so wm.mu alone no longer
+	// excludes integration mutations.
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -137,6 +144,16 @@ func (wm *Manager) createTempPublishBranch(commandID, baseBranch string) (tempBr
 	if err := validateSHA(baseSHA); err != nil {
 		return "", "", fmt.Errorf("base SHA for publish: %w", err)
 	}
+
+	// A daemon crash mid-publish can leave the previous attempt's temp
+	// branch behind; `git branch <temp> <sha>` would then exit 128
+	// ("already exists") on EVERY retry until the failure budget quarantines
+	// the command. Clear the stale branch first via the shared cleanup
+	// helper, which also restores the integration checkout when the crash
+	// left the temp branch checked out there. Best-effort: if the branch
+	// genuinely cannot be cleared, the creation below fails with the real
+	// reason.
+	wm.cleanupTempPublishBranchUnlocked(commandID)
 
 	if err := wm.gitRun("branch", tempBranch, baseSHA); err != nil {
 		return "", "", fmt.Errorf("create temp publish branch: %w", err)

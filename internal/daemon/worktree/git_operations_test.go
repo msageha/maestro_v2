@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -31,8 +33,36 @@ func TestClassifyGitError(t *testing.T) {
 			want: gitErrorTransient,
 		},
 		{
-			name: "unable to create generic",
+			// "Unable to create" without .lock evidence is not lock
+			// contention (disk full, permission) — retrying cannot help.
+			name: "unable to create generic is permanent",
 			err:  errors.New("Unable to create temp file"),
+			want: gitErrorPermanent,
+		},
+		{
+			name: "cannot lock ref",
+			err:  errors.New("error: cannot lock ref 'refs/heads/main': is at abc123 but expected def456"),
+			want: gitErrorTransient,
+		},
+		{
+			// Regression (W-G8): the old bare "lock" substring misclassified
+			// permanent pathspec errors mentioning package-lock.json.
+			name: "package-lock.json pathspec is permanent",
+			err:  errors.New("error: pathspec 'package-lock.json' did not match any file(s) known to git"),
+			want: gitErrorPermanent,
+		},
+		{
+			// Regression (W-G8): "flock" must not be treated as git lock contention.
+			name: "flock message is permanent",
+			err:  errors.New("fatal: flock operation failed on shared resource"),
+			want: gitErrorPermanent,
+		},
+		{
+			// Regression (W-G8): lock contention stays transient even when the
+			// message also contains a broad permanent keyword ("invalid" in a
+			// ref name) — specific transient patterns are matched first.
+			name: "lock contention containing invalid stays transient",
+			err:  errors.New("Unable to create '/repo/.git/refs/heads/invalid.lock': File exists"),
 			want: gitErrorTransient,
 		},
 
@@ -239,7 +269,7 @@ func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
 
 func TestIsTransientGitError(t *testing.T) {
 	t.Parallel()
-	if !isTransientGitError(errors.New("Unable to create lock")) {
+	if !isTransientGitError(errors.New("Unable to create '/repo/.git/index.lock': File exists")) {
 		t.Error("expected lock error to be transient")
 	}
 	if isTransientGitError(errors.New("fatal: bad object")) {
@@ -388,5 +418,186 @@ func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
 	// macOS — see retest8 flaky failure report.
 	if elapsed > 1500*time.Millisecond {
 		t.Errorf("gitOutputWithRetry took %v, expected fast return for permanent error (no retry)", elapsed)
+	}
+}
+
+// Regression (W-G2): the raw combined output must preserve nested paths for
+// the unstattable fallbacks, while the returned error stays sanitized.
+func TestGitRunRawInDir_RawOutputPreservesNestedPaths(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	raw, err := wm.gitRunRawInDir(projectRoot, "add", "sub/dir/nonexistent.txt")
+	if err == nil {
+		t.Fatal("expected git add of a nonexistent path to fail")
+	}
+	if !strings.Contains(raw, "'sub/dir/nonexistent.txt'") {
+		t.Errorf("raw output must preserve the full nested path, got: %q", raw)
+	}
+	// The error embeds only the sanitized git output: the quoted stderr path
+	// is mangled to the …/<basename> form (the command-args echo at the
+	// error head legitimately keeps the argv verbatim).
+	if strings.Contains(err.Error(), "'sub/dir/nonexistent.txt'") {
+		t.Errorf("returned error must embed sanitized output only, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "'sub…/nonexistent.txt'") {
+		t.Errorf("returned error should carry the sanitized …/<basename> form, got: %v", err)
+	}
+}
+
+// Regression (W-G2): extracting unstattable paths from the sanitized error
+// text mangles nested paths into non-existent targets (`a/b/c.env` →
+// `a…/c.env`) — the fallbacks must extract from the RAW output.
+func TestExtractUnstattablePaths_RawVsSanitized(t *testing.T) {
+	t.Parallel()
+	const path = "internal/config/.env.example"
+	raw := "fatal: unable to stat '" + path + "': Operation not permitted"
+
+	got := extractUnstattablePaths(raw)
+	if len(got) != 1 || got[0] != path {
+		t.Fatalf("raw extraction = %v, want [%s]", got, path)
+	}
+	for _, p := range extractUnstattablePaths(sanitizeGitStderr(raw)) {
+		if p == path {
+			t.Fatalf("sanitized extraction preserved the nested path — the raw plumbing regression guard is stale: %v", p)
+		}
+	}
+}
+
+// Regression (W-G2): sanitizeGitStderr's 256-byte truncation can cut the
+// classification keywords out of a long message; detection must therefore
+// run on the raw output.
+func TestIsUnstattableMessage_TruncationSafeOnRawOnly(t *testing.T) {
+	t.Parallel()
+	long := "error: unable to stat '" + strings.Repeat("deep/", 60) + ".env': Operation not permitted"
+	if !isUnstattableMessage(long) {
+		t.Error("raw long message must classify as unstattable")
+	}
+	if isUnstattableMessage(sanitizeGitStderr(long)) {
+		t.Error("sanitized long message classified as unstattable — truncation guard is stale, revisit the raw plumbing rationale")
+	}
+}
+
+// Regression (W-G1): a --no-checkout worktree has an EMPTY per-worktree
+// index; materializeNoCheckoutWorktree must populate it via `read-tree HEAD`
+// before checkout-index, otherwise nothing is materialised and the worker
+// receives a worktree containing only .git (whose `git add -A` would then
+// commit the deletion of every tracked file).
+func TestMaterializeNoCheckoutWorktree_PopulatesIndexAndFiles(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Nested tracked content so materialisation covers subdirectories.
+	if err := os.MkdirAll(filepath.Join(projectRoot, "sub", "dir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, "sub", "dir", "nested.txt"), []byte("n\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.gitRun("add", "-A"); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.gitRun("commit", "-m", "add nested"); err != nil {
+		t.Fatal(err)
+	}
+
+	wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_mat", "worker1")
+	if err := os.MkdirAll(filepath.Dir(wtPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.gitRun("worktree", "add", "--no-checkout", "-b", "maestro/cmd_mat/worker1", wtPath, "HEAD"); err != nil {
+		t.Fatalf("worktree add --no-checkout: %v", err)
+	}
+
+	if err := wm.materializeNoCheckoutWorktree("cmd_mat", wtPath, nil); err != nil {
+		t.Fatalf("materializeNoCheckoutWorktree: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(wtPath, "sub", "dir", "nested.txt")); err != nil {
+		t.Errorf("tracked file not materialised: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(wtPath, "README.md")); err != nil {
+		t.Errorf("root tracked file not materialised: %v", err)
+	}
+	statusOut, err := wm.gitOutputInDir(wtPath, "status", "--porcelain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		t.Errorf("worktree must be clean after materialisation (an empty index reports mass deletions), got:\n%s", statusOut)
+	}
+}
+
+// Regression (W-G1): a materialisation failure must fail the fallback
+// (fail-fast) instead of reporting an unusable worktree as recovered.
+func TestMaterializeNoCheckoutWorktree_FailsFastOnReadTreeFailure(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// A plain directory is not a worktree: read-tree HEAD must fail and the
+	// helper must surface it.
+	if err := wm.materializeNoCheckoutWorktree("cmd_mat_bad", t.TempDir(), nil); err == nil {
+		t.Fatal("expected read-tree failure to fail the fallback, got nil")
+	}
+}
+
+// Regression (W-G5): git subprocesses must run with the message locale
+// pinned to C so error classification never depends on the daemon locale.
+func TestGitExec_PinsMessageLocale(t *testing.T) {
+	// t.Setenv is incompatible with t.Parallel.
+	t.Setenv("LC_ALL", "ja_JP.UTF-8")
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// `git -c alias.x=!env x` dumps the environment the git subprocess sees.
+	out, err := wm.gitOutput("-c", "alias.envdump=!env", "envdump")
+	if err != nil {
+		t.Fatalf("git alias envdump: %v", err)
+	}
+	env := make(map[string]string)
+	for line := range strings.SplitSeq(out, "\n") {
+		if k, v, ok := strings.Cut(line, "="); ok {
+			env[k] = v
+		}
+	}
+	if env["LC_ALL"] != "C" {
+		t.Errorf("git subprocess LC_ALL = %q, want C (daemon locale must not leak)", env["LC_ALL"])
+	}
+	if env["LANG"] != "C" {
+		t.Errorf("git subprocess LANG = %q, want C", env["LANG"])
+	}
+}
+
+// Regression (W-G6): a failed `worktree add -b` against a PRE-EXISTING
+// branch must not delete that branch on the error path — it may hold
+// unpublished commits from an earlier run.
+func TestEnsureWorkerWorktree_PreservesPreexistingBranchOnFailure(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_g6_worker"
+	branch := "maestro/" + commandID + "/worker1"
+	if err := wm.gitRun("branch", branch, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+	wantSHA, err := wm.gitOutput("rev-parse", branch)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.EnsureWorkerWorktree(commandID, "worker1"); err == nil {
+		t.Fatal("expected worktree add -b against a pre-existing branch to fail")
+	}
+
+	gotSHA, err := wm.gitOutput("rev-parse", branch)
+	if err != nil {
+		t.Fatalf("pre-existing branch must survive the failed attempt: %v", err)
+	}
+	if strings.TrimSpace(gotSHA) != strings.TrimSpace(wantSHA) {
+		t.Errorf("pre-existing branch moved: %s -> %s", strings.TrimSpace(wantSHA), strings.TrimSpace(gotSHA))
 	}
 }

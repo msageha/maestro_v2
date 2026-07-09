@@ -1138,3 +1138,49 @@ func TestMergeToIntegration_DefersWhenForwardMergeInFlight(t *testing.T) {
 		t.Errorf("uncommitted resolution edit must survive (data=%q err=%v)", data, rErr)
 	}
 }
+
+// Regression (W-G4): a stale `_publish` temp branch left behind by a crashed
+// publish must not fail every subsequent publish with exit 128
+// ("already exists") until the failure budget quarantines the command.
+func TestPublishToBase_RecoversFromStaleTempPublishBranch(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_stale_publish"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "file.txt"), []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate crash residue: the previous attempt's temp branch survived.
+	tempBranch := "maestro/" + commandID + "/_publish"
+	if err := wm.gitRun("branch", tempBranch, "HEAD"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.PublishToBase(commandID, "retry publish"); err != nil {
+		t.Fatalf("PublishToBase must recover from a stale temp branch: %v", err)
+	}
+	if err := wm.gitRun("rev-parse", "--verify", "--quiet", "refs/heads/"+tempBranch); err == nil {
+		t.Errorf("temp branch %s should be gone after successful publish", tempBranch)
+	}
+	// The published content must be on base.
+	if _, err := wm.gitOutput("show", "main:file.txt"); err != nil {
+		t.Errorf("published file missing from base branch: %v", err)
+	}
+}

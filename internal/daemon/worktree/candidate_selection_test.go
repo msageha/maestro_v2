@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
@@ -567,5 +568,144 @@ func TestParseJudgeVote(t *testing.T) {
 	}
 	if _, err := parseJudgeVote(`plain text`); err == nil {
 		t.Error("no JSON must fail")
+	}
+}
+
+// --- W-G3: wm.mu released during external processes; integration lock keeps
+// the worktree reserved ---
+
+// waitForFile polls until path exists or the timeout elapses.
+func waitForFile(t *testing.T, path string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("file %s did not appear within %s", path, timeout)
+}
+
+// Regression (W-G3): RunCandidateSelection must not hold wm.mu while its
+// external verify commands run — every other manager operation (dispatch
+// path resolution, commits, GC) would otherwise stall for the whole
+// multi-minute suite.
+func TestRunCandidateSelection_ReleasesManagerMutexDuringVerify(t *testing.T) {
+	t.Parallel()
+	wm, commandID, inputs := selectionFixture(t)
+
+	flag := filepath.Join(t.TempDir(), "verify_started")
+	// The first run (Stage 0 baseline) signals then sleeps; later runs pass
+	// immediately so the whole selection stays fast.
+	verify := fmt.Sprintf("test -f %s || { touch %s; sleep 3; }", flag, flag)
+
+	type result struct {
+		outcome *ABSelectionOutcome
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		o, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_unlock",
+			inputs, []string{verify}, nil, nil)
+		done <- result{o, err}
+	}()
+
+	waitForFile(t, flag, 10*time.Second)
+
+	// The baseline verify is sleeping (~3s) with the durable marker saved;
+	// wm.mu must be free for unrelated operations.
+	start := time.Now()
+	if _, err := wm.GetCommandState(commandID); err != nil {
+		t.Fatalf("GetCommandState during selection: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("manager mutex held during external verify: GetCommandState took %s", elapsed)
+	}
+
+	res := <-done
+	if res.err != nil {
+		t.Fatalf("RunCandidateSelection: %v", res.err)
+	}
+	if res.outcome.Degraded || res.outcome.WinnerTaskID != inputs[0].TaskID {
+		t.Errorf("outcome = %+v, want first input winning a passing-verifier tie", res.outcome)
+	}
+}
+
+// Regression (W-G3): while wm.mu is released for external verify runs, the
+// per-command integration lock must keep same-command integration mutations
+// (here: MergeToIntegration) excluded. Without it the merge would land
+// mid-selection and the selection's restore (reset --hard to the
+// pre-selection SHA) would wipe the merge commit off the integration branch.
+func TestMergeToIntegration_ExcludedDuringSelection(t *testing.T) {
+	t.Parallel()
+	wm, commandID, inputs := selectionFixture(t)
+
+	// A committed worker ready to merge.
+	if err := wm.EnsureWorkerWorktree(commandID, "workerm"); err != nil {
+		t.Fatal(err)
+	}
+	wtPath, err := wm.GetWorkerPath(commandID, "workerm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "merge_payload.txt"), []byte("m\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "workerm", "payload"); err != nil {
+		t.Fatal(err)
+	}
+
+	flag := filepath.Join(t.TempDir(), "verify_started")
+	verify := fmt.Sprintf("test -f %s || { touch %s; sleep 3; }", flag, flag)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := wm.RunCandidateSelection(context.Background(), commandID, "abg_excl",
+			inputs, []string{verify}, nil, nil)
+		done <- err
+	}()
+	waitForFile(t, flag, 10*time.Second)
+
+	// Issued during the selection's unlock window: must block on the
+	// integration lock and apply only after the selection restored preSHA.
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, []string{"workerm"}, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("unexpected conflicts: %v", conflicts)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("RunCandidateSelection: %v", err)
+	}
+
+	// The merge commit must survive on the integration branch: the
+	// selection's restore ran strictly before the merge started.
+	if _, err := wm.gitOutput("show", "maestro/"+commandID+"/integration:merge_payload.txt"); err != nil {
+		t.Errorf("worker merge lost — selection restore wiped a concurrent merge: %v", err)
+	}
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ABSelection != nil {
+		t.Errorf("selection marker not cleared: %+v", state.ABSelection)
+	}
+}
+
+// Regression (W-G9): a verify command leaving a background child that
+// inherits the output pipes must not block runSelectionCmds until that
+// grandchild exits — cmd.WaitDelay bounds the pipe wait after the direct
+// child terminates.
+func TestRunSelectionCmds_WaitDelayBoundsPipeHoldingGrandchild(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	start := time.Now()
+	wm.runSelectionCmds(context.Background(), projectRoot, []string{"sleep 30 & exit 0"})
+	if elapsed := time.Since(start); elapsed > 20*time.Second {
+		t.Fatalf("runSelectionCmds blocked %s on a pipe-holding grandchild; WaitDelay must bound the wait", elapsed)
 	}
 }

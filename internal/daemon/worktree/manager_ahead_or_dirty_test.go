@@ -210,10 +210,10 @@ func TestExtractUnstattablePaths(t *testing.T) {
 	}
 }
 
-// TestIsUnstattableError verifies the detector accepts canonical OS-deny
+// TestIsUnstattableMessage verifies the detector accepts canonical OS-deny
 // shapes (both `git add` and `git worktree add` phrasings) and rejects
 // unrelated errors.
-func TestIsUnstattableError(t *testing.T) {
+func TestIsUnstattableMessage(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
 		msg  string
@@ -230,13 +230,9 @@ func TestIsUnstattableError(t *testing.T) {
 		{"", false},
 	}
 	for _, c := range cases {
-		var err error
-		if c.msg != "" {
-			err = errFromString(c.msg)
-		}
-		got := isUnstattableError(err)
+		got := isUnstattableMessage(c.msg)
 		if got != c.want {
-			t.Errorf("isUnstattableError(%q) = %v, want %v", c.msg, got, c.want)
+			t.Errorf("isUnstattableMessage(%q) = %v, want %v", c.msg, got, c.want)
 		}
 	}
 }
@@ -433,9 +429,3 @@ func TestAppendToGitInfoExclude_LinkedWorktree(t *testing.T) {
 		t.Error("file should be visible again after exclude block GC")
 	}
 }
-
-type stringErr string
-
-func (e stringErr) Error() string { return string(e) }
-
-func errFromString(s string) error { return stringErr(s) }

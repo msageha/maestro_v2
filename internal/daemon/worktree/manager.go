@@ -76,7 +76,7 @@ type Manager struct {
 	// serialize against scan and against each other.
 	//
 	// Lock hierarchy (must be acquired in this order):
-	//   scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu
+	//   scanMu (caller, outside this package) → cmdLocks[cmd] → integrationLocks[cmd] → wm.mu
 	//
 	// Invariants:
 	//   1. All code paths that need both cmdLocks and wm.mu MUST acquire
@@ -94,9 +94,32 @@ type Manager struct {
 	// and defer the operation on failure.
 	cmdLocks sync.Map
 
+	// integrationLocks holds per-commandID *sync.Mutex serializing every
+	// operation that mutates the command's integration worktree: merge,
+	// publish, resume-merge, resolver-edit discard, cleanup and A/B
+	// selection. RunCandidateSelection releases wm.mu while its external
+	// verify commands / judges run (multi-minute processes) so unrelated
+	// worktree operations are not stalled; this lock is what keeps the
+	// integration worktree reserved for the whole selection during those
+	// windows.
+	//
+	// Position in the lock hierarchy (see cmdLocks):
+	//   scanMu → cmdLocks[cmd] → integrationLocks[cmd] → wm.mu
+	// Never acquire while holding wm.mu; code that already holds wm.mu
+	// (e.g. GC helpers) must use TryLock and defer on failure.
+	// Entries are cleaned up alongside cmdLocks (CleanupCommand /
+	// gcOrphanedCmdLocks).
+	integrationLocks sync.Map
+
 	// testPublishResetHook, if non-nil, replaces git reset --hard HEAD during
 	// PublishToBase. Used only for testing error paths. Must be nil in production.
 	testPublishResetHook func() error
+
+	// testGCStage2Hook, if non-nil, runs at the start of each GC Stage 2
+	// cleanup target (before locks are re-acquired). Used only by tests to
+	// simulate state mutations racing the Stage 1 snapshot. Must be nil in
+	// production.
+	testGCStage2Hook func(commandID string)
 }
 
 // NewManager creates a new Manager.
@@ -314,6 +337,20 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 		return fmt.Errorf("create worktree parent dir: %w", err)
 	}
 
+	// Probe branch existence BEFORE `worktree add -b`: the error path below
+	// must only delete a branch this attempt created. When the branch
+	// already exists (e.g. residue holding unpublished commits from an
+	// earlier run), `worktree add -b` fails with "already exists" and an
+	// unconditional `branch -D` would destroy those commits. A failed probe
+	// conservatively assumes the branch pre-exists.
+	branchPreexisted, probeErr := wm.localBranchExists(workerBranch)
+	if probeErr != nil {
+		wm.Log(core.LogLevelWarn,
+			"worker_branch_probe_failed command=%s worker=%s branch=%s error=%v (error path will not delete the branch)",
+			commandID, workerID, workerBranch, probeErr)
+		branchPreexisted = true
+	}
+
 	if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
 		[]string{"worktree", "add", "-b", workerBranch, wtPath, baseSHA}); err != nil {
 		// Final cleanup pass in case the fallback also failed.
@@ -323,7 +360,9 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 				commandID, workerID, wtPath, rmErr)
 		}
 		_ = wm.gitRun("worktree", "prune", "-v")
-		_ = wm.gitRun("branch", "-D", workerBranch)
+		if !branchPreexisted {
+			_ = wm.gitRun("branch", "-D", workerBranch)
+		}
 		return fmt.Errorf("create worktree for %s: %w", workerID, err)
 	}
 

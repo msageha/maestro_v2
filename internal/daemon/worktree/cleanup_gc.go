@@ -24,10 +24,17 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		return err
 	}
 	// Acquire per-command resolver lock before wm.mu to match the
-	// documented hierarchy: cmdLocks[cmd] → wm.mu.
+	// documented hierarchy: cmdLocks[cmd] → integrationLocks[cmd] → wm.mu.
 	cl := wm.commandLock(commandID)
 	cl.Lock()
 	defer cl.Unlock()
+
+	// Reserve the integration worktree so cleanup never destroys it under an
+	// in-flight A/B selection (which releases wm.mu during external verify
+	// runs).
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
 
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
@@ -53,10 +60,11 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
 	}
 
-	// M5: Remove per-command resolver lock to prevent memory leak.
+	// M5: Remove per-command locks to prevent memory leak.
 	// Safe after cleanup: all worktrees/branches/state are gone; any future
 	// operation on the same commandID will allocate a fresh mutex via LoadOrStore.
 	wm.cmdLocks.Delete(commandID)
+	wm.integrationLocks.Delete(commandID)
 
 	wm.Log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
 	return nil
@@ -124,8 +132,33 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 		cl := wm.commandLock(t.commandID)
 		cl.Lock()
 
+		// Reserve the integration worktree (see CleanupCommand). Blocking is
+		// acceptable here: shutdown cancels the scan context first, which
+		// unwinds any in-flight selection promptly.
+		il := wm.integrationLock(t.commandID)
+		il.Lock()
+
 		wm.mu.Lock()
-		errs := wm.cleanupCommandCore(t.commandID, t.state, false)
+		// Reload the state under lock: the Stage 1 snapshot may be stale
+		// (workers/candidates added since), and a stale-state cleanup would
+		// miss their worktrees and leak their branches. NotExist means a
+		// concurrent path already cleaned the command up.
+		state := t.state
+		switch fresh, loadErr := wm.loadStateUnlocked(t.commandID); {
+		case loadErr == nil:
+			state = fresh
+		case os.IsNotExist(loadErr):
+			wm.mu.Unlock()
+			il.Unlock()
+			cl.Unlock()
+			cleaned++
+			wm.Log(core.LogLevelInfo, "shutdown_cleanup_already_done command=%s", t.commandID)
+			continue
+		default:
+			wm.Log(core.LogLevelWarn, "shutdown_cleanup_reload_failed command=%s error=%v (using stage-1 snapshot)",
+				t.commandID, loadErr)
+		}
+		errs := wm.cleanupCommandCore(t.commandID, state, false)
 		wm.mu.Unlock()
 
 		if len(errs) > 0 {
@@ -135,11 +168,13 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 		} else {
 			wm.Log(core.LogLevelInfo, "shutdown_cleanup_done command=%s", t.commandID)
 			cleaned++
-			// Safe to delete: we hold the per-command lock and cleanup
+			// Safe to delete: we hold the per-command locks and cleanup
 			// succeeded (all worktrees/branches/state are gone).
 			wm.cmdLocks.Delete(t.commandID)
+			wm.integrationLocks.Delete(t.commandID)
 		}
 
+		il.Unlock()
 		cl.Unlock()
 	}
 
@@ -239,11 +274,7 @@ func (wm *Manager) GC() error {
 			} else {
 				wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", se.commandID, now.Sub(se.createdAt))
 			}
-			wm.mu.Lock()
-			if err := wm.cleanupCommandUnlocked(se.commandID, se.state); err != nil {
-				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", se.commandID, err)
-			}
-			wm.mu.Unlock()
+			wm.gcCleanupCommand(se.commandID, gcTTLCleanupEligible)
 			continue
 		}
 		remaining = append(remaining, se)
@@ -261,11 +292,9 @@ func (wm *Manager) GC() error {
 				continue
 			}
 			wm.Log(core.LogLevelInfo, "gc_max_exceeded command=%s", remaining[i].commandID)
-			wm.mu.Lock()
-			if err := wm.cleanupCommandUnlocked(remaining[i].commandID, remaining[i].state); err != nil {
-				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", remaining[i].commandID, err)
-			}
-			wm.mu.Unlock()
+			wm.gcCleanupCommand(remaining[i].commandID, func(st *model.WorktreeCommandState) bool {
+				return model.IsIntegrationTerminal(st.Integration.Status)
+			})
 		}
 	}
 
@@ -280,29 +309,93 @@ func (wm *Manager) GC() error {
 	return nil
 }
 
-// gcOrphanedCmdLocks removes cmdLocks entries for commands whose state files
-// no longer exist. This handles the memory leak when cleanupCommandUnlocked's
-// TryLock fails (resolver is active): after the resolver completes, the entry
-// remains because the state file has already been removed. Caller must hold wm.mu.
+// gcTTLCleanupEligible is the TTL-path re-validation applied to the FRESH
+// state in gcCleanupCommand: terminal integrations are always reclaimable;
+// failed ones only while no worker is mid conflict-resolution (same rules as
+// the Stage 1 snapshot checks).
+func gcTTLCleanupEligible(st *model.WorktreeCommandState) bool {
+	if model.IsIntegrationTerminal(st.Integration.Status) {
+		return true
+	}
+	return st.Integration.Status == model.IntegrationStatusFailed && !hasInFlightWorker(st)
+}
+
+// gcCleanupCommand re-acquires locks, RELOADS the command state, and
+// re-validates the cleanup preconditions before destroying anything. The
+// Stage 1 snapshot is taken without holding wm.mu across Stage 2, so by the
+// time a target is processed another code path may have added workers or
+// candidates — a stale-snapshot cleanup would miss their worktrees, remove
+// the state file, and let Stage 3 orphan detection force-remove them while
+// their branches leak — or advanced the integration status out of
+// eligibility.
+func (wm *Manager) gcCleanupCommand(commandID string, eligible func(*model.WorktreeCommandState) bool) {
+	if wm.testGCStage2Hook != nil {
+		wm.testGCStage2Hook(commandID)
+	}
+
+	// TryLock (not Lock): an in-flight A/B selection, merge or publish may
+	// hold the integration lock for many minutes; GC must not stall behind
+	// it. A skipped target is retried on the next GC cycle.
+	il := wm.integrationLock(commandID)
+	if !il.TryLock() {
+		wm.Log(core.LogLevelInfo,
+			"gc_skip_integration_busy command=%s (integration worktree reserved; retrying next cycle)", commandID)
+		return
+	}
+	defer il.Unlock()
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	fresh, err := wm.loadStateUnlocked(commandID)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			wm.Log(core.LogLevelWarn, "gc_reload_state_failed command=%s error=%v", commandID, err)
+		}
+		return // already cleaned up, or unreadable — retry next cycle
+	}
+	if !eligible(fresh) {
+		wm.Log(core.LogLevelInfo, "gc_skip_state_changed command=%s status=%s (state advanced between GC stages)",
+			commandID, fresh.Integration.Status)
+		return
+	}
+	if err := wm.cleanupCommandUnlocked(commandID, fresh); err != nil {
+		wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
+		return
+	}
+	// Cleanup succeeded — drop the per-command integration lock entry (we
+	// hold it) to mirror the cmdLocks lifecycle.
+	wm.integrationLocks.Delete(commandID)
+}
+
+// gcOrphanedCmdLocks removes cmdLocks / integrationLocks entries for commands
+// whose state files no longer exist. This handles the memory leak when
+// cleanupCommandUnlocked's TryLock fails (resolver is active): after the
+// resolver completes, the entry remains because the state file has already
+// been removed. Caller must hold wm.mu.
 func (wm *Manager) gcOrphanedCmdLocks() {
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
-	wm.cmdLocks.Range(func(key, value any) bool {
-		commandID, ok := key.(string)
-		if !ok {
-			return true
-		}
-		statePath := filepath.Join(stateDir, commandID+".yaml")
-		if _, err := os.Stat(statePath); os.IsNotExist(err) {
-			mu, ok := value.(*sync.Mutex)
-			if ok && mu.TryLock() {
-				wm.cmdLocks.Delete(commandID)
-				mu.Unlock()
-				wm.Log(core.LogLevelDebug, "gc_orphaned_cmd_lock command=%s", commandID)
+	sweep := func(locks *sync.Map, label string) {
+		locks.Range(func(key, value any) bool {
+			commandID, ok := key.(string)
+			if !ok {
+				return true
 			}
-			// TryLock failure: resolver still active; will be cleaned up next GC cycle.
-		}
-		return true
-	})
+			statePath := filepath.Join(stateDir, commandID+".yaml")
+			if _, err := os.Stat(statePath); os.IsNotExist(err) {
+				mu, ok := value.(*sync.Mutex)
+				if ok && mu.TryLock() {
+					locks.Delete(commandID)
+					mu.Unlock()
+					wm.Log(core.LogLevelDebug, "gc_orphaned_%s command=%s", label, commandID)
+				}
+				// TryLock failure: holder still active; cleaned up next GC cycle.
+			}
+			return true
+		})
+	}
+	sweep(&wm.cmdLocks, "cmd_lock")
+	sweep(&wm.integrationLocks, "integration_lock")
 }
 
 // detectAndRemoveOrphanWorktrees cross-references git worktree list against
@@ -613,6 +706,13 @@ func (wm *Manager) CleanupTempPublishBranch(commandID string) {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
+	wm.cleanupTempPublishBranchUnlocked(commandID)
+}
+
+// cleanupTempPublishBranchUnlocked is the core of CleanupTempPublishBranch.
+// Also called by createTempPublishBranch to clear a stale temp branch left
+// behind by a crashed publish before recreating it. Caller MUST hold wm.mu.
+func (wm *Manager) cleanupTempPublishBranchUnlocked(commandID string) {
 	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
 
 	// Precondition: only touch anything if the branch actually exists.

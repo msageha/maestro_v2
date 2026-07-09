@@ -368,6 +368,13 @@ func (wm *Manager) RecoverDirtyWorktreeQuarantine(commandID string) error {
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
+	// Reserve the integration worktree: an in-flight A/B selection releases
+	// wm.mu during its external verify runs, so wm.mu alone no longer
+	// excludes integration mutations.
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 

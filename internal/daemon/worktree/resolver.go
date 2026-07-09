@@ -110,6 +110,26 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 	return m
 }
 
+// integrationLock returns the per-command mutex reserving the command's
+// integration worktree (see the integrationLocks field doc in manager.go).
+// Same LoadOrStore convergence pattern as commandLock.
+//
+// Locking order: acquire BEFORE wm.mu (and after cmdLocks[cmd] when both are
+// needed); never acquire while holding wm.mu.
+func (wm *Manager) integrationLock(commandID string) *sync.Mutex {
+	if v, ok := wm.integrationLocks.Load(commandID); ok {
+		if mu, ok := v.(*sync.Mutex); ok {
+			return mu
+		}
+	}
+	m := &sync.Mutex{}
+	actual, _ := wm.integrationLocks.LoadOrStore(commandID, m)
+	if mu, ok := actual.(*sync.Mutex); ok {
+		return mu
+	}
+	return m
+}
+
 // DispatchConflictResolution transitions a worker from conflict→resolving and
 // marks the corresponding planner signal as dispatched. CAS-protected by
 // conflictGen: if the current signal's ConflictGeneration differs, returns
@@ -227,6 +247,10 @@ func (wm *Manager) DiscardResolverEdits(commandID, workerID string) error {
 	cl.Lock()
 	defer cl.Unlock()
 
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -293,6 +317,8 @@ func (wm *Manager) resolverGitRunInDir(dir string, args ...string) error {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // args are constructed internally from validated inputs
 	cmd.Dir = dir
+	cmd.Env = gitEnv()
+	cmd.WaitDelay = subprocessWaitDelay
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {

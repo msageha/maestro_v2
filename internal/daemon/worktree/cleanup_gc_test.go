@@ -938,3 +938,114 @@ func TestCleanupAll_RespectsContextCancellation(t *testing.T) {
 		t.Errorf("expected context canceled error, got: %v", err)
 	}
 }
+
+// Regression (W-G7): GC Stage 2 must reload the command state after
+// re-acquiring wm.mu instead of cleaning with the Stage 1 snapshot. A worker
+// added between the stages would otherwise be missed by cleanup — its branch
+// leaks while Stage 3 orphan detection force-removes the worktree.
+func TestGC_Stage2ReloadsStateBeforeCleanup(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.GC.TTLHours = ptr.Int(0)
+
+	commandID := "cmd_gc_reload"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "f.txt"), []byte("x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add f"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.PublishToBase(commandID, ""); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Simulate a worker added between Stage 1 (snapshot) and Stage 2
+	// (cleanup) by another code path.
+	hookFired := false
+	wm.testGCStage2Hook = func(cmdID string) {
+		if hookFired || cmdID != commandID {
+			return
+		}
+		hookFired = true
+		if err := wm.EnsureWorkerWorktree(commandID, "worker_late"); err != nil {
+			t.Errorf("hook EnsureWorkerWorktree: %v", err)
+		}
+	}
+
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+	if !hookFired {
+		t.Fatal("test hook did not fire; GC Stage 2 was not exercised")
+	}
+
+	lateBranch := "maestro/" + commandID + "/worker_late"
+	if err := wm.gitRun("rev-parse", "--verify", "--quiet", "refs/heads/"+lateBranch); err == nil {
+		t.Errorf("late-added worker branch leaked: Stage 2 must clean up from the reloaded state")
+	}
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("state file should be removed after GC cleanup")
+	}
+}
+
+// Regression (W-G7): the Stage 2 reload must also re-validate eligibility —
+// a command whose integration status regressed out of the reclaimable set
+// between the stages must be skipped.
+func TestGC_Stage2SkipsWhenStateNoLongerEligible(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.GC.TTLHours = ptr.Int(0)
+
+	commandID := "cmd_gc_regress"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+	// Make the snapshot see an eligible state (failed, no in-flight worker).
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Integration.Status = model.IntegrationStatusFailed
+	if err := wm.saveState(commandID, state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Between the stages the resolution pipeline takes ownership of a worker
+	// (conflict) — cleanup must defer.
+	wm.testGCStage2Hook = func(cmdID string) {
+		if cmdID != commandID {
+			return
+		}
+		st, err := wm.GetCommandState(commandID)
+		if err != nil {
+			t.Errorf("hook GetCommandState: %v", err)
+			return
+		}
+		st.Workers[0].Status = model.WorktreeStatusConflict
+		if err := wm.saveState(commandID, st); err != nil {
+			t.Errorf("hook saveState: %v", err)
+		}
+	}
+
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	if _, err := os.Stat(statePath); err != nil {
+		t.Errorf("command must NOT be cleaned when the fresh state is no longer eligible: %v", err)
+	}
+}

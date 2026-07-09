@@ -155,6 +155,18 @@ func (wm *Manager) addCandidateWorktreeUnlocked(state *model.WorktreeCommandStat
 		return fmt.Errorf("create candidate worktree parent dir: %w", err)
 	}
 
+	// Same guard as addWorkerWorktreeUnlocked: the error path must only
+	// delete a branch this attempt created, never a pre-existing branch
+	// (which may hold unpublished commits). A failed probe conservatively
+	// assumes the branch pre-exists.
+	branchPreexisted, probeErr := wm.localBranchExists(branch)
+	if probeErr != nil {
+		wm.Log(core.LogLevelWarn,
+			"candidate_branch_probe_failed command=%s task=%s branch=%s error=%v (error path will not delete the branch)",
+			commandID, taskID, branch, probeErr)
+		branchPreexisted = true
+	}
+
 	if err := wm.gitWorktreeAddWithUnstattableFallback(commandID,
 		[]string{"worktree", "add", "-b", branch, wtPath, baseSHA}); err != nil {
 		if rmErr := os.RemoveAll(wtPath); rmErr != nil {
@@ -163,7 +175,9 @@ func (wm *Manager) addCandidateWorktreeUnlocked(state *model.WorktreeCommandStat
 				commandID, taskID, wtPath, rmErr)
 		}
 		_ = wm.gitRun("worktree", "prune", "-v")
-		_ = wm.gitRun("branch", "-D", branch)
+		if !branchPreexisted {
+			_ = wm.gitRun("branch", "-D", branch)
+		}
 		return fmt.Errorf("create candidate worktree for %s: %w", taskID, err)
 	}
 

@@ -102,6 +102,16 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("selection requires at least one candidate")
 	}
+	// Reserve the integration worktree for the WHOLE selection run. wm.mu is
+	// released while external processes execute (verify commands, judges —
+	// tens of minutes in total) so dispatch path resolution, worker commits,
+	// other commands' merges and GC keep flowing; this per-command lock is
+	// what keeps same-command integration mutations (merge / publish /
+	// resume-merge / cleanup) excluded during those windows.
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -181,7 +191,7 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 		outcome.Reason = "no verify commands configured; no mechanical signal (PR1)"
 		return outcome, nil
 	}
-	basePass, baseFailCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+	basePass, baseFailCmd := wm.runSelectionCmdsUnlocked(ctx, intPath, verifyCmds)
 	if ctx.Err() != nil {
 		// Shutdown mid-selection is RETRYABLE, not a verdict: command
 		// failures caused by the dying context must not masquerade as a
@@ -280,7 +290,7 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 				r.diffText = diff
 			}
 		}
-		pass, failCmd := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+		pass, failCmd := wm.runSelectionCmdsUnlocked(ctx, intPath, verifyCmds)
 		r.score = pass
 		r.firstFail = failCmd
 		evidence["suite_"+c.TaskID] = fmt.Sprintf("%d/%d", pass, total)
@@ -303,7 +313,7 @@ func (wm *Manager) RunCandidateSelection(ctx context.Context, commandID, groupID
 			if applied == 0 {
 				evidence["cross_"+c.TaskID] = "neutral_no_overlay"
 			} else {
-				crossPass, crossFail := wm.runSelectionCmds(ctx, intPath, verifyCmds)
+				crossPass, crossFail := wm.runSelectionCmdsUnlocked(ctx, intPath, verifyCmds)
 				r.crossScore = crossPass
 				evidence["cross_"+c.TaskID] = fmt.Sprintf("%d/%d", crossPass, total)
 				if crossFail != "" {
@@ -443,7 +453,7 @@ func (wm *Manager) stage3Judge(ctx context.Context, commandID string, judgeModel
 	for _, judgeModel := range judgeModels[:2] {
 		wm.Log(core.LogLevelInfo, "ab_stage3_judge_started command=%s judge=%s", commandID, judgeModel)
 		jctx, cancel := context.WithTimeout(ctx, abJudgeTimeout)
-		out, err := invoker.Invoke(jctx, judgeModel, systemPrompt, userPrompt)
+		out, err := wm.invokeJudgeUnlocked(jctx, invoker, judgeModel, systemPrompt, userPrompt)
 		cancel()
 		if ctx.Err() != nil {
 			return 0, fmt.Errorf("selection interrupted: %w", ctx.Err()) // parent cancel — retryable
@@ -688,6 +698,28 @@ func stage2Tiebreak(a, b candidateMetrics, evidence map[string]string) int {
 	}
 }
 
+// runSelectionCmdsUnlocked runs the external verify commands with wm.mu
+// RELEASED: a verify suite may run for tens of minutes (selectionCmdTimeout
+// per command) and holding the manager mutex for that long stalls every
+// other worktree operation (dispatch path resolution, commits, merges of
+// other commands, GC). The integration worktree stays reserved by the
+// per-command integrationLock held for the whole RunCandidateSelection
+// call. Caller MUST hold wm.mu.
+func (wm *Manager) runSelectionCmdsUnlocked(ctx context.Context, dir string, cmds []string) (pass int, firstFail string) {
+	wm.mu.Unlock()
+	defer wm.mu.Lock()
+	return wm.runSelectionCmds(ctx, dir, cmds)
+}
+
+// invokeJudgeUnlocked releases wm.mu around one external Stage 3 judge
+// invocation (up to abJudgeTimeout) — same rationale as
+// runSelectionCmdsUnlocked. Caller MUST hold wm.mu.
+func (wm *Manager) invokeJudgeUnlocked(ctx context.Context, invoker reviewer.ClaudeInvoker, judgeModel, systemPrompt, userPrompt string) (string, error) {
+	wm.mu.Unlock()
+	defer wm.mu.Lock()
+	return invoker.Invoke(ctx, judgeModel, systemPrompt, userPrompt)
+}
+
 // runSelectionCmds executes verify commands sequentially in dir, stopping at
 // nothing (all commands run so the pass count is a meaningful score).
 // Returns the pass count and the first failing command ("" when all pass).
@@ -696,6 +728,10 @@ func (wm *Manager) runSelectionCmds(ctx context.Context, dir string, cmds []stri
 		cctx, cancel := context.WithTimeout(ctx, selectionCmdTimeout)
 		cmd := exec.CommandContext(cctx, "sh", "-c", c) //nolint:gosec // verify.yaml commands are operator/Planner-authored by design
 		cmd.Dir = dir
+		// Bound pipe-holding grandchildren: without WaitDelay a verify
+		// command that leaves a background child inheriting stdout/stderr
+		// would block CombinedOutput far beyond the command's own exit.
+		cmd.WaitDelay = subprocessWaitDelay
 		out, err := cmd.CombinedOutput()
 		cancel()
 		if err != nil {

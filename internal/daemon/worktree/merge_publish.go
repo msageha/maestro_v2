@@ -180,6 +180,13 @@ func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, wor
 	if err := validateIDs(commandID, workerIDs...); err != nil {
 		return nil, err
 	}
+	// Reserve the integration worktree: an in-flight A/B selection releases
+	// wm.mu during its external verify runs, so wm.mu alone no longer
+	// excludes integration mutations.
+	il := wm.integrationLock(commandID)
+	il.Lock()
+	defer il.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
