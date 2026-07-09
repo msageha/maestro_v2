@@ -1,8 +1,10 @@
 package status
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +99,54 @@ func TestGetQueueDepths_SkipsInvalidSchema(t *testing.T) {
 	}
 	if queues[0].Name != "planner" {
 		t.Errorf("expected planner, got %q", queues[0].Name)
+	}
+}
+
+// aliasBombYAML returns a YAML document whose alias nesting exceeds
+// maestroyaml.MaxAliasDepth. Each level references the previous one, so a
+// naive yaml.Unmarshal would expand it exponentially (billion laughs).
+func aliasBombYAML(header string) string {
+	var b strings.Builder
+	b.WriteString(header)
+	b.WriteString("a0: &a0 [\"x\",\"x\"]\n")
+	for i := 1; i <= 12; i++ {
+		fmt.Fprintf(&b, "a%d: &a%d [*a%d,*a%d]\n", i, i, i-1, i-1)
+	}
+	return b.String()
+}
+
+// TestGetQueueDepths_SkipsAliasBomb pins P-F6: queue-file reads go through
+// SafeUnmarshal, so an anchor/alias bomb is rejected instead of expanded.
+func TestGetQueueDepths_SkipsAliasBomb(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "queue")
+	os.Mkdir(queueDir, 0755)
+
+	os.WriteFile(filepath.Join(queueDir, "planner.yaml"),
+		[]byte("schema_version: 1\nfile_type: \"queue_command\"\ncommands: []\n"), 0644)
+	os.WriteFile(filepath.Join(queueDir, "bomb.yaml"),
+		[]byte(aliasBombYAML("schema_version: 1\nfile_type: \"queue_task\"\ntasks: []\n")), 0644)
+
+	queues := getQueueDepths(dir)
+	if len(queues) != 1 {
+		t.Fatalf("expected 1 queue (bomb skipped), got %d", len(queues))
+	}
+	if queues[0].Name != "planner" {
+		t.Errorf("expected planner, got %q", queues[0].Name)
+	}
+}
+
+// TestGetSignalsStatus_SkipsAliasBomb pins P-F6 for the planner_signals path.
+func TestGetSignalsStatus_SkipsAliasBomb(t *testing.T) {
+	dir := t.TempDir()
+	queueDir := filepath.Join(dir, "queue")
+	os.Mkdir(queueDir, 0755)
+
+	os.WriteFile(filepath.Join(queueDir, "planner_signals.yaml"),
+		[]byte(aliasBombYAML("schema_version: 1\nfile_type: \"planner_signals\"\nsignals: []\n")), 0644)
+
+	if got := getSignalsStatus(dir); got != nil {
+		t.Fatalf("expected nil for alias-bomb planner_signals, got %+v", got)
 	}
 }
 

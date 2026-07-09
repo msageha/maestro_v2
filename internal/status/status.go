@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -317,7 +315,7 @@ func getQueueDepths(maestroDir string) []queueStatus {
 		}
 
 		var qf queueFile
-		if err := yaml.Unmarshal(data, &qf); err != nil {
+		if err := maestroyaml.SafeUnmarshal(data, &qf); err != nil {
 			slog.Warn("status: failed to parse file", "file", entry.Name(), "error", err)
 			continue
 		}
@@ -373,7 +371,7 @@ func getSignalsStatus(maestroDir string) *signalsStatus {
 		return nil
 	}
 	var sq model.PlannerSignalQueue
-	if err := yaml.Unmarshal(data, &sq); err != nil {
+	if err := maestroyaml.SafeUnmarshal(data, &sq); err != nil {
 		slog.Warn("status: failed to parse planner_signals", "error", err)
 		return nil
 	}
