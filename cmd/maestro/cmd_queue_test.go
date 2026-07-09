@@ -108,6 +108,90 @@ func TestRunQueueWrite_CommandMissingContent(t *testing.T) {
 	}
 }
 
+func TestRunQueueWrite_CommandOrchestratorTargetHintsMessage(t *testing.T) {
+	err := newCLIApp().runQueueWrite([]string{"orchestrator", "--type", "command",
+		"--content", "do the thing"}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for command with orchestrator target")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--type message") {
+		t.Errorf("expected error to hint at --type message, got: %q", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_MessageRejectsNonOrchestratorTarget(t *testing.T) {
+	for _, target := range []string{"planner", "worker1"} {
+		t.Run(target, func(t *testing.T) {
+			err := newCLIApp().runQueueWrite([]string{target, "--type", "message",
+				"--content", "hello"}, io.Discard)
+			if err == nil {
+				t.Fatal("expected error for message with non-orchestrator target")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+			if !strings.Contains(ce.Msg, "target=orchestrator") {
+				t.Errorf("expected error to mention target=orchestrator requirement, got: %q", ce.Msg)
+			}
+		})
+	}
+}
+
+func TestRunQueueWrite_MessageMissingContent(t *testing.T) {
+	err := newCLIApp().runQueueWrite([]string{"orchestrator", "--type", "message"}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for missing --content")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--content is required") {
+		t.Errorf("expected '--content is required' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_MessageSendsParams(t *testing.T) {
+	withMaestroDir(t)
+	var gotParams map[string]any
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			if command != "queue_write" {
+				t.Errorf("expected command queue_write, got %s", command)
+			}
+			p, ok := params.(map[string]any)
+			if !ok {
+				t.Fatalf("expected map[string]any params, got %T", params)
+			}
+			gotParams = p
+			return successResponse(map[string]string{"id": "ntf_0000000001_abcdef01"}), nil
+		},
+	})
+
+	err := app.runQueueWrite([]string{"orchestrator", "--type", "message",
+		"--content", "続きを進めて", "--priority", "5"}, io.Discard)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotParams["target"] != "orchestrator" {
+		t.Errorf("target = %v, want orchestrator", gotParams["target"])
+	}
+	if gotParams["type"] != "message" {
+		t.Errorf("type = %v, want message", gotParams["type"])
+	}
+	if gotParams["content"] != "続きを進めて" {
+		t.Errorf("content = %v, want 続きを進めて", gotParams["content"])
+	}
+	if gotParams["priority"] != 5 {
+		t.Errorf("priority = %v, want 5", gotParams["priority"])
+	}
+}
+
 func TestRunQueueWrite_TaskTypeRejectedFromCLI(t *testing.T) {
 	// Task creation is the Planner's exclusive responsibility (audit C3).
 	// `maestro queue write --type task` must be rejected at the CLI surface
@@ -345,6 +429,21 @@ func TestRunQueueWrite_NotificationMissingFields(t *testing.T) {
 func TestRunQueueWrite_CommandContentTooLong(t *testing.T) {
 	longContent := strings.Repeat("x", 65537)
 	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "command", "--content", longContent}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for oversized content")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_MessageContentTooLong(t *testing.T) {
+	longContent := strings.Repeat("x", 65537)
+	err := newCLIApp().runQueueWrite([]string{"orchestrator", "--type", "message", "--content", longContent}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for oversized content")
 	}

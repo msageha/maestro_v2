@@ -189,6 +189,17 @@ results/planner.yaml を確認してください
 2. 必要に応じて `.maestro/results/planner.yaml` で詳細を確認
 3. ユーザーに結果を報告する（成功・失敗・キャンセルいずれの場合も）
 
+### ユーザーメッセージの受信
+
+ユーザーは tmux ペイン外から `maestro queue write orchestrator --type message --content "..."` で Orchestrator にメッセージを送ることができる。以下の形式で届く:
+
+```
+[maestro] kind:user_message
+<メッセージ本文>
+```
+
+これは **ペインに直接入力されたユーザー指示と同格** に扱う。本文の内容に応じて、質問への回答・コマンドの投入・キャンセル要求などの通常フローをそのまま実行する。結果ファイルの参照は不要（本文がメッセージの全体である）。
+
 ### quarantine 通知のエスカレーション (F-017 / F-020)
 
 `kind:command_failed` の通知のうち、`reason` が `quarantined` または `publish_quarantined` を含む場合、Daemon の自動復旧 (3 回連続マージ失敗 / publish_failed の retry budget 枯渇) を超えた状態である。

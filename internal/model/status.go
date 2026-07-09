@@ -119,6 +119,12 @@ const (
 	// Orchestrator uses this nudge to re-run its Decide step (or pause/stop
 	// continuous mode) after a missed command_completed notification.
 	NotificationTypeContinuousStalled NotificationType = "continuous_stalled"
+	// NotificationTypeUserMessage carries a free-form user message enqueued via
+	// `maestro queue write orchestrator --type message`. Unlike the other
+	// notification types it has no backing result file: the content itself is
+	// delivered in the envelope, letting users drive the Orchestrator from
+	// outside its tmux pane.
+	NotificationTypeUserMessage NotificationType = "user_message"
 )
 
 var terminalStatuses = map[Status]bool{
@@ -160,6 +166,7 @@ var validNotificationTypes = map[NotificationType]bool{
 	NotificationTypeContinuousPaused:  true,
 	NotificationTypeContinuousStopped: true,
 	NotificationTypeContinuousStalled: true,
+	NotificationTypeUserMessage:       true,
 }
 
 // Queue entry status transitions for command/task: pending ↔ in_progress → terminal.

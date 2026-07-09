@@ -45,24 +45,27 @@ type QueueWriteParams struct {
 type QueueWriteFunc func(QueueWriteParams) *uds.Response
 
 // QueueWrite handles UDS queue-write requests by dispatching to the
-// per-target backend (command / task / notification / cancel-request).
+// per-target backend (command / task / notification / cancel-request /
+// message).
 type QueueWrite struct {
 	command       QueueWriteFunc
 	task          QueueWriteFunc
 	notification  QueueWriteFunc
 	cancelRequest QueueWriteFunc
+	message       QueueWriteFunc
 }
 
-// NewQueueWrite constructs a QueueWrite handler bound to the four
+// NewQueueWrite constructs a QueueWrite handler bound to the five
 // per-target backends. Any of the funcs may be nil; in that case the
 // matching request type returns a clear "not implemented" error rather
 // than panicking on a nil call.
-func NewQueueWrite(command, task, notification, cancelRequest QueueWriteFunc) *QueueWrite {
+func NewQueueWrite(command, task, notification, cancelRequest, message QueueWriteFunc) *QueueWrite {
 	return &QueueWrite{
 		command:       command,
 		task:          task,
 		notification:  notification,
 		cancelRequest: cancelRequest,
+		message:       message,
 	}
 }
 
@@ -95,8 +98,16 @@ func (h *QueueWrite) Handle(req *uds.Request) *uds.Response {
 			return resp
 		}
 		return h.cancelRequest(params)
+	case "message":
+		// User messages are an operator-facing surface only: agent panes talk
+		// to the Orchestrator through their own typed channels (notification /
+		// planner signal), so RoleCLI is the sole permitted caller.
+		if resp := apipolicy.RequireCallerRole(req, "queue_write message", uds.RoleCLI); resp != nil {
+			return resp
+		}
+		return h.message(params)
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("invalid type: %q, must be command|task|notification|cancel-request", params.Type))
+			fmt.Sprintf("invalid type: %q, must be command|task|notification|cancel-request|message", params.Type))
 	}
 }

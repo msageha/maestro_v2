@@ -547,7 +547,14 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 // transient failures, and re-delivery of an orchestrator notification is
 // safe (orchestrator side is idempotent on notification ID).
 func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
-	env := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
+	var env string
+	if ntf.Type == model.NotificationTypeUserMessage {
+		// User messages have no backing result file to point the
+		// Orchestrator at — the content itself is the payload.
+		env = envelope.BuildOrchestratorUserMessageEnvelope(ntf.Content)
+	} else {
+		env = envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
+	}
 	_, err := disp.executeDispatch(agent.ExecRequest{
 		AgentID:    "orchestrator",
 		Message:    env,

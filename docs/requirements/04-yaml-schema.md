@@ -301,7 +301,7 @@ file_type: "queue_notification"
 notifications:
   - id: "ntf_1771722600_d4e9f0a2"
     command_id: "cmd_1771722000_a3f2b7c1"
-    type: "command_completed" # command_completed | command_failed | command_cancelled | continuous_paused | continuous_stopped | continuous_stalled
+    type: "command_completed" # command_completed | command_failed | command_cancelled | continuous_paused | continuous_stopped | continuous_stalled | user_message
     source_result_id: "res_1771722600_f1a2b3c4" # 元の planner result ID（冪等重複排除用）
     content: "認証機能の実装が完了しました。詳細は results/planner.yaml を参照してください。"
     priority: 100 # 優先度（小さいほど高優先。デフォルト 100。デーモンが自動設定）
@@ -318,6 +318,8 @@ notifications:
 ```
 
 > **継続モード通知**: `continuous_paused`（pause_on_failure 等で paused に遷移）/ `continuous_stopped`（max_iterations・max_consecutive_failures 到達で stopped に遷移）/ `continuous_stalled`（稼働中に次イテレーションが `stall_notification_sec` 投入されない停滞）は、デーモンが継続モードの状態変化を Orchestrator に伝えるための通知型である。Orchestrator はこれらを受けて次イテレーション生成の再実行・停止判断・ユーザー報告を行う。
+
+> **ユーザーメッセージ**: `user_message` は `maestro queue write orchestrator --type message` で投入される自由文メッセージ（tmux ペイン外から Orchestrator を操作する経路）。`command_id` を持たず、`source_result_id` はエントリ ID から `user:{notification_id}` 形式で合成される（重複排除キーの衝突回避のため一意）。他の通知型と異なり結果ファイルを参照せず、`content` 自体が envelope（`[maestro] kind:user_message` + 本文）で Orchestrator ペインに配信される。
 
 ## 4.6.1 queue/planner_signals.yaml（デーモン → Planner: 構造化シグナル）
 

@@ -394,7 +394,7 @@ func TestRunQueueWrite_UsageOmitsTaskType(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	if !strings.Contains(ce.Msg, "<command|notification|cancel-request>") {
+	if !strings.Contains(ce.Msg, "<command|message|notification|cancel-request>") {
 		t.Errorf("usage should list the supported types, got: %s", ce.Msg)
 	}
 	if strings.Contains(ce.Msg, "|task|") || strings.Contains(ce.Msg, "task|") {

@@ -24,6 +24,21 @@ func (a *cliApp) runQueue(args []string) error {
 	}
 }
 
+// buildMessageWriteParams validates and builds params for a user-message queue write.
+func buildMessageWriteParams(params map[string]any, content string, priority int) error {
+	if content == "" {
+		return &CLIError{Code: 1, Msg: "maestro queue write: --content is required for type=message"}
+	}
+	if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
+	}
+	params["content"] = content
+	if priority > 0 {
+		params["priority"] = priority
+	}
+	return nil
+}
+
 // buildCommandWriteParams validates and builds params for a command queue write.
 func buildCommandWriteParams(params map[string]any, content string, priority int, skillRefs []string) error {
 	if content == "" {
@@ -95,16 +110,16 @@ func buildCancelRequestWriteParams(params map[string]any, commandID, reason stri
 // warnOut is the destination for deprecation warnings.
 func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|notification|cancel-request> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|message|notification|cancel-request> [options]"}
 	}
 
 	target := args[0]
 
-	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|notification|cancel-request> [options]")
+	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|message|notification|cancel-request> [options]")
 	var writeType, content, commandID, sourceResultID, notificationType, reason string
 	var priority int
 
-	cmd.RequiredString(&writeType, "type", "Entry type: command, notification, or cancel-request (task creation is Planner-only via plan submit)")
+	cmd.RequiredString(&writeType, "type", "Entry type: command, message, notification, or cancel-request (task creation is Planner-only via plan submit)")
 	cmd.StringVar(&content, "content", "", "Entry content text")
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.IntVar(&priority, "priority", 0, "Entry priority (higher = more urgent)")
@@ -155,12 +170,28 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 		// the CLI so operators get an immediate error instead of "I queued
 		// it but the wrong agent reacted".
 		if target != "planner" {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf(
+			msg := fmt.Sprintf(
 				"maestro queue write: --type command requires target=planner (the only command consumer); got target=%q",
+				target,
+			)
+			if target == "orchestrator" {
+				msg += "\nto send a message to the Orchestrator, use: maestro queue write orchestrator --type message --content \"...\""
+			}
+			return &CLIError{Code: 1, Msg: msg}
+		}
+		if err := buildCommandWriteParams(params, content, priority, []string(skillRefs)); err != nil {
+			return err
+		}
+	case "message":
+		// User messages have a single consumer (the Orchestrator); they are
+		// delivered into its pane so users can drive it from outside tmux.
+		if target != "orchestrator" {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf(
+				"maestro queue write: --type message requires target=orchestrator (the only user-message consumer); got target=%q",
 				target,
 			)}
 		}
-		if err := buildCommandWriteParams(params, content, priority, []string(skillRefs)); err != nil {
+		if err := buildMessageWriteParams(params, content, priority); err != nil {
 			return err
 		}
 	case "task":
@@ -177,7 +208,7 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 			return err
 		}
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|notification|cancel-request> [options]", writeType)}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|message|notification|cancel-request> [options]", writeType)}
 	}
 
 	return a.sendQueueWrite(params)

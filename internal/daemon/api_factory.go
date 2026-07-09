@@ -48,6 +48,7 @@ func newAPI(d *Daemon) *API {
 			queueWrite.handleQueueWriteTask,
 			queueWrite.handleQueueWriteNotification,
 			queueWrite.handleQueueWriteCancelRequest,
+			queueWrite.handleQueueWriteMessage,
 		),
 		plan: daemonapi.NewPlan(
 			d.maestroDir,

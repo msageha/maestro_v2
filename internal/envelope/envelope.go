@@ -375,6 +375,16 @@ func BuildOrchestratorNotificationEnvelope(commandID string, notificationType mo
 		terminalStatus)
 }
 
+// BuildOrchestratorUserMessageEnvelope creates the envelope for a user message
+// delivered to the Orchestrator (queue_write type=message). Unlike the other
+// Orchestrator notification envelopes there is no backing result file, so the
+// message content itself is carried in the body after passing through the
+// sanitization pipeline (boundary-marker escaping + truncation).
+func BuildOrchestratorUserMessageEnvelope(content string) string {
+	body := NewRawContent(content).Sanitize().Truncate(MaxContentBytes).BuildBody()
+	return fmt.Sprintf("[maestro] kind:%s\n%s", model.NotificationTypeUserMessage, body)
+}
+
 func mapNotificationTypeToStatus(nt model.NotificationType) string {
 	switch nt {
 	case "command_completed":

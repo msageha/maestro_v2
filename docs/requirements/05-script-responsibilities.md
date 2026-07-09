@@ -201,6 +201,15 @@ maestro queue write orchestrator \
   --notification-type command_completed \
   --source-result-id res_1771722600_f1a2b3c4 \
   --content "認証機能の実装が完了しました"
+
+# User → Orchestrator（ユーザーメッセージ。tmux ペイン外から Orchestrator を操作する経路）
+maestro queue write orchestrator \
+  --type message \
+  --content "優先度を見直してから続行してください"
+# → queue/orchestrator.yaml に type=user_message のエントリを追加し、デーモンが
+#   Orchestrator ペインへ配信する。結果ファイルを持たず content 自体が envelope で届く。
+#   caller role は CLI のみ許可（Agent ペインからの呼び出しは拒否）。
+#   continuous gate の対象外（paused/stopped 中でもユーザーは Orchestrator に到達できる）
 ```
 
 **処理フロー**（デーモン内部）:
