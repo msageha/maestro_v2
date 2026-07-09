@@ -18,6 +18,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -215,9 +216,10 @@ func TestR4PlanStatus_RetryableFillingPhase_NoQuarantine(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
-		return "", fmt.Errorf("phase \"impl\" is in transient status filling, retry later")
-	}
+	// The real evaluator: retryability is now classified from the error it
+	// returns (plan.IsRetryable), so the mock must produce plan's own
+	// retryableError — the filling phase below makes it do exactly that.
+	deps.CanComplete = plan.CanComplete
 
 	commandID := "cmd_0000000001_r4retry1"
 	resultID := "res_0000000001_r4retry1"
@@ -258,9 +260,9 @@ func TestR4PlanStatus_RetryableUnresolvedCandidateGroup_NoQuarantine(t *testing.
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
-		return "", fmt.Errorf("A/B candidate group g1 is racing (selection in progress)")
-	}
+	// Real evaluator: the racing candidate group below yields plan's
+	// retryableError, which plan.IsRetryable classifies for R4.
+	deps.CanComplete = plan.CanComplete
 
 	commandID := "cmd_0000000001_r4retry2"
 	resultID := "res_0000000001_r4retry2"
@@ -623,6 +625,64 @@ func TestR10PausedForReplan_FreshStateUpdatedAt_EscalatesViaResultAnchor(t *test
 	}
 }
 
+// TestR10PausedForReplan_TaskStatusChangedAtAnchor_PreferredOverResult pins
+// the strict D-F7 anchor: the per-task TaskStatusChangedAt stamp records the
+// actual paused_for_replan transition. The task's last worker result is 2h
+// old (the pre-strict approximation would escalate — the result predates the
+// pause by the verify/repair window), but the pause itself happened 30
+// minutes ago, inside the 1h deadletter window, so R10 must NOT escalate.
+func TestR10PausedForReplan_TaskStatusChangedAtAnchor_PreferredOverResult(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.Config.Verify = model.VerifyDaemonConfig{}
+
+	commandID := "cmd_0000000001_r10anch2"
+	taskID := "task_0000000001_r10anch2"
+	now := time.Date(2026, 4, 25, 12, 0, 0, 0, time.UTC)
+	setClock(&deps, now)
+
+	state := model.CommandState{
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID:  commandID,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:          map[string]model.Status{taskID: model.StatusPausedForReplan},
+			TaskStatusChangedAt: map[string]string{taskID: now.Add(-30 * time.Minute).Format(time.RFC3339)},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: now.Add(-3 * time.Hour).Format(time.RFC3339),
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	rf := model.TaskResultFile{
+		SchemaVersion: 1, FileType: "result_worker",
+		Results: []model.TaskResult{{
+			ID: "res_0000000001_r10anch2", TaskID: taskID, CommandID: commandID,
+			Status: model.StatusFailed, CreatedAt: now.Add(-2 * time.Hour).Format(time.RFC3339),
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	run := newRun(&deps)
+	outcome := R10PausedForReplanDeadletter{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected no escalation (pause is 30m old < 1h window), got %+v", outcome.Repairs)
+	}
+	reloaded, err := run.loadState(statePath)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := reloaded.TaskStates[taskID]; got != model.StatusPausedForReplan {
+		t.Fatalf("task state = %q, want paused_for_replan preserved", got)
+	}
+}
+
 // --- D-F8: r1AddTaskToQueue is an upsert ---
 
 func TestR1AddTaskToQueue_Upsert_NoDuplicateRow(t *testing.T) {
@@ -703,6 +763,118 @@ func TestR1ResultQueue_StaleResult_DoesNotClobberRedispatchedTask(t *testing.T) 
 	}
 	if got.Tasks[0].Status != model.StatusInProgress {
 		t.Fatalf("queue status = %s, want in_progress (live attempt preserved)", got.Tasks[0].Status)
+	}
+}
+
+// TestR1ResultQueue_EpochFence_OldEpochResultFencedDespiteFreshTimestamp pins
+// the strict D-F9 fence: a result that persisted lease epoch 1 but was
+// written AFTER the epoch-2 re-dispatch (delayed crash-recovery write) slips
+// through the CreatedAt-vs-InProgressAt comparison; the epoch fence must
+// still reject it so the live attempt is not terminal-ized.
+func TestR1ResultQueue_EpochFence_OldEpochResultFencedDespiteFreshTimestamp(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	taskID := "task_0000000001_fence002"
+	rf := model.TaskResultFile{
+		SchemaVersion: 1, FileType: "result_worker",
+		Results: []model.TaskResult{{
+			ID: "res_0000000001_fence002", TaskID: taskID, CommandID: "cmd_1",
+			Status: model.StatusFailed, LeaseEpoch: 1,
+			CreatedAt: now.Format(time.RFC3339), // postdates the re-dispatch
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+	inProgressAt := now.Add(-1 * time.Minute).Format(time.RFC3339)
+	tq := model.TaskQueue{
+		SchemaVersion: 1, FileType: "queue_task",
+		Tasks: []model.Task{{
+			ID: taskID, CommandID: "cmd_1", Status: model.StatusInProgress,
+			LeaseEpoch:   2,
+			InProgressAt: &inProgressAt,
+			CreatedAt:    now.Add(-30 * time.Minute).Format(time.RFC3339),
+			UpdatedAt:    inProgressAt,
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+
+	outcome := R1ResultQueue{}.Apply(newRun(&deps))
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected 0 repairs (old-epoch result fenced), got %+v", outcome.Repairs)
+	}
+	data, err := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var got model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if got.Tasks[0].Status != model.StatusInProgress {
+		t.Fatalf("queue status = %s, want in_progress (live attempt preserved)", got.Tasks[0].Status)
+	}
+}
+
+// TestR1ResultQueue_EpochFence_SameEpochResultAppliesDespiteOlderTimestamp
+// pins the fence's other direction: a same-epoch result belongs to the row's
+// current attempt and must apply even when its CreatedAt predates the row's
+// InProgressAt (second-granularity clock skew / replayed recovery write that
+// the old timestamp fence dropped).
+func TestR1ResultQueue_EpochFence_SameEpochResultAppliesDespiteOlderTimestamp(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	taskID := "task_0000000001_fence003"
+	rf := model.TaskResultFile{
+		SchemaVersion: 1, FileType: "result_worker",
+		Results: []model.TaskResult{{
+			ID: "res_0000000001_fence003", TaskID: taskID, CommandID: "cmd_1",
+			Status: model.StatusFailed, LeaseEpoch: 2,
+			CreatedAt: now.Add(-10 * time.Minute).Format(time.RFC3339),
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+	inProgressAt := now.Add(-1 * time.Minute).Format(time.RFC3339)
+	tq := model.TaskQueue{
+		SchemaVersion: 1, FileType: "queue_task",
+		Tasks: []model.Task{{
+			ID: taskID, CommandID: "cmd_1", Status: model.StatusInProgress,
+			LeaseEpoch:   2,
+			InProgressAt: &inProgressAt,
+			CreatedAt:    now.Add(-30 * time.Minute).Format(time.RFC3339),
+			UpdatedAt:    inProgressAt,
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+
+	outcome := R1ResultQueue{}.Apply(newRun(&deps))
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair (same-epoch result applies), got %+v", outcome.Repairs)
+	}
+	data, err := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var got model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if got.Tasks[0].Status != model.StatusFailed {
+		t.Fatalf("queue status = %s, want failed (same-epoch terminal applied)", got.Tasks[0].Status)
 	}
 }
 

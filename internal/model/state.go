@@ -18,6 +18,30 @@ type TaskTracking struct {
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
 	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"` // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
 	IdempotencyKeys    map[string]string   `yaml:"idempotency_keys,omitempty"`   // idempotency_key → task_id; prevents duplicate task injection on retry
+	// TaskStatusChangedAt records, per task, the RFC3339 timestamp of the
+	// most recent TaskStates transition. Reconcile rules anchor staleness
+	// windows on it (e.g. R10 measures "how long has this task been in
+	// paused_for_replan" from the actual transition instead of approximating
+	// via worker-result timestamps, D-F7). Writers must go through
+	// SetTaskState so the stamp stays in lockstep with TaskStates; entries
+	// may be missing for state files written before this field existed —
+	// readers fall back to their previous anchors.
+	TaskStatusChangedAt map[string]string `yaml:"task_status_changed_at,omitempty"`
+}
+
+// SetTaskState records a task status transition together with its
+// transition timestamp. All TaskStates writes must go through this helper —
+// a bare map assignment would leave TaskStatusChangedAt stale and skew any
+// reconcile rule anchored on it.
+func (t *TaskTracking) SetTaskState(taskID string, status Status, nowRFC3339 string) {
+	if t.TaskStates == nil {
+		t.TaskStates = make(map[string]Status)
+	}
+	t.TaskStates[taskID] = status
+	if t.TaskStatusChangedAt == nil {
+		t.TaskStatusChangedAt = make(map[string]string)
+	}
+	t.TaskStatusChangedAt[taskID] = nowRFC3339
 }
 
 // RetryTracking groups retry-related fields within CommandState.

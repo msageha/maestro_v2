@@ -2,6 +2,7 @@ package plan
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,6 +279,28 @@ func TestCanComplete_FillingPhase(t *testing.T) {
 	var retryErr *retryableError
 	if !errors.As(err, &retryErr) {
 		t.Errorf("error is not retryableError, got %T: %v", err, err)
+	}
+}
+
+// TestIsRetryable pins the exported classifier daemon-side reconcile rules
+// use (D-F2): only errors wrapping this package's retryableError count.
+func TestIsRetryable(t *testing.T) {
+	t.Parallel()
+	inner := &retryableError{Err: errors.New("transient")}
+	if !IsRetryable(inner) {
+		t.Error("retryableError must classify as retryable")
+	}
+	if !IsRetryable(fmt.Errorf("outer: %w", inner)) {
+		t.Error("wrapped retryableError must classify as retryable")
+	}
+	if IsRetryable(errors.New("plain")) {
+		t.Error("plain error must not classify as retryable")
+	}
+	if IsRetryable(&ActionRequiredError{Reason: "PHASE_AWAITING_FILL"}) {
+		t.Error("ActionRequiredError must not classify as retryable")
+	}
+	if IsRetryable(nil) {
+		t.Error("nil must not classify as retryable")
 	}
 }
 

@@ -66,7 +66,7 @@ func WireRetryTaskIntoState(state *CommandState, retryTaskID, predecessorTaskID,
 		state.RetryLineage[retryTaskID] = predecessorTaskID
 	}
 
-	state.TaskStates[retryTaskID] = StatusPlanned
+	state.SetTaskState(retryTaskID, StatusPlanned, now)
 	state.UpdatedAt = now
 	return membered
 }
@@ -79,6 +79,7 @@ func WireRetryTaskIntoState(state *CommandState, retryTaskID, predecessorTaskID,
 // phantom reopen.
 func UnwireRetryTaskFromState(state *CommandState, retryTaskID, predecessorTaskID, now string) {
 	delete(state.TaskStates, retryTaskID)
+	delete(state.TaskStatusChangedAt, retryTaskID)
 	delete(state.TaskDependencies, retryTaskID)
 	delete(state.RetryLineage, retryTaskID)
 

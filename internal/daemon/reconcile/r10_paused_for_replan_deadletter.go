@@ -252,7 +252,7 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, resultsForCommand
 				"R10 paused_for_replan_deadletter command=%s task=%s age=%s threshold=%s -> failed "+
 					"(planner did not act within deadletter window — escalating to terminal failure)",
 				commandID, p.taskID, p.age.Round(time.Second), threshold)
-			state.TaskStates[p.taskID] = model.StatusFailed
+			state.SetTaskState(p.taskID, model.StatusFailed, nowStr)
 			modified = true
 			if requiredSet[p.taskID] {
 				requiredTaskEscalated = true
@@ -304,17 +304,27 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, resultsForCommand
 }
 
 // r10ResolveTaskStaleAnchor extracts the timestamp R10 uses to measure "how
-// long has this task been in paused_for_replan?" for a single task. The
-// task's most recent worker result is preferred: it is written before the
-// pause transition and never moves when unrelated tasks touch the state
+// long has this task been in paused_for_replan?" for a single task.
+//
+// The per-task TaskStatusChangedAt stamp is preferred: it records the exact
+// paused_for_replan transition, so the deadletter window neither fires early
+// (the worker-result approximation predated the pause by the verify/repair
+// window, D-F7) nor is deferred by sibling writes.
+//
+// For state files written before TaskStatusChangedAt existed, the task's
+// most recent worker result remains the approximation: it is written before
+// the pause transition and never moves when unrelated tasks touch the state
 // file, so escalation cannot be deferred indefinitely by sibling reconcile
-// writes (the previous command-level state.UpdatedAt anchor reset on every
+// writes (the older command-level state.UpdatedAt anchor reset on every
 // write, letting an active sibling task postpone the deadletter forever).
-// The result timestamp predates the actual pause by the verify/repair
-// window, so escalation fires slightly early rather than late.
-// state.UpdatedAt remains the fallback for tasks with no result on disk.
-// Returns (zero, false) when no parseable anchor exists.
+// state.UpdatedAt remains the last-resort fallback for tasks with no result
+// on disk. Returns (zero, false) when no parseable anchor exists.
 func r10ResolveTaskStaleAnchor(state *model.CommandState, taskID string, resultsForCommand map[string]time.Time) (time.Time, bool) {
+	if stamp, ok := state.TaskStatusChangedAt[taskID]; ok {
+		if t, err := time.Parse(time.RFC3339, stamp); err == nil {
+			return t.UTC(), true
+		}
+	}
 	if t, ok := resultsForCommand[taskID]; ok {
 		return t.UTC(), true
 	}

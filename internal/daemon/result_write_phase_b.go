@@ -107,7 +107,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 								"(applying anyway)",
 							originalTaskID, params.TaskID, params.CommandID, existing, err)
 					}
-					state.TaskStates[originalTaskID] = model.StatusCancelled
+					state.SetTaskState(originalTaskID, model.StatusCancelled, now.UTC().Format(time.RFC3339))
 					h.logFn(LogLevelInfo,
 						"retry_lineage_superseded original_task=%s retry_task=%s command=%s",
 						originalTaskID, params.TaskID, params.CommandID)
@@ -170,7 +170,7 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 	if !ok {
 		// Defensive: validateStateRegistration in Phase A ensures the task is
 		// registered, but we never want to dereference a missing key.
-		state.TaskStates[params.TaskID] = recordedStatus
+		state.SetTaskState(params.TaskID, recordedStatus, h.clock.Now().UTC().Format(time.RFC3339))
 		return false
 	}
 
@@ -204,7 +204,7 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 			// repair_pending forever and R2 kept skipping it ("repair
 			// pipeline owns this slot"), wedging the whole iteration
 			// (Report 2026-05-06 bug-1).
-			state.TaskStates[params.TaskID] = model.StatusCancelled
+			state.SetTaskState(params.TaskID, model.StatusCancelled, h.clock.Now().UTC().Format(time.RFC3339))
 			if state.CancelledReasons == nil {
 				state.CancelledReasons = make(map[string]string)
 			}
@@ -233,12 +233,12 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 		// `* → cancelled` is a universal transition; AdvanceTaskState applies it
 		// directly. Falling back to a direct write keeps the late-after-plan-
 		// terminal coercion path unchanged for the idempotent case as well.
-		state.TaskStates[params.TaskID] = model.StatusCancelled
+		state.SetTaskState(params.TaskID, model.StatusCancelled, h.clock.Now().UTC().Format(time.RFC3339))
 		return false
 	default:
 		// Unexpected status (Phase A only forwards completed/failed/cancelled);
 		// fall back to direct write so we do not silently drop the result.
-		state.TaskStates[params.TaskID] = recordedStatus
+		state.SetTaskState(params.TaskID, recordedStatus, h.clock.Now().UTC().Format(time.RFC3339))
 		return false
 	}
 }
@@ -248,12 +248,12 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 // here would desynchronize result/state; we log at ERROR so the §2.1 state
 // machine violation is visible in audit logs without blocking the worker.
 func (h *ResultWriteAPI) advanceOrForce(state *model.CommandState, params ResultWriteParams, target model.Status) {
-	if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, target); err != nil {
+	if err := model.AdvanceTaskState(&state.TaskTracking, params.TaskID, target, h.clock.Now().UTC().Format(time.RFC3339)); err != nil {
 		h.logFn(LogLevelError,
 			"result_write_advance_failed task=%s command=%s target=%s reason=%v "+
 				"(applying direct write; investigate planner/worker for §2.1 violation)",
 			params.TaskID, params.CommandID, target, err)
-		state.TaskStates[params.TaskID] = target
+		state.SetTaskState(params.TaskID, target, h.clock.Now().UTC().Format(time.RFC3339))
 	}
 }
 
@@ -307,11 +307,12 @@ func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus
 				params.TaskID, params.CommandID, current, nextStatus, reason)
 			return errNoUpdate
 		}
-		if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, nextStatus); err != nil {
+		now := h.clock.Now().UTC().Format(time.RFC3339)
+		if err := model.AdvanceTaskState(&state.TaskTracking, params.TaskID, nextStatus, now); err != nil {
 			return fmt.Errorf("apply verify outcome %s → %s: %w",
 				current, nextStatus, err)
 		}
-		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
 		h.logFn(LogLevelInfo,
 			"verify_outcome_applied task=%s command=%s next=%s reason=%q",
 			params.TaskID, params.CommandID, nextStatus, reason)

@@ -974,14 +974,15 @@ func (h *ResultWriteAPI) cancelSupersededPredecessor(commandID, predecessorID, r
 		if model.IsTerminal(current) {
 			return errNoUpdate
 		}
-		if err := model.AdvanceTaskState(state.TaskStates, predecessorID, model.StatusCancelled); err != nil {
+		now := h.clock.Now().UTC().Format(time.RFC3339)
+		if err := model.AdvanceTaskState(&state.TaskTracking, predecessorID, model.StatusCancelled, now); err != nil {
 			return err
 		}
 		if state.CancelledReasons == nil {
 			state.CancelledReasons = make(map[string]string)
 		}
 		state.CancelledReasons[predecessorID] = reason
-		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
 		return nil
 	})
 }
@@ -1041,10 +1042,11 @@ func (h *ResultWriteAPI) advanceRepairPendingToPausedForReplan(params ResultWrit
 		if state.TaskStates == nil || state.TaskStates[params.TaskID] != model.StatusRepairPending {
 			return errNoUpdate
 		}
-		if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, model.StatusPausedForReplan); err != nil {
+		now := h.clock.Now().UTC().Format(time.RFC3339)
+		if err := model.AdvanceTaskState(&state.TaskTracking, params.TaskID, model.StatusPausedForReplan, now); err != nil {
 			return err
 		}
-		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
 		return nil
 	})
 	h.lockMap.Unlock(cmdLockKey)

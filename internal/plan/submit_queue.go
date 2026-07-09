@@ -256,6 +256,7 @@ func rollbackPhaseFillState(state *model.CommandState, phaseIdx int, tasks []Tas
 		state.OptionalTaskIDs = removeFromSlice(state.OptionalTaskIDs, taskID)
 
 		delete(state.TaskStates, taskID)
+		delete(state.TaskStatusChangedAt, taskID)
 		delete(state.TaskDependencies, taskID)
 	}
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)

@@ -232,7 +232,7 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	canon.UpdatedAt = now
 
 	// --- State registration (in memory) ---
-	state.TaskStates[shadowID] = canonState
+	state.SetTaskState(shadowID, canonState, now)
 	if state.TaskDependencies == nil {
 		state.TaskDependencies = map[string][]string{}
 	}

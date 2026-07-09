@@ -3,25 +3,27 @@ package model
 import "fmt"
 
 // AdvanceTaskState applies the §2.1 task lifecycle progression that takes
-// state[taskID] to target. When the direct transition is permitted by
+// t.TaskStates[taskID] to target. When the direct transition is permitted by
 // ValidateTaskStateTransition, it is applied as-is; otherwise a shortest valid
 // path is computed via BFS over validTaskStateTransitions and each intermediate
-// step is applied in order.
+// step is applied in order. Every applied step goes through SetTaskState so
+// TaskStatusChangedAt stays in lockstep with TaskStates (nowRFC3339 stamps
+// the transition time).
 //
 // The function is purely in-memory: callers are responsible for persisting
-// the mutated map and for providing whatever locking is needed. Universal
-// transitions (`* → paused_for_human`, `* → aborted`) are handled by their
-// direct ValidateTaskStateTransition shortcut and never re-routed through the
-// graph.
+// the mutated tracking struct and for providing whatever locking is needed.
+// Universal transitions (`* → paused_for_human`, `* → aborted`) are handled by
+// their direct ValidateTaskStateTransition shortcut and never re-routed through
+// the graph.
 //
 // This helper is the single entry point that lets callers express logical
 // intent (e.g. "this task is now completed") without having to spell out
 // every intermediate state transition (running → verify_pending → completed).
-func AdvanceTaskState(states map[string]Status, taskID string, target Status) error {
-	if states == nil {
+func AdvanceTaskState(t *TaskTracking, taskID string, target Status, nowRFC3339 string) error {
+	if t == nil || t.TaskStates == nil {
 		return fmt.Errorf("AdvanceTaskState: states map is nil")
 	}
-	current, ok := states[taskID]
+	current, ok := t.TaskStates[taskID]
 	if !ok {
 		return fmt.Errorf("AdvanceTaskState: task %q not registered in states", taskID)
 	}
@@ -35,7 +37,7 @@ func AdvanceTaskState(states map[string]Status, taskID string, target Status) er
 
 	// Direct transition (covers universal `* → paused_for_human` / `* → aborted`).
 	if err := ValidateTaskStateTransition(current, target); err == nil {
-		states[taskID] = target
+		t.SetTaskState(taskID, target, nowRFC3339)
 		return nil
 	}
 
@@ -44,13 +46,13 @@ func AdvanceTaskState(states map[string]Status, taskID string, target Status) er
 		return fmt.Errorf("AdvanceTaskState: %w", err)
 	}
 	for _, next := range path {
-		if err := ValidateTaskStateTransition(states[taskID], next); err != nil {
+		if err := ValidateTaskStateTransition(t.TaskStates[taskID], next); err != nil {
 			// Defensive: BFS only enqueues valid edges, but re-validate so the
 			// universal-transition map shortcut and the graph stay consistent.
 			return fmt.Errorf("AdvanceTaskState: applying %s → %s: %w",
-				states[taskID], next, err)
+				t.TaskStates[taskID], next, err)
 		}
-		states[taskID] = next
+		t.SetTaskState(taskID, next, nowRFC3339)
 	}
 	return nil
 }

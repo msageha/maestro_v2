@@ -263,6 +263,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 
 				for _, taskID := range sp.taskIDs {
 					delete(state.TaskStates, taskID)
+					delete(state.TaskStatusChangedAt, taskID)
 					delete(state.TaskDependencies, taskID)
 					state.RequiredTaskIDs = removeFromSlice(state.RequiredTaskIDs, taskID)
 					state.OptionalTaskIDs = removeFromSlice(state.OptionalTaskIDs, taskID)

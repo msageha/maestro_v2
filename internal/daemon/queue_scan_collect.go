@@ -1023,10 +1023,11 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		}
 
 		cancelledResults = append(cancelledResults, CancelledTaskResult{
-			TaskID:    task.ID,
-			CommandID: task.CommandID,
-			Status:    "cancelled",
-			Reason:    reason,
+			TaskID:     task.ID,
+			CommandID:  task.CommandID,
+			Status:     "cancelled",
+			Reason:     reason,
+			LeaseEpoch: task.LeaseEpoch,
 		})
 	}
 
@@ -1106,10 +1107,11 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		}
 
 		cancelledResults = append(cancelledResults, CancelledTaskResult{
-			TaskID:    task.ID,
-			CommandID: task.CommandID,
-			Status:    "cancelled",
-			Reason:    reason,
+			TaskID:     task.ID,
+			CommandID:  task.CommandID,
+			Status:     "cancelled",
+			Reason:     reason,
+			LeaseEpoch: task.LeaseEpoch,
 		})
 	}
 

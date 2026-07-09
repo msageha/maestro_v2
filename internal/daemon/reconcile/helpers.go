@@ -13,11 +13,16 @@ import (
 )
 
 // terminalResultInfo carries a terminal result's status together with its
-// creation timestamp so queue reconciliation can fence out results that
-// predate the queue row's current dispatch attempt (see StaleResult).
+// lease epoch and creation timestamp so queue reconciliation can fence out
+// results that predate the queue row's current dispatch attempt (see
+// StaleResult).
 type terminalResultInfo struct {
-	Status    model.Status
-	CreatedAt string
+	Status model.Status
+	// LeaseEpoch is the queue row's lease epoch recorded at result-write
+	// time. 0 means the result predates the field (D-F9); the fence then
+	// falls back to the CreatedAt timestamp comparison.
+	LeaseEpoch int
+	CreatedAt  string
 }
 
 // queueItemAccessor defines how to access and update a queue item for terminal result reconciliation.
@@ -35,10 +40,11 @@ type queueItemAccessor[T any] struct {
 	// StaleResult, when non-nil, reports whether the terminal result predates
 	// the item's current attempt so applying it would clobber a live
 	// re-dispatch. result_write fences its terminal transitions with
-	// status+epoch+owner; the result file does not persist the request's
-	// lease epoch, so the reconcile-side fence compares the result's
-	// CreatedAt against the row's dispatch timestamp instead.
-	StaleResult func(*T, string) bool
+	// status+epoch+owner; the reconcile-side fence compares the result's
+	// persisted lease epoch against the row's current epoch, falling back
+	// to the CreatedAt-vs-dispatch-timestamp comparison for results written
+	// before the epoch was persisted (D-F9).
+	StaleResult func(*T, terminalResultInfo) bool
 }
 
 // reconcileTerminalQueueItems processes queue items, updating those whose terminal result
@@ -70,7 +76,7 @@ func reconcileTerminalQueueItems[T any](
 		// Fencing: a result written before the item's current dispatch belongs
 		// to an earlier attempt. Applying it would terminal-ize a freshly
 		// re-dispatched row and strand the live worker.
-		if accessor.StaleResult != nil && accessor.StaleResult(item, result.CreatedAt) {
+		if accessor.StaleResult != nil && accessor.StaleResult(item, result) {
 			run.Log(core.LogLevelWarn,
 				"%s stale_result_fenced queue=%s id=%s result_status=%s result_created_at=%s "+
 					"(result predates the row's current dispatch; leaving queue row for the live attempt)",
@@ -158,20 +164,29 @@ func taskQueueAccessor() queueItemAccessor[model.Task] {
 			t.LeaseExpiresAt = nil
 			t.UpdatedAt = now
 		},
-		// A result strictly older than the row's in_progress transition was
-		// written by a previous attempt of the same task ID (crash recovery
-		// results always postdate their own dispatch). Same-timestamp results
-		// pass so second-granularity RFC3339 does not fence a legitimate
+		// Epoch fence (D-F9): a result that persisted the lease epoch of the
+		// attempt it belongs to is stale exactly when that epoch is lower
+		// than the row's current epoch — a same-epoch result always applies
+		// (crash-recovery repairs of the same attempt must not be fenced).
+		// Results with no recorded epoch (0, written before the field
+		// existed) fall back to the timestamp fence: a result strictly older
+		// than the row's in_progress transition was written by a previous
+		// attempt of the same task ID (crash recovery results always
+		// postdate their own dispatch). Same-timestamp results pass so
+		// second-granularity RFC3339 does not fence a legitimate
 		// crash-recovery repair.
-		StaleResult: func(t *model.Task, resultCreatedAt string) bool {
-			if t.InProgressAt == nil || resultCreatedAt == "" {
+		StaleResult: func(t *model.Task, result terminalResultInfo) bool {
+			if result.LeaseEpoch > 0 {
+				return result.LeaseEpoch < t.LeaseEpoch
+			}
+			if t.InProgressAt == nil || result.CreatedAt == "" {
 				return false
 			}
 			inProgressAt, err := time.Parse(time.RFC3339, *t.InProgressAt)
 			if err != nil {
 				return false
 			}
-			createdAt, err := time.Parse(time.RFC3339, resultCreatedAt)
+			createdAt, err := time.Parse(time.RFC3339, result.CreatedAt)
 			if err != nil {
 				return false
 			}

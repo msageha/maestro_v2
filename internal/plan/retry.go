@@ -724,10 +724,10 @@ func applyRetryStateChanges(
 	// Set new task state. §2.1: retry tasks enter the lifecycle at `planned`
 	// just like fresh tasks; the retry distinction is captured in
 	// state.RetryLineage above, not by initialising at a different state.
-	state.TaskStates[newTaskID] = model.StatusPlanned
+	state.SetTaskState(newTaskID, model.StatusPlanned, now)
 	state.TaskDependencies[newTaskID] = rc.blockedBy
 	if state.TaskStates[opts.RetryOf] == model.StatusPausedForReplan {
-		state.TaskStates[opts.RetryOf] = model.StatusCancelled
+		state.SetTaskState(opts.RetryOf, model.StatusCancelled, now)
 		if state.CancelledReasons == nil {
 			state.CancelledReasons = make(map[string]string)
 		}

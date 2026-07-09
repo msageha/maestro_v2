@@ -463,7 +463,7 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 		}
 	}
 
-	state.TaskStates[taskID] = newStatus
+	state.SetTaskState(taskID, newStatus, nowUTC())
 
 	if cancelledReason != "" {
 		if state.CancelledReasons == nil {

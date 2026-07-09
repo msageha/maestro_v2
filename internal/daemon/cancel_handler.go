@@ -152,10 +152,11 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		}
 
 		results = append(results, CancelledTaskResult{
-			TaskID:    task.ID,
-			CommandID: commandID,
-			Status:    "cancelled",
-			Reason:    "command_cancel_requested",
+			TaskID:     task.ID,
+			CommandID:  commandID,
+			Status:     "cancelled",
+			Reason:     "command_cancel_requested",
+			LeaseEpoch: task.LeaseEpoch,
 		})
 	}
 
@@ -341,19 +342,21 @@ func (ch *CancelHandler) ApplyCancelMark(task *model.Task, expectedEpoch int) (C
 		}
 	}
 	return CancelledTaskResult{
-		TaskID:    task.ID,
-		CommandID: task.CommandID,
-		Status:    "cancelled",
-		Reason:    "command_cancel_requested",
+		TaskID:     task.ID,
+		CommandID:  task.CommandID,
+		Status:     "cancelled",
+		Reason:     "command_cancel_requested",
+		LeaseEpoch: task.LeaseEpoch,
 	}, true
 }
 
 // CancelledTaskResult represents a synthetic cancelled result entry.
 type CancelledTaskResult struct {
-	TaskID    string
-	CommandID string
-	Status    string
-	Reason    string
+	TaskID     string
+	CommandID  string
+	Status     string
+	Reason     string
+	LeaseEpoch int
 }
 
 // WriteSyntheticResults writes synthetic cancelled results to the results/ directory
@@ -392,6 +395,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 				Summary:                fmt.Sprintf("cancelled: %s", r.Reason),
 				PartialChangesPossible: true,
 				RetrySafe:              false,
+				LeaseEpoch:             r.LeaseEpoch,
 				CreatedAt:              now,
 			})
 		}

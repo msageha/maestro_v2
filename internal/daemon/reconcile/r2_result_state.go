@@ -194,7 +194,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				run.Log(core.LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
 					commandID, re.TaskID, re.Status, currentStatus)
 
-				state.TaskStates[re.TaskID] = re.Status
+				state.SetTaskState(re.TaskID, re.Status, run.Deps.Clock.Now().UTC().Format(time.RFC3339))
 				state.AppliedResultIDs[re.TaskID] = re.ResultID
 				modified = true
 				if re.NeedsVerifyStamp {

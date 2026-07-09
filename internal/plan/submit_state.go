@@ -44,7 +44,7 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 		// running / verify_pending automatically as the task progresses, so
 		// downstream code that targets verify_pending or completed sees the full
 		// §2.1 state path applied without per-step planner orchestration.
-		state.TaskStates[taskID] = model.StatusPlanned
+		state.SetTaskState(taskID, model.StatusPlanned, now)
 
 		if len(t.BlockedBy) > 0 {
 			depIDs := make([]string, 0, len(t.BlockedBy))
@@ -120,7 +120,7 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 				}
 
 				// §2.1: tasks enter the lifecycle at `planned`; see buildCommandState above.
-				state.TaskStates[taskID] = model.StatusPlanned
+				state.SetTaskState(taskID, model.StatusPlanned, now)
 
 				// Convert blocked_by names to IDs
 				if len(t.BlockedBy) > 0 {
@@ -157,7 +157,7 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 	if systemCommitTaskID != nil {
 		state.RequiredTaskIDs = append(state.RequiredTaskIDs, *systemCommitTaskID)
 		// §2.1: __system_commit also enters the lifecycle at `planned`.
-		state.TaskStates[*systemCommitTaskID] = model.StatusPlanned
+		state.SetTaskState(*systemCommitTaskID, model.StatusPlanned, now)
 
 		// Register dependencies: system commit blocks on all concrete-phase tasks
 		depIDs := make([]string, 0, len(cpd.tasks)-1) // exclude __system_commit itself

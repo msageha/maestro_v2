@@ -59,10 +59,17 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 			}
 			// Keep the newest terminal result per task so the stale-result
 			// fence in taskQueueAccessor compares against the latest attempt.
-			if existing, ok := terminalResults[result.TaskID]; ok && existing.CreatedAt >= result.CreatedAt {
-				continue
+			// Lease epoch orders attempts exactly; CreatedAt breaks ties and
+			// orders legacy results with no recorded epoch (D-F9).
+			if existing, ok := terminalResults[result.TaskID]; ok {
+				if existing.LeaseEpoch > result.LeaseEpoch {
+					continue
+				}
+				if existing.LeaseEpoch == result.LeaseEpoch && existing.CreatedAt >= result.CreatedAt {
+					continue
+				}
 			}
-			terminalResults[result.TaskID] = terminalResultInfo{Status: result.Status, CreatedAt: result.CreatedAt}
+			terminalResults[result.TaskID] = terminalResultInfo{Status: result.Status, LeaseEpoch: result.LeaseEpoch, CreatedAt: result.CreatedAt}
 		}
 		if len(terminalResults) == 0 {
 			continue

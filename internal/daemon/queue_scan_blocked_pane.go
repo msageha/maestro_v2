@@ -218,7 +218,7 @@ func (qh *QueueHandler) failTaskBlockedPane(task *model.Task, queueFile, agentID
 	task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 	qh.scanExecutor.scanCounters.LeaseReleases++
 	workerID := workerIDFromPath(queueFile)
-	qh.writeSyntheticBlockedPaneResult(workerID, task.ID, task.CommandID, agentID, blockedFor)
+	qh.writeSyntheticBlockedPaneResult(workerID, task.ID, task.CommandID, agentID, blockedFor, task.LeaseEpoch)
 	if qh.paneActivity != nil {
 		qh.paneActivity.ForgetAgent(agentID)
 	}
@@ -317,7 +317,7 @@ func (qh *QueueHandler) failTaskTerminalError(task *model.Task, queueFile, agent
 	task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 	qh.scanExecutor.scanCounters.LeaseReleases++
 	workerID := workerIDFromPath(queueFile)
-	qh.writeSyntheticTerminalErrorResult(workerID, task.ID, task.CommandID, agentID)
+	qh.writeSyntheticTerminalErrorResult(workerID, task.ID, task.CommandID, agentID, task.LeaseEpoch)
 	if qh.paneActivity != nil {
 		qh.paneActivity.ForgetAgent(agentID)
 	}
@@ -329,7 +329,7 @@ func (qh *QueueHandler) failTaskTerminalError(task *model.Task, queueFile, agent
 // summary names the actual cause space (Claude API / content filter /
 // authentication) and points at the right remediation (rephrase prompt,
 // rotate API key, etc.) so the Planner picks an appropriate replan path.
-func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, commandID, agentID string) {
+func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, commandID, agentID string, leaseEpoch int) {
 	if workerID == "" {
 		qh.log(LogLevelError,
 			"synthetic_terminal_error_result_skipped task=%s command=%s reason=missing_worker_id",
@@ -359,6 +359,7 @@ func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, comm
 			Summary:                fmt.Sprintf(terminalErrorSummaryFmt, agentID),
 			PartialChangesPossible: false,
 			RetrySafe:              true,
+			LeaseEpoch:             leaseEpoch,
 			CreatedAt:              qh.clock.Now().UTC().Format(time.RFC3339),
 		})
 		return nil
@@ -376,7 +377,7 @@ func (qh *QueueHandler) writeSyntheticTerminalErrorResult(workerID, taskID, comm
 // "result:<workerID>" key, same downstream pipeline so R1/R2 reconcilers
 // propagate the terminal status without depending on the worker ever
 // writing its own result (it cannot — its pane is still wedged).
-func (qh *QueueHandler) writeSyntheticBlockedPaneResult(workerID, taskID, commandID, agentID string, blockedFor time.Duration) {
+func (qh *QueueHandler) writeSyntheticBlockedPaneResult(workerID, taskID, commandID, agentID string, blockedFor time.Duration, leaseEpoch int) {
 	if workerID == "" {
 		qh.log(LogLevelError,
 			"synthetic_blocked_pane_result_skipped task=%s command=%s reason=missing_worker_id",
@@ -406,6 +407,7 @@ func (qh *QueueHandler) writeSyntheticBlockedPaneResult(workerID, taskID, comman
 			Summary:                fmt.Sprintf(blockedPaneTimeoutSummaryFmt, agentID, blockedFor.Round(time.Second)),
 			PartialChangesPossible: true,
 			RetrySafe:              false,
+			LeaseEpoch:             leaseEpoch,
 			CreatedAt:              qh.clock.Now().UTC().Format(time.RFC3339),
 		})
 		return nil

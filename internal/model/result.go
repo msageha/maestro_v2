@@ -49,8 +49,16 @@ type TaskResult struct {
 	PartialChangesPossible bool     `yaml:"partial_changes_possible"`
 	RetrySafe              bool     `yaml:"retry_safe"`
 	NotifiableBase         `yaml:",inline"`
-	CreatedAt              string                 `yaml:"created_at"`
-	QualityGateEvaluation  *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`
+	// LeaseEpoch records the queue row's lease epoch at result-write time.
+	// Reconcile fences terminal results against re-dispatched queue rows
+	// with it: a result whose epoch is lower than the row's current epoch
+	// belongs to an earlier attempt and must not terminal-ize the live one
+	// (D-F9). 0 means "written before this field existed" — dispatched rows
+	// always carry epoch >= 1 (lease acquisition increments it), so readers
+	// fall back to the CreatedAt timestamp fence for legacy results.
+	LeaseEpoch            int                    `yaml:"lease_epoch,omitempty"`
+	CreatedAt             string                 `yaml:"created_at"`
+	QualityGateEvaluation *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`
 	// RunOnIntegration / RunOnMain mirror the queue task flags at result-write
 	// time so the result_handler's notify gate can identify entries that must
 	// wait for the daemon-owned verify pipeline before notifying the Planner.

@@ -134,7 +134,7 @@ func Rebuild(opts RebuildOptions) error {
 			slogc().Info("rebuild: skipping task with terminal status", "task_id", taskID, "current_status", string(currentStatus), "target_status", string(lr.status))
 			continue
 		}
-		state.TaskStates[taskID] = lr.status
+		state.SetTaskState(taskID, lr.status, nowUTC())
 		state.AppliedResultIDs[taskID] = lr.resultID
 	}
 
@@ -164,7 +164,7 @@ func Rebuild(opts RebuildOptions) error {
 	for _, taskID := range phantomFailures {
 		slogc().Warn("rebuild: phantom task in state has no queue entry, marking failed",
 			"command_id", opts.CommandID, "task_id", taskID)
-		state.TaskStates[taskID] = model.StatusFailed
+		state.SetTaskState(taskID, model.StatusFailed, nowUTC())
 		if state.CancelledReasons == nil {
 			state.CancelledReasons = make(map[string]string)
 		}

@@ -827,6 +827,7 @@ func reloadPhaseFillState(sm *StateManager, opts SubmitOptions, _ int, fillingSt
 }
 
 func applyPhaseFillTasks(state *model.CommandState, targetPhaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string) error {
+	now := nowUTC()
 	for _, t := range tasks {
 		taskID := nameToID[t.Name]
 		state.Phases[targetPhaseIdx].TaskIDs = append(state.Phases[targetPhaseIdx].TaskIDs, taskID)
@@ -835,7 +836,7 @@ func applyPhaseFillTasks(state *model.CommandState, targetPhaseIdx int, opts Sub
 		} else {
 			state.OptionalTaskIDs = append(state.OptionalTaskIDs, taskID)
 		}
-		state.TaskStates[taskID] = model.StatusPlanned
+		state.SetTaskState(taskID, model.StatusPlanned, now)
 		if len(t.BlockedBy) > 0 {
 			depIDs := make([]string, 0, len(t.BlockedBy))
 			for _, depName := range t.BlockedBy {

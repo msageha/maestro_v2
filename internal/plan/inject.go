@@ -222,7 +222,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 	// §2.1: injected tasks enter the lifecycle at `planned`; AdvanceTaskState
 	// walks them through ready / dispatched / running on dispatch and result.
-	state.TaskStates[newTaskID] = model.StatusPlanned
+	state.SetTaskState(newTaskID, model.StatusPlanned, nowUTC())
 	if len(opts.BlockedBy) > 0 {
 		state.TaskDependencies[newTaskID] = opts.BlockedBy
 	}

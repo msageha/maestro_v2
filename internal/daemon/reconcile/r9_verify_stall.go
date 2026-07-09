@@ -224,7 +224,7 @@ func r9ApplyForCommand(run *Run, statePath, commandID string, resultsForCommand 
 				"R9 verify_pending_stall command=%s task=%s age=%s threshold=%s -> repair_pending",
 				commandID, taskID, age.Round(time.Second), threshold)
 
-			state.TaskStates[taskID] = model.StatusRepairPending
+			state.SetTaskState(taskID, model.StatusRepairPending, now.Format(time.RFC3339))
 			modified = true
 			commandRepairs = append(commandRepairs, Repair{
 				Pattern:   PatternR9,
@@ -487,8 +487,9 @@ func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reas
 		if err != nil || state.TaskStates == nil || state.TaskStates[taskID] != model.StatusRepairPending {
 			return
 		}
-		state.TaskStates[taskID] = model.StatusPausedForReplan
-		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		state.SetTaskState(taskID, model.StatusPausedForReplan, now)
+		state.UpdatedAt = now
 		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 			run.Log(core.LogLevelWarn,
 				"R9 verify_repair_replan_signal_failed command=%s task=%s error=%v",

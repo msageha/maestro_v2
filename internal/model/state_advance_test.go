@@ -2,6 +2,12 @@ package model
 
 import "testing"
 
+const advanceTestNow = "2026-07-09T00:00:00Z"
+
+func trackingWith(states map[string]Status) *TaskTracking {
+	return &TaskTracking{TaskStates: states}
+}
+
 func TestAdvanceTaskState_DirectTransitions(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -21,12 +27,15 @@ func TestAdvanceTaskState_DirectTransitions(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			states := map[string]Status{"t1": tt.current}
-			if err := AdvanceTaskState(states, "t1", tt.target); err != nil {
+			tr := trackingWith(map[string]Status{"t1": tt.current})
+			if err := AdvanceTaskState(tr, "t1", tt.target, advanceTestNow); err != nil {
 				t.Fatalf("AdvanceTaskState(%s → %s): %v", tt.current, tt.target, err)
 			}
-			if got := states["t1"]; got != tt.target {
+			if got := tr.TaskStates["t1"]; got != tt.target {
 				t.Errorf("after advance: got %s, want %s", got, tt.target)
+			}
+			if got := tr.TaskStatusChangedAt["t1"]; got != advanceTestNow {
+				t.Errorf("TaskStatusChangedAt = %q, want %q", got, advanceTestNow)
 			}
 		})
 	}
@@ -61,12 +70,15 @@ func TestAdvanceTaskState_MultiHopPaths(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			states := map[string]Status{"t1": tt.current}
-			if err := AdvanceTaskState(states, "t1", tt.target); err != nil {
+			tr := trackingWith(map[string]Status{"t1": tt.current})
+			if err := AdvanceTaskState(tr, "t1", tt.target, advanceTestNow); err != nil {
 				t.Fatalf("AdvanceTaskState(%s → %s): %v", tt.current, tt.target, err)
 			}
-			if got := states["t1"]; got != tt.final {
+			if got := tr.TaskStates["t1"]; got != tt.final {
 				t.Errorf("after advance: got %s, want %s", got, tt.final)
+			}
+			if got := tr.TaskStatusChangedAt["t1"]; got != advanceTestNow {
+				t.Errorf("TaskStatusChangedAt = %q, want %q", got, advanceTestNow)
 			}
 		})
 	}
@@ -79,26 +91,30 @@ func TestAdvanceTaskState_MultiHopPaths(t *testing.T) {
 // original behaviour while new code that initialises at StatusPlanned gets the
 // §2.1 lifecycle path automatically.
 func TestAdvanceTaskState_LegacyPendingShortestPathPreservesCompat(t *testing.T) {
-	states := map[string]Status{"t1": StatusPending}
-	if err := AdvanceTaskState(states, "t1", StatusVerifyPending); err != nil {
+	tr := trackingWith(map[string]Status{"t1": StatusPending})
+	if err := AdvanceTaskState(tr, "t1", StatusVerifyPending, advanceTestNow); err != nil {
 		t.Fatalf("advance: %v", err)
 	}
 	// Final state is verify_pending; intermediate hops are not observable here,
 	// but the test ensures BFS does not pick the longer pending → planned →
 	// ready → dispatched → running → verify_pending route by accident (which
 	// would still produce the correct final state, but at higher cost).
-	if got := states["t1"]; got != StatusVerifyPending {
+	if got := tr.TaskStates["t1"]; got != StatusVerifyPending {
 		t.Errorf("got %s, want verify_pending", got)
 	}
 }
 
 func TestAdvanceTaskState_Idempotent(t *testing.T) {
-	states := map[string]Status{"t1": StatusCompleted}
-	if err := AdvanceTaskState(states, "t1", StatusCompleted); err != nil {
+	tr := trackingWith(map[string]Status{"t1": StatusCompleted})
+	if err := AdvanceTaskState(tr, "t1", StatusCompleted, advanceTestNow); err != nil {
 		t.Fatalf("idempotent advance to same state should succeed, got: %v", err)
 	}
-	if got := states["t1"]; got != StatusCompleted {
+	if got := tr.TaskStates["t1"]; got != StatusCompleted {
 		t.Errorf("got %s, want %s", got, StatusCompleted)
+	}
+	// No transition happened, so no stamp must be recorded.
+	if got, ok := tr.TaskStatusChangedAt["t1"]; ok {
+		t.Errorf("TaskStatusChangedAt stamped %q on a no-op advance", got)
 	}
 }
 
@@ -116,8 +132,8 @@ func TestAdvanceTaskState_RejectsTerminal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			states := map[string]Status{"t1": tt.current}
-			if err := AdvanceTaskState(states, "t1", tt.target); err == nil {
+			tr := trackingWith(map[string]Status{"t1": tt.current})
+			if err := AdvanceTaskState(tr, "t1", tt.target, advanceTestNow); err == nil {
 				t.Errorf("expected error for terminal %s → %s, got nil", tt.current, tt.target)
 			}
 		})
@@ -125,34 +141,37 @@ func TestAdvanceTaskState_RejectsTerminal(t *testing.T) {
 }
 
 func TestAdvanceTaskState_RejectsMissingTask(t *testing.T) {
-	states := map[string]Status{"t1": StatusInProgress}
-	if err := AdvanceTaskState(states, "missing", StatusVerifyPending); err == nil {
+	tr := trackingWith(map[string]Status{"t1": StatusInProgress})
+	if err := AdvanceTaskState(tr, "missing", StatusVerifyPending, advanceTestNow); err == nil {
 		t.Error("expected error for unknown task ID, got nil")
 	}
 }
 
 func TestAdvanceTaskState_RejectsNilStates(t *testing.T) {
-	if err := AdvanceTaskState(nil, "t1", StatusCompleted); err == nil {
+	if err := AdvanceTaskState(nil, "t1", StatusCompleted, advanceTestNow); err == nil {
+		t.Error("expected error for nil tracking, got nil")
+	}
+	if err := AdvanceTaskState(&TaskTracking{}, "t1", StatusCompleted, advanceTestNow); err == nil {
 		t.Error("expected error for nil states map, got nil")
 	}
 }
 
 func TestAdvanceTaskState_PreservesOtherTasks(t *testing.T) {
-	states := map[string]Status{
+	tr := trackingWith(map[string]Status{
 		"t1": StatusInProgress,
 		"t2": StatusPending,
 		"t3": StatusCompleted,
-	}
-	if err := AdvanceTaskState(states, "t1", StatusCompleted); err != nil {
+	})
+	if err := AdvanceTaskState(tr, "t1", StatusCompleted, advanceTestNow); err != nil {
 		t.Fatalf("advance t1: %v", err)
 	}
-	if states["t2"] != StatusPending {
-		t.Errorf("t2 mutated to %s", states["t2"])
+	if tr.TaskStates["t2"] != StatusPending {
+		t.Errorf("t2 mutated to %s", tr.TaskStates["t2"])
 	}
-	if states["t3"] != StatusCompleted {
-		t.Errorf("t3 mutated to %s", states["t3"])
+	if tr.TaskStates["t3"] != StatusCompleted {
+		t.Errorf("t3 mutated to %s", tr.TaskStates["t3"])
 	}
-	if states["t1"] != StatusCompleted {
-		t.Errorf("t1 = %s, want completed", states["t1"])
+	if tr.TaskStates["t1"] != StatusCompleted {
+		t.Errorf("t1 = %s, want completed", tr.TaskStates["t1"])
 	}
 }

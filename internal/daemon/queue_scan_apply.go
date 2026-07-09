@@ -167,7 +167,7 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							// the loop using the same downstream pipeline as
 							// real worker results.
 							workerID := strings.TrimSuffix(filepath.Base(queueFile), ".yaml")
-							qh.writeSyntheticPreflightResult(workerID, task.ID, task.CommandID, dr.Error.Error())
+							qh.writeSyntheticPreflightResult(workerID, task.ID, task.CommandID, dr.Error.Error(), task.LeaseEpoch)
 							return
 						}
 						// Defensive: in_progress → failed is allowed by the queue
@@ -555,7 +555,7 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 // mutated the in-memory task queue and will flush via FlushQueues; the queue
 // lock is acquired by FlushQueues, never simultaneously with the result lock,
 // matching the pattern in CancelHandler.WriteSyntheticResults.
-func (qh *QueueHandler) writeSyntheticPreflightResult(workerID, taskID, commandID, reason string) {
+func (qh *QueueHandler) writeSyntheticPreflightResult(workerID, taskID, commandID, reason string, leaseEpoch int) {
 	if workerID == "" {
 		qh.log(LogLevelError,
 			"synthetic_preflight_result_skipped task=%s command=%s reason=missing_worker_id",
@@ -585,6 +585,7 @@ func (qh *QueueHandler) writeSyntheticPreflightResult(workerID, taskID, commandI
 			Summary:                fmt.Sprintf("dispatch_blocked_run_on_main_preflight: %s", reason),
 			PartialChangesPossible: false,
 			RetrySafe:              false,
+			LeaseEpoch:             leaseEpoch,
 			CreatedAt:              qh.clock.Now().UTC().Format(time.RFC3339),
 		})
 		return nil

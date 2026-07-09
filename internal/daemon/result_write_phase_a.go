@@ -380,6 +380,7 @@ func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params Resu
 		FilesChanged:           params.FilesChanged,
 		PartialChangesPossible: params.PartialChangesPossible,
 		RetrySafe:              params.RetrySafe,
+		LeaseEpoch:             params.LeaseEpoch,
 		CreatedAt:              now,
 		RunOnIntegration:       runOnIntegration,
 		RunOnMain:              runOnMain,

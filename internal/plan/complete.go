@@ -162,8 +162,9 @@ func autoCancelPausedForReplanIfBlocking(state *model.CommandState) int {
 	if state.CancelledReasons == nil {
 		state.CancelledReasons = make(map[string]string)
 	}
+	now := nowUTC()
 	for _, taskID := range pausedIDs {
-		state.TaskStates[taskID] = model.StatusCancelled
+		state.SetTaskState(taskID, model.StatusCancelled, now)
 		state.CancelledReasons[taskID] = "auto_cancelled_at_plan_complete:paused_for_replan_unblocked"
 	}
 	return len(pausedIDs)

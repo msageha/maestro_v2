@@ -373,7 +373,7 @@ func (qh *QueueHandler) cancelABCandidateStateOnly(commandID, taskID, reason str
 		if state.CancelledReasons == nil {
 			state.CancelledReasons = map[string]string{}
 		}
-		state.TaskStates[taskID] = model.StatusCancelled
+		state.SetTaskState(taskID, model.StatusCancelled, qh.clock.Now().UTC().Format(time.RFC3339))
 		state.CancelledReasons[taskID] = reason
 		state.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 		return nil
@@ -534,7 +534,7 @@ func (qh *QueueHandler) cancelPendingABCandidate(commandID string, c *model.ABCa
 		if state.CancelledReasons == nil {
 			state.CancelledReasons = map[string]string{}
 		}
-		state.TaskStates[c.TaskID] = model.StatusCancelled
+		state.SetTaskState(c.TaskID, model.StatusCancelled, qh.clock.Now().UTC().Format(time.RFC3339))
 		state.CancelledReasons[c.TaskID] = "superseded_by_ab_timeout"
 		state.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 		return nil
@@ -915,11 +915,11 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 			for _, c := range g.Candidates {
 				if c.TaskID == g.CanonicalTaskID {
 					if len(canonicalSupersededReason) > 0 && canonicalSupersededReason[0] != "" {
-						state.TaskStates[c.TaskID] = model.StatusCancelled
+						state.SetTaskState(c.TaskID, model.StatusCancelled, now)
 						state.CancelledReasons[c.TaskID] = canonicalSupersededReason[0]
 					}
 				} else {
-					state.TaskStates[c.TaskID] = model.StatusCancelled
+					state.SetTaskState(c.TaskID, model.StatusCancelled, now)
 					state.CancelledReasons[c.TaskID] = "superseded_by_ab_degraded"
 				}
 			}
@@ -935,13 +935,13 @@ func (qh *QueueHandler) resolveABGroup(commandID, groupID, winnerTaskID string, 
 				// completion would wait forever for a re-execution that
 				// never comes.
 				model.WireRetryTaskIntoState(state, winnerTaskID, g.CanonicalTaskID, now)
-				state.TaskStates[winnerTaskID] = model.StatusCompleted
-				state.TaskStates[g.CanonicalTaskID] = model.StatusCancelled
+				state.SetTaskState(winnerTaskID, model.StatusCompleted, now)
+				state.SetTaskState(g.CanonicalTaskID, model.StatusCancelled, now)
 				state.CancelledReasons[g.CanonicalTaskID] = "superseded_by_ab_winner:" + winnerTaskID
 			}
 			for _, c := range g.Candidates {
 				if c.TaskID != winnerTaskID && state.TaskStates[c.TaskID] != model.StatusCancelled {
-					state.TaskStates[c.TaskID] = model.StatusCancelled
+					state.SetTaskState(c.TaskID, model.StatusCancelled, now)
 					state.CancelledReasons[c.TaskID] = "superseded_by_ab_loser"
 				}
 			}

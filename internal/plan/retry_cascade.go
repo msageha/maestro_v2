@@ -205,7 +205,7 @@ func updateTaskStateForCascade(state *model.CommandState, cancelledTaskID, newTa
 	state.RetryLineage[newTaskID] = cancelledTaskID
 	rewriteDependencies(state, cancelledTaskID, newTaskID)
 	// §2.1: cascade-retry tasks enter the lifecycle at `planned`.
-	state.TaskStates[newTaskID] = model.StatusPlanned
+	state.SetTaskState(newTaskID, model.StatusPlanned, nowUTC())
 	state.TaskDependencies[newTaskID] = newDeps
 
 	// Add to phase

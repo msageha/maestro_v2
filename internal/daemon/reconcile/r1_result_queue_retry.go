@@ -160,10 +160,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 				})
 
 			case actionMaxRetriesFailed:
-				if state.TaskStates == nil {
-					state.TaskStates = make(map[string]model.Status)
-				}
-				state.TaskStates[r.entry.taskID] = model.StatusDeadLetter
+				state.SetTaskState(r.entry.taskID, model.StatusDeadLetter, run.Deps.Clock.Now().UTC().Format(time.RFC3339))
 				delete(state.RetryEnqueueFailed, r.entry.taskID)
 				modified = true
 
@@ -188,10 +185,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 				})
 
 			case actionNoOriginalFailed:
-				if state.TaskStates == nil {
-					state.TaskStates = make(map[string]model.Status)
-				}
-				state.TaskStates[r.entry.taskID] = model.StatusFailed
+				state.SetTaskState(r.entry.taskID, model.StatusFailed, run.Deps.Clock.Now().UTC().Format(time.RFC3339))
 				delete(state.RetryEnqueueFailed, r.entry.taskID)
 				modified = true
 				repairs = append(repairs, Repair{

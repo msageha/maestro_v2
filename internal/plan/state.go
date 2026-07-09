@@ -219,6 +219,17 @@ func (e *retryableError) Unwrap() error {
 	return e.Err
 }
 
+// IsRetryable reports whether err — as returned by CanComplete or Complete —
+// wraps this package's retryableError: a transient condition (phase mid-fill,
+// unresolved A/B selection, merge-gate lag) that resolves on a following
+// daemon scan without operator action. Exported so daemon-side reconcile
+// rules can classify evaluator failures directly instead of re-deriving the
+// transient conditions structurally from the state snapshot (D-F2).
+func IsRetryable(err error) bool {
+	var re *retryableError
+	return errors.As(err, &re)
+}
+
 // CanComplete checks whether a command can transition to a terminal status.
 // Returns the derived PlanStatus or an error if the command is not ready.
 func CanComplete(state *model.CommandState) (model.PlanStatus, error) {

@@ -159,7 +159,7 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 		}
 
 		// Post-processing: update state + synthetic result
-		dlp.taskDeadLetterPostProcess(task.CommandID, task.ID, workerID)
+		dlp.taskDeadLetterPostProcess(task.CommandID, task.ID, workerID, task.LeaseEpoch)
 
 		results = append(results, DeadLetterResult{
 			QueueType: workerID,
@@ -372,7 +372,7 @@ func (dlp *DeadLetterProcessor) bufferDeadLetterOrchestratorNotification(command
 // The state lock is held until the synthetic result is written to prevent a
 // TOCTOU race where Complete() could aggregate results before the synthetic
 // result exists (CR-013).
-func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, workerID string) {
+func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, workerID string, leaseEpoch int) {
 	statePath := filepath.Join(dlp.maestroDir, "state", "commands", commandID+".yaml")
 
 	// Acquire state lock first (held through both state update and result write).
@@ -391,8 +391,8 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 		if model.IsTerminal(state.TaskStates[taskID]) {
 			return errNoUpdate
 		}
-		state.TaskStates[taskID] = model.StatusFailed
 		now := dlp.clock.Now().UTC().Format(time.RFC3339)
+		state.SetTaskState(taskID, model.StatusFailed, now)
 		state.UpdatedAt = now
 		return nil
 	}); err != nil {
@@ -427,12 +427,13 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 
 		now := dlp.clock.Now().UTC().Format(time.RFC3339)
 		rf.Results = append(rf.Results, model.TaskResult{
-			ID:        resID,
-			TaskID:    taskID,
-			CommandID: commandID,
-			Status:    model.StatusFailed,
-			Summary:   "dead-lettered: dispatch retry exhausted",
-			CreatedAt: now,
+			ID:         resID,
+			TaskID:     taskID,
+			CommandID:  commandID,
+			Status:     model.StatusFailed,
+			Summary:    "dead-lettered: dispatch retry exhausted",
+			LeaseEpoch: leaseEpoch,
+			CreatedAt:  now,
 		})
 		return nil
 	}); err != nil {
