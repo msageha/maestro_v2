@@ -50,14 +50,6 @@ priority: 10
 2. **Where**: どこで起きたか（ファイル:行番号、関数名）
 3. **Why**: なぜ起きたか（直接原因を 1 文で）
 
-**例:**
-
-```
-What: "nil pointer dereference" in handler
-Where: internal/auth/handler.go:42 Login()
-Why: GetUser が nil を返すケースで nil チェックなし
-```
-
 ほとんどのエラーは 3 ステップで原因が特定できる。特定できない場合のみ追加の Why を重ねる。
 
 ## 4. エラー報告テンプレート（summary）
@@ -72,18 +64,6 @@ Why: GetUser が nil を返すケースで nil チェックなし
 - Why: <直接原因>
 - 試行した対応: <何をしたか（省略可）>
 [未完了] <完了できなかった項目>
-```
-
-**例:**
-
-```
-[変更理由] UserService に GetByEmail メソッドを追加しようとした
-[注意事項] エラー: ロジック不具合
-- What: コンパイルエラー "cannot use *User as User value"
-- Where: internal/service/user.go:58
-- Why: UserRepository.FindByEmail の戻り値が *User だが interface は User を要求
-- 試行した対応: interface 側の修正を検討したがスコープ外と判断
-[未完了] GetByEmail メソッドの実装
 ```
 
 ## 5. 既知パターンによる高速診断

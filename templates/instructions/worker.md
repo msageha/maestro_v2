@@ -416,18 +416,6 @@ epoch 不一致 / max_runtime / status mismatch は Worker 側のバグではな
 | 推定原因           | 事実と推定を区別して記載する。未検証の仮説は「推定」「未検証」と明示する                   |
 | 次に試すべきこと   | リトライする Worker への引き継ぎ。試して無駄だった経路も対称に記録する（同じ袋小路を防ぐ） |
 
-**例:**
-
-```
-[変更理由] JWT 検証ミドルウェアの実装を試みたが未完了。
-[注意事項]
-- 試行1: jwt-go v4 で実装 → go build 失敗 (exit 1)。"undefined: jwt.ParseWithClaims" (v4 で API 変更)
-- 試行2: golang-jwt/jwt/v5 へ移行 → テスト 3 件失敗。TestExpiredToken が期待と逆の判定
-- 推定原因: config.yaml の auth.token_ttl 未設定でゼロ値 TTL が「常に期限切れ」判定を生む (未検証)
-- 試して無駄だった経路: TTL のハードコードは他テストを壊すため不可
-[未完了] ミドルウェア本体。auth.token_ttl のデフォルト値決定が先行して必要。
-```
-
 exit code は `--exit-code` にも渡す（§Result Write）。この報告の質は、daemon の blocked / リトライ判定と Planner の再計画の入力品質を直接決める。
 
 ---
