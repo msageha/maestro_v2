@@ -302,7 +302,7 @@ func (c Config) validateExperimental(errs *[]error) {
 	if c.ABTest.SelectionTimeoutSec != nil && *c.ABTest.SelectionTimeoutSec < 0 {
 		*errs = append(*errs, fmt.Errorf("ab_test.selection_timeout_sec: must be >= 0"))
 	}
-	if c.ABTest.JudgeModels != nil && len(c.ABTest.JudgeModels) == 1 {
+	if len(c.ABTest.JudgeModels) == 1 {
 		*errs = append(*errs, fmt.Errorf("ab_test.judge_models: needs 0 (disable) or >= 2 entries (the agree/disagree protocol takes two votes)"))
 	}
 	seenJudges := map[string]bool{}
@@ -322,7 +322,7 @@ func (c Config) validateExperimental(errs *[]error) {
 			continue
 		}
 		if _, err := filepath.Match(p, "probe"); err != nil {
-			*errs = append(*errs, fmt.Errorf("ab_test.cross_test_patterns: %q is not a valid glob: %v", p, err))
+			*errs = append(*errs, fmt.Errorf("ab_test.cross_test_patterns: %q is not a valid glob: %w", p, err))
 		}
 	}
 

@@ -43,7 +43,7 @@ type DashboardEvent struct {
 	IsWarning bool
 }
 
-// DashboardData contains all data needed to render the dashboard
+// ABRaceInfo describes an in-flight or resolved A/B candidate-selection race for the dashboard.
 type ABRaceInfo struct {
 	CommandID string
 	GroupID   string
@@ -54,6 +54,7 @@ type ABRaceInfo struct {
 	unresolved bool   // sort key: active races first
 }
 
+// DashboardData contains all data needed to render the dashboard
 type DashboardData struct {
 	ABRaces []ABRaceInfo
 

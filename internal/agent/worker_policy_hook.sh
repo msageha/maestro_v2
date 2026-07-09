@@ -117,7 +117,7 @@ deny() {
 # without an approval prompt. Reached only after every maestro deny rule has
 # passed. See the decision-model note above for why this is necessary.
 allow() {
-  jq -nc --arg role "$role" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"maestro " + $role + " policy: no control-plane violation or role-scoped boundary violation"}}'
+  jq -nc --arg role "$role" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":("maestro " + $role + " policy: no control-plane violation or role-scoped boundary violation")}}'
   exit 0
 }
 

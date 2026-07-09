@@ -13,8 +13,6 @@ import (
 	yaml "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/events"
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -506,7 +504,7 @@ func (f *DashboardFormatter) collectABRaces(data *DashboardData) {
 			continue
 		}
 		var cs model.CommandState
-		if err := yamlv3.Unmarshal(raw, &cs); err != nil {
+		if err := yaml.Unmarshal(raw, &cs); err != nil {
 			continue
 		}
 		for gid, g := range cs.CandidateGroups {

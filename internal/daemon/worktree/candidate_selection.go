@@ -580,7 +580,7 @@ func (wm *Manager) overlayOpponentTests(intPath, opponentBranch string, files []
 			continue
 		}
 		full := filepath.Join(intPath, filepath.FromSlash(f))
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(full), 0o750); err != nil {
 			continue
 		}
 		if err := os.WriteFile(full, []byte(content), 0o644); err != nil { //nolint:gosec // test files inside the managed worktree

@@ -162,8 +162,6 @@ type MergeConflict struct {
 	TheirsRef     string   `yaml:"theirs_ref,omitempty"` // worker 側の ref
 }
 
-// WorktreeCommandState holds all worktree state for a single command.
-// Persisted at .maestro/state/worktrees/{command_id}.yaml
 // CandidateWorktree records an A/B candidate-exclusive worktree + branch
 // (docs/design/ab_candidate_selection.md §3). Unlike worker worktrees these
 // are task-scoped and never merged directly: the selection pipeline merges
@@ -185,6 +183,8 @@ type ABSelectionMarker struct {
 	StartedAt string `yaml:"started_at"`
 }
 
+// WorktreeCommandState holds all worktree state for a single command.
+// Persisted at .maestro/state/worktrees/{command_id}.yaml
 type WorktreeCommandState struct {
 	SchemaVersion int              `yaml:"schema_version"`
 	FileType      string           `yaml:"file_type"`
