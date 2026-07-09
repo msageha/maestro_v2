@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -14,9 +15,12 @@ import (
 const version = "2.4.0"
 const maestroDirEnv = "MAESTRO_DIR"
 
-// ExitCodeRetryable is the exit code used when the CLI operation can be retried.
-// This includes daemon-side rejections such as FENCING_REJECT, BACKPRESSURE,
-// MAX_RUNTIME_EXCEEDED, and retryable agent exec errors.
+// ExitCodeRetryable is the exit code used when the CLI operation can be
+// retried. This covers daemon-side BACKPRESSURE rejections (uniform across
+// every daemon-RPC subcommand; see udsCLIError) and retryable agent exec
+// errors. Fencing and max-runtime rejections use the dedicated codes 10-12
+// below; ExitCodeRetryable remains their fallback for unclassifiable
+// fencing responses (see fencingCLIError).
 const ExitCodeRetryable = 2
 
 // ExitCodeSubmitUncertain is returned by `maestro agent exec` when the
@@ -104,13 +108,26 @@ type stringSliceFlag = model.StringSlice
 // modeSetter implements flag.Value as a boolean flag that sets a shared string variable.
 // Used for shorthand mode flags (e.g., --interrupt sets mode to "interrupt").
 // Since flag.FlagSet processes args left to right, argv-order precedence is preserved.
+// An explicit `--flag=false` is a no-op rather than the inverse footgun of
+// still selecting the mode.
 type modeSetter struct {
 	target *string
 	val    string
 }
 
-func (m *modeSetter) String() string   { return "" }
-func (m *modeSetter) Set(string) error { *m.target = m.val; return nil }
+func (m *modeSetter) String() string { return "" }
+
+func (m *modeSetter) Set(s string) error {
+	v, err := strconv.ParseBool(s)
+	if err != nil {
+		return fmt.Errorf("invalid boolean value %q", s)
+	}
+	if v {
+		*m.target = m.val
+	}
+	return nil
+}
+
 func (m *modeSetter) IsBoolFlag() bool { return true }
 
 func main() {
@@ -186,6 +203,9 @@ func (a *cliApp) run(args []string) int {
 	}
 
 	if err != nil {
+		if errors.Is(err, errHelpRequested) {
+			return 0
+		}
 		var ce *CLIError
 		if errors.As(err, &ce) {
 			if !ce.Silent {
@@ -253,6 +273,15 @@ func requireMaestroDir(cmd string) (string, error) {
 	return dir, nil
 }
 
+// printUsage prints the top-level command listing.
+//
+// Exposure policy: every subcommand that agents (Planner / Orchestrator /
+// Worker) or operators are expected to invoke is listed here. The single
+// intentional omission is `plan unquarantine`, an operator-only backstop
+// kept out of agent-visible help (see runPlanUnquarantine in
+// cmd_plan_ops.go for the rationale); runPlan's own usage line still
+// enumerates it so a mistyped plan subcommand shows the complete dispatch
+// table.
 func printUsage() {
 	fmt.Fprintf(os.Stderr, `maestro %s — Multi-agent orchestration system
 
@@ -270,10 +299,13 @@ Agent Commands (CLI → Daemon):
   result write <reporter> [options] Write result
   plan submit [options]            Submit task plan
   plan complete [options]          Report command completion (--summary <text> | --summary-file <path>)
+  plan add-task [options]          Inject a task into an active plan (--worker-id <id> targets a specific worker, e.g. for merge_conflict resolution)
   plan add-retry-task [options]    Replace failed task
   plan request-cancel [options]    Request cancellation
   plan rebuild [options]           Rebuild state from results
   plan recover [options]           Auto-select worktree recovery action
+  plan resume-merge [options]      Re-enable merge attempts after conflict resolution
+  plan retry-publish [options]     Retry publish-to-base after failure/cooldown
   plan resolve-conflict [options]  Clear a publish-blocking commit_failed worker (NOT for phase merge_conflict — for those, use plan add-task)
   verify write [options]           Write command-scoped verify config
 
@@ -284,7 +316,7 @@ Internal:
   task heartbeat    Send heartbeat for an active task
 
 Skill Management:
-  skill list                  List registered skills
+  skill list --role <role>    List registered skills for a role
   skill candidates [--status] List skill candidates
   skill approve <id> [--name] Approve a skill candidate
   skill reject <id>           Reject a skill candidate

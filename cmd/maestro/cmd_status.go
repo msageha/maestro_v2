@@ -55,11 +55,7 @@ func (a *cliApp) runDashboard(args []string) error {
 	}
 
 	if !resp.Success {
-		msg := "unknown error"
-		if resp.Error != nil {
-			msg = resp.Error.Message
-		}
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro dashboard: %s", msg)}
+		return udsCLIError("maestro dashboard", resp)
 	}
 
 	var result map[string]string

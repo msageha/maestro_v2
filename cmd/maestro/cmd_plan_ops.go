@@ -50,8 +50,7 @@ func (a *cliApp) runPlanRequestCancel(args []string) error {
 	}
 
 	if !resp.Success {
-		code, msg := udsErrorInfo(resp)
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: [%s] %s", code, msg)}
+		return udsCLIError("maestro plan request-cancel", resp)
 	}
 
 	fmt.Printf("cancel requested for command %s\n", commandID)

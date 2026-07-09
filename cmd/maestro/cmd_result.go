@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -57,7 +58,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 	// ため、--status failed の場合は worker が必ずこの値を渡すこと。
 	cmd.IntVar(&exitCode, "exit-code", -1, "Worker process exit code (required for failed status to drive auto-retry)")
 
-	cmd.AddCheck("--task-id, --command-id, --lease-epoch, and --status are required", func() bool {
+	cmd.AddCheck("--task-id, --command-id, --lease-epoch (>= 0), and --status are required", func() bool {
 		return taskID != "" && commandID != "" && resultStatus != "" && leaseEpoch >= 0
 	})
 
@@ -71,6 +72,16 @@ func (a *cliApp) runResultWrite(args []string) error {
 	cmd.AddCheck("--exit-code is required when --status=failed", func() bool {
 		return resultStatus != "failed" || exitCode >= 0
 	})
+
+	if strings.HasPrefix(reporter, "-") {
+		// A flag in the reporter position means the positional argument was
+		// forgotten; parsing args[1:] as-is would consume the flag name as
+		// the reporter and blame an unrelated token. -h/--help still works.
+		if reporter == "-h" || reporter == "--help" {
+			return cmd.Parse(args)
+		}
+		return cmd.UsageErrorf("missing reporter — the first argument must be the reporter agent ID, got flag %q", reporter)
+	}
 
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
@@ -105,10 +116,14 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return cmd.Errorf("%v", err)
 	}
 
-	// Validate and truncate individual entries for repeatable flags.
+	// Validate and truncate individual entries for repeatable flags. File
+	// paths are rejected instead of truncated: a truncated path would point
+	// the daemon at a file that does not exist.
 	truncateEntries("--learnings", learnings, model.DefaultMaxEntryContentBytes)
 	truncateEntries("--skill-candidates", skillCandidates, model.DefaultMaxEntryContentBytes)
-	truncateEntries("--files-changed", filesChanged, model.DefaultMaxEntryContentBytes)
+	if err := rejectOversizedEntries("--files-changed", filesChanged, model.DefaultMaxEntryContentBytes); err != nil {
+		return cmd.Errorf("%v", err)
+	}
 
 	maestroDir, err := requireMaestroDir("result write")
 	if err != nil {
@@ -155,8 +170,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 		if exit := classifyFencingExitCode(resp); exit != 0 {
 			return fencingCLIError(resp, false, "maestro result write")
 		}
-		code, msg := udsErrorInfo(resp)
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
+		return udsCLIError("maestro result write", resp)
 	}
 
 	return printJSONResponse(resp.Data, "result write")
@@ -165,7 +179,9 @@ func (a *cliApp) runResultWrite(args []string) error {
 // truncateEntries checks each entry in entries against maxBytes and truncates
 // oversized entries in place with a warning log. This is a graceful approach:
 // oversized entries are truncated rather than rejected, allowing the command
-// to proceed while alerting operators via logs.
+// to proceed while alerting operators via logs. Truncation respects UTF-8
+// rune boundaries so multibyte content (e.g. Japanese learnings) is never
+// cut mid-rune into invalid UTF-8.
 func truncateEntries(flag string, entries stringSliceFlag, maxBytes int) {
 	for i, entry := range entries {
 		if len(entry) > maxBytes {
@@ -175,9 +191,34 @@ func truncateEntries(flag string, entries stringSliceFlag, maxBytes int) {
 				"original_bytes", len(entry),
 				"max_bytes", maxBytes,
 			)
-			entries[i] = entry[:maxBytes]
+			entries[i] = truncateAtRuneBoundary(entry, maxBytes)
 		}
 	}
+}
+
+// truncateAtRuneBoundary returns the longest prefix of s that is at most
+// maxBytes bytes long and does not end mid-rune.
+func truncateAtRuneBoundary(s string, maxBytes int) string {
+	if len(s) <= maxBytes {
+		return s
+	}
+	cut := maxBytes
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut]
+}
+
+// rejectOversizedEntries returns an error when any entry exceeds maxBytes.
+// Used for file-path flags, where truncation would silently produce a path
+// that references a nonexistent file.
+func rejectOversizedEntries(flag string, entries stringSliceFlag, maxBytes int) error {
+	for i, entry := range entries {
+		if len(entry) > maxBytes {
+			return fmt.Errorf("%s entry %d exceeds maximum size of %d bytes (got %d); file paths are not truncated — pass the actual changed path", flag, i, maxBytes, len(entry))
+		}
+	}
+	return nil
 }
 
 // summaryPlaceholderPatterns lists exact-match (case-folded, whitespace-

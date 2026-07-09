@@ -426,10 +426,12 @@ func TestRunPlanAddRetryTask_ValidateID(t *testing.T) {
 			errMsg:  "invalid --retry-of",
 		},
 		{
+			// bloom-level 0 (also the unset sentinel) must report the range
+			// requirement, not a misleading "required flags" message (C-F17).
 			name:    "bloom-level too low",
 			args:    allRequiredFlags(map[string]string{"--bloom-level": "0"}),
 			wantErr: true,
-			errMsg:  "all required flags must be set",
+			errMsg:  "--bloom-level must be between 1 and 6",
 		},
 		{
 			name:    "bloom-level too high",

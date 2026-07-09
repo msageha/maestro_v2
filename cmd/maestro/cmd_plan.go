@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -81,13 +83,21 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 		tasksFile = "-" // default to stdin
 	}
 
-	// Validate non-stdin file path before passing to daemon
+	// Validate non-stdin file path before passing to daemon. The path is
+	// resolved to an absolute one because the daemon opens it from its own
+	// working directory (wherever `maestro up` ran), not from this CLI's —
+	// a relative path like ./tasks.yaml from a Planner worktree would
+	// otherwise fail with a not-found error the agent cannot self-correct.
 	if tasksFile != "-" && tasksFile != "/dev/stdin" {
 		cleaned, err := validate.FilePath(tasksFile)
 		if err != nil {
 			return fmt.Errorf("maestro plan submit: invalid tasks file: %w", err)
 		}
-		tasksFile = cleaned
+		abs, err := filepath.Abs(cleaned)
+		if err != nil {
+			return fmt.Errorf("maestro plan submit: resolve tasks file path: %w", err)
+		}
+		tasksFile = abs
 	}
 
 	maestroDir, err := requireMaestroDir("plan submit")
@@ -104,12 +114,15 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 		"dry_run":    dryRun,
 	}
 	if tasksFile == "-" || tasksFile == "/dev/stdin" {
-		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(model.DefaultMaxYAMLFileBytes)+1))
+		if isStdinTerminal() {
+			return &CLIError{Code: 1, Msg: "maestro plan submit: stdin is a terminal and no tasks input was piped; pass --tasks-file <path> or pipe the tasks YAML into stdin"}
+		}
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(maxInlineUDSPayloadBytes)+1))
 		if err != nil {
 			return fmt.Errorf("maestro plan submit: read stdin: %w", err)
 		}
-		if len(data) > model.DefaultMaxYAMLFileBytes {
-			return fmt.Errorf("maestro plan submit: stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
+		if len(data) > maxInlineUDSPayloadBytes {
+			return fmt.Errorf("maestro plan submit: stdin input exceeds the %d-byte inline limit (UDS frame cap); write the YAML to a file and pass --tasks-file <path> so the daemon reads it directly", maxInlineUDSPayloadBytes)
 		}
 		dataMap["tasks_data"] = string(data)
 	} else {
@@ -212,21 +225,34 @@ func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[strin
 	client.SetTimeout(timeout)
 	resp, err := client.SendCommandContext(ctx, "plan", params)
 	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("maestro %s: timed out after %v waiting for daemon response (the daemon may be busy with a scan cycle — consider retrying): %w", cmd, timeout, err)
-		}
-		return fmt.Errorf("maestro %s: %w", cmd, err)
+		return planSendError(cmd, ctx.Err(), err, timeout)
 	}
 
 	if !resp.Success {
 		code, msg := udsErrorInfo(resp)
 		if code == uds.ErrCodeValidation || code == uds.ErrCodeActionRequired {
 			// Validation messages may have custom formatting; sanitize to prevent terminal injection
-			fmt.Fprint(os.Stderr, sanitizeForTerminal(msg))
+			fmt.Fprintf(os.Stderr, "maestro %s: %s\n", cmd, sanitizeForTerminal(msg))
 			return &CLIError{Code: 1, Silent: true}
 		}
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro %s: [%s] %s", cmd, code, msg)}
+		return udsCLIError("maestro "+cmd, resp)
 	}
 
 	return printJSONResponse(resp.Data, cmd)
+}
+
+// planSendError classifies a failed plan RPC by the context state at the
+// time of failure: a deadline expiry is reported as a timeout (retry
+// guidance), a signal-driven cancellation as an interrupt (the previous
+// behaviour reported Ctrl-C as "timed out", pointing operators at the wrong
+// diagnosis), and everything else as a plain transport error.
+func planSendError(cmd string, ctxErr, sendErr error, timeout time.Duration) error {
+	switch {
+	case errors.Is(ctxErr, context.DeadlineExceeded):
+		return fmt.Errorf("maestro %s: timed out after %v waiting for daemon response (the daemon may be busy with a scan cycle — consider retrying): %w", cmd, timeout, sendErr)
+	case ctxErr != nil:
+		return fmt.Errorf("maestro %s: canceled by interrupt signal while waiting for daemon response: %w", cmd, sendErr)
+	default:
+		return fmt.Errorf("maestro %s: %w", cmd, sendErr)
+	}
 }

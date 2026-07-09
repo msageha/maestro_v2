@@ -21,12 +21,15 @@ func (a *cliApp) runTask(args []string) error {
 
 // runTaskHeartbeat sends a heartbeat for an active task via UDS.
 func (a *cliApp) runTaskHeartbeat(args []string) error {
-	cmd := NewCommand("maestro task heartbeat", "maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>")
+	cmd := NewCommand("maestro task heartbeat", "maestro task heartbeat --task-id <id> --worker-id <id> (--epoch <n> | --lease-epoch <n>)")
 	var taskID, workerID string
 	var epoch int
 	cmd.RequiredString(&taskID, "task-id", "Task ID to send heartbeat for")
 	cmd.RequiredString(&workerID, "worker-id", "Worker ID that owns the task")
 	cmd.RequiredInt(&epoch, "epoch", -1, "Lease epoch number for fencing")
+	// Alias so the same concept has the same spelling as
+	// `result write --lease-epoch`; both flags share the target variable.
+	cmd.IntVar(&epoch, "lease-epoch", -1, "Alias for --epoch")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -68,7 +71,7 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 				silent := exit == ExitCodeMaxRuntimeExceeded
 				return fencingCLIError(resp, silent, "maestro task heartbeat")
 			}
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: [%s] %s", resp.Error.Code, resp.Error.Message)}
+			return udsCLIError("maestro task heartbeat", resp)
 		}
 		return &CLIError{Code: 1, Msg: "maestro task heartbeat: heartbeat failed"}
 	}

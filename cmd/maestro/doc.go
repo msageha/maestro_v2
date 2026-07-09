@@ -9,8 +9,9 @@
 //   - status: Displays formation and command status.
 //   - queue: Reads and writes agent queue entries (CLI-to-daemon IPC).
 //   - result: Reports task execution results from workers.
-//   - plan: Submits task plans, reports completion, adds retry tasks, requests
-//     cancellation, and rebuilds state from results.
+//   - plan: Submits task plans, reports completion, adds retry tasks, injects
+//     tasks into active plans (add-task), requests cancellation, and rebuilds
+//     state from results.
 //   - agent: Launches and communicates with agents in tmux panes.
 //   - worker: Queries idle worker status.
 //   - task: Manages task heartbeats.

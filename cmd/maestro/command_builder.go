@@ -6,7 +6,15 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 )
+
+// errHelpRequested signals that the user explicitly asked for help via
+// -h/--help. The help text has already been written to stdout by the time
+// this error is returned; run() maps it to exit code 0 (POSIX convention:
+// an explicit help request is not a failure), unlike usage errors from bad
+// flags, which keep exiting non-zero.
+var errHelpRequested = errors.New("help requested")
 
 // newFlagSet creates a flag.FlagSet that suppresses default output (errors are handled by callers).
 func newFlagSet(name string) *flag.FlagSet {
@@ -119,6 +127,20 @@ func (b *CommandBuilder) ParsePositional(args []string) error {
 	return nil
 }
 
+// Changed reports whether the named flag was explicitly set on the command
+// line (flag.Visit semantics). This distinguishes an explicit `--flag=false`
+// from the flag simply holding its default value. Only meaningful after
+// Parse/ParsePositional has run.
+func (b *CommandBuilder) Changed(name string) bool {
+	changed := false
+	b.fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			changed = true
+		}
+	})
+	return changed
+}
+
 // NArg returns the number of remaining positional arguments after parsing.
 func (b *CommandBuilder) NArg() int { return b.fs.NArg() }
 
@@ -148,7 +170,10 @@ func (b *CommandBuilder) withUsage(msg string) error {
 	return &CLIError{Code: 1, Msg: fmt.Sprintf("%s: %s\n%s", b.name, msg, b.usage)}
 }
 
-// helpMessage builds a help output with the usage string and flag descriptions.
+// helpMessage writes the usage string and flag descriptions to stdout and
+// returns errHelpRequested so run() exits 0. Explicit -h/--help is a
+// successful operation; only parse/validation failures reuse the usage text
+// with a non-zero exit.
 func (b *CommandBuilder) helpMessage() error {
 	var buf bytes.Buffer
 	b.fs.SetOutput(&buf)
@@ -159,5 +184,6 @@ func (b *CommandBuilder) helpMessage() error {
 	if buf.Len() > 0 {
 		msg += "\n\nFlags:\n" + buf.String()
 	}
-	return &CLIError{Code: 1, Msg: msg}
+	_, _ = fmt.Fprintln(os.Stdout, msg)
+	return errHelpRequested
 }

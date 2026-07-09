@@ -47,17 +47,38 @@ func precheckGitRepo(projectRoot, baseBranch string) error {
 	return nil
 }
 
+// upFlagState captures the parsed `maestro up` flags. boostSet /
+// continuousSet record whether the flag appeared on the command line at
+// all (flag.Visit semantics), so an explicit `--boost=false` /
+// `--continuous=false` is propagated as an override instead of being
+// silently dropped as "flag not given".
+type upFlagState struct {
+	boost, continuous, detach, force bool
+	boostSet, continuousSet          bool
+}
+
+// parseUpFlags parses `maestro up` arguments into an upFlagState.
+func parseUpFlags(args []string) (*upFlagState, error) {
+	cmd := NewCommand("maestro up", "maestro up [--boost[=bool]] [--continuous[=bool]] [--detach|-d] [--force|-f]")
+	st := &upFlagState{}
+	cmd.BoolVar(&st.boost, "boost", false, "Enable boost mode for faster execution (--boost=false to explicitly disable)")
+	cmd.BoolVar(&st.continuous, "continuous", false, "Run in continuous mode (--continuous=false to explicitly disable)")
+	cmd.BoolVar(&st.detach, "detach", false, "Run in background without attaching to tmux")
+	cmd.BoolVar(&st.detach, "d", false, "Shorthand for --detach")
+	cmd.BoolVar(&st.force, "force", false, "Force start even if formation is already running")
+	cmd.BoolVar(&st.force, "f", false, "Shorthand for --force")
+	if err := cmd.Parse(args); err != nil {
+		return nil, err
+	}
+	st.boostSet = cmd.Changed("boost")
+	st.continuousSet = cmd.Changed("continuous")
+	return st, nil
+}
+
 // runUp starts the formation (daemon + agents) and optionally attaches to tmux.
 func runUp(args []string) error {
-	cmd := NewCommand("maestro up", "maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]")
-	var boost, continuous, detach, force bool
-	cmd.BoolVar(&boost, "boost", false, "Enable boost mode for faster execution")
-	cmd.BoolVar(&continuous, "continuous", false, "Run in continuous mode")
-	cmd.BoolVar(&detach, "detach", false, "Run in background without attaching to tmux")
-	cmd.BoolVar(&detach, "d", false, "Shorthand for --detach")
-	cmd.BoolVar(&force, "force", false, "Force start even if formation is already running")
-	cmd.BoolVar(&force, "f", false, "Shorthand for --force")
-	if err := cmd.Parse(args); err != nil {
+	flags, err := parseUpFlags(args)
+	if err != nil {
 		return err
 	}
 
@@ -91,11 +112,11 @@ func runUp(args []string) error {
 	opts := formation.UpOptions{
 		MaestroDir:    maestroDir,
 		Config:        cfg,
-		Boost:         boost,
-		Continuous:    continuous,
-		Force:         force,
-		BoostSet:      boost,
-		ContinuousSet: continuous,
+		Boost:         flags.boost,
+		Continuous:    flags.continuous,
+		Force:         flags.force,
+		BoostSet:      flags.boostSet,
+		ContinuousSet: flags.continuousSet,
 	}
 
 	if err := formation.RunUp(opts); err != nil {
@@ -115,9 +136,9 @@ func runUp(args []string) error {
 		return fmt.Errorf("maestro up: %w", err)
 	}
 
-	printAttachHint(detach)
+	printAttachHint(flags.detach)
 
-	if !detach {
+	if !flags.detach {
 		if os.Getenv("TMUX") != "" {
 			return nil
 		}

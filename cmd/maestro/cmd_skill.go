@@ -127,14 +127,20 @@ func (a *cliApp) runSkillApprove(args []string) error {
 		return &CLIError{Code: 1, Msg: "maestro skill approve: missing candidate-id\nusage: maestro skill approve <candidate-id> [--name <skill-name>]"}
 	}
 
-	candidateID := args[0]
-	if err := validate.ID(candidateID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid candidate-id: %v", err)}
-	}
-
 	cmd := NewCommand("maestro skill approve", "maestro skill approve <candidate-id> [--name <skill-name>]")
 	var skillName string
 	cmd.StringVar(&skillName, "name", "", "Skill name in kebab-case (a-z0-9 and hyphens, 1-64 chars)")
+
+	candidateID := args[0]
+	if strings.HasPrefix(candidateID, "-") {
+		if candidateID == "-h" || candidateID == "--help" {
+			return cmd.Parse(args)
+		}
+		return cmd.UsageErrorf("missing candidate-id — the first argument must be the candidate ID, got flag %q", candidateID)
+	}
+	if err := validate.ID(candidateID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid candidate-id: %v", err)}
+	}
 
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
@@ -159,8 +165,7 @@ func (a *cliApp) runSkillApprove(args []string) error {
 	}
 
 	if !resp.Success {
-		code, msg := udsErrorInfo(resp)
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: [%s] %s", code, msg)}
+		return udsCLIError("maestro skill approve", resp)
 	}
 
 	var result map[string]string
@@ -184,12 +189,19 @@ func (a *cliApp) runSkillReject(args []string) error {
 		return &CLIError{Code: 1, Msg: "maestro skill reject: missing candidate-id\nusage: maestro skill reject <candidate-id>"}
 	}
 
+	cmd := NewCommand("maestro skill reject", "maestro skill reject <candidate-id>")
+
 	candidateID := args[0]
+	if strings.HasPrefix(candidateID, "-") {
+		if candidateID == "-h" || candidateID == "--help" {
+			return cmd.Parse(args)
+		}
+		return cmd.UsageErrorf("missing candidate-id — the first argument must be the candidate ID, got flag %q", candidateID)
+	}
 	if err := validate.ID(candidateID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: invalid candidate-id: %v", err)}
 	}
 
-	cmd := NewCommand("maestro skill reject", "maestro skill reject <candidate-id>")
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -210,8 +222,7 @@ func (a *cliApp) runSkillReject(args []string) error {
 	}
 
 	if !resp.Success {
-		code, msg := udsErrorInfo(resp)
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: [%s] %s", code, msg)}
+		return udsCLIError("maestro skill reject", resp)
 	}
 
 	fmt.Printf("rejected %s\n", candidateID)

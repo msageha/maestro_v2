@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -90,20 +91,20 @@ func buildCancelRequestWriteParams(params map[string]any, commandID, reason stri
 	return nil
 }
 
-// runQueueWrite enqueues a command, task, notification, or cancel-request via UDS.
+// runQueueWrite enqueues a command, notification, or cancel-request via UDS.
 // warnOut is the destination for deprecation warnings.
 func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|notification|cancel-request> [options]"}
 	}
 
 	target := args[0]
 
-	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
+	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|notification|cancel-request> [options]")
 	var writeType, content, commandID, sourceResultID, notificationType, reason string
 	var priority int
 
-	cmd.RequiredString(&writeType, "type", "Entry type: command, task, notification, or cancel-request")
+	cmd.RequiredString(&writeType, "type", "Entry type: command, notification, or cancel-request (task creation is Planner-only via plan submit)")
 	cmd.StringVar(&content, "content", "", "Entry content text")
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.IntVar(&priority, "priority", 0, "Entry priority (higher = more urgent)")
@@ -123,8 +124,19 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level 1-6 (task only)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency, repeatable (task only)")
 	cmd.Var(&constraints, "constraint", "Task constraint, repeatable (task only)")
+	cmd.Var(&constraints, "constraints", "Alias for --constraint (matches plan add-task --constraints)")
 	cmd.Var(&toolsHint, "tools-hint", "Recommended tool hint, repeatable (task only)")
 	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint for task execution (task only)")
+
+	if strings.HasPrefix(target, "-") {
+		// A flag in the target position means the positional argument was
+		// forgotten; parsing args[1:] as-is would misattribute the mistake
+		// (e.g. "unexpected argument: command"). -h/--help still works.
+		if target == "-h" || target == "--help" {
+			return cmd.Parse(args)
+		}
+		return cmd.UsageErrorf("missing target — the first argument must be the target agent, got flag %q", target)
+	}
 
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
@@ -165,7 +177,7 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 			return err
 		}
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|notification|cancel-request> [options]", writeType)}
 	}
 
 	return a.sendQueueWrite(params)
@@ -185,11 +197,7 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 	}
 
 	if !resp.Success {
-		code, msg := udsErrorInfo(resp)
-		if code == "BACKPRESSURE" {
-			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
-		}
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
+		return udsCLIError("maestro queue write", resp)
 	}
 
 	var result map[string]string

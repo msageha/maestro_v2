@@ -519,10 +519,16 @@ func TestRunResultWrite_OversizedLearningTruncated(t *testing.T) {
 	}
 }
 
-func TestRunResultWrite_OversizedFilesChangedTruncated(t *testing.T) {
+// TestRunResultWrite_OversizedFilesChangedRejected pins the C-F13 fix: a
+// file path over the entry limit is rejected outright. Truncating it (the
+// previous behaviour) handed the daemon a path that references a
+// nonexistent file.
+func TestRunResultWrite_OversizedFilesChangedRejected(t *testing.T) {
 	withMaestroDir(t)
+	called := false
 	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			called = true
 			return successResponse(map[string]string{"result_id": "res1"}), nil
 		},
 	})
@@ -533,11 +539,21 @@ func TestRunResultWrite_OversizedFilesChangedTruncated(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "completed",
-		"--summary", "Verified oversized files-changed entries are truncated, not rejected",
+		"--summary", "Verified oversized files-changed entries are rejected, not truncated",
 		"--files-changed", oversized,
 	})
-	if err != nil {
-		t.Fatalf("unexpected error (should truncate, not reject): %v", err)
+	if err == nil {
+		t.Fatal("expected rejection for oversized --files-changed entry")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--files-changed") || !strings.Contains(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected --files-changed size rejection message, got: %s", ce.Msg)
+	}
+	if called {
+		t.Error("daemon must not be contacted when --files-changed is rejected")
 	}
 }
 

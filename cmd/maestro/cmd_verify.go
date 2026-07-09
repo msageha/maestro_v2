@@ -65,17 +65,23 @@ func (a *cliApp) runVerifyWrite(args []string) error {
 		if code == uds.ErrCodeValidation {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro verify write: %s", msg)}
 		}
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro verify write: [%s] %s", code, msg)}
+		return udsCLIError("maestro verify write", resp)
 	}
 	fmt.Println("verify config written")
 	return nil
 }
 
+// readVerifyConfigInput reads the verify config from stdin or a file. Both
+// sources are capped at maxInlineUDSPayloadBytes because the content is
+// sent inline (config_data) in a single UDS frame either way.
 func readVerifyConfigInput(configFile string) ([]byte, error) {
 	if configFile == "" || configFile == "-" || configFile == "/dev/stdin" {
-		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(model.DefaultMaxYAMLFileBytes)+1))
-		if err == nil && len(data) > model.DefaultMaxYAMLFileBytes {
-			return nil, fmt.Errorf("maestro verify write: stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
+		if isStdinTerminal() {
+			return nil, &CLIError{Code: 1, Msg: "maestro verify write: stdin is a terminal and no config input was piped; pass --config-file <path> or pipe the verify YAML into stdin"}
+		}
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(maxInlineUDSPayloadBytes)+1))
+		if err == nil && len(data) > maxInlineUDSPayloadBytes {
+			return nil, fmt.Errorf("maestro verify write: stdin input exceeds the %d-byte inline limit (UDS frame cap)", maxInlineUDSPayloadBytes)
 		}
 		return data, err
 	}
@@ -87,8 +93,8 @@ func readVerifyConfigInput(configFile string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("maestro verify write: stat config file: %w", err)
 	}
-	if info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
-		return nil, fmt.Errorf("maestro verify write: config file exceeds maximum size of %d bytes (got %d)", model.DefaultMaxYAMLFileBytes, info.Size())
+	if info.Size() > int64(maxInlineUDSPayloadBytes) {
+		return nil, fmt.Errorf("maestro verify write: config file exceeds the %d-byte inline limit (UDS frame cap) (got %d)", maxInlineUDSPayloadBytes, info.Size())
 	}
 	data, err := os.ReadFile(cleaned) //nolint:gosec // configFile is validated above and intentionally user-specified
 	if err != nil {

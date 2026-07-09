@@ -42,8 +42,12 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
+	// --bloom-level is intentionally excluded here: the unset sentinel (0) is
+	// also an out-of-range value, so validateTaskParams reports the precise
+	// "--bloom-level must be between 1 and 6" instead of a misleading
+	// "required flags" message for range errors.
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && retryOf != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && retryOf != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
@@ -128,8 +132,10 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
+	// --bloom-level excluded for the same reason as in runPlanAddRetryTask:
+	// range validation in validateTaskParams produces the accurate message.
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && (purpose != "" || purposeFile != "") && (content != "" || contentFile != "") && (acceptanceCriteria != "" || acceptanceCriteriaFile != "") && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
