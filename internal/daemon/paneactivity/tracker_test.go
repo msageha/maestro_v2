@@ -274,6 +274,73 @@ func TestTracker_BareTimerWithoutVerbIsIdle(t *testing.T) {
 	}
 }
 
+// TestTracker_NumericOnlyRateProgressIsActive pins the W-P1 rate-delta
+// signal: a bare transfer tool (wget-style, no verbs, no spinner glyphs)
+// updates its tail purely through numbers, which the liveness
+// normalisation collapses — the normalised tail hash freezes. The raw
+// delta of the rate-marker lines (MB/s + eta) must classify the pane
+// Active instead of releasing the lease mid-transfer.
+func TestTracker_NumericOnlyRateProgressIsActive(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+	t2 := t1.Add(60 * time.Second)
+
+	frame := func(pct, rate, eta string) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		out += "$ wget https://example.com/big.bin\n"
+		out += "big.bin  " + pct + "%[=====>      ]  " + rate + "MB/s  eta " + eta + "\n"
+		return out
+	}
+
+	if v := tr.ObserveVerdict("worker1", frame("45", "3.4", "10s"), time.Minute, t0); v != VerdictUncertain {
+		t.Fatalf("first capture should be Uncertain, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("52", "4.1", "8s"), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("numeric-only rate progress must read Active via the rate-delta signal, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("61", "3.9", "6s"), time.Minute, t2); v != VerdictActive {
+		t.Fatalf("continuing rate progress must remain Active, got %v", v)
+	}
+}
+
+// TestTracker_FrozenRateLineWithTimerChurnIsIdle guards the W-P1 signal's
+// two failure modes at once: a COMPLETED transfer left its final progress
+// line (with rate units) frozen in the tail while a bare timer keeps
+// ticking below it. The rate-marker lines produce no cross-scan delta, so
+// the signal must stay inert — a static rate-unit hint would pin this pane
+// Active forever, and treating the raw timer churn as progress would
+// re-open the hung-pane P0 (Report 2026-05-06).
+func TestTracker_FrozenRateLineWithTimerChurnIsIdle(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+	t2 := t1.Add(60 * time.Second)
+
+	frame := func(timer string) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		out += "big.bin  100%[==========]  3.4MB/s  in 12s\n"
+		out += "elapsed: " + timer + "\n"
+		return out
+	}
+
+	if v := tr.ObserveVerdict("worker1", frame("45s"), time.Minute, t0); v != VerdictUncertain {
+		t.Fatalf("first capture should be Uncertain, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("1m 5s"), time.Minute, t1); v != VerdictIdle {
+		t.Fatalf("frozen rate line + timer churn must read Idle, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("2m 5s"), time.Minute, t2); v != VerdictIdle {
+		t.Fatalf("repeated frozen rate line must remain Idle, got %v", v)
+	}
+}
+
 // TestTracker_JapaneseVerbAnimationIsActive verifies that the
 // daemon-side default hint catches Japanese verb animations
 // (claude-code Japanese-locale UI: "✶ 検証中…", "⎿ 待機中…"). This is

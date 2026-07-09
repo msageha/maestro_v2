@@ -45,8 +45,16 @@ import (
 type Snapshot struct {
 	ContentHash string
 	TailHash    string
-	CapturedAt  time.Time
-	MatchedBusy bool
+	// RateLinesHash covers only the tail lines that carry a transfer /
+	// progress rate marker (MB/s, it/s, ETA …), hashed WITHOUT numeric
+	// normalisation. Tools that report progress purely through numbers
+	// (bare wget/dd/tqdm driven directly in the pane) keep a stable
+	// normalised TailHash — their only cross-scan delta is numeric — so
+	// this hash is the dedicated weak signal for them (W-P1). Empty when
+	// the tail has no rate-marker lines.
+	RateLinesHash string
+	CapturedAt    time.Time
+	MatchedBusy   bool
 }
 
 // activeTailLines is the number of trailing lines used for forward-progress
@@ -464,6 +472,40 @@ var defaultActiveHintRegex = regexp.MustCompile(
 		// the tail signals an active animation.
 		`|[✻✼✽✾✿⏳⏰⌛◐◑◒◓◴◵◶◷⠁⠂⠃⠄⠅⠆⠇⠈⠉⠊⠋⠌⠍⠎⠏]`)
 
+// progressRateLineRegex matches tail lines that carry a transfer / progress
+// rate marker: byte-rate units (KB/s, MiB/s, …), iteration rates (it/s,
+// items/s, tok/s), or an ETA field. Numeric-only progress tools (bare
+// wget/dd/tqdm run directly in the pane, W-P1) update ONLY these numbers,
+// which the liveness normalisation deliberately collapses — so their tail
+// hash freezes and the pane reads Idle even though the tool is mid-transfer.
+//
+// The signal derived from these lines is a CROSS-SCAN DELTA of their raw
+// (un-normalised) text, never a static match — see the rate-delta branch in
+// ObserveVerdict. That shape is what keeps both known failure modes closed:
+//   - a hung agent TUI's timer/counter churn (the 2026-05-06 P0) has no rate
+//     units, so the signal stays inert regardless of how much the tail moves;
+//   - a COMPLETED tool's final progress line ("… 5.2 MB/s" frozen in the
+//     tail, dd's "bytes transferred in … (1.0 MB/s)" summary) no longer
+//     changes, so the delta is zero and the pane correctly reads Idle. A
+//     static activeHint-style match on the same units would pin such panes
+//     Active forever, which is why W-P1 was originally deferred.
+var progressRateLineRegex = regexp.MustCompile(
+	`(?im)^.*(?:` +
+		// Byte / bit rates: 5.2MB/s, 981 KiB/s, 12 Mb/s, 4kB/s.
+		`\d[\d.,]*\s*[KMGTP]?i?[Bb]/s\b` +
+		// Iteration rates: 12.4it/s, 3 items/s, 45 tok/s, 8 tokens/s.
+		`|\d[\d.,]*\s*(?:it|items?|toks?|tokens?)/s\b` +
+		// ETA fields: "ETA 00:12", "eta 3m2s", "ETA: 5s".
+		`|\bETA:?\s+\S` +
+		`).*$`,
+)
+
+// rateLines extracts the tail lines matched by progressRateLineRegex joined
+// with newline, preserving their raw numeric content for delta hashing.
+func rateLines(tail string) string {
+	return strings.Join(progressRateLineRegex.FindAllString(tail, -1), "\n")
+}
+
 // completionSummaryLineRegex matches the static completion-summary line
 // Claude Code renders after a turn finishes — "✻ Cooked for 1m 35s",
 // "✻ Worked for 5m 4s", "✻ Sautéed for 40s" — which then stays on screen
@@ -616,6 +658,9 @@ func (t *Tracker) RecordObservation(agentID, content string, now time.Time) Snap
 		TailHash:    t.hashFunc(normalisedTail),
 		CapturedAt:  now,
 		MatchedBusy: matched,
+	}
+	if rl := rateLines(tail); rl != "" {
+		snap.RateLinesHash = t.hashFunc(rl)
 	}
 	t.mu.Lock()
 	t.snapshots[agentID] = snap
@@ -932,6 +977,10 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 
 	tail := tailLines(content)
 	tailHash := t.hashFunc(normalizeForLiveness(tail))
+	rateLinesHash := ""
+	if rl := rateLines(tail); rl != "" {
+		rateLinesHash = t.hashFunc(rl)
+	}
 	// activeHintMatched is true when the raw tail contains an
 	// always-on activity marker (defaultActiveHintRegex). The operator's
 	// busy_pattern is honoured first if set, but the daemon-side default
@@ -978,6 +1027,18 @@ func (t *Tracker) ObserveVerdict(agentID, content string, minPrevAge time.Durati
 		// progress (output streaming, prompt updating, etc.). Scrollback
 		// churn alone cannot satisfy this branch because the tail hash
 		// only covers the bottom activeTailLines.
+		verdict = VerdictActive
+	case rateLinesHash != "" && prev.RateLinesHash != "" && prev.RateLinesHash != rateLinesHash:
+		// Rate-delta weak signal (W-P1): the tail's transfer/progress-rate
+		// lines (MB/s, it/s, ETA …) changed across scans even though the
+		// numeric-normalised tail hash did not — a tool that reports
+		// progress purely through numbers (bare wget/dd/tqdm in the pane)
+		// is mid-transfer. Scoping the delta to rate-marker lines keeps
+		// the hung-TUI timer churn (2026-05-06 P0) inert — those lines
+		// carry no rate units — and a COMPLETED tool's frozen progress
+		// line produces no delta, so this cannot pin an idle pane Active
+		// the way a static rate-unit hint would. max_in_progress_min
+		// remains the wall-clock back-stop.
 		verdict = VerdictActive
 	default:
 		verdict = VerdictIdle
