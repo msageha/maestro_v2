@@ -657,10 +657,12 @@ func TestHookScript_PlannerRolePolicy(t *testing.T) {
 		t.Errorf("planner Write to .maestro/state should be denied, got: %s", out)
 	}
 
+	// Fix D: planner never mutates files — the role-scoped deny fires
+	// before any path-based rule, so WT001 must not be the reason.
 	outsideWorktree := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":%q,"content":"package foo"}}`, filepath.Join(projectDir, "internal", "foo.go"))
 	out = runHookScriptInDir(t, scriptPath, outsideWorktree, worktreeDir, "planner")
-	if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "WT001") {
-		t.Errorf("planner Write outside fake worktree should skip WT001 and allow, got: %s", out)
+	if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "not permitted for planner/orchestrator") || strings.Contains(out, "WT001") {
+		t.Errorf("planner Write should be denied by the role rule (not WT001), got: %s", out)
 	}
 }
 
@@ -2366,5 +2368,291 @@ func TestHookScript_SBX_RunOnMainMutationDenyStillWinsBeforeMaestroRewrite(t *te
 	}
 	if decoded.HookSpecificOutput.UpdatedInput != nil {
 		t.Fatalf("denied run_on_main mutation must not carry updatedInput, got: %s", out)
+	}
+}
+
+// --- Fix D (T-A1): planner/orchestrator file-mutation tools denied ---
+//
+// The hook's explicit `allow` for non-denied tools OVERRIDES --allowedTools
+// (verified on claude 2.1.187), so without an explicit deny the blanket allow
+// would grant Write/Edit to roles whose allowedTools deliberately omit them.
+func TestHookScript_FixD_PlannerOrchestratorFileMutationDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	inputs := map[string]string{
+		"Write":        `{"tool_name":"Write","tool_input":{"file_path":"/tmp/x","content":"y"}}`,
+		"Edit":         `{"tool_name":"Edit","tool_input":{"file_path":"/tmp/x","old_string":"a","new_string":"b"}}`,
+		"MultiEdit":    `{"tool_name":"MultiEdit","tool_input":{"file_path":"/tmp/x","edits":[{"old_string":"a","new_string":"b"}]}}`,
+		"NotebookEdit": `{"tool_name":"NotebookEdit","tool_input":{"notebook_path":"/tmp/x.ipynb","new_source":"y"}}`,
+	}
+	for _, role := range []string{"planner", "orchestrator"} {
+		for toolName, input := range inputs {
+			t.Run(role+"_"+toolName, func(t *testing.T) {
+				out := runHookScript(t, scriptPath, input, role)
+				if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "not permitted for planner/orchestrator") {
+					t.Errorf("%s %s should be role-denied, got: %s", role, toolName, out)
+				}
+			})
+		}
+	}
+
+	// Worker keeps its file-mutation surface (path rules still apply).
+	workerWrite := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":%q,"content":"y"}}`, filepath.Join(dir, "scratch.txt"))
+	out := runHookScriptInDir(t, scriptPath, workerWrite, dir, "worker")
+	if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "not permitted for planner/orchestrator") {
+		t.Errorf("worker Write must not be hit by the planner/orchestrator role deny, got: %s", out)
+	}
+
+	// Bash for planner/orchestrator is unaffected by the Write/Edit role deny.
+	bashOut := runHookScript(t, scriptPath, makeBashInput("echo hello"), "planner")
+	if !strings.Contains(bashOut, `"permissionDecision":"allow"`) {
+		t.Errorf("planner Bash echo should still be allowed, got: %s", bashOut)
+	}
+}
+
+// --- Fix B (T-A2): maestro lifecycle commands denied for every role ---
+//
+// `maestro down` runs RunDown locally (tmux.KillSession + daemon SIGTERM)
+// with no daemon-side role gate; any agent pane invoking it tears down the
+// running formation. The deny must fire before the rule #6 unsandbox rewrite
+// so a lifecycle call is never allow-rewritten.
+func TestHookScript_FixB_MaestroLifecycleDeniedForAllRoles(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	denyCmds := []string{
+		"maestro down",
+		"maestro up",
+		"maestro daemon",
+		"maestro shutdown",
+		"maestro stop",
+		"maestro down --force",
+		"cd /tmp && maestro down",
+		"echo done; maestro down",
+		"/opt/maestro/bin/maestro down",
+		"env FOO=bar maestro down",
+	}
+	for _, role := range []string{"worker", "planner", "orchestrator"} {
+		for _, cmd := range denyCmds {
+			t.Run(role+"/"+cmd, func(t *testing.T) {
+				out := runHookScript(t, scriptPath, makeBashInput(cmd), role)
+				decoded := decodeHookOutput(t, out)
+				if decoded.HookSpecificOutput.PermissionDecision != "deny" || !strings.Contains(out, "lifecycle command") {
+					t.Errorf("%s %q should be lifecycle-denied, got: %s", role, cmd, out)
+				}
+				if decoded.HookSpecificOutput.UpdatedInput != nil {
+					t.Errorf("%s %q: denied lifecycle command must not be unsandbox-rewritten, got: %s", role, cmd, out)
+				}
+			})
+		}
+	}
+
+	allowCmds := []string{
+		`maestro result write --summary "run maestro down later"`, // lifecycle verb as data
+		"maestro download-report",                                 // word-boundary: down is a prefix only
+		"maestro status",
+	}
+	for _, cmd := range allowCmds {
+		t.Run("allow/"+cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), "worker")
+			if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "lifecycle command") {
+				t.Errorf("%q should not be lifecycle-denied, got: %s", cmd, out)
+			}
+		})
+	}
+}
+
+// --- Fix A (T-A4): prefixed role-env forgery forms denied ---
+//
+// The daemon trusts the env-declared caller role, so rule #1b must catch
+// role-env rewrites in every spelling, including `export VAR=...;` and
+// other prefixed forms the old command-position anchor missed.
+func TestHookScript_FixA_RoleEnvPrefixedForgeryDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Non-control-plane maestro subcommands are used so rule #1 (which runs
+	// first and has its own deny message) does not mask the #1b guard.
+	denyCmds := []string{
+		"export MAESTRO_AGENT_ROLE=cli; maestro down",
+		"export MAESTRO_AGENT_ROLE=cli && maestro version",
+		"export TMUX_PANE=%99; maestro result write --summary x",
+		"readonly MAESTRO_AGENT_ROLE=cli; maestro version",
+		"export -n MAESTRO_AGENT_ROLE; maestro version",
+		"true; MAESTRO_AGENT_ROLE=cli maestro result write --summary x",
+	}
+	for _, cmd := range denyCmds {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), "worker")
+			if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "role-environment manipulation") {
+				t.Errorf("%q should be denied as role-env manipulation, got: %s", cmd, out)
+			}
+		})
+	}
+
+	allowCmds := []string{
+		`maestro result write --summary "MAESTRO_AGENT_ROLE notes"`, // mention as data, no assignment
+		"echo MAESTRO_AGENT_ROLE",                                   // no maestro invocation at all
+	}
+	for _, cmd := range allowCmds {
+		t.Run("allow/"+cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), "worker")
+			if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "role-environment manipulation") {
+				t.Errorf("%q must not trip the role-env guard, got: %s", cmd, out)
+			}
+		})
+	}
+}
+
+// --- S-F1: no-redirect control-plane writers (tee/cp/mv/dd/...) denied ---
+//
+// tee writes its file arguments without `>`, so the redirect-shaped rule #4
+// checks missed `printf x | tee .maestro/config.yaml` and
+// `tee .maestro/state/x < in`. The dedicated verb rule must catch those,
+// including across a pipe.
+func TestHookScript_SF1_NoRedirectControlPlaneWriteDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	denyCmds := []string{
+		"printf x | tee .maestro/config.yaml",
+		"tee .maestro/state/x < input.txt",
+		"echo y | tee -a .maestro/queue/task.yaml",
+		"cp payload .maestro/hooks/worker-policy.sh",
+		"mv evil .maestro/verify.yaml",
+		"dd if=/dev/zero of=.maestro/bin/roles/worker/maestro",
+		"truncate -s0 .maestro/dashboard.md",
+		"cat in | tee /abs/project/.maestro/logs/daemon.log",
+	}
+	for _, cmd := range denyCmds {
+		t.Run(cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), "worker")
+			if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, ".maestro/ control-plane write blocked") {
+				t.Errorf("%q should be denied as control-plane write, got: %s", cmd, out)
+			}
+		})
+	}
+
+	allowCmds := []string{
+		"printf x | tee /tmp/out.txt",
+		"tee build/log.txt < input.txt",
+		`maestro result write --summary "piped to tee .maestro/config.yaml"`, // path as data
+		"cp foo bar/my.maestro/state.txt",                                    // my.maestro is not .maestro
+	}
+	for _, cmd := range allowCmds {
+		t.Run("allow/"+cmd, func(t *testing.T) {
+			out := runHookScript(t, scriptPath, makeBashInput(cmd), "worker")
+			if !strings.Contains(out, `"permissionDecision":"allow"`) || strings.Contains(out, "control-plane write blocked") {
+				t.Errorf("%q must not trip the control-plane verb rule, got: %s", cmd, out)
+			}
+		})
+	}
+}
+
+// --- S-F2: RUN_ON_MAIN redirect forms >| and fd-prefixed denied ---
+//
+// RUN_ON_MAIN is the read-only verification mode; `>|` (noclobber override)
+// and fd-prefixed redirects (`1>`, `2>>`) previously slipped past the
+// redirect regex, and `| tee out` slipped past the verb list.
+func TestHookScript_SF2_RunOnMainRedirectVariantsDenied(t *testing.T) {
+	scriptPath, env := runOnMainBashEnv(t, "1")
+
+	runHook := func(t *testing.T, command string) string {
+		t.Helper()
+		cmd := exec.Command("bash", scriptPath)
+		cmd.Stdin = strings.NewReader(makeBashInput(command))
+		cmd.Env = env
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("hook script failed: %v, output: %s", err, out)
+		}
+		return string(out)
+	}
+
+	denyCmds := []string{
+		"echo x >| out.txt",
+		"echo x 1> out.txt",
+		"echo x 2>> err.log",
+		"echo x &> all.log",
+		"go test ./... | tee test.log",
+		"dd if=/dev/zero of=scratch.bin",
+	}
+	for _, command := range denyCmds {
+		t.Run(command, func(t *testing.T) {
+			out := runHook(t, command)
+			if !strings.Contains(out, `"permissionDecision":"deny"`) || !strings.Contains(out, "RUN_ON_MAIN") {
+				t.Errorf("%q should be RUN_ON_MAIN-denied, got: %s", command, out)
+			}
+		})
+	}
+
+	allowCmds := []string{
+		"go test ./... 2>&1", // fd duplication writes no file
+		"echo msg >&2",       // dup to stderr
+	}
+	for _, command := range allowCmds {
+		t.Run("allow/"+command, func(t *testing.T) {
+			out := runHook(t, command)
+			if strings.Contains(out, "RUN_ON_MAIN") {
+				t.Errorf("%q is read-only and must not be RUN_ON_MAIN-denied, got: %s", command, out)
+			}
+		})
+	}
+}
+
+// --- T-A5 / S-F3: L1 --disallowedTools pattern symmetry ---
+//
+// Read patterns need the **/ form because the Worker CWD is the worktree and
+// project-root reads arrive as absolute paths (T-A5); bin/, hooks/, and
+// verify.yaml must be protected at L1 like they are at L2 (S-F3).
+func TestHookScript_L1_ControlPlanePatternSymmetry(t *testing.T) {
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	want := []string{
+		// T-A5: absolute-path-capable Read forms alongside the relative ones.
+		"Read(.maestro/state/**)", "Read(**/.maestro/state/**)",
+		"Read(.maestro/queue/**)", "Read(**/.maestro/queue/**)",
+		"Read(.maestro/results/**)", "Read(**/.maestro/results/**)",
+		"Read(.maestro/locks/**)", "Read(**/.maestro/locks/**)",
+		"Read(.maestro/logs/**)", "Read(**/.maestro/logs/**)",
+		"Read(.maestro/config.yaml)", "Read(**/.maestro/config.yaml)",
+		"Read(.maestro/dashboard.md)", "Read(**/.maestro/dashboard.md)",
+		// S-F3: policy-enforcement paths protected in both layers.
+		"Read(.maestro/bin/**)", "Read(**/.maestro/bin/**)",
+		"Read(.maestro/hooks/**)", "Read(**/.maestro/hooks/**)",
+		"Read(.maestro/verify.yaml)", "Read(**/.maestro/verify.yaml)",
+		"Edit(**/.maestro/bin/**)", "Write(**/.maestro/bin/**)",
+		"Edit(**/.maestro/hooks/**)", "Write(**/.maestro/hooks/**)",
+		"Edit(**/.maestro/verify.yaml)", "Write(**/.maestro/verify.yaml)",
+	}
+	for _, pattern := range want {
+		if !strings.Contains(joined, pattern) {
+			t.Errorf("worker --disallowedTools should contain %q", pattern)
+		}
 	}
 }

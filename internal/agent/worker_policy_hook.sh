@@ -63,10 +63,18 @@ set -euo pipefail
 #     sandbox for all roles. They connect to the daemon over a Unix
 #     domain socket, and sandbox.network.allowUnixSockets is macOS-only;
 #     running the CLI unsandboxed is the portable macOS/Linux fix.
-#   - planner / orchestrator: only Bash role-environment manipulation
-#     (#1b), git push (#3), and .maestro/ control-plane redirects (#4) are
-#     denied. Bash protected-path writes (#7) are also denied for all roles.
-#     Write/Edit only denies .maestro/ control-plane paths. The
+#   - Maestro lifecycle commands (`maestro down/up/daemon/shutdown/stop`)
+#     are operator-only for every role (#3b): RunDown executes locally
+#     (tmux.KillSession + daemon SIGTERM) with no daemon-side role gate,
+#     so any agent pane invoking it tears down the running formation.
+#   - planner / orchestrator: Bash role-environment manipulation (#1b),
+#     git push (#3), maestro lifecycle commands (#3b), and .maestro/
+#     control-plane redirects (#4) are denied. Bash protected-path writes
+#     (#7) are also denied for all roles. Write/Edit/MultiEdit/NotebookEdit
+#     are denied outright: these roles operate via maestro CLI + Read only,
+#     and because this hook's explicit `allow` OVERRIDES --allowedTools
+#     (verified on claude 2.1.187), the file-mutation tools must be denied
+#     here or the blanket allow silently widens the role surface. The
 #     worker-only maestro subcommand matrix (#1), worktree git deny (#2),
 #     RUN_ON_MAIN (#5), package-manager unsandbox rewrite (#6), and WT001 are
 #     intentionally skipped; the maestro CLI unsandbox rewrite still applies.
@@ -226,7 +234,17 @@ if [ "$tool_name" = "Bash" ]; then
   #     command-position anchoring is deliberately NOT used here. A role-env
   #     rewrite plus any mention of `maestro` is suspicious, including
   #     `sh -c 'maestro ...'` subshell strings.
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(env(\s+[^;|&[:space:]]+)*\s+(-u\s+)?(MAESTRO_AGENT_ROLE|TMUX_PANE)|unset\s+(MAESTRO_AGENT_ROLE|TMUX_PANE)|((MAESTRO_AGENT_ROLE|TMUX_PANE)=))' && \
+  #     The assignment form (`VAR=`) matches ANYWHERE in the command — the
+  #     previous command-position anchor missed prefixed spellings such as
+  #     `export MAESTRO_AGENT_ROLE=cli; maestro ...` (Fix A). Over-matching
+  #     on payloads that merely mention `MAESTRO_AGENT_ROLE=...` as data is
+  #     deliberate: a forged role corrupts the control plane, so false
+  #     positives are preferred over false negatives here. `env -u VAR`,
+  #     `unset VAR`, and `export -n VAR` stay command-position anchored
+  #     (they are plain words otherwise). Residual gap (regex parsing is
+  #     best-effort): value-less attribute tampering like
+  #     `declare +x MAESTRO_AGENT_ROLE` is not caught.
+  if echo "$cmd" | grep -qE '(MAESTRO_AGENT_ROLE|TMUX_PANE)=|(^|;|\||&&)\s*(env(\s+[^;|&[:space:]]+)*\s+(-u\s+)?(MAESTRO_AGENT_ROLE|TMUX_PANE)|(unset|export)\s+(-[A-Za-z]+\s+)*(MAESTRO_AGENT_ROLE|TMUX_PANE))' && \
      echo "$cmd" | grep -qE 'maestro[[:space:]]+'; then
     deny "maestro invocation with role-environment manipulation blocked (do not unset / rewrite MAESTRO_AGENT_ROLE or TMUX_PANE before calling maestro)"
   fi
@@ -253,15 +271,44 @@ if [ "$tool_name" = "Bash" ]; then
     deny "git push blocked for $role (daemon owns publish via merge_publish / publish_completed)"
   fi
 
+  # 3b. Maestro lifecycle commands are operator-only for EVERY role.
+  #     `maestro down` (and up/daemon/shutdown/stop) runs RunDown locally
+  #     (tmux.KillSession + daemon SIGTERM) with no daemon-side role gate,
+  #     so any agent pane invoking it tears down the running formation.
+  #     This rule must sit BEFORE the rule #6 unsandbox rewrite: rule #6
+  #     allow-rewrites plain maestro CLI calls for all roles, and a
+  #     lifecycle call must never reach that branch.
+  if echo "$cmd" | grep -qE "${maestro_cmd_prefix}[[:space:]]+(down|up|daemon|shutdown|stop)([[:space:]]|$)"; then
+    deny "maestro lifecycle command (down/up/daemon/shutdown/stop) is operator-only; no agent role may tear down or restart the running formation"
+  fi
+
   # 4. .maestro/ control plane is daemon-owned. Block command-position
   #    writes (redirects, file-mutating commands targeting .maestro/).
   #    The check uses (^|[;|&]) anchors so a `--summary "wrote .maestro/"`
   #    payload that mentions the path as data does not trip the rule.
-  if echo "$cmd" | grep -qiE '(^|[;|&(])\s*(echo|printf|tee|cat|cp|mv|rsync|install|ln)\s+.*>\s*\.maestro/(state|queue|results|locks|logs|hooks|config\.yaml|dashboard\.md|verify\.yaml)'; then
+  #    `bin` is included: .maestro/bin/roles/<role>/maestro is the role
+  #    wrapper the launcher generates; rewriting it is a role-forgery
+  #    foothold (S-F3).
+  if echo "$cmd" | grep -qiE '(^|[;|&(])\s*(echo|printf|tee|cat|cp|mv|rsync|install|ln)\s+.*>\s*\.maestro/(state|queue|results|locks|logs|hooks|bin|config\.yaml|dashboard\.md|verify\.yaml)'; then
     deny ".maestro/ control-plane write blocked (daemon-owned)"
   fi
-  if echo "$cmd" | grep -qE '(^|[;|&(])\s*[^|]*>\s*\.maestro/(state|queue|results|locks|logs|hooks|config\.yaml|dashboard\.md|verify\.yaml)'; then
+  if echo "$cmd" | grep -qE '(^|[;|&(])\s*[^|]*>\s*\.maestro/(state|queue|results|locks|logs|hooks|bin|config\.yaml|dashboard\.md|verify\.yaml)'; then
     deny ".maestro/ control-plane redirect blocked (daemon-owned)"
+  fi
+  # tee/cp/mv/... write their file arguments WITHOUT any `>` redirection,
+  # so the two redirect-shaped checks above miss
+  # `printf x | tee .maestro/config.yaml`, `tee .maestro/state/x < in`,
+  # and `cp payload .maestro/queue/y` (S-F1). Match the file-writing verbs
+  # at any command position — `|` is in the anchor class, so pipe-fed
+  # invocations across a pipeline are caught — with a control-plane path
+  # anywhere in the argument list (the path may carry a prefix ending in
+  # whitespace, `/` for absolute paths, or `=` for dd's of=). Regex-based
+  # shell parsing stays best-effort: writes laundered through interpreters
+  # (python/perl one-liners), xargs, or variable-expanded paths are NOT
+  # caught here; daemon-side ownership of .maestro/ and the L1
+  # --disallowedTools patterns remain the backstop.
+  if echo "$cmd" | grep -qiE '(^|[;|&(])[[:space:]]*(tee|cp|mv|rsync|install|ln|dd|truncate)[[:space:]]([^;|&<>]*[[:space:]/=])?\.maestro/(state|queue|results|locks|logs|hooks|bin|config\.yaml|dashboard\.md|verify\.yaml)'; then
+    deny ".maestro/ control-plane write blocked (daemon-owned)"
   fi
 
   # 7. Claude Code hard-protects IDE/runtime config directories and prompts
@@ -304,16 +351,25 @@ if [ "$tool_name" = "Bash" ]; then
   #    arguments is not scanned, mirroring the design choice to delegate
   #    generic destructive-command defense to the global hook.
   if [ "$role" = "worker" ] && [ "$run_on_main" = "1" ]; then
-    # Common file-mutating verbs at command position.
-    if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/[A-Za-z0-9_./-]+/)?(cp|mv|rm|mkdir|rmdir|touch|chmod|chown|chgrp|ln|install)\b'; then
+    # Common file-mutating verbs at command position. tee/dd/truncate/rsync
+    # are included because they write their file arguments without any `>`
+    # redirection (`... | tee out.log` would otherwise slip past the
+    # redirection check below).
+    if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/[A-Za-z0-9_./-]+/)?(cp|mv|rm|mkdir|rmdir|touch|chmod|chown|chgrp|ln|install|tee|dd|truncate|rsync)\b'; then
       deny "RUN_ON_MAIN: file-mutating command blocked (read-only verification mode)"
     fi
     # In-place editors.
     if echo "$cmd" | grep -qE '(^|[;|&(])\s*(sed|gsed|perl)\s+(-[a-zA-Z]*i|--in-place)\b'; then
       deny "RUN_ON_MAIN: in-place editor blocked (read-only verification mode)"
     fi
-    # Output redirection (writing to a file).
-    if echo "$cmd" | grep -qE '(^|[^0-9&])>{1,2}[[:space:]]*[A-Za-z0-9_./~$-]'; then
+    # Output redirection (writing to a file). Covers plain `>`/`>>`,
+    # noclobber-override `>|`, fd-prefixed forms (`1>`, `2>> err.log`),
+    # and bash's `&>`/`&>>` both-streams form, while NOT matching pure fd
+    # duplications (`2>&1`, `>&2`), which write no file (S-F2). Residual
+    # gap: the legacy csh-style `>&file` spelling is indistinguishable
+    # from an fd-dup by regex alone and is not caught; writes performed
+    # inside interpreters are likewise out of regex reach.
+    if echo "$cmd" | grep -qE '(^|[^0-9&])[0-9]*>{1,2}\|?[[:space:]]*[A-Za-z0-9_./~$-]|(^|[^&>])&>{1,2}[[:space:]]*[A-Za-z0-9_./~$-]'; then
       deny "RUN_ON_MAIN: output redirection blocked (read-only verification mode)"
     fi
     # Mutating git verbs.
@@ -363,6 +419,15 @@ fi
 # notebook_path. All four mutate files and must obey the same
 # run_on_main / control-plane / worktree-boundary rules.
 if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ] || [ "$tool_name" = "MultiEdit" ] || [ "$tool_name" = "NotebookEdit" ]; then
+  # 0. planner / orchestrator never mutate files directly: their launch
+  #    args restrict --allowedTools to the maestro CLI + Read surface, but
+  #    the explicit `allow` this hook returns for non-denied tools OVERRIDES
+  #    --allowedTools (verified on claude 2.1.187). Without this deny the
+  #    blanket allow would silently grant Write/Edit to both roles.
+  if [ "$role" = "planner" ] || [ "$role" = "orchestrator" ]; then
+    deny "Write/Edit is not permitted for planner/orchestrator (these roles operate via maestro CLI + Read only; the PreToolUse allow must not widen allowedTools)"
+  fi
+
   file_path="$(echo "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // ""')"
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
@@ -372,11 +437,14 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ] || [ "$tool_name" = "
   fi
 
   # 2. .maestro/ control-plane is daemon-owned (absolute and relative paths).
+  #    bin/ holds the launcher-generated role wrappers
+  #    (.maestro/bin/roles/<role>/maestro); rewriting one is a role-forgery
+  #    foothold (S-F3).
   case "$file_path_lower" in
-    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/config.yaml|*/.maestro/dashboard.md|*/.maestro/verify.yaml)
+    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/bin/*|*/.maestro/config.yaml|*/.maestro/dashboard.md|*/.maestro/verify.yaml)
       deny "write to .maestro/ control-plane path blocked (daemon-owned)"
       ;;
-    .maestro/state/*|.maestro/queue/*|.maestro/results/*|.maestro/locks/*|.maestro/hooks/*|.maestro/config.yaml|.maestro/dashboard.md|.maestro/verify.yaml)
+    .maestro/state/*|.maestro/queue/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/hooks/*|.maestro/bin/*|.maestro/config.yaml|.maestro/dashboard.md|.maestro/verify.yaml)
       deny "write to .maestro/ control-plane path blocked (daemon-owned, relative)"
       ;;
   esac

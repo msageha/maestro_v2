@@ -768,13 +768,34 @@ var workerDisallowedTools = []string{
 	// also rejects non-CLI callers (cmd_agent.go guardAgentExecCaller)
 	// and worker_policy_hook.sh denies it at L2.
 	"Bash(maestro agent:*)",
+	// Each control-plane Read is listed in both the relative and the
+	// **/-prefixed form. The Worker's CWD is its worktree, so a Read that
+	// targets the project root arrives as an absolute path the relative
+	// pattern never matches (T-A5); the **/ form mirrors the Edit/Write
+	// entries below. hooks/, bin/, and verify.yaml are included so the L1
+	// list stays symmetric with the L2 hook's protected-path set (S-F3):
+	// .maestro/bin/roles/<role>/maestro is the launcher-generated role
+	// wrapper and .maestro/hooks/ holds this policy hook itself.
 	"Read(.maestro/state/**)",
+	"Read(**/.maestro/state/**)",
 	"Read(.maestro/queue/**)",
+	"Read(**/.maestro/queue/**)",
 	"Read(.maestro/results/**)",
+	"Read(**/.maestro/results/**)",
 	"Read(.maestro/locks/**)",
+	"Read(**/.maestro/locks/**)",
 	"Read(.maestro/logs/**)",
+	"Read(**/.maestro/logs/**)",
+	"Read(.maestro/hooks/**)",
+	"Read(**/.maestro/hooks/**)",
+	"Read(.maestro/bin/**)",
+	"Read(**/.maestro/bin/**)",
 	"Read(.maestro/config.yaml)",
+	"Read(**/.maestro/config.yaml)",
 	"Read(.maestro/dashboard.md)",
+	"Read(**/.maestro/dashboard.md)",
+	"Read(.maestro/verify.yaml)",
+	"Read(**/.maestro/verify.yaml)",
 	// Runtime-protected: .claude / .codex / .gemini own the agent's tool
 	// permissions, hooks, and skills. A Worker that edits these can
 	// effectively re-program itself or sibling Workers; the resulting
@@ -833,6 +854,16 @@ var workerDisallowedTools = []string{
 	"Write(**/.maestro/config.yaml)",
 	"Edit(**/.maestro/dashboard.md)",
 	"Write(**/.maestro/dashboard.md)",
+	// S-F3: hooks/, bin/, and verify.yaml govern policy enforcement itself
+	// (this PreToolUse hook, the role wrapper scripts, the verification
+	// contract). The L2 hook already denies Bash/Write/Edit against them;
+	// list them here too so L1 and L2 protect the same path set.
+	"Edit(**/.maestro/hooks/**)",
+	"Write(**/.maestro/hooks/**)",
+	"Edit(**/.maestro/bin/**)",
+	"Write(**/.maestro/bin/**)",
+	"Edit(**/.maestro/verify.yaml)",
+	"Write(**/.maestro/verify.yaml)",
 }
 
 func appendWorkspaceReadAllowances(args []string, maestroDir, role string) []string {
