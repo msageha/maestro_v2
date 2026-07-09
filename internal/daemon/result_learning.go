@@ -111,7 +111,7 @@ func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string
 	// while workerModelName can resolve to an alias ("opus" under boost,
 	// the "sonnet" fallback) or the raw config spelling ("claude-opus-4-7").
 	// Without the shared normalisation the reward silently missed the arm.
-	modelName := model.ModelFamily(rh.workerModelName(workerID))
+	modelName := model.Family(rh.workerModelName(workerID))
 	if modelName == "" {
 		return
 	}

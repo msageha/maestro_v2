@@ -139,7 +139,7 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 			// AddArm dedups, so several spellings of one family collapse
 			// into a single arm.
 			for _, name := range availableModels {
-				m.BanditSelector.AddArm(model.ModelFamily(name))
+				m.BanditSelector.AddArm(model.Family(name))
 			}
 			log(LogLevelInfo, "bandit selector initialized arms=%d", len(m.BanditSelector.GetStats()))
 		}

@@ -89,11 +89,11 @@ func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 }
 
 // modelFamily returns the canonical family alias for a model identifier.
-// Delegates to model.ModelFamily — the shared definition also keys the
+// Delegates to model.Family — the shared definition also keys the
 // daemon-side bandit arms, keeping selection and reward attribution aligned
 // with worker eligibility.
 func modelFamily(name string) string {
-	return model.ModelFamily(name)
+	return model.Family(name)
 }
 
 // GetWorkerModel returns the model configured for the given worker, falling back to the default.

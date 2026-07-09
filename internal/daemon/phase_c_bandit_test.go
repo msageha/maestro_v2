@@ -199,7 +199,7 @@ func TestRecordBanditReward_FamilyNormalization(t *testing.T) {
 	m := newTestTaskBloomManager(t)
 	// Production registration path: family-normalised arms.
 	for _, name := range []string{"claude-opus-4-7", "sonnet"} {
-		m.BanditSelector.AddArm(model.ModelFamily(name))
+		m.BanditSelector.AddArm(model.Family(name))
 	}
 	rh.SetPhaseCManager(m)
 	// Worker configured with the full model ID spelling.

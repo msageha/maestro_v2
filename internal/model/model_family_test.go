@@ -2,7 +2,7 @@ package model
 
 import "testing"
 
-func TestModelFamily(t *testing.T) {
+func TestFamily(t *testing.T) {
 	tests := []struct {
 		in   string
 		want string
@@ -21,8 +21,8 @@ func TestModelFamily(t *testing.T) {
 		{"claude-fable-5", "claude-fable-5"},
 	}
 	for _, tt := range tests {
-		if got := ModelFamily(tt.in); got != tt.want {
-			t.Errorf("ModelFamily(%q) = %q, want %q", tt.in, got, tt.want)
+		if got := Family(tt.in); got != tt.want {
+			t.Errorf("Family(%q) = %q, want %q", tt.in, got, tt.want)
 		}
 	}
 }

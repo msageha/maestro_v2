@@ -78,8 +78,6 @@ func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Ti
 	return valid, nil
 }
 
-// FormatLearningsSection formats learnings for injection into task content.
-// Returns empty string if no learnings are provided.
 // FormatRepairStrategySection renders a proven repair strategy for a failure
 // pattern as an injectable DATA section (same framing contract as
 // FormatLearningsSection: reference data, not instructions). Injected into a
@@ -99,6 +97,8 @@ func FormatRepairStrategySection(category, strategy string, successRate float64,
 	return sb.String()
 }
 
+// FormatLearningsSection formats learnings for injection into task content.
+// Returns empty string if no learnings are provided.
 func FormatLearningsSection(learnings []model.Learning) string {
 	if len(learnings) == 0 {
 		return ""
