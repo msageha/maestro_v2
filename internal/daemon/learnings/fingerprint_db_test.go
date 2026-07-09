@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStoreAndQuery(t *testing.T) {
@@ -75,6 +76,53 @@ func TestMaxSizeEviction(t *testing.T) {
 	}
 	if _, ok := db.Query("fp3"); !ok {
 		t.Error("expected fp3 to exist")
+	}
+}
+
+// backdateLastSeen deterministically sets an entry's LastSeen so eviction
+// order does not depend on time.Now() resolution. The cached oldest time is
+// kept coherent when the entry is the cached oldest.
+func backdateLastSeen(t *testing.T, db *FingerprintDB, fp string, ts time.Time) {
+	t.Helper()
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	p, ok := db.patterns[fp]
+	if !ok {
+		t.Fatalf("fingerprint %s not found", fp)
+	}
+	p.LastSeen = ts
+	if db.oldestValid && db.oldestKey == fp {
+		db.oldestTime = ts
+	}
+}
+
+// TestStoreAtCapacity_EvictsOldestNotNewest is a regression test: after an
+// eviction invalidated the cached oldest entry, Store used to cache the
+// just-inserted (newest) entry as oldest, so every subsequent insert evicted
+// the previous insert instead of the true oldest.
+func TestStoreAtCapacity_EvictsOldestNotNewest(t *testing.T) {
+	t.Parallel()
+	db := NewFingerprintDB(3)
+	base := time.Now().Add(-time.Hour)
+
+	for i := 1; i <= 6; i++ {
+		fp := fmt.Sprintf("fp%d", i)
+		db.Store(fp, "cat", "strat")
+		backdateLastSeen(t, db, fp, base.Add(time.Duration(i)*time.Second))
+	}
+
+	if db.Size() != 3 {
+		t.Fatalf("expected size=3 at capacity, got %d", db.Size())
+	}
+	for _, evicted := range []string{"fp1", "fp2", "fp3"} {
+		if _, ok := db.Query(evicted); ok {
+			t.Errorf("expected %s (oldest) to be evicted", evicted)
+		}
+	}
+	for _, kept := range []string{"fp4", "fp5", "fp6"} {
+		if _, ok := db.Query(kept); !ok {
+			t.Errorf("expected %s (newest) to be retained", kept)
+		}
 	}
 }
 

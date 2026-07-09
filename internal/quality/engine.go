@@ -42,7 +42,6 @@ type compiledRule struct {
 // compiledCondition represents a pre-compiled condition
 type compiledCondition struct {
 	*RuleCondition
-	compiledRegex *regexp.Regexp
 	subConditions []*compiledCondition
 }
 
@@ -178,17 +177,19 @@ func (e *Engine) compileCondition(condition *RuleCondition) (*compiledCondition,
 			if err != nil {
 				return nil, fmt.Errorf("invalid regex pattern: %w", err)
 			}
-			compiled.compiledRegex = re
-			// Also set on RuleCondition so evaluators can access it
+			// Set on RuleCondition so evaluators can access it
 			condition.CompiledRegex = re
 		}
 	}
 
-	// Recursively compile sub-conditions for logical operators
+	// Recursively compile sub-conditions for logical operators.
+	// Sub-conditions must be compiled through the slice elements themselves
+	// (not loop-variable copies): the logical evaluators later evaluate
+	// condition.Conditions[i] directly, so CompiledRegex has to be set there.
 	if len(condition.Conditions) > 0 {
 		compiled.subConditions = make([]*compiledCondition, 0, len(condition.Conditions))
-		for _, subCond := range condition.Conditions {
-			compiledSub, err := e.compileCondition(&subCond)
+		for i := range condition.Conditions {
+			compiledSub, err := e.compileCondition(&condition.Conditions[i])
 			if err != nil {
 				return nil, err
 			}
@@ -217,9 +218,11 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 		return cached, nil
 	}
 
-	// Use singleflight to prevent duplicate evaluations
-	// Use null byte separator to avoid key collision when gateType contains ":"
-	key := string(gateType) + "\x00" + cacheKey.ContextFingerprint
+	// Use singleflight to prevent duplicate evaluations.
+	// Use null byte separator to avoid key collision when gateType contains ":".
+	// The config checksum is part of the key so evaluations spanning a
+	// configuration reload never share a result computed from the old config.
+	key := string(gateType) + "\x00" + cacheKey.GateVersionHash + "\x00" + cacheKey.ContextFingerprint
 	result, err, _ := e.singleflight.Do(key, func() (interface{}, error) {
 		return e.evaluateUncached(ctx, gateType, contextWrapper)
 	})
@@ -478,6 +481,15 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 		}
 	}
 
+	// Check phase filter
+	if len(trigger.Phases) > 0 {
+		phase, ok := evalCtx.GetField("task.phase")
+		phaseStr, isStr := phase.(string)
+		if !ok || !isStr || !slices.Contains(trigger.Phases, phaseStr) {
+			return false
+		}
+	}
+
 	// Check pattern triggers using pre-compiled regexes
 	for _, pattern := range trigger.Patterns {
 		if value, ok := evalCtx.GetField(pattern.Field); ok {
@@ -510,9 +522,13 @@ func (e *Engine) generateCacheKey(gateType string, context map[string]interface{
 	}
 	hash := sha256.Sum256(contextData)
 
+	e.mu.RLock()
+	checksum := e.configChecksum
+	e.mu.RUnlock()
+
 	return &cacheKey{
 		GateID:             gateType,
-		GateVersionHash:    e.configChecksum,
+		GateVersionHash:    checksum,
 		ContextFingerprint: hex.EncodeToString(hash[:]),
 	}, nil
 }

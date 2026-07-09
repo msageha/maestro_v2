@@ -16,65 +16,99 @@ const (
 	DecisionDeepen Decision = "deepen"
 )
 
-// Sampler implements Thompson Sampling for width-vs-depth exploration decisions.
-type Sampler struct {
+// betaArm holds the Beta posterior parameters of a single bandit arm:
+// Beta(alpha, beta) with alpha = prior + observed successes and
+// beta = prior + observed failures.
+type betaArm struct {
 	alpha float64
 	beta  float64
-	mu    sync.Mutex
 }
 
-// NewSampler creates a Thompson Sampler with initial Beta distribution parameters.
-// alpha biases toward "widen", beta biases toward "deepen".
+// Sampler implements standard Thompson Sampling for width-vs-depth
+// exploration decisions. Each arm (widen, deepen) keeps an independent
+// Beta(successes+prior, failures+prior) posterior; successes increment the
+// arm's alpha, failures increment the arm's beta.
+type Sampler struct {
+	widen  betaArm
+	deepen betaArm
+	mu     sync.Mutex
+}
+
+// NewSampler creates a Thompson Sampler with initial per-arm priors.
+// alpha is the widen arm's prior success weight, beta is the deepen arm's
+// prior success weight (both failure priors start at 1): a larger alpha
+// biases toward "widen", a larger beta biases toward "deepen".
 func NewSampler(alpha, beta float64) *Sampler {
 	return &Sampler{
-		alpha: alpha,
-		beta:  beta,
+		widen:  betaArm{alpha: alpha, beta: 1},
+		deepen: betaArm{alpha: beta, beta: 1},
 	}
 }
 
-// Sample draws from the Beta(alpha, beta) distribution and returns a decision.
-// If the sampled value exceeds 0.5, returns "widen"; otherwise "deepen".
+// Sample draws from each arm's Beta posterior and returns the decision
+// whose sampled success probability is higher.
 func (s *Sampler) Sample() Decision {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	sample := betaSample(s.alpha, s.beta)
-	if sample > 0.5 {
+	widenSample := betaSample(s.widen.alpha, s.widen.beta)
+	deepenSample := betaSample(s.deepen.alpha, s.deepen.beta)
+	if widenSample > deepenSample {
 		return DecisionWiden
 	}
 	return DecisionDeepen
 }
 
-// Update adjusts the distribution based on observed success/failure.
-// For "widen" + success: alpha++. For "deepen" + success: beta++.
-// Failures do not update (standard Thompson Sampling reward model).
+// Update adjusts the chosen arm's posterior based on the observed outcome:
+// success increments the arm's alpha, failure increments the arm's beta
+// (standard Thompson Sampling posterior update).
 func (s *Sampler) Update(decision Decision, success bool) {
-	if !success {
-		return
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	var arm *betaArm
 	switch decision {
 	case DecisionWiden:
-		s.alpha++
+		arm = &s.widen
 	case DecisionDeepen:
-		s.beta++
+		arm = &s.deepen
+	default:
+		return
+	}
+
+	if success {
+		arm.alpha++
+	} else {
+		arm.beta++
 	}
 }
 
-// Alpha returns the current alpha parameter.
+// Alpha returns the widen arm's alpha parameter (prior + observed successes).
 func (s *Sampler) Alpha() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.alpha
+	return s.widen.alpha
 }
 
-// Beta returns the current beta parameter.
+// Beta returns the deepen arm's alpha parameter (prior + observed successes).
 func (s *Sampler) Beta() float64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.beta
+	return s.deepen.alpha
+}
+
+// WidenParams returns the widen arm's Beta posterior parameters.
+func (s *Sampler) WidenParams() (alpha, beta float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.widen.alpha, s.widen.beta
+}
+
+// DeepenParams returns the deepen arm's Beta posterior parameters.
+func (s *Sampler) DeepenParams() (alpha, beta float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deepen.alpha, s.deepen.beta
 }
 
 // betaSample draws a sample from Beta(alpha, beta) using the Gamma distribution method.

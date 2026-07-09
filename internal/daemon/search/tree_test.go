@@ -63,6 +63,39 @@ func TestAddRootAndExpand(t *testing.T) {
 	}
 }
 
+// TestAddRoot_DoesNotOverwriteExistingRoot is a regression test: AddRoot
+// used to replace the root unconditionally, orphaning the existing subtree.
+func TestAddRoot_DoesNotOverwriteExistingRoot(t *testing.T) {
+	t.Parallel()
+	tree := NewTree(5, 10, 0.2)
+
+	first := tree.AddRoot("root-1")
+	if first == nil || first.ID != "root-1" {
+		t.Fatalf("expected first AddRoot to create root-1, got %+v", first)
+	}
+	if _, err := tree.Expand("root-1", []string{"child-1"}); err != nil {
+		t.Fatalf("Expand: %v", err)
+	}
+
+	// Idempotent re-add of the same root returns the existing node.
+	same := tree.AddRoot("root-1")
+	if same.ID != "root-1" || len(same.Children) != 1 {
+		t.Fatalf("re-adding same root must return existing node with children, got %+v", same)
+	}
+
+	// A different id must not replace the root.
+	other := tree.AddRoot("root-2")
+	if other.ID != "root-1" {
+		t.Fatalf("AddRoot with different id must keep existing root, got %s", other.ID)
+	}
+	if _, exists := tree.GetNode("root-2"); exists {
+		t.Fatal("root-2 must not be inserted when a root already exists")
+	}
+	if best, err := tree.SelectBest("root-1", 1.41); err != nil || best != "child-1" {
+		t.Fatalf("existing subtree must remain intact, got best=%q err=%v", best, err)
+	}
+}
+
 func TestBackpropagate(t *testing.T) {
 	t.Parallel()
 	tree := NewTree(5, 4, 0.0)

@@ -57,10 +57,22 @@ func NewTree(maxDepth, maxBranching int, pruneThreshold float64) *Tree {
 	}
 }
 
-// AddRoot adds the root node to the tree. Returns error if root already exists.
+// AddRoot adds the root node to the tree. If a root already exists, the
+// tree is left unchanged and the existing root node is returned: replacing
+// the root would orphan the existing subtree and silently discard its
+// accumulated visit statistics.
 func (t *Tree) AddRoot(id string) *Node {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
+	if t.root != "" {
+		existing := t.nodes[t.root]
+		if existing.ID != id {
+			slog.Warn("search/tree: AddRoot ignored, root already exists",
+				"existing_root", existing.ID, "requested_root", id)
+		}
+		return existing
+	}
 
 	n := &Node{
 		ID:       id,

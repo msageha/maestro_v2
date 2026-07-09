@@ -95,10 +95,15 @@ func (db *FingerprintDB) Store(fp string, category string, strategy string) {
 		OccurrenceCount: 1,
 		LastSeen:        now,
 	}
-	if !db.oldestValid || now.Before(db.oldestTime) {
+	// When the cached oldest entry is stale (e.g. right after eviction), the
+	// true oldest must be recomputed across all entries. Caching the entry
+	// just inserted would mark the newest pattern as oldest and evict it on
+	// the next insert.
+	if !db.oldestValid {
+		db.rebuildOldestLocked()
+	} else if now.Before(db.oldestTime) {
 		db.oldestKey = fp
 		db.oldestTime = now
-		db.oldestValid = true
 	}
 }
 

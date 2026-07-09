@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -19,17 +20,50 @@ type Handler struct {
 	logLevel     core.LogLevel
 	clock        core.Clock
 	stateManager core.StateManager
+
+	// probeMu guards probeTasks: commandID → taskID of the half-open probe
+	// granted by AllowProbe. Only the recorded probe task's result may close
+	// or re-open the breaker; results of unrelated in-flight tasks must not
+	// be mistaken for probe outcomes.
+	probeMu    sync.Mutex
+	probeTasks map[string]string
 }
 
 // NewHandler creates a new Handler.
 func NewHandler(cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *Handler {
 	return &Handler{
-		LogMixin: core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel)},
-		config:   cfg,
-		logger:   logger,
-		logLevel: logLevel,
-		clock:    core.RealClock{},
+		LogMixin:   core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel)},
+		config:     cfg,
+		logger:     logger,
+		logLevel:   logLevel,
+		clock:      core.RealClock{},
+		probeTasks: make(map[string]string),
 	}
+}
+
+// setProbeTask records the task granted as half-open probe for a command.
+func (cb *Handler) setProbeTask(commandID, taskID string) {
+	cb.probeMu.Lock()
+	defer cb.probeMu.Unlock()
+	if cb.probeTasks == nil {
+		cb.probeTasks = make(map[string]string)
+	}
+	cb.probeTasks[commandID] = taskID
+}
+
+// probeTask returns the recorded half-open probe task for a command.
+func (cb *Handler) probeTask(commandID string) (string, bool) {
+	cb.probeMu.Lock()
+	defer cb.probeMu.Unlock()
+	taskID, ok := cb.probeTasks[commandID]
+	return taskID, ok
+}
+
+// clearProbeTask removes the recorded half-open probe task for a command.
+func (cb *Handler) clearProbeTask(commandID string) {
+	cb.probeMu.Lock()
+	defer cb.probeMu.Unlock()
+	delete(cb.probeTasks, commandID)
 }
 
 // SetStateReader wires the state manager for circuit breaker state queries.
@@ -75,40 +109,69 @@ func (cb *Handler) UpdateCounterOnResult(
 
 	nowStr := now.UTC().Format(time.RFC3339)
 
-	// Handle half-open probe results
+	// Handle half-open probe results. Only the task recorded by AllowProbe
+	// is a probe; results of unrelated in-flight tasks fall through to the
+	// normal counter handling below and must not close/re-open the breaker.
 	if state.CircuitBreaker.HalfOpen && state.CircuitBreaker.HalfOpenProbeActive {
-		switch resultStatus {
-		case model.StatusCompleted:
-			// Probe succeeded → close the breaker
-			state.CircuitBreaker.HalfOpen = false
-			state.CircuitBreaker.HalfOpenAt = nil
+		probeTaskID, hasProbe := cb.probeTask(state.CommandID)
+		switch {
+		case !hasProbe:
+			// Probe ownership is unknown (e.g. the in-memory registry was
+			// lost on daemon restart). Release the probe slot so AllowProbe
+			// can grant a fresh probe instead of staying stuck forever; the
+			// current result is handled by the normal counter path.
 			state.CircuitBreaker.HalfOpenProbeActive = false
-			state.CircuitBreaker.Tripped = false
-			state.CircuitBreaker.TrippedAt = nil
-			state.CircuitBreaker.TripReason = nil
-			state.CircuitBreaker.ConsecutiveFailures = 0
-			state.CircuitBreaker.LastProgressAt = &nowStr
-			cb.Log(core.LogLevelInfo, "circuit_breaker_half_open_probe_success command=%s closing_breaker", state.CommandID)
-			return false, ""
+			cb.Log(core.LogLevelWarn,
+				"circuit_breaker_half_open_probe_owner_unknown command=%s task=%s releasing_probe_slot",
+				state.CommandID, taskID)
 
-		case model.StatusFailed:
-			// Probe failed → re-open (reset timer for next half-open attempt)
-			state.CircuitBreaker.HalfOpen = false
-			state.CircuitBreaker.HalfOpenAt = nil
-			state.CircuitBreaker.HalfOpenProbeActive = false
-			state.CircuitBreaker.TrippedAt = &nowStr // reset trip time for next half-open delay
-			reason := "half_open_probe_failed"
-			state.CircuitBreaker.TripReason = &reason
-			cb.Log(core.LogLevelInfo, "circuit_breaker_half_open_probe_failed command=%s reopening_breaker", state.CommandID)
-			return false, ""
+		case probeTaskID == taskID:
+			switch resultStatus {
+			case model.StatusCompleted:
+				// Probe succeeded → close the breaker
+				state.CircuitBreaker.HalfOpen = false
+				state.CircuitBreaker.HalfOpenAt = nil
+				state.CircuitBreaker.HalfOpenProbeActive = false
+				state.CircuitBreaker.Tripped = false
+				state.CircuitBreaker.TrippedAt = nil
+				state.CircuitBreaker.TripReason = nil
+				state.CircuitBreaker.ConsecutiveFailures = 0
+				state.CircuitBreaker.LastProgressAt = &nowStr
+				cb.clearProbeTask(state.CommandID)
+				cb.Log(core.LogLevelInfo, "circuit_breaker_half_open_probe_success command=%s closing_breaker", state.CommandID)
+				return false, ""
+
+			case model.StatusFailed:
+				// Probe failed → re-open (reset timer for next half-open attempt)
+				state.CircuitBreaker.HalfOpen = false
+				state.CircuitBreaker.HalfOpenAt = nil
+				state.CircuitBreaker.HalfOpenProbeActive = false
+				state.CircuitBreaker.TrippedAt = &nowStr // reset trip time for next half-open delay
+				reason := "half_open_probe_failed"
+				state.CircuitBreaker.TripReason = &reason
+				cb.clearProbeTask(state.CommandID)
+				cb.Log(core.LogLevelInfo, "circuit_breaker_half_open_probe_failed command=%s reopening_breaker", state.CommandID)
+				return false, ""
+
+			case model.StatusCancelled:
+				// Probe was cancelled — neither success nor failure. Release
+				// the probe slot so a new probe can be granted; without this
+				// the HalfOpenProbeActive flag would stay set forever.
+				state.CircuitBreaker.HalfOpenProbeActive = false
+				cb.clearProbeTask(state.CommandID)
+				cb.Log(core.LogLevelInfo,
+					"circuit_breaker_half_open_probe_cancelled command=%s task=%s probe_slot_released",
+					state.CommandID, taskID)
+				return false, ""
+			}
 		}
 	}
 
 	switch resultStatus {
 	case model.StatusCompleted:
-		if state.CircuitBreaker.ConsecutiveFailures > 0 {
-			state.CircuitBreaker.ConsecutiveFailures--
-		}
+		// Reset (not decrement): the counter tracks consecutive failures, so
+		// any success breaks the streak entirely.
+		state.CircuitBreaker.ConsecutiveFailures = 0
 		state.CircuitBreaker.LastProgressAt = &nowStr
 		return false, ""
 
@@ -188,6 +251,7 @@ func (cb *Handler) TripBreaker(state *model.CommandState, reason string, now tim
 	state.CircuitBreaker.HalfOpen = false
 	state.CircuitBreaker.HalfOpenAt = nil
 	state.CircuitBreaker.HalfOpenProbeActive = false
+	cb.clearProbeTask(state.CommandID)
 
 	// Set cancel request so the existing cancel flow handles task cancellation
 	if !state.Cancel.Requested {
@@ -325,9 +389,11 @@ func (cb *Handler) MarkProgress(commandID string) error {
 }
 
 // AllowProbe checks whether a single probe task should be dispatched in half-open state.
-// Returns true (and marks the probe as active) if a probe is allowed.
+// Returns true (and marks the probe as active, recording taskID as the probe
+// owner) if a probe is allowed. Only the recorded task's result is treated as
+// the probe outcome by UpdateCounterOnResult.
 // Called with the state lock held; the caller must save.
-func (cb *Handler) AllowProbe(state *model.CommandState) bool {
+func (cb *Handler) AllowProbe(state *model.CommandState, taskID string) bool {
 	if state == nil || !cb.config.CircuitBreaker.Enabled {
 		return false
 	}
@@ -336,6 +402,7 @@ func (cb *Handler) AllowProbe(state *model.CommandState) bool {
 		return false
 	}
 	cbs.HalfOpenProbeActive = true
-	cb.Log(core.LogLevelInfo, "circuit_breaker_probe_allowed command=%s", state.CommandID)
+	cb.setProbeTask(state.CommandID, taskID)
+	cb.Log(core.LogLevelInfo, "circuit_breaker_probe_allowed command=%s task=%s", state.CommandID, taskID)
 	return true
 }

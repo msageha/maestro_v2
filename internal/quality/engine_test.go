@@ -2,6 +2,7 @@ package quality
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -583,4 +584,278 @@ func TestEngine_TriggerFilters(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.Passed) // Passes because gate doesn't trigger
 	})
+}
+
+// TestEngine_Evaluate_LogicalOperatorsWithRegex is a regression test for
+// sub-condition compilation: compileCondition used to compile loop-variable
+// copies, so matches/not_matches under and/or/not always failed with
+// "regex not pre-compiled".
+func TestEngine_Evaluate_LogicalOperatorsWithRegex(t *testing.T) {
+	engine := NewEngine()
+
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "logical_regex",
+				Name:     "Logical Regex",
+				Enabled:  ptr.Bool(true),
+				Type:     GateTypePreTask,
+				Priority: 10,
+				Rules: []RuleDefinition{
+					{
+						ID: "and_matches",
+						Condition: RuleCondition{
+							Type: ConditionAnd,
+							Conditions: []RuleCondition{
+								{
+									Type:     ConditionFieldValidation,
+									Field:    "task.id",
+									Operator: OpMatches,
+									Value:    `^task-[0-9]+$`,
+								},
+								{
+									Type: ConditionOr,
+									Conditions: []RuleCondition{
+										{
+											Type:     ConditionFieldValidation,
+											Field:    "task.content",
+											Operator: OpNotMatches,
+											Value:    `rm\s+-rf`,
+										},
+										{
+											Type:     ConditionFieldValidation,
+											Field:    "task.approved",
+											Operator: OpEquals,
+											Value:    true,
+										},
+									},
+								},
+								{
+									Type: ConditionNot,
+									Conditions: []RuleCondition{
+										{
+											Type:     ConditionFieldValidation,
+											Field:    "task.content",
+											Operator: OpMatches,
+											Value:    `forbidden`,
+										},
+									},
+								},
+							},
+						},
+						Severity: SeverityError,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+
+	require.NoError(t, engine.LoadConfiguration(config))
+
+	testCases := []struct {
+		name       string
+		context    map[string]interface{}
+		expectPass bool
+	}{
+		{
+			name: "all sub-conditions satisfied",
+			context: map[string]interface{}{
+				"task": map[string]interface{}{
+					"id":      "task-42",
+					"content": "echo hello",
+				},
+			},
+			expectPass: true,
+		},
+		{
+			name: "and fails on id regex mismatch",
+			context: map[string]interface{}{
+				"task": map[string]interface{}{
+					"id":      "not-a-task",
+					"content": "echo hello",
+				},
+			},
+			expectPass: false,
+		},
+		{
+			name: "or passes via approved despite dangerous content",
+			context: map[string]interface{}{
+				"task": map[string]interface{}{
+					"id":       "task-7",
+					"content":  "rm -rf /tmp/scratch",
+					"approved": true,
+				},
+			},
+			expectPass: true,
+		},
+		{
+			name: "not fails on forbidden content",
+			context: map[string]interface{}{
+				"task": map[string]interface{}{
+					"id":      "task-9",
+					"content": "run forbidden step",
+				},
+			},
+			expectPass: false,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			result, err := engine.Evaluate(context.Background(), GateTypePreTask, tc.context)
+			require.NoError(t, err)
+			for _, rr := range result.RuleResults {
+				require.NoError(t, rr.Error, "rule %s must evaluate without error", rr.RuleID)
+			}
+			assert.Equal(t, tc.expectPass, result.Passed)
+		})
+	}
+}
+
+func TestEngine_TriggerFilters_Phases(t *testing.T) {
+	engine := NewEngine()
+
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "phase_filtered",
+				Name:     "Phase Filtered Gate",
+				Enabled:  ptr.Bool(true),
+				Type:     GateTypePreTask,
+				Priority: 10,
+				Trigger: TriggerDefinition{
+					Phases: []string{"implementation", "verification"},
+				},
+				Rules: []RuleDefinition{
+					{
+						ID: "phase_scoped_rule",
+						Condition: RuleCondition{
+							Type:     ConditionFieldValidation,
+							Field:    "task.checklist",
+							Operator: OpExists,
+						},
+						Severity: SeverityError,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+
+	require.NoError(t, engine.LoadConfiguration(config))
+	ctx := context.Background()
+
+	// Matching phase without checklist: gate triggers and fails.
+	matchingCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"phase": "implementation",
+		},
+	}
+	result, err := engine.Evaluate(ctx, GateTypePreTask, matchingCtx)
+	require.NoError(t, err)
+	assert.False(t, result.Passed, "gate must trigger for a listed phase")
+
+	// Non-matching phase: gate must not trigger.
+	otherPhaseCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"phase": "research",
+		},
+	}
+	result, err = engine.Evaluate(ctx, GateTypePreTask, otherPhaseCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed, "gate must not trigger for an unlisted phase")
+
+	// Missing phase field: gate must not trigger.
+	noPhaseCtx := map[string]interface{}{
+		"task": map[string]interface{}{},
+	}
+	result, err = engine.Evaluate(ctx, GateTypePreTask, noPhaseCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed, "gate must not trigger without a phase field")
+}
+
+// TestEngine_ConcurrentReloadAndEvaluate exercises configuration reloads
+// racing with evaluations. Run with -race: generateCacheKey used to read
+// configChecksum without holding e.mu.
+func TestEngine_ConcurrentReloadAndEvaluate(t *testing.T) {
+	engine := NewEngine()
+
+	makeConfig := func(pattern string) *GateConfiguration {
+		return &GateConfiguration{
+			SchemaVersion: "1.0.0",
+			Gates: []GateDefinition{
+				{
+					ID:       "reload_race",
+					Name:     "Reload Race Gate",
+					Enabled:  ptr.Bool(true),
+					Type:     GateTypePreTask,
+					Priority: 10,
+					Rules: []RuleDefinition{
+						{
+							ID: "match_rule",
+							Condition: RuleCondition{
+								Type:     ConditionFieldValidation,
+								Field:    "task.id",
+								Operator: OpMatches,
+								Value:    pattern,
+							},
+							Severity: SeverityError,
+						},
+					},
+					Action: ActionDefinition{
+						OnPass: ActionAllow,
+						OnFail: ActionBlock,
+					},
+				},
+			},
+		}
+	}
+
+	require.NoError(t, engine.LoadConfiguration(makeConfig(`^task-a$`)))
+
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			pattern := `^task-a$`
+			if i%2 == 1 {
+				pattern = `^task-b$`
+			}
+			for j := 0; j < 50; j++ {
+				if err := engine.LoadConfiguration(makeConfig(pattern)); err != nil {
+					t.Errorf("LoadConfiguration: %v", err)
+					return
+				}
+			}
+		}(i)
+	}
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			evalCtx := map[string]interface{}{
+				"task": map[string]interface{}{
+					"id": "task-a",
+				},
+			}
+			for j := 0; j < 50; j++ {
+				if _, err := engine.Evaluate(ctx, GateTypePreTask, evalCtx); err != nil {
+					t.Errorf("Evaluate: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

@@ -40,11 +40,11 @@ func TestUpdate_WidenSuccess(t *testing.T) {
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionWiden, true)
-	if s.Alpha() != 2.0 {
-		t.Fatalf("expected alpha=2.0, got %f", s.Alpha())
+	if wa, wb := s.WidenParams(); wa != 2.0 || wb != 1.0 {
+		t.Fatalf("expected widen arm Beta(2,1), got Beta(%f,%f)", wa, wb)
 	}
-	if s.Beta() != 1.0 {
-		t.Fatalf("expected beta=1.0, got %f", s.Beta())
+	if da, db := s.DeepenParams(); da != 1.0 || db != 1.0 {
+		t.Fatalf("expected deepen arm Beta(1,1), got Beta(%f,%f)", da, db)
 	}
 }
 
@@ -53,21 +53,55 @@ func TestUpdate_DeepenSuccess(t *testing.T) {
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionDeepen, true)
-	if s.Alpha() != 1.0 {
-		t.Fatalf("expected alpha=1.0, got %f", s.Alpha())
+	if wa, wb := s.WidenParams(); wa != 1.0 || wb != 1.0 {
+		t.Fatalf("expected widen arm Beta(1,1), got Beta(%f,%f)", wa, wb)
 	}
-	if s.Beta() != 2.0 {
-		t.Fatalf("expected beta=2.0, got %f", s.Beta())
+	if da, db := s.DeepenParams(); da != 2.0 || db != 1.0 {
+		t.Fatalf("expected deepen arm Beta(2,1), got Beta(%f,%f)", da, db)
 	}
 }
 
-func TestUpdate_FailureNoChange(t *testing.T) {
+func TestUpdate_FailureIncrementsArmBeta(t *testing.T) {
 	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionWiden, false)
-	if s.Alpha() != 1.0 || s.Beta() != 1.0 {
-		t.Fatalf("failure should not change parameters, got alpha=%f beta=%f", s.Alpha(), s.Beta())
+	if wa, wb := s.WidenParams(); wa != 1.0 || wb != 2.0 {
+		t.Fatalf("widen failure must yield widen arm Beta(1,2), got Beta(%f,%f)", wa, wb)
+	}
+	if da, db := s.DeepenParams(); da != 1.0 || db != 1.0 {
+		t.Fatalf("widen failure must not touch deepen arm, got Beta(%f,%f)", da, db)
+	}
+
+	s.Update(DecisionDeepen, false)
+	if da, db := s.DeepenParams(); da != 1.0 || db != 2.0 {
+		t.Fatalf("deepen failure must yield deepen arm Beta(1,2), got Beta(%f,%f)", da, db)
+	}
+}
+
+// TestSampler_FailuresShiftBiasAway is a regression test: failures used to be
+// ignored entirely, so a repeatedly failing arm kept being sampled
+// (rich-get-richer). With the standard posterior update, repeated widen
+// failures must shift sampling toward deepen.
+func TestSampler_FailuresShiftBiasAway(t *testing.T) {
+	t.Parallel()
+	s := NewSampler(1.0, 1.0)
+
+	for range 50 {
+		s.Update(DecisionWiden, false)
+	}
+
+	deepenCount := 0
+	const iterations = 200
+	for range iterations {
+		if s.Sample() == DecisionDeepen {
+			deepenCount++
+		}
+	}
+
+	ratio := float64(deepenCount) / float64(iterations)
+	if ratio < 0.8 {
+		t.Fatalf("expected >80%% deepen after 50 widen failures, got %.1f%%", ratio*100)
 	}
 }
 

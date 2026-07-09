@@ -281,7 +281,11 @@ func TestUpdateCounterOnResult_IndependentFailuresStillCount(t *testing.T) {
 	}
 }
 
-func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
+// TestUpdateCounterOnResult_ResetOnSuccess verifies that a success resets the
+// consecutive-failure counter to 0 (regression: the counter used to be
+// decremented by 1, turning "consecutive failures" into a leaky bucket that
+// could trip on non-consecutive failures).
+func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
@@ -295,29 +299,54 @@ func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
 	if tripped {
 		t.Error("expected no trip on success")
 	}
-	if state.CircuitBreaker.ConsecutiveFailures != 1 {
-		t.Errorf("expected 1 failure after decrement, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	if state.CircuitBreaker.ConsecutiveFailures != 0 {
+		t.Errorf("expected counter reset to 0 on success, got %d", state.CircuitBreaker.ConsecutiveFailures)
 	}
 	if state.CircuitBreaker.LastProgressAt == nil {
 		t.Error("expected LastProgressAt to be set")
 	}
 
-	// Second success decrements to 0
+	// Success with counter already at 0 stays at 0.
 	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "t2", "r2", time.Now())
 	if tripped {
 		t.Error("expected no trip on success")
 	}
 	if state.CircuitBreaker.ConsecutiveFailures != 0 {
-		t.Errorf("expected 0 failures after second decrement, got %d", state.CircuitBreaker.ConsecutiveFailures)
+		t.Errorf("expected 0 failures, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	}
+}
+
+// TestUpdateCounterOnResult_SuccessBreaksFailureStreak verifies that failures
+// interleaved with successes never accumulate to the threshold.
+func TestUpdateCounterOnResult_SuccessBreaksFailureStreak(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	state := &model.CommandState{CommandID: "cmd1"}
+
+	sequence := []struct {
+		status model.Status
+		taskID string
+	}{
+		{model.StatusFailed, "tA"},
+		{model.StatusFailed, "tB"},
+		{model.StatusCompleted, "tS"},
+		{model.StatusFailed, "tC"},
+		{model.StatusFailed, "tD"},
+	}
+	for i, step := range sequence {
+		tripped, _ := cb.UpdateCounterOnResult(state, step.status, step.taskID, fmt.Sprintf("r%d", i), time.Now())
+		if tripped {
+			t.Fatalf("step %d (%s %s): non-consecutive failures must not trip", i, step.status, step.taskID)
+		}
+	}
+	if got := state.CircuitBreaker.ConsecutiveFailures; got != 2 {
+		t.Errorf("expected 2 consecutive failures after streak break, got %d", got)
 	}
 
-	// Third success stays at 0 (floor)
-	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "t3", "r3", time.Now())
-	if tripped {
-		t.Error("expected no trip on success")
-	}
-	if state.CircuitBreaker.ConsecutiveFailures != 0 {
-		t.Errorf("expected 0 failures (floor), got %d", state.CircuitBreaker.ConsecutiveFailures)
+	// A third consecutive failure now reaches the threshold.
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "tE", "rE", time.Now())
+	if !tripped {
+		t.Error("expected trip at 3 consecutive failures")
 	}
 }
 
@@ -728,18 +757,24 @@ func TestAllowProbe_HalfOpen(t *testing.T) {
 		},
 	}
 
-	allowed := cb.AllowProbe(state)
+	allowed := cb.AllowProbe(state, "probe_task")
 	if !allowed {
 		t.Error("expected probe allowed in half-open state")
 	}
 	if !state.CircuitBreaker.HalfOpenProbeActive {
 		t.Error("expected HalfOpenProbeActive=true after AllowProbe")
 	}
+	if got, ok := cb.probeTask("cmd1"); !ok || got != "probe_task" {
+		t.Errorf("expected probe task recorded as probe_task, got %q ok=%v", got, ok)
+	}
 
 	// Second call should be rejected (probe already active)
-	allowed = cb.AllowProbe(state)
+	allowed = cb.AllowProbe(state, "another_task")
 	if allowed {
 		t.Error("expected probe rejected when already active")
+	}
+	if got, _ := cb.probeTask("cmd1"); got != "probe_task" {
+		t.Errorf("rejected AllowProbe must not overwrite probe owner, got %q", got)
 	}
 }
 
@@ -748,7 +783,7 @@ func TestAllowProbe_NotHalfOpen(t *testing.T) {
 	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
 	state := &model.CommandState{CommandID: "cmd1"}
 
-	allowed := cb.AllowProbe(state)
+	allowed := cb.AllowProbe(state, "probe_task")
 	if allowed {
 		t.Error("expected probe not allowed when not half-open")
 	}
@@ -758,7 +793,7 @@ func TestAllowProbe_NilState(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
 
-	allowed := cb.AllowProbe(nil)
+	allowed := cb.AllowProbe(nil, "probe_task")
 	if allowed {
 		t.Error("expected probe not allowed on nil state")
 	}
@@ -780,8 +815,10 @@ func TestHalfOpenProbe_Success_ClosesBreaker(t *testing.T) {
 			ConsecutiveFailures: 3,
 			HalfOpen:            true,
 			HalfOpenAt:          &halfOpenAt,
-			HalfOpenProbeActive: true,
 		},
+	}
+	if !cb.AllowProbe(state, "probe_task") {
+		t.Fatal("expected probe allowed")
 	}
 
 	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_task", "r_probe", now)
@@ -822,8 +859,10 @@ func TestHalfOpenProbe_Failure_ReopensBreaker(t *testing.T) {
 			ConsecutiveFailures: 3,
 			HalfOpen:            true,
 			HalfOpenAt:          &halfOpenAt,
-			HalfOpenProbeActive: true,
 		},
+	}
+	if !cb.AllowProbe(state, "probe_task") {
+		t.Fatal("expected probe allowed")
 	}
 
 	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "probe_task", "r_probe", now)
@@ -845,6 +884,136 @@ func TestHalfOpenProbe_Failure_ReopensBreaker(t *testing.T) {
 	}
 	if state.CircuitBreaker.TripReason == nil || *state.CircuitBreaker.TripReason != "half_open_probe_failed" {
 		t.Errorf("expected TripReason='half_open_probe_failed', got %v", state.CircuitBreaker.TripReason)
+	}
+}
+
+// TestHalfOpenProbe_NonProbeResult_DoesNotResolveProbe verifies that results
+// of tasks other than the recorded probe do not close or re-open the breaker
+// (regression: any task result used to be treated as the probe outcome).
+func TestHalfOpenProbe_NonProbeResult_DoesNotResolveProbe(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	trippedAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			TrippedAt:           &trippedAt,
+			ConsecutiveFailures: 3,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+		},
+	}
+	if !cb.AllowProbe(state, "probe_task") {
+		t.Fatal("expected probe allowed")
+	}
+
+	// A straggler task completing must NOT close the breaker.
+	cb.UpdateCounterOnResult(state, model.StatusCompleted, "straggler_ok", "r_s1", now)
+	if !state.CircuitBreaker.Tripped || !state.CircuitBreaker.HalfOpen {
+		t.Error("non-probe success must not close the breaker")
+	}
+	if !state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("non-probe success must not release the probe slot")
+	}
+
+	// A straggler task failing must NOT re-open (probe stays pending).
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "straggler_fail", "r_s2", now)
+	if !state.CircuitBreaker.HalfOpen {
+		t.Error("non-probe failure must not resolve the half-open state")
+	}
+	if !state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("non-probe failure must not release the probe slot")
+	}
+
+	// The recorded probe's success still closes the breaker.
+	cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_task", "r_probe", now)
+	if state.CircuitBreaker.Tripped || state.CircuitBreaker.HalfOpen {
+		t.Error("probe success must close the breaker")
+	}
+}
+
+// TestHalfOpenProbe_Cancelled_ReleasesProbeSlot verifies that a cancelled
+// probe releases HalfOpenProbeActive so a new probe can be granted
+// (regression: a cancelled probe used to leave the flag stuck forever).
+func TestHalfOpenProbe_Cancelled_ReleasesProbeSlot(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	trippedAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			TrippedAt:           &trippedAt,
+			ConsecutiveFailures: 3,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+		},
+	}
+	if !cb.AllowProbe(state, "probe_task") {
+		t.Fatal("expected probe allowed")
+	}
+
+	cb.UpdateCounterOnResult(state, model.StatusCancelled, "probe_task", "r_probe", now)
+
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("cancelled probe must release HalfOpenProbeActive")
+	}
+	if !state.CircuitBreaker.HalfOpen || !state.CircuitBreaker.Tripped {
+		t.Error("cancelled probe must keep the breaker half-open (neither close nor re-open)")
+	}
+	if _, ok := cb.probeTask("cmd1"); ok {
+		t.Error("cancelled probe must clear the recorded probe owner")
+	}
+
+	// A new probe can now be granted and its success closes the breaker.
+	if !cb.AllowProbe(state, "probe_retry") {
+		t.Fatal("expected a new probe allowed after cancellation")
+	}
+	cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_retry", "r_retry", now)
+	if state.CircuitBreaker.Tripped || state.CircuitBreaker.HalfOpen {
+		t.Error("retried probe success must close the breaker")
+	}
+}
+
+// TestHalfOpenProbe_UnknownOwner_ReleasesProbeSlot simulates a daemon restart
+// that wiped the in-memory probe registry while the persisted state still has
+// HalfOpenProbeActive=true: the slot must be released (allowing a fresh
+// probe) and the incoming result must not close the breaker.
+func TestHalfOpenProbe_UnknownOwner_ReleasesProbeSlot(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	trippedAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			TrippedAt:           &trippedAt,
+			ConsecutiveFailures: 3,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true, // persisted flag without in-memory owner
+		},
+	}
+
+	cb.UpdateCounterOnResult(state, model.StatusCompleted, "some_task", "r1", now)
+
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("unknown probe owner must release the probe slot")
+	}
+	if !state.CircuitBreaker.Tripped || !state.CircuitBreaker.HalfOpen {
+		t.Error("result without a known probe owner must not close the breaker")
+	}
+
+	// A fresh probe can be granted afterwards.
+	if !cb.AllowProbe(state, "probe_new") {
+		t.Error("expected a fresh probe allowed after slot release")
 	}
 }
 
@@ -974,11 +1143,13 @@ func TestUpdateCounterOnResult_WritesAppliedResultIDs_HalfOpenProbe(t *testing.T
 	state := &model.CommandState{
 		CommandID: "cmd1",
 		CircuitBreaker: model.CircuitBreakerState{
-			Tripped:             true,
-			HalfOpen:            true,
-			HalfOpenAt:          &halfOpenAt,
-			HalfOpenProbeActive: true,
+			Tripped:    true,
+			HalfOpen:   true,
+			HalfOpenAt: &halfOpenAt,
 		},
+	}
+	if !cb.AllowProbe(state, "probe_ok") {
+		t.Fatal("expected probe allowed for cmd1")
 	}
 	cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_ok", "r_probe_ok", now)
 
@@ -993,11 +1164,13 @@ func TestUpdateCounterOnResult_WritesAppliedResultIDs_HalfOpenProbe(t *testing.T
 	state2 := &model.CommandState{
 		CommandID: "cmd2",
 		CircuitBreaker: model.CircuitBreakerState{
-			Tripped:             true,
-			HalfOpen:            true,
-			HalfOpenAt:          &halfOpenAt,
-			HalfOpenProbeActive: true,
+			Tripped:    true,
+			HalfOpen:   true,
+			HalfOpenAt: &halfOpenAt,
 		},
+	}
+	if !cb.AllowProbe(state2, "probe_fail") {
+		t.Fatal("expected probe allowed for cmd2")
 	}
 	cb.UpdateCounterOnResult(state2, model.StatusFailed, "probe_fail", "r_probe_fail", now)
 
@@ -1066,7 +1239,7 @@ func TestFullHalfOpenLifecycle(t *testing.T) {
 	}
 
 	// Step 5: Allow probe
-	allowed := cb.AllowProbe(state)
+	allowed := cb.AllowProbe(state, "probe1")
 	if !allowed {
 		t.Fatal("expected probe allowed")
 	}
