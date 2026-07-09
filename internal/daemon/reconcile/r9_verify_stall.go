@@ -73,9 +73,109 @@ func (R9VerifyStall) Apply(run *Run) Outcome {
 		commandRepairs := r9ApplyForCommand(run, statePath, commandID, resultTimestamps[commandID], now, commandThreshold)
 		r9ScheduleVerifyRepairs(run, statePath, commandID, commandRepairs)
 		repairs = append(repairs, commandRepairs...)
+		repairs = append(repairs, r9ReclaimOrphanedRepairPending(run, statePath, commandID, resultTimestamps[commandID], now, commandThreshold)...)
 	}
 
 	return Outcome{Repairs: repairs}
+}
+
+// r9OrphanReclaimGrace is the minimum state-file quiescence before a
+// repair_pending entry with no registered repair pipeline is treated as a
+// crash artifact. Writing repair_pending bumps state.UpdatedAt, so a
+// concurrent writer that is about to register the repair task (the window
+// between its state write and its queue write) is never raced by the sweep.
+const r9OrphanReclaimGrace = 60 * time.Second
+
+// r9ReclaimOrphanedRepairPending recovers repair_pending tasks whose repair
+// pipeline lost ownership. R9 transitions verify_pending → repair_pending and
+// registers the repair task within the same Apply, and every registration
+// failure path advances the slot to paused_for_replan immediately — so a
+// persisting repair_pending entry is healthy only while a successor exists.
+// A crash between the repair_pending state write and the repair-task
+// registration leaves the entry with no successor anywhere: R9's main pass
+// walks only verify_pending and R2 deliberately skips the repair slot, so
+// nothing ever reclaimed it and the publish gate stayed blocked forever.
+//
+// Ownership probes (any of them present → the entry is owned, skip):
+//   - a RetryLineage successor (repair task registered in state);
+//   - a RetryEnqueueFailed marker (R1 owns the re-enqueue).
+//
+// Unowned entries older than the verify stall threshold (anchored on the
+// task's most recent worker result, falling back to state.UpdatedAt like the
+// main pass) are advanced to paused_for_replan through the same helper R9's
+// failure paths use, which also emits the durable paused_for_replan signal.
+func r9ReclaimOrphanedRepairPending(run *Run, statePath, commandID string, resultsForCommand map[string]time.Time, now time.Time, threshold time.Duration) []Repair {
+	var orphans []struct {
+		taskID string
+		age    time.Duration
+	}
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelError, "R9 orphan_reclaim_load_state command=%s error=%v", commandID, err)
+			}
+			return
+		}
+		if len(state.TaskStates) == 0 {
+			return
+		}
+		// Quiescence grace: repair_pending writes bump UpdatedAt, so a fresh
+		// state file means a repair registration may still be in flight.
+		if updatedAt, err := time.Parse(time.RFC3339, state.UpdatedAt); err == nil {
+			if now.Sub(updatedAt) < r9OrphanReclaimGrace {
+				return
+			}
+		}
+		hasSuccessor := make(map[string]bool, len(state.RetryLineage))
+		for _, predecessorID := range state.RetryLineage {
+			hasSuccessor[predecessorID] = true
+		}
+		for taskID, status := range state.TaskStates {
+			if status != model.StatusRepairPending {
+				continue
+			}
+			if hasSuccessor[taskID] {
+				continue
+			}
+			if _, ok := state.RetryEnqueueFailed[taskID]; ok {
+				continue
+			}
+			anchor, anchorOk := resultsForCommand[taskID]
+			if !anchorOk {
+				if t, perr := time.Parse(time.RFC3339, state.UpdatedAt); perr == nil {
+					anchor = t
+				} else {
+					continue
+				}
+			}
+			age := now.Sub(anchor)
+			if age < threshold {
+				continue
+			}
+			orphans = append(orphans, struct {
+				taskID string
+				age    time.Duration
+			}{taskID: taskID, age: age})
+		}
+	})
+
+	var repairs []Repair
+	for _, o := range orphans {
+		run.Log(core.LogLevelWarn,
+			"R9 repair_pending_orphaned command=%s task=%s age=%s (no repair task registered; crash between transition and registration) -> paused_for_replan",
+			commandID, o.taskID, o.age.Round(time.Second))
+		if !r9AdvanceRepairPendingToReplan(run, statePath, commandID, o.taskID, "repair_pending_orphaned") {
+			continue
+		}
+		repairs = append(repairs, Repair{
+			Pattern:   PatternR9,
+			CommandID: commandID,
+			TaskID:    o.taskID,
+			Detail:    fmt.Sprintf("repair_pending orphaned for %s with no registered repair task; advanced to paused_for_replan", o.age.Round(time.Second)),
+		})
+	}
+	return repairs
 }
 
 // r9ApplyForCommand applies R9 logic to a single command state file under its
@@ -376,7 +476,11 @@ func r9MarkRetryEnqueueFailed(run *Run, statePath, commandID, workerID, taskID s
 	return markErr
 }
 
-func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reason string) {
+// r9AdvanceRepairPendingToReplan moves a repair_pending task to
+// paused_for_replan and queues the durable Planner signal. Returns whether
+// the transition was applied (false when the slot already moved on or the
+// state write failed).
+func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reason string) bool {
 	advanced := false
 	run.Deps.LockMap.WithLock("state:"+commandID, func() {
 		state, err := run.loadState(statePath)
@@ -396,6 +500,7 @@ func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reas
 	if advanced {
 		r9QueuePausedForReplanSignal(run, commandID, taskID, reason)
 	}
+	return advanced
 }
 
 func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
@@ -408,7 +513,7 @@ func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
 	// the same scan cycle. WorkerID and ConflictGeneration are zero-valued
 	// for this signal kind, which is intentional.
 	phaseID := "__task_" + taskID
-	sig := model.PlannerSignal{
+	upsertPlannerSignal(run, model.PlannerSignal{
 		Kind:      "paused_for_replan",
 		CommandID: commandID,
 		PhaseID:   phaseID,
@@ -417,28 +522,6 @@ func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
 			commandID, taskID, reason),
 		CreatedAt: now,
 		UpdatedAt: now,
-	}
-	signalPath := signalQueuePath(run.Deps.MaestroDir)
-	run.Deps.LockMap.WithLock("queue:planner_signals", func() {
-		if err := yamlutil.ReadModifyWrite(signalPath, func(sq *model.PlannerSignalQueue) error {
-			for _, existing := range sq.Signals {
-				if existing.Kind == sig.Kind && existing.CommandID == sig.CommandID &&
-					existing.PhaseID == sig.PhaseID && existing.WorkerID == sig.WorkerID &&
-					existing.ConflictGeneration == sig.ConflictGeneration {
-					return yamlutil.ErrNoUpdate
-				}
-			}
-			if sq.SchemaVersion == 0 {
-				sq.SchemaVersion = 1
-				sq.FileType = "planner_signal_queue"
-			}
-			sq.Signals = append(sq.Signals, sig)
-			return nil
-		}); err != nil {
-			run.Log(core.LogLevelWarn,
-				"R9 paused_for_replan_signal_write_failed command=%s task=%s reason=%q error=%v",
-				commandID, taskID, reason, err)
-		}
 	})
 }
 

@@ -52,11 +52,17 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 			continue
 		}
 
-		terminalResults := make(map[string]model.Status)
+		terminalResults := make(map[string]terminalResultInfo)
 		for _, result := range rf.Results {
-			if model.IsTerminal(result.Status) {
-				terminalResults[result.TaskID] = result.Status
+			if !model.IsTerminal(result.Status) {
+				continue
 			}
+			// Keep the newest terminal result per task so the stale-result
+			// fence in taskQueueAccessor compares against the latest attempt.
+			if existing, ok := terminalResults[result.TaskID]; ok && existing.CreatedAt >= result.CreatedAt {
+				continue
+			}
+			terminalResults[result.TaskID] = terminalResultInfo{Status: result.Status, CreatedAt: result.CreatedAt}
 		}
 		if len(terminalResults) == 0 {
 			continue

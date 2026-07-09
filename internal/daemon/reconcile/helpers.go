@@ -12,6 +12,14 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// terminalResultInfo carries a terminal result's status together with its
+// creation timestamp so queue reconciliation can fence out results that
+// predate the queue row's current dispatch attempt (see StaleResult).
+type terminalResultInfo struct {
+	Status    model.Status
+	CreatedAt string
+}
+
 // queueItemAccessor defines how to access and update a queue item for terminal result reconciliation.
 type queueItemAccessor[T any] struct {
 	// ShouldProcess returns true if this item should be checked against terminal results.
@@ -24,6 +32,13 @@ type queueItemAccessor[T any] struct {
 	TaskID func(*T) string
 	// ApplyUpdate updates the item's status, clears lease fields, and sets UpdatedAt.
 	ApplyUpdate func(*T, model.Status, string)
+	// StaleResult, when non-nil, reports whether the terminal result predates
+	// the item's current attempt so applying it would clobber a live
+	// re-dispatch. result_write fences its terminal transitions with
+	// status+epoch+owner; the result file does not persist the request's
+	// lease epoch, so the reconcile-side fence compares the result's
+	// CreatedAt against the row's dispatch timestamp instead.
+	StaleResult func(*T, string) bool
 }
 
 // reconcileTerminalQueueItems processes queue items, updating those whose terminal result
@@ -31,7 +46,7 @@ type queueItemAccessor[T any] struct {
 // Returns whether modifications were made, the repairs, and the set of repaired command IDs.
 func reconcileTerminalQueueItems[T any](
 	items []T,
-	terminalResults map[string]model.Status,
+	terminalResults map[string]terminalResultInfo,
 	accessor queueItemAccessor[T],
 	run *Run,
 	patternName RepairPatternID,
@@ -47,8 +62,19 @@ func reconcileTerminalQueueItems[T any](
 		}
 
 		matchKey := accessor.MatchKey(item)
-		resultStatus, found := terminalResults[matchKey]
+		result, found := terminalResults[matchKey]
 		if !found {
+			continue
+		}
+
+		// Fencing: a result written before the item's current dispatch belongs
+		// to an earlier attempt. Applying it would terminal-ize a freshly
+		// re-dispatched row and strand the live worker.
+		if accessor.StaleResult != nil && accessor.StaleResult(item, result.CreatedAt) {
+			run.Log(core.LogLevelWarn,
+				"%s stale_result_fenced queue=%s id=%s result_status=%s result_created_at=%s "+
+					"(result predates the row's current dispatch; leaving queue row for the live attempt)",
+				patternName, queueName, matchKey, result.Status, result.CreatedAt)
 			continue
 		}
 
@@ -56,9 +82,9 @@ func reconcileTerminalQueueItems[T any](
 		taskID := accessor.TaskID(item)
 
 		run.Log(core.LogLevelWarn, "%s result_terminal_queue_mismatch queue=%s id=%s result_status=%s",
-			patternName, queueName, matchKey, resultStatus)
+			patternName, queueName, matchKey, result.Status)
 
-		accessor.ApplyUpdate(item, resultStatus, now)
+		accessor.ApplyUpdate(item, result.Status, now)
 		modified = true
 		repairedCommands[commandID] = true
 
@@ -66,7 +92,7 @@ func reconcileTerminalQueueItems[T any](
 			Pattern:   patternName,
 			CommandID: commandID,
 			TaskID:    taskID,
-			Detail:    fmt.Sprintf("queue %s updated to %s", queueName, resultStatus),
+			Detail:    fmt.Sprintf("queue %s updated to %s", queueName, result.Status),
 		})
 	}
 
@@ -81,7 +107,7 @@ func reconcileTerminalQueue[Q any, T any](
 	patternName RepairPatternID,
 	queueName string,
 	queuePath string,
-	terminalResults map[string]model.Status,
+	terminalResults map[string]terminalResultInfo,
 	unmarshalQueue func(data []byte) (Q, []T, error),
 	setItems func(Q, []T) Q,
 	accessor queueItemAccessor[T],
@@ -131,6 +157,25 @@ func taskQueueAccessor() queueItemAccessor[model.Task] {
 			t.LeaseOwner = nil
 			t.LeaseExpiresAt = nil
 			t.UpdatedAt = now
+		},
+		// A result strictly older than the row's in_progress transition was
+		// written by a previous attempt of the same task ID (crash recovery
+		// results always postdate their own dispatch). Same-timestamp results
+		// pass so second-granularity RFC3339 does not fence a legitimate
+		// crash-recovery repair.
+		StaleResult: func(t *model.Task, resultCreatedAt string) bool {
+			if t.InProgressAt == nil || resultCreatedAt == "" {
+				return false
+			}
+			inProgressAt, err := time.Parse(time.RFC3339, *t.InProgressAt)
+			if err != nil {
+				return false
+			}
+			createdAt, err := time.Parse(time.RFC3339, resultCreatedAt)
+			if err != nil {
+				return false
+			}
+			return createdAt.Before(inProgressAt)
 		},
 	}
 }

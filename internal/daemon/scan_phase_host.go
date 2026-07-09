@@ -54,12 +54,16 @@ func (qh *QueueHandler) executeDeferredReconcileNotifications(notifications []De
 	if qh.reconciler == nil || len(notifications) == 0 {
 		return
 	}
+	// ExecuteDeferredNotifications performs per-kind failure recovery itself
+	// (one-shot guard rollback for R7/R8, durable fill_timeout signal for
+	// R6), so a failed delivery here re-emits on a following scan instead of
+	// being silently dropped.
 	failed := qh.reconciler.ExecuteDeferredNotifications(notifications)
 	if len(failed) == 0 {
 		return
 	}
 	for _, n := range failed {
-		qh.log(LogLevelWarn, "reconciler_notification_failed kind=%s command_id=%s", n.Kind, n.CommandID)
+		qh.log(LogLevelWarn, "reconciler_notification_failed kind=%s command_id=%s (recovery scheduled; re-emits on a later scan)", n.Kind, n.CommandID)
 	}
 	qh.log(LogLevelWarn, "reconciler_notifications_failed count=%d", len(failed))
 }

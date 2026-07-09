@@ -1261,9 +1261,12 @@ func TestRemoveCommandFromPlannerQueue_NoQueueFile(t *testing.T) {
 	// No planner.yaml exists — should remove queue dir to test missing file
 	os.Remove(filepath.Join(maestroDir, "queue", "planner.yaml"))
 
-	err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
+	removed, err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
+	}
+	if removed != nil {
+		t.Errorf("expected nil removed command, got %+v", removed)
 	}
 }
 
@@ -1281,9 +1284,12 @@ func TestRemoveCommandFromPlannerQueue_CommandNotFound(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
 
 	run := newRun(&deps)
-	err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
+	removed, err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
+	}
+	if removed != nil {
+		t.Errorf("expected nil removed command, got %+v", removed)
 	}
 
 	// Original command should still be there

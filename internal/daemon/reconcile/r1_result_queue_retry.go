@@ -361,7 +361,11 @@ func r1BuildRetryTask(original *model.Task, retryTaskID string, clock core.Clock
 	return retryTask
 }
 
-// r1AddTaskToQueue appends a task to the worker's queue file.
+// r1AddTaskToQueue upserts a task into the worker's queue file: the existence
+// check and the append run under the same queue lock acquisition, so a caller
+// whose pre-check (e.g. r1TaskExistsInQueue) raced a concurrent enqueue cannot
+// produce a duplicate row. An already-present task ID is treated as success —
+// the caller's goal ("task is in the queue") is met.
 // Acquires queue lock internally.
 func r1AddTaskToQueue(run *Run, workerID string, task *model.Task) error {
 	queuePath := taskQueuePath(run.Deps.MaestroDir, workerID)
@@ -382,6 +386,14 @@ func r1AddTaskToQueue(run *Run, workerID string, task *model.Task) error {
 	} else {
 		tq.SchemaVersion = 1
 		tq.FileType = "queue_task"
+	}
+
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == task.ID {
+			run.Log(core.LogLevelInfo, "R1 add_task_already_in_queue worker=%s task=%s (upsert no-op)",
+				workerID, task.ID)
+			return nil
+		}
 	}
 
 	tq.Tasks = append(tq.Tasks, *task)

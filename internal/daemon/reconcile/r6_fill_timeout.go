@@ -127,6 +127,68 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 	return Outcome{Repairs: repairs, Notifications: notifications}
 }
 
+// r6QueueFillTimeoutSignals writes durable fill_timeout planner signals for
+// phases that are still timed_out, as the recovery path for a failed
+// NotifyFillTimeout delivery. The timed_out transition itself must not be
+// rolled back (the deadline genuinely expired and cascade cancellations were
+// already applied), and R6 only scans awaiting_fill phases so it never
+// re-fires for a phase that already transitioned — a dropped delivery used to
+// silence the timeout forever. The planner signal queue is retained with
+// retry/backoff until delivered and auto-removes the signal when the phase
+// leaves timed_out, which is exactly the durable re-delivery this path needs
+// (the daemon's own Phase A transition writer uses the same channel and the
+// same message format).
+func r6QueueFillTimeoutSignals(run *Run, commandID string, timedOutPhases map[string]bool) {
+	if len(timedOutPhases) == 0 {
+		return
+	}
+	statePath := filepath.Join(run.Deps.MaestroDir, "state", "commands", commandID+".yaml")
+
+	type phaseRef struct {
+		id   string
+		name string
+	}
+	var refs []phaseRef
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelWarn, "R6 fallback_signal_load_state command=%s error=%v", commandID, err)
+			}
+			return
+		}
+		for i := range state.Phases {
+			phase := &state.Phases[i]
+			if !timedOutPhases[phase.Name] {
+				continue
+			}
+			if phase.Status != model.PhaseStatusTimedOut {
+				continue // phase moved on since; the signal would be stale
+			}
+			refs = append(refs, phaseRef{id: phase.PhaseID, name: phase.Name})
+		}
+	})
+
+	now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+	for _, ref := range refs {
+		// Same message format as the Phase A transition writer so the
+		// Planner-side handling is uniform.
+		upsertPlannerSignal(run, model.PlannerSignal{
+			Kind:      "fill_timeout",
+			CommandID: commandID,
+			PhaseID:   ref.id,
+			PhaseName: ref.name,
+			Message: fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phase:%s\nfill deadline expired",
+				commandID, ref.name),
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+		run.Log(core.LogLevelInfo,
+			"R6 fill_timeout_signal_queued command=%s phase=%s (deferred notification delivery failed; durable signal takes over)",
+			commandID, ref.name)
+	}
+}
+
 // cascadeCancelTimedOutPhases propagates cancellation from timedOutPhases to all
 // transitively dependent pending/awaiting_fill phases. Returns true if any phase
 // was cancelled, along with the accumulated repairs and full set of cancelled phase names.

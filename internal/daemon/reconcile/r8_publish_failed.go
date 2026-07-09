@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -97,4 +98,38 @@ func (R8PublishFailed) Apply(run *Run) Outcome {
 	}
 
 	return Outcome{Repairs: repairs, Notifications: notifications}
+}
+
+// r8ClearPublishStallSignaled rolls back the StallSignaled one-shot guard
+// when the NotifyPublishQuarantined delivery failed. The guard is persisted
+// optimistically during Apply — before delivery is attempted — so a transient
+// pane failure used to leave StallSignaled=true forever and the quarantined
+// command was never escalated to anyone. Clearing the guard lets the next
+// scan re-detect the quarantine and re-emit; duplicate deliveries are
+// tolerated downstream.
+func r8ClearPublishStallSignaled(run *Run, commandID string) {
+	statePath := filepath.Join(run.Deps.MaestroDir, "state", "worktrees", commandID+".yaml")
+	run.Deps.LockMap.WithLock("worktree:"+commandID, func() {
+		state, err := run.loadWorktreeState(statePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelWarn, "R8 rollback_load_worktree_state command=%s error=%v", commandID, err)
+			}
+			return
+		}
+		if state.Integration.Status != model.IntegrationStatusQuarantined || !state.Integration.StallSignaled {
+			return
+		}
+		state.Integration.StallSignaled = false
+		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+			run.Log(core.LogLevelError,
+				"R8 rollback_write_worktree_state command=%s error=%v (escalation stays guarded until an operator/Planner acts)",
+				commandID, err)
+			return
+		}
+		run.Log(core.LogLevelInfo,
+			"R8 stall_signaled_rolled_back command=%s (publish_quarantined delivery failed; next scan re-emits)",
+			commandID)
+	})
 }

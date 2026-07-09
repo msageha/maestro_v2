@@ -19,10 +19,10 @@ func (R3PlannerQueue) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
-	terminalResults := make(map[string]model.Status)
+	terminalResults := make(map[string]terminalResultInfo)
 	for _, result := range rf.Results {
 		if model.IsTerminal(result.Status) {
-			terminalResults[result.CommandID] = result.Status
+			terminalResults[result.CommandID] = terminalResultInfo{Status: result.Status, CreatedAt: result.CreatedAt}
 		}
 	}
 	if len(terminalResults) == 0 {

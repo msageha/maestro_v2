@@ -93,11 +93,19 @@ func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 
 // ExecuteDeferredNotifications sends collected Planner notifications via agent executor.
 // Returns the list of notifications that failed to deliver, enabling the caller to retry.
+//
+// Delivery failures additionally trigger per-kind recovery
+// (recoverFailedNotification): the emitting patterns persist their one-shot
+// guards optimistically during Apply — before delivery is attempted — so a
+// dropped delivery must either roll the guard back (R7/R8) or hand the
+// message to the durable planner-signal queue (R6). Without this, a single
+// transient pane failure permanently silenced the escalation.
 func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotification) []DeferredNotification {
 	if e.deps.ExecutorFactory == nil {
 		return notifications
 	}
 	var failed []DeferredNotification
+	var run *Run // lazily created; only needed for failure recovery
 	for _, n := range notifications {
 		var err error
 		switch n.Kind {
@@ -118,10 +126,34 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 			continue
 		}
 		if err != nil {
+			if run == nil {
+				run = newRun(&e.deps)
+			}
+			recoverFailedNotification(run, n)
 			failed = append(failed, n)
 		}
 	}
 	return failed
+}
+
+// recoverFailedNotification arranges re-delivery for a notification whose
+// pane delivery failed. Guard-bearing kinds roll their persisted one-shot
+// guard back so the next reconcile scan re-detects and re-emits; R6's
+// fill_timeout hands over to the durable planner-signal queue because its
+// state transition (phase → timed_out + cascade cancels) is correct and must
+// not be reverted. Kinds without a persistence guard (re_fill, re_evaluate,
+// conflict_resolution) need no recovery here: re_fill is backstopped by the
+// daemon's recurring awaiting_fill signals and conflict_resolution by R7's
+// resolving-stall reset.
+func recoverFailedNotification(run *Run, n DeferredNotification) {
+	switch n.Kind {
+	case NotifyPublishQuarantined:
+		r8ClearPublishStallSignaled(run, n.CommandID)
+	case NotifyConflictEscalation:
+		r7ClearConflictEscalated(run, n.CommandID, n.WorkerID)
+	case NotifyFillTimeout:
+		r6QueueFillTimeoutSignals(run, n.CommandID, n.TimedOutPhases)
+	}
 }
 
 // createExecutor creates an AgentExecutor via the factory, logging and returning

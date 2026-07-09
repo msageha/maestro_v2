@@ -200,3 +200,46 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 
 	return Outcome{Repairs: repairs, Notifications: notifications}
 }
+
+// r7ClearConflictEscalated rolls back the ConflictEscalated one-shot guard
+// when the NotifyConflictEscalation delivery failed. The guard is persisted
+// optimistically during Apply — before delivery is attempted — so a transient
+// pane failure used to leave ConflictEscalated=true forever and the exhausted
+// conflict was never escalated to the Planner. Clearing the guard lets the
+// next scan re-detect the exhausted attempts and re-emit; the escalation
+// branch is state-free otherwise, so this is safe to repeat.
+func r7ClearConflictEscalated(run *Run, commandID, workerID string) {
+	statePath := filepath.Join(run.Deps.MaestroDir, "state", "worktrees", commandID+".yaml")
+	run.Deps.LockMap.WithLock("worktree:"+commandID, func() {
+		state, err := run.loadWorktreeState(statePath)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelWarn, "R7 rollback_load_worktree_state command=%s worker=%s error=%v", commandID, workerID, err)
+			}
+			return
+		}
+		for i := range state.Workers {
+			ws := &state.Workers[i]
+			if ws.WorkerID != workerID {
+				continue
+			}
+			if ws.Status != model.WorktreeStatusConflict || !ws.ConflictEscalated {
+				return // worker moved on (recovery action ran); honour the new state
+			}
+			now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+			ws.ConflictEscalated = false
+			ws.UpdatedAt = now
+			state.UpdatedAt = now
+			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+				run.Log(core.LogLevelError,
+					"R7 rollback_write_worktree_state command=%s worker=%s error=%v (escalation stays guarded until recovery clears it)",
+					commandID, workerID, err)
+				return
+			}
+			run.Log(core.LogLevelInfo,
+				"R7 conflict_escalated_rolled_back command=%s worker=%s (conflict_escalation delivery failed; next scan re-emits)",
+				commandID, workerID)
+			return
+		}
+	})
+}

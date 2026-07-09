@@ -74,6 +74,68 @@ func (r *Run) updateLastReconciledAt(commandID string) {
 	})
 }
 
+// writeSyntheticPlannerFailedResult appends a synthetic failed CommandResult
+// to results/planner.yaml on behalf of a Planner that can no longer produce a
+// real one (R0 tore the command down; R10's Planner went silent past the
+// paused_for_replan deadletter window). The single write drives the standard
+// terminal propagation chain — R3 reconciles the planner queue, R4 reconciles
+// state.plan_status, and the result_notification pipeline informs the
+// orchestrator — without requiring further Planner cooperation.
+//
+// Idempotent: if results/planner.yaml already has a result for commandID the
+// write is skipped silently (the Planner may have raced us with a real
+// result, or a prior cycle already wrote ours).
+func writeSyntheticPlannerFailedResult(run *Run, pattern RepairPatternID, commandID, summary string) {
+	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
+	run.Deps.LockMap.WithLock("result:planner", func() {
+		rf, err := run.loadCommandResultFile(resultPath)
+		if err != nil {
+			run.Log(core.LogLevelWarn,
+				"%s synthetic_planner_result_load_failed command=%s error=%v "+
+					"(terminal propagation skipped this cycle; will retry next scan)",
+				pattern, commandID, err)
+			return
+		}
+		for _, r := range rf.Results {
+			if r.CommandID == commandID {
+				return // idempotent: already have a result for this command
+			}
+		}
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			run.Log(core.LogLevelWarn,
+				"%s synthetic_planner_result_id_failed command=%s error=%v",
+				pattern, commandID, err)
+			return
+		}
+		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+		}
+		if rf.FileType == "" {
+			rf.FileType = "result_command"
+		}
+		rf.Results = append(rf.Results, model.CommandResult{
+			ID:        resultID,
+			CommandID: commandID,
+			Status:    model.StatusFailed,
+			Summary:   summary,
+			CreatedAt: nowStr,
+		})
+		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+			run.Log(core.LogLevelError,
+				"%s synthetic_planner_result_write_failed command=%s error=%v "+
+					"(terminal propagation deferred to next scan)",
+				pattern, commandID, err)
+			return
+		}
+		run.Log(core.LogLevelInfo,
+			"%s synthetic_planner_result command=%s status=failed "+
+				"(R3/R4 walk planner queue + state.plan_status to failed; result_notification informs the orchestrator)",
+			pattern, commandID)
+	})
+}
+
 // quarantineCommandResult removes a specific result from results/planner.yaml and writes it to quarantine/.
 func (r *Run) quarantineCommandResult(resultPath string, result model.CommandResult) error {
 	quarantineDir := filepath.Join(r.Deps.MaestroDir, "quarantine")

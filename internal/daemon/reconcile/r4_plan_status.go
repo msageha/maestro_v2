@@ -82,6 +82,49 @@ func NewR4PlanStatus(tracker *BackoffTracker) *R4PlanStatus {
 	return &R4PlanStatus{backoffs: tracker}
 }
 
+// r4RetryableCanCompleteState mirrors the transient conditions that
+// plan.CanComplete reports via its package-private retryableError: an
+// unresolved A/B candidate race, a phase mid-fill, or a phase whose tasks all
+// finished but whose status lags behind the daemon's merge_recorded gate. All
+// of these resolve on a following scan without operator action. The error
+// type is unexported from internal/plan and the evaluator arrives through
+// core.CanCompleteFunc, so R4 re-derives retryability structurally from the
+// same state snapshot it handed to the evaluator. Under-classification is
+// safe: it falls back to the pre-existing quarantine path.
+func r4RetryableCanCompleteState(state *model.CommandState) bool {
+	for _, g := range state.CandidateGroups {
+		if g != nil && g.Status.IsUnresolved() {
+			return true
+		}
+	}
+	for i := range state.Phases {
+		phase := &state.Phases[i]
+		if phase.Status == model.PhaseStatusFilling {
+			return true
+		}
+		if model.IsPhaseTerminal(phase.Status) || len(phase.TaskIDs) == 0 {
+			continue
+		}
+		// Merge-gate window: every task of the phase already reached
+		// completed (or cancelled-as-superseded) but the phase transition is
+		// deferred on the merge_recorded gate. Raw TaskStates is a
+		// conservative subset of plan's lineage-aware effective statuses:
+		// lineage-only cases fall through to quarantine, same as before.
+		allDone := true
+		for _, tid := range phase.TaskIDs {
+			ts, ok := state.TaskStates[tid]
+			if !ok || (ts != model.StatusCompleted && ts != model.StatusCancelled) {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			return true
+		}
+	}
+	return false
+}
+
 // r4BackoffCycles returns the number of cycles to skip after the nth consecutive failure.
 // Exponential: 1, 2, 4, 8 (capped at 8).
 func r4BackoffCycles(failures int) int {
@@ -168,6 +211,19 @@ func (r *R4PlanStatus) Apply(run *Run) Outcome {
 			derivedStatus, canCompleteErr := run.Deps.CanComplete(state)
 			if canCompleteErr != nil {
 				r.backoffs.recordFailure(commandID)
+				// Retryable failures (phase mid-fill, A/B selection in
+				// progress, merge_recorded gate) resolve on a following scan
+				// without operator action. Quarantining on those deleted the
+				// planner result permanently while recovery depended on a
+				// single re_evaluate notification delivery (D-F2). Backoff is
+				// still recorded so a long-lived transient does not hammer
+				// the evaluator every scan.
+				if r4RetryableCanCompleteState(state) {
+					run.Log(core.LogLevelInfo,
+						"R4 can_complete_retryable command=%s error=%v (transient fill/selection/merge-gate state; deferring to next scan instead of quarantining)",
+						commandID, canCompleteErr)
+					return r4Outcome{}
+				}
 				run.Log(core.LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
 					commandID, canCompleteErr)
 				return r4Outcome{

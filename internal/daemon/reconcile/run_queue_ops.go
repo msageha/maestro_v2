@@ -14,8 +14,11 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// removeCommandFromPlannerQueue removes a command from queue/planner.yaml entirely.
-func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
+// removeCommandFromPlannerQueue removes a command from queue/planner.yaml
+// entirely. The removed row is returned so the caller can re-insert it as
+// compensation when a later phase vetoes the repair (R0's Phase 3 re-check).
+// Returns (nil, nil) when the queue file or the command row does not exist.
+func (r *Run) removeCommandFromPlannerQueue(commandID string) (*model.Command, error) {
 	r.Deps.LockMap.Lock("queue:planner")
 	defer r.Deps.LockMap.Unlock("queue:planner")
 
@@ -23,42 +26,92 @@ func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("read planner queue: %w", err)
+		return nil, fmt.Errorf("read planner queue: %w", err)
 	}
 	var cq model.CommandQueue
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return fmt.Errorf("parse planner queue: %w", err)
+		return nil, fmt.Errorf("parse planner queue: %w", err)
 	}
 
+	var removed *model.Command
 	filtered := make([]model.Command, 0, len(cq.Commands))
-	for _, cmd := range cq.Commands {
-		if cmd.ID != commandID {
-			filtered = append(filtered, cmd)
+	for i := range cq.Commands {
+		if cq.Commands[i].ID == commandID {
+			cp := cq.Commands[i]
+			removed = &cp
+			continue
 		}
+		filtered = append(filtered, cq.Commands[i])
 	}
-	if len(filtered) == len(cq.Commands) {
-		return nil
+	if removed == nil {
+		return nil, nil
 	}
 	cq.Commands = filtered
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		r.Log(core.LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
-		return fmt.Errorf("write planner queue: %w", err)
+		return nil, fmt.Errorf("write planner queue: %w", err)
 	}
-	return nil
+	return removed, nil
 }
 
-// removeTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
-func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
-	queueDir := queueDirPath(r.Deps.MaestroDir)
-	entries, err := os.ReadDir(queueDir)
-	if err != nil {
-		if os.IsNotExist(err) {
+// restoreCommandToPlannerQueue re-inserts a command row removed by
+// removeCommandFromPlannerQueue when a later phase vetoes the repair.
+// Idempotent: skips when the command ID is already present.
+func (r *Run) restoreCommandToPlannerQueue(cmd model.Command) {
+	r.Deps.LockMap.WithLock("queue:planner", func() {
+		queuePath := commandQueuePath(r.Deps.MaestroDir)
+		if err := yamlutil.ReadModifyWrite(queuePath, func(cq *model.CommandQueue) error {
+			for i := range cq.Commands {
+				if cq.Commands[i].ID == cmd.ID {
+					return yamlutil.ErrNoUpdate
+				}
+			}
+			if cq.SchemaVersion == 0 {
+				cq.SchemaVersion = 1
+				cq.FileType = "queue_command"
+			}
+			cq.Commands = append(cq.Commands, cmd)
 			return nil
+		}); err != nil {
+			r.Log(core.LogLevelError, "R0 command_restore_failed command=%s error=%v", cmd.ID, err)
+			return
 		}
-		return fmt.Errorf("read queue dir: %w", err)
+		r.Log(core.LogLevelInfo, "R0 command_restored command=%s (repair vetoed; planner queue row re-inserted)", cmd.ID)
+	})
+}
+
+// preDispatchRemovable reports whether a queue row is still in a pre-dispatch
+// status and can be removed without stranding a live worker.
+func preDispatchRemovable(s model.Status) bool {
+	switch s {
+	case model.StatusPending, model.StatusPlanned, model.StatusReady:
+		return true
+	}
+	return false
+}
+
+// removeCommandTasksFromWorkerQueues removes the command's pre-dispatch
+// (pending / planned / ready) tasks from every worker queue. Rows that
+// advanced past pre-dispatch are left in place and reported via keptActive so
+// the caller can veto the repair — deleting a dispatched row would strand a
+// live worker whose result_write then fails with task-not-found. Terminal
+// rows are also left in place (harmless history) and are NOT counted as
+// active. Removed rows are returned for compensation re-insert via
+// restoreQueueEntries.
+func (r *Run) removeCommandTasksFromWorkerQueues(commandID string) (removed map[string]removedQueueEntry, keptActive map[string]bool, err error) {
+	removed = make(map[string]removedQueueEntry)
+	keptActive = make(map[string]bool)
+
+	queueDir := queueDirPath(r.Deps.MaestroDir)
+	entries, dirErr := os.ReadDir(queueDir)
+	if dirErr != nil {
+		if os.IsNotExist(dirErr) {
+			return removed, keptActive, nil
+		}
+		return removed, keptActive, fmt.Errorf("read queue dir: %w", dirErr)
 	}
 
 	var writeErrs []error
@@ -82,20 +135,28 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 				if os.IsNotExist(err) {
 					return nil
 				}
-				r.Log(core.LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
-				return nil
+				return fmt.Errorf("read %s: %w", name, err)
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				r.Log(core.LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
-				return nil
+				return fmt.Errorf("parse %s: %w", name, err)
 			}
 
 			filtered := make([]model.Task, 0, len(tq.Tasks))
 			for _, task := range tq.Tasks {
-				if task.CommandID != commandID {
-					filtered = append(filtered, task)
+				if task.CommandID == commandID {
+					if preDispatchRemovable(task.Status) {
+						removed[task.ID] = removedQueueEntry{workerID: workerID, task: task}
+						continue
+					}
+					if !model.IsTerminal(task.Status) {
+						keptActive[task.ID] = true
+						r.Log(core.LogLevelWarn,
+							"R0 remove_tasks_skip_active file=%s task=%s status=%s (row advanced past pre-dispatch; keeping)",
+							name, task.ID, task.Status)
+					}
 				}
+				filtered = append(filtered, task)
 			}
 			if len(filtered) == len(tq.Tasks) {
 				return nil
@@ -113,9 +174,9 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 	}
 
 	if len(writeErrs) > 0 {
-		return writeErrs[0]
+		return removed, keptActive, errors.Join(writeErrs...)
 	}
-	return nil
+	return removed, keptActive, nil
 }
 
 // batchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
@@ -142,14 +203,6 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed map[string
 	removeSet := make(map[string]struct{}, len(taskIDs))
 	for _, id := range taskIDs {
 		removeSet[id] = struct{}{}
-	}
-
-	removable := func(s model.Status) bool {
-		switch s {
-		case model.StatusPending, model.StatusPlanned, model.StatusReady:
-			return true
-		}
-		return false
 	}
 
 	queueDir := queueDirPath(r.Deps.MaestroDir)
@@ -186,7 +239,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed map[string
 			filtered := make([]model.Task, 0, len(tq.Tasks))
 			for _, task := range tq.Tasks {
 				if _, remove := removeSet[task.ID]; remove {
-					if removable(task.Status) {
+					if preDispatchRemovable(task.Status) {
 						removed[task.ID] = removedQueueEntry{workerID: workerID, task: task}
 						continue
 					}
@@ -216,6 +269,38 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) (removed map[string
 		return removed, keptActive, errors.Join(writeErrs...)
 	}
 	return removed, keptActive, nil
+}
+
+// upsertPlannerSignal appends sig to queue/planner_signals.yaml unless a
+// signal with the same canonical dedup key — (Kind, CommandID, PhaseID,
+// WorkerID, ConflictGeneration), see the daemon's signalDedupKey — already
+// exists. The signal queue is the durable at-least-once Planner delivery
+// channel (retained with retry/backoff until delivered, removed when stale),
+// used by reconcile rules whose one-shot notification would otherwise be
+// lost on a transient pane failure.
+func upsertPlannerSignal(run *Run, sig model.PlannerSignal) {
+	signalPath := signalQueuePath(run.Deps.MaestroDir)
+	run.Deps.LockMap.WithLock("queue:planner_signals", func() {
+		if err := yamlutil.ReadModifyWrite(signalPath, func(sq *model.PlannerSignalQueue) error {
+			for _, existing := range sq.Signals {
+				if existing.Kind == sig.Kind && existing.CommandID == sig.CommandID &&
+					existing.PhaseID == sig.PhaseID && existing.WorkerID == sig.WorkerID &&
+					existing.ConflictGeneration == sig.ConflictGeneration {
+					return yamlutil.ErrNoUpdate
+				}
+			}
+			if sq.SchemaVersion == 0 {
+				sq.SchemaVersion = 1
+				sq.FileType = "planner_signal_queue"
+			}
+			sq.Signals = append(sq.Signals, sig)
+			return nil
+		}); err != nil {
+			run.Log(core.LogLevelWarn,
+				"planner_signal_upsert_failed kind=%s command=%s phase=%s error=%v",
+				sig.Kind, sig.CommandID, sig.PhaseID, err)
+		}
+	})
 }
 
 // removedQueueEntry captures a queue row deleted by

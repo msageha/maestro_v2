@@ -33,16 +33,19 @@ import (
 //
 // R10 is intentionally conservative:
 //   - 0 threshold disables the rule entirely (operator opt-out);
-//   - elapsed time is measured against state.UpdatedAt because no result file
-//     is rewritten when the daemon advances state to paused_for_replan;
+//   - elapsed time is measured per task against the task's most recent worker
+//     result (falling back to state.UpdatedAt when no result exists) — see
+//     r10ResolveTaskStaleAnchor for why the command-level UpdatedAt anchor
+//     could defer escalation indefinitely;
 //   - the daemon emits a deadletter log so the operator sees the
 //     escalation in the same channel as R7/R8/R9 deadletters.
 type R10PausedForReplanDeadletter struct{}
 
 // Apply scans every command state file, identifies paused_for_replan tasks
-// whose state.UpdatedAt is older than the configured threshold, and rewrites
-// their TaskStates entry to failed. Sibling daemon plumbing (the dependency
-// resolver, queue reconciler, and publish gate) reacts on the next scan.
+// whose per-task stale anchor is older than the configured threshold, and
+// rewrites their TaskStates entry to failed. Sibling daemon plumbing (the
+// dependency resolver, queue reconciler, and publish gate) reacts on the next
+// scan.
 func (R10PausedForReplanDeadletter) Apply(run *Run) Outcome {
 	thresholdSec := run.Deps.Config.Verify.EffectivePausedForReplanDeadletterSec()
 	if thresholdSec <= 0 {
@@ -56,6 +59,8 @@ func (R10PausedForReplanDeadletter) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
+	resultTimestamps := r9LoadResultTimestamps(run)
+
 	now := run.Deps.Clock.Now().UTC()
 	var repairs []Repair
 
@@ -66,7 +71,7 @@ func (R10PausedForReplanDeadletter) Apply(run *Run) Outcome {
 		}
 		commandID := strings.TrimSuffix(name, ".yaml")
 		statePath := filepath.Join(stateDir, name)
-		commandRepairs := r10ApplyForCommand(run, statePath, commandID, now, threshold)
+		commandRepairs := r10ApplyForCommand(run, statePath, commandID, resultTimestamps[commandID], now, threshold)
 		repairs = append(repairs, commandRepairs...)
 	}
 
@@ -87,21 +92,20 @@ type r10Candidate struct {
 // honoured even at internal call boundaries:
 //
 //  1. Read-only Phase 1 under the state lock: identify candidates whose
-//     UpdatedAt anchor is older than the threshold.
+//     per-task stale anchor is older than the threshold.
 //  2. Per-candidate queue work under each queue lock (state lock released):
 //     find the owning worker (transient I/O errors propagate so we do NOT
 //     advance state for them) and overwrite the queue task to failed.
 //  3. Phase 3 reacquires the state lock, re-verifies that each successful
 //     candidate is still at paused_for_replan, and writes state to failed.
 //
-// The freshness check uses state.UpdatedAt because every
-// advanceRepairPendingToPausedForReplan path bumps it to the same RFC3339
-// timestamp as the status mutation; if the timestamp is unparseable the
-// task is logged and skipped. Two-phase queue→state ordering means
-// failures in Phase 2 leave the state at paused_for_replan so the next
-// scan retries (r10MarkQueueTaskFailed is idempotent on already-failed
-// queue rows).
-func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, threshold time.Duration) []Repair {
+// The freshness check uses the task's most recent worker result timestamp
+// (r10ResolveTaskStaleAnchor) with state.UpdatedAt as the fallback; if no
+// parseable anchor exists the task is logged and skipped. Two-phase
+// queue→state ordering means failures in Phase 2 leave the state at
+// paused_for_replan so the next scan retries (r10MarkQueueTaskFailed is
+// idempotent on already-failed queue rows).
+func r10ApplyForCommand(run *Run, statePath, commandID string, resultsForCommand map[string]time.Time, now time.Time, threshold time.Duration) []Repair {
 	// Phase 1: identify candidates under state lock (no queue locks here).
 	var candidates []r10Candidate
 	stateLoaded := false
@@ -117,20 +121,20 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 		if state.TaskStates == nil {
 			return
 		}
-		startedAt, anchorOk := r10ResolveStaleAnchor(state)
-		if !anchorOk {
-			run.Log(core.LogLevelDebug,
-				"R10 skip command=%s reason=stale_anchor_unparseable updated_at=%q "+
-					"(no R10 candidates evaluated; operator inspection may be required)",
-				commandID, state.UpdatedAt)
-			return
-		}
-		age := now.Sub(startedAt)
-		if age < threshold {
-			return
-		}
 		for taskID, status := range state.TaskStates {
 			if status != model.StatusPausedForReplan {
+				continue
+			}
+			startedAt, anchorOk := r10ResolveTaskStaleAnchor(state, taskID, resultsForCommand)
+			if !anchorOk {
+				run.Log(core.LogLevelDebug,
+					"R10 skip command=%s task=%s reason=stale_anchor_unparseable updated_at=%q "+
+						"(candidate not evaluated; operator inspection may be required)",
+					commandID, taskID, state.UpdatedAt)
+				continue
+			}
+			age := now.Sub(startedAt)
+			if age < threshold {
 				continue
 			}
 			candidates = append(candidates, r10Candidate{taskID: taskID, age: age})
@@ -292,79 +296,28 @@ func r10ApplyForCommand(run *Run, statePath, commandID string, now time.Time, th
 	// keeps optional failures from forcing a command-wide failure unless
 	// the operator opted in.
 	if requiredTaskEscalated {
-		r10WriteSyntheticPlannerFailedResult(run, commandID)
+		writeSyntheticPlannerFailedResult(run, PatternR10, commandID,
+			"synthetic_failure: paused_for_replan deadletter — planner did not act within configured window (R10)")
 	}
 
 	return commandRepairs
 }
 
-// r10WriteSyntheticPlannerFailedResult appends a synthetic failed
-// CommandResult to results/planner.yaml on behalf of a Planner that
-// went silent past the paused_for_replan deadletter window. R3 will
-// then reconcile the planner queue (in_progress → failed) and R4 will
-// reconcile state.PlanStatus on the next scan, so this single write
-// drives the whole "command goes terminal" propagation chain without
-// requiring further Planner cooperation.
-//
-// Idempotent: if results/planner.yaml already has a result for
-// commandID we skip silently (the Planner may have raced us with a
-// real result, or a prior R10 cycle already wrote ours).
-func r10WriteSyntheticPlannerFailedResult(run *Run, commandID string) {
-	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
-	run.Deps.LockMap.WithLock("result:planner", func() {
-		rf, err := run.loadCommandResultFile(resultPath)
-		if err != nil {
-			run.Log(core.LogLevelWarn,
-				"R10 synthetic_planner_result_load_failed command=%s error=%v "+
-					"(planner queue terminal propagation skipped this cycle; will retry next scan)",
-				commandID, err)
-			return
-		}
-		for _, r := range rf.Results {
-			if r.CommandID == commandID {
-				return // idempotent: already have a result for this command
-			}
-		}
-		resultID, err := model.GenerateID(model.IDTypeResult)
-		if err != nil {
-			run.Log(core.LogLevelWarn,
-				"R10 synthetic_planner_result_id_failed command=%s error=%v",
-				commandID, err)
-			return
-		}
-		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
-		if rf.SchemaVersion == 0 {
-			rf.SchemaVersion = 1
-		}
-		if rf.FileType == "" {
-			rf.FileType = "result_command"
-		}
-		rf.Results = append(rf.Results, model.CommandResult{
-			ID:        resultID,
-			CommandID: commandID,
-			Status:    model.StatusFailed,
-			Summary:   "synthetic_failure: paused_for_replan deadletter — planner did not act within configured window (R10)",
-			CreatedAt: nowStr,
-		})
-		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			run.Log(core.LogLevelError,
-				"R10 synthetic_planner_result_write_failed command=%s error=%v "+
-					"(planner queue terminal propagation deferred to next scan)",
-				commandID, err)
-			return
-		}
-		run.Log(core.LogLevelInfo,
-			"R10 synthetic_planner_result command=%s status=failed "+
-				"(R3/R4 will pick up the terminal-result mismatch and walk planner queue + state.plan_status to failed)",
-			commandID)
-	})
-}
-
-// r10ResolveStaleAnchor extracts the timestamp R10 uses to measure "how long
-// has this task been in paused_for_replan?". state.UpdatedAt is updated on the
-// same write that sets paused_for_replan and is therefore a tight upper bound
-// on the wait duration. Returns (zero, false) when no parseable anchor exists.
-func r10ResolveStaleAnchor(state *model.CommandState) (time.Time, bool) {
+// r10ResolveTaskStaleAnchor extracts the timestamp R10 uses to measure "how
+// long has this task been in paused_for_replan?" for a single task. The
+// task's most recent worker result is preferred: it is written before the
+// pause transition and never moves when unrelated tasks touch the state
+// file, so escalation cannot be deferred indefinitely by sibling reconcile
+// writes (the previous command-level state.UpdatedAt anchor reset on every
+// write, letting an active sibling task postpone the deadletter forever).
+// The result timestamp predates the actual pause by the verify/repair
+// window, so escalation fires slightly early rather than late.
+// state.UpdatedAt remains the fallback for tasks with no result on disk.
+// Returns (zero, false) when no parseable anchor exists.
+func r10ResolveTaskStaleAnchor(state *model.CommandState, taskID string, resultsForCommand map[string]time.Time) (time.Time, bool) {
+	if t, ok := resultsForCommand[taskID]; ok {
+		return t.UTC(), true
+	}
 	if state.UpdatedAt == "" {
 		return time.Time{}, false
 	}
