@@ -128,6 +128,9 @@ func (qh *QueueHandler) SetPhaseCManager(m *PhaseCManager) {
 	defer qh.initMu.Unlock()
 	qh.phaseC = m
 	qh.resultHandler.SetPhaseCManager(m)
+	// C-5 repair loop: retry tasks get their predecessor's proven repair
+	// strategy injected at dispatch. Nil-safe on the manager side.
+	qh.dispatcher.SetRepairHintProvider(m.RepairHintForRetry)
 }
 
 // SetModelSelector wires the adaptive model selector into the result handler

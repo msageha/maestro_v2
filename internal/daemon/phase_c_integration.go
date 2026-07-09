@@ -187,6 +187,13 @@ func (qh *QueueHandler) classifyAndLogTask(task *model.Task, workerID string) {
 	// bucket. No-op when the bandit is disabled.
 	qh.phaseC.RecordTaskBloom(task.ID, task.BloomLevel)
 
+	// C-5 repair loop: link a retry task to its predecessor's failure
+	// fingerprint so its terminal result can credit the pattern. No-op for
+	// non-retry tasks or when the FingerprintDB is disabled.
+	if task.OriginalTaskID != "" {
+		qh.phaseC.RecordRetryFingerprint(task.ID, task.OriginalTaskID)
+	}
+
 	// C-4 search tree / Thompson sampler: lazily add the command root (in case
 	// a task is dispatched without its command entering classifyAndLogCommand
 	// first — e.g., on retry), expand the task under it, and sample a

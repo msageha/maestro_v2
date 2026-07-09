@@ -49,6 +49,10 @@ type Dispatcher struct {
 	gateEvaluator    PreTaskGateEvaluator
 	worktreeManager  WorktreeResolver
 	taskAliveChecker TaskAliveChecker
+	// repairHint, when non-nil, returns an injectable DATA section carrying
+	// a proven repair strategy for a retry task's failure pattern (C-5
+	// loop). Returns "" for non-retry tasks or unknown patterns.
+	repairHint func(*model.Task) string
 }
 
 // New creates a new Dispatcher.
@@ -86,6 +90,21 @@ func (disp *Dispatcher) SetWorktreeManager(wm WorktreeResolver) {
 	disp.mu.Lock()
 	defer disp.mu.Unlock()
 	disp.worktreeManager = wm
+}
+
+// SetRepairHintProvider wires the C-5 repair-strategy hint source. Late-bound
+// from daemon startup because the PhaseCManager that backs it is created
+// after the dispatcher.
+func (disp *Dispatcher) SetRepairHintProvider(f func(*model.Task) string) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.repairHint = f
+}
+
+func (disp *Dispatcher) getRepairHint() func(*model.Task) string {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.repairHint
 }
 
 // SetTaskAliveChecker wires the queue-state probe the inline retry loop

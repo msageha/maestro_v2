@@ -164,6 +164,29 @@ func (db *FingerprintDB) RecordSuccess(fp string) {
 	}
 }
 
+// RecordRepairSuccess credits a successful repair against the fingerprint:
+// the success statistics are updated (as RecordSuccess) and, when the
+// pattern has no repair strategy recorded yet, the provided strategy text is
+// adopted. First-writer-wins keeps the suggested strategy stable — later
+// successes only strengthen the success rate instead of churning the text
+// with every retry summary.
+func (db *FingerprintDB) RecordRepairSuccess(fp, strategy string) {
+	db.mu.Lock()
+	defer db.mu.Unlock()
+
+	p, ok := db.patterns[fp]
+	if !ok {
+		return
+	}
+	p.SuccessCount++
+	if p.OccurrenceCount > 0 {
+		p.SuccessRate = float64(p.SuccessCount) / float64(p.OccurrenceCount)
+	}
+	if p.RepairStrategy == "" && strategy != "" {
+		p.RepairStrategy = strategy
+	}
+}
+
 // SuggestStrategy returns the recorded repair strategy for a fingerprint,
 // but only if there has been at least one successful repair (SuccessRate > 0).
 func (db *FingerprintDB) SuggestStrategy(fp string) (string, bool) {

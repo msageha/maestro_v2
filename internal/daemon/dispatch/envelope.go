@@ -50,6 +50,16 @@ func (disp *Dispatcher) BuildTaskContent(task *model.Task) (envelope.SanitizedCo
 		}
 	}
 
+	// Inject the proven repair strategy for a retry task's failure pattern
+	// (C-5 loop; append after learnings). The provider returns "" for
+	// non-retry tasks and for patterns without a successful repair.
+	if hint := disp.getRepairHint(); hint != nil {
+		if section := hint(task); section != "" {
+			safe = safe.Append(section)
+			disp.dl.Logf(core.LogLevelInfo, "repair_strategy_injected task=%s original_task=%s", task.ID, task.OriginalTaskID)
+		}
+	}
+
 	return safe, nil
 }
 

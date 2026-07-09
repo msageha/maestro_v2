@@ -51,6 +51,7 @@ func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID 
 	// recordTaskResultLearning a high-level orchestrator that is easy to
 	// extend (e.g. adding C-6 / C-7) without re-flowing this function.
 	rh.recordFingerprintCapture(r, workerID, m)
+	rh.recordRepairOutcome(r, m)
 	rh.recordBanditReward(r, workerID)
 	rh.recordSearchTreeOutcome(r, m)
 	rh.recordEvolutionSignal(r, m)
@@ -71,9 +72,13 @@ func (rh *ResultHandler) recordFingerprintCapture(r *model.TaskResult, workerID 
 		if fp == "" {
 			return
 		}
-		// Strategy is empty at capture time; the planner/retry logic may
-		// attach one later via Store(fp, category, strategy).
+		// Strategy is empty at capture time; recordRepairOutcome attaches
+		// one when a retry of this task later completes (C-5 loop).
 		m.FingerprintDB.Store(fp, category, "")
+		// Remember which fingerprint this task failed with so a retry can
+		// resolve the pattern at dispatch (RepairHintForRetry) and credit
+		// it on success (recordRepairOutcome).
+		m.RecordTaskFailureFingerprint(r.TaskID, fp)
 		rh.log(LogLevelInfo, "fingerprint_store worker=%s task=%s command=%s category=%s fp=%s",
 			workerID, r.TaskID, r.CommandID, category, fp)
 	}

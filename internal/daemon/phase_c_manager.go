@@ -57,6 +57,18 @@ type PhaseCManager struct {
 	// taskBloomSeq is the generation counter for taskBloom entries.
 	taskBloomSeq uint64
 
+	// repairMu protects the C-5 repair-strategy attribution tables below
+	// (see phase_c_repair.go). Separate from the sibling mutexes so the
+	// failure/retry paths don't contend with bloom or search bookkeeping.
+	repairMu sync.Mutex
+	// taskFailureFP maps a FAILED taskID → its error fingerprint, so a
+	// retry of that task can resolve the failure pattern at dispatch time.
+	taskFailureFP *boundedFPMap
+	// retryFP maps a dispatched RETRY taskID → the predecessor's failure
+	// fingerprint; consumed at the retry's terminal result to credit the
+	// pattern on success.
+	retryFP *boundedFPMap
+
 	// evolutionMu protects the per-command evolutionary bookkeeping below.
 	// Separate from searchMu so the two code paths don't contend.
 	evolutionMu sync.Mutex

@@ -81,6 +81,7 @@ type QueueDispatcherConfigurer interface {
 	SetQualityGate(qg dispatch.GateChecker)
 	SetWorktreeManager(wm dispatch.WorktreeResolver)
 	SetTaskAliveChecker(c dispatch.TaskAliveChecker)
+	SetRepairHintProvider(f func(*model.Task) string)
 }
 
 // QueueDispatcherOperator defines runtime dispatch and sorting operations.
