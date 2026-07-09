@@ -35,12 +35,23 @@ const maxConflictResolutionAttempts = 2
 //   - ConflictResolutionAttempts < 2: transition worker to resolving, increment
 //     attempts, and emit NotifyConflictResolution for Planner to generate a
 //     __conflict_resolution task.
-//   - ConflictResolutionAttempts >= 2: emit NotifyConflictEscalation for Planner
-//     to handle the unresolvable conflict.
+//   - ConflictResolutionAttempts >= 2: durably queue a conflict_escalation
+//     planner signal FIRST (WAL), then persist the ConflictEscalated one-shot
+//     guard. Delivery happens through the planner-signal queue (retry/backoff,
+//     removed on successful delivery), so neither a delivery failure nor a
+//     crash between the guard write and delivery can silence the escalation
+//     (D-F1). Duplicate deliveries are possible in crash-retry windows and are
+//     tolerated downstream.
 type R7MergeConflict struct{}
 
 // Apply scans worktree state files for commands with IntegrationStatusConflict,
 // finds workers in WorktreeStatusConflict, and triggers resolution or escalation.
+// Escalations follow the package's three-phase lock pattern: candidates are
+// snapshotted under the worktree lock, their durable signals are queued under
+// the queue lock, and the guard write re-verifies eligibility under the
+// re-acquired worktree lock. Candidates that moved on between phases get their
+// queued signal compensated away (best effort — a crash before the
+// compensation leaves one stale nudge, which the Planner can verify).
 func (R7MergeConflict) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification
@@ -58,10 +69,70 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
 		statePath := filepath.Join(worktreeDir, entry.Name())
+		lockKey := "worktree:" + commandID
 
+		// Phase 1 (worktree lock, read-only): snapshot escalation candidates.
+		// A stale resolving worker that Phase 3 resets back to conflict is
+		// eligible in the same scan, so the predicate mirrors the reset rule.
+		var escalationCandidates []string
+		run.Deps.LockMap.WithLock(lockKey, func() {
+			state, err := run.loadWorktreeState(statePath)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					run.Log(core.LogLevelError, "R7 load_worktree_state command=%s error=%v", commandID, err)
+				}
+				return
+			}
+			if state.Integration.Status != model.IntegrationStatusConflict &&
+				state.Integration.Status != model.IntegrationStatusPartialMerge {
+				return
+			}
+			for i := range state.Workers {
+				ws := &state.Workers[i]
+				if ws.ConflictEscalated || ws.ConflictResolutionAttempts < maxConflictResolutionAttempts {
+					continue
+				}
+				switch ws.Status {
+				case model.WorktreeStatusConflict:
+					escalationCandidates = append(escalationCandidates, ws.WorkerID)
+				case model.WorktreeStatusResolving:
+					if r7ResolvingStalled(run, ws) {
+						escalationCandidates = append(escalationCandidates, ws.WorkerID)
+					}
+				}
+			}
+		})
+
+		// Phase 2 (queue lock): WAL — durably queue the escalation signals
+		// BEFORE the guard write. Dedup on (Kind, CommandID, WorkerID) keeps
+		// crash-retry loops from stacking duplicates while a signal is
+		// pending.
+		enqueued := make(map[string]bool, len(escalationCandidates))
+		now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		for _, workerID := range escalationCandidates {
+			upsertPlannerSignal(run, model.PlannerSignal{
+				Kind:      "conflict_escalation",
+				CommandID: commandID,
+				WorkerID:  workerID,
+				Message: fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
+					commandID, workerID),
+				CreatedAt: now,
+				UpdatedAt: now,
+			})
+			enqueued[workerID] = true
+			run.Log(core.LogLevelInfo,
+				"R7 conflict_escalation_signal_queued command=%s worker=%s (durable signal precedes the one-shot guard)",
+				commandID, workerID)
+		}
+
+		// Phase 3 (worktree lock): apply mutations — stale-resolving resets,
+		// resolution dispatches, and escalation guards for workers whose
+		// signal is durably queued.
 		var r []Repair
 		var n []DeferredNotification
-		run.Deps.LockMap.WithLock("worktree:"+commandID, func() {
+		escalated := make(map[string]bool, len(enqueued))
+		writeFailed := false
+		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadWorktreeState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
@@ -93,11 +164,7 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				if ws.Status != model.WorktreeStatusResolving {
 					continue
 				}
-				updatedAt, err := time.Parse(time.RFC3339, ws.UpdatedAt)
-				if err != nil {
-					continue
-				}
-				if run.Deps.Clock.Now().Sub(updatedAt) < resolvingStallTimeout {
+				if !r7ResolvingStalled(run, ws) {
 					continue
 				}
 				run.Log(core.LogLevelWarn, "R7 reset_stale_resolving command=%s worker=%s stale_since=%s",
@@ -118,11 +185,11 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 					// One-shot guard: the conflict is unrecoverable and the
 					// worker status stays `conflict` until an operator/Planner
 					// recovery action changes it. Without this guard the
-					// escalation notification + repair re-fired on every
-					// reconcile scan (the branch sets no state), spamming the
-					// Planner pane and inflating repair counts. Emit exactly
-					// once per escalation, matching R8's StallSignaled pattern.
-					// The guard is cleared by setWorkerStatus when the worker
+					// escalation signal + repair re-fired on every reconcile
+					// scan (the branch sets no state), spamming the Planner
+					// pane and inflating repair counts. Emit exactly once per
+					// escalation, matching R8's StallSignaled pattern. The
+					// guard is cleared by setWorkerStatus when the worker
 					// re-enters conflict from a clean state (a fresh episode in
 					// a later phase), so a genuinely new conflict re-escalates.
 					if ws.ConflictEscalated {
@@ -131,20 +198,25 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 							commandID, ws.WorkerID, ws.ConflictResolutionAttempts)
 						continue
 					}
+					// Guard write requires the durable signal from Phase 2:
+					// a worker that became eligible only after the snapshot
+					// waits for the next scan so the signal-first invariant
+					// holds on every path.
+					if !enqueued[ws.WorkerID] {
+						run.Log(core.LogLevelInfo,
+							"R7 conflict_escalation_deferred command=%s worker=%s (eligible after snapshot; next scan queues the signal first)",
+							commandID, ws.WorkerID)
+						continue
+					}
 					run.Log(core.LogLevelWarn, "R7 conflict_escalation command=%s worker=%s attempts=%d",
 						commandID, ws.WorkerID, ws.ConflictResolutionAttempts)
-					commandNotifications = append(commandNotifications, DeferredNotification{
-						Kind:      NotifyConflictEscalation,
-						CommandID: commandID,
-						WorkerID:  ws.WorkerID,
-						Reason:    fmt.Sprintf("conflict resolution exceeded %d attempts", maxConflictResolutionAttempts),
-					})
 					commandRepairs = append(commandRepairs, Repair{
 						Pattern:   PatternR7,
 						CommandID: commandID,
 						Detail:    fmt.Sprintf("worker %s conflict escalated (attempts=%d)", ws.WorkerID, ws.ConflictResolutionAttempts),
 					})
 					ws.ConflictEscalated = true
+					escalated[ws.WorkerID] = true
 					modified = true
 					continue
 				}
@@ -179,13 +251,13 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v "+
 						"(suppressing this scan's notifications/repairs — the unsaved "+
 						"ConflictResolutionAttempts/ConflictEscalated would make the next scan "+
-						"re-count and re-notify, duplicating resolution tasks)", commandID, err)
+						"re-count and re-notify, duplicating resolution tasks; the queued "+
+						"escalation signals stay durable and dedup on the retry)", commandID, err)
 					// State (attempt counters, escalation flags, resolving
 					// transitions) did not persist: the next scan will
 					// re-derive the same decisions and re-emit. Sending the
 					// notifications now would double-dispatch.
-					r = nil
-					n = nil
+					writeFailed = true
 					return
 				}
 			}
@@ -194,6 +266,22 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 			n = commandNotifications
 		})
 
+		// Phase 4 (queue lock): compensate signals whose candidate did not
+		// escalate in Phase 3 because the worker moved on between phases.
+		// Best effort — the signal kind is command-scoped so the staleness
+		// filter cannot clean it up, and leaving one would nag the Planner
+		// about a conflict that no longer needs escalation. When the state
+		// WRITE failed, the signals are deliberately kept: the escalation
+		// fact still holds and the next scan's retry dedups against them.
+		if !writeFailed {
+			for _, workerID := range escalationCandidates {
+				if escalated[workerID] {
+					continue
+				}
+				removePlannerSignal(run, "conflict_escalation", commandID, workerID)
+			}
+		}
+
 		repairs = append(repairs, r...)
 		notifications = append(notifications, n...)
 	}
@@ -201,45 +289,12 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 	return Outcome{Repairs: repairs, Notifications: notifications}
 }
 
-// r7ClearConflictEscalated rolls back the ConflictEscalated one-shot guard
-// when the NotifyConflictEscalation delivery failed. The guard is persisted
-// optimistically during Apply — before delivery is attempted — so a transient
-// pane failure used to leave ConflictEscalated=true forever and the exhausted
-// conflict was never escalated to the Planner. Clearing the guard lets the
-// next scan re-detect the exhausted attempts and re-emit; the escalation
-// branch is state-free otherwise, so this is safe to repeat.
-func r7ClearConflictEscalated(run *Run, commandID, workerID string) {
-	statePath := filepath.Join(run.Deps.MaestroDir, "state", "worktrees", commandID+".yaml")
-	run.Deps.LockMap.WithLock("worktree:"+commandID, func() {
-		state, err := run.loadWorktreeState(statePath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				run.Log(core.LogLevelWarn, "R7 rollback_load_worktree_state command=%s worker=%s error=%v", commandID, workerID, err)
-			}
-			return
-		}
-		for i := range state.Workers {
-			ws := &state.Workers[i]
-			if ws.WorkerID != workerID {
-				continue
-			}
-			if ws.Status != model.WorktreeStatusConflict || !ws.ConflictEscalated {
-				return // worker moved on (recovery action ran); honour the new state
-			}
-			now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
-			ws.ConflictEscalated = false
-			ws.UpdatedAt = now
-			state.UpdatedAt = now
-			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				run.Log(core.LogLevelError,
-					"R7 rollback_write_worktree_state command=%s worker=%s error=%v (escalation stays guarded until recovery clears it)",
-					commandID, workerID, err)
-				return
-			}
-			run.Log(core.LogLevelInfo,
-				"R7 conflict_escalated_rolled_back command=%s worker=%s (conflict_escalation delivery failed; next scan re-emits)",
-				commandID, workerID)
-			return
-		}
-	})
+// r7ResolvingStalled reports whether a resolving worker has been stuck longer
+// than resolvingStallTimeout (the Planner never called resume-merge).
+func r7ResolvingStalled(run *Run, ws *model.WorktreeState) bool {
+	updatedAt, err := time.Parse(time.RFC3339, ws.UpdatedAt)
+	if err != nil {
+		return false
+	}
+	return run.Deps.Clock.Now().Sub(updatedAt) >= resolvingStallTimeout
 }

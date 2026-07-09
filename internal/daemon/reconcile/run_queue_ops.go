@@ -303,6 +303,39 @@ func upsertPlannerSignal(run *Run, sig model.PlannerSignal) {
 	})
 }
 
+// removePlannerSignal deletes the signal matching (kind, commandID, workerID)
+// from queue/planner_signals.yaml. Compensation counterpart of
+// upsertPlannerSignal for WAL-first rules (R7/R8) whose candidate moved on
+// between the signal enqueue and the guard write: their signal kinds are
+// command-scoped, so the scan loop's staleness filter never removes them and
+// a leftover entry would nag the Planner about a resolved condition.
+func removePlannerSignal(run *Run, kind, commandID, workerID string) {
+	signalPath := signalQueuePath(run.Deps.MaestroDir)
+	run.Deps.LockMap.WithLock("queue:planner_signals", func() {
+		if err := yamlutil.ReadModifyWrite(signalPath, func(sq *model.PlannerSignalQueue) error {
+			kept := sq.Signals[:0]
+			for _, existing := range sq.Signals {
+				if existing.Kind == kind && existing.CommandID == commandID && existing.WorkerID == workerID {
+					continue
+				}
+				kept = append(kept, existing)
+			}
+			if len(kept) == len(sq.Signals) {
+				return yamlutil.ErrNoUpdate
+			}
+			sq.Signals = kept
+			return nil
+		}); err != nil {
+			run.Log(core.LogLevelWarn,
+				"planner_signal_remove_failed kind=%s command=%s worker=%s error=%v",
+				kind, commandID, workerID, err)
+		}
+	})
+	run.Log(core.LogLevelInfo,
+		"planner_signal_compensated kind=%s command=%s worker=%s (candidate moved on before the guard write)",
+		kind, commandID, workerID)
+}
+
 // removedQueueEntry captures a queue row deleted by
 // batchRemoveTaskIDsFromQueues so a caller can re-insert it (compensation)
 // when a later veto invalidates the removal.

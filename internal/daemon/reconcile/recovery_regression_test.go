@@ -1,13 +1,12 @@
 package reconcile
 
 // Regression tests for the D-F1〜D-F9 reconcile recovery findings:
-// notification-loss recovery (guard rollback / durable signal), R4 retryable
-// CanComplete deferral, R0 teardown visibility + compensation, R9 orphaned
-// repair_pending reclaim, R10 per-task stale anchor, and the R1 upsert /
-// stale-result fences.
+// notification-loss recovery (signal-first WAL for R6/R7/R8 escalations),
+// R4 retryable CanComplete deferral, R0 teardown visibility + compensation,
+// R9 orphaned repair_pending reclaim, R10 per-task stale anchor, and the R1
+// upsert / stale-result fences.
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -24,12 +23,6 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-func failingExecutorFactory(deps *Deps) {
-	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
-		return &mocks.MockExecutor{Result: agent.ExecResult{Error: fmt.Errorf("tmux pane unavailable")}}, nil
-	}
-}
-
 func readPlannerSignalQueue(t *testing.T, maestroDir string) model.PlannerSignalQueue {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(maestroDir, "queue", "planner_signals.yaml"))
@@ -43,116 +36,108 @@ func readPlannerSignalQueue(t *testing.T, maestroDir string) model.PlannerSignal
 	return sq
 }
 
-// --- D-F1: R8 guard rollback on delivery failure ---
+// --- D-F1: R8 queues the durable signal BEFORE the one-shot guard (WAL) ---
 
-func TestR8PublishFailed_DeliveryFailure_RollsBackGuardAndReemits(t *testing.T) {
+func TestR8PublishFailed_WAL_SignalPrecedesGuard(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	failingExecutorFactory(&deps)
 
-	commandID := "cmd_0000000001_r8roll01"
+	commandID := "cmd_0000000001_r8wal001"
 	state := newWorktreeCommandState(commandID, model.IntegrationStatusQuarantined, nil)
 	state.Integration.PublishFailureCount = 5
 	state.Integration.QuarantineReason = "publish: push to base failed (failure_count=5)"
 	writeWorktreeState(t, maestroDir, commandID, state)
 
 	engine := NewEngine(deps, R8PublishFailed{})
-	_, notifications := engine.Reconcile()
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(notifications))
+	repairs, notifications := engine.Reconcile()
+	if len(repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(repairs))
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("escalation must use the durable signal queue, not notifications; got %+v", notifications)
 	}
 
-	statePath := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	// The durable signal is queued and the guard persisted: whatever the
+	// crash point after Apply, the scan loop's signal delivery owns the
+	// escalation (no delivery-failure rollback needed).
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 || sq.Signals[0].Kind != "publish_quarantined" || sq.Signals[0].CommandID != commandID {
+		t.Fatalf("expected 1 publish_quarantined signal, got %+v", sq.Signals)
+	}
 	run := newRun(&deps)
-	persisted, err := run.loadWorktreeState(statePath)
+	persisted, err := run.loadWorktreeState(filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml"))
 	if err != nil {
 		t.Fatalf("reload worktree state: %v", err)
 	}
 	if !persisted.Integration.StallSignaled {
-		t.Fatal("StallSignaled should be persisted optimistically before delivery")
+		t.Fatal("StallSignaled should be persisted after the signal is queued")
 	}
 
-	failed := engine.ExecuteDeferredNotifications(notifications)
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 failed notification, got %d", len(failed))
-	}
-
-	rolledBack, err := run.loadWorktreeState(statePath)
-	if err != nil {
-		t.Fatalf("reload worktree state after rollback: %v", err)
-	}
-	if rolledBack.Integration.StallSignaled {
-		t.Fatal("StallSignaled should be rolled back after delivery failure")
-	}
-
-	// Next scan must re-emit the escalation.
-	_, reemitted := engine.Reconcile()
-	if len(reemitted) != 1 || reemitted[0].Kind != NotifyPublishQuarantined {
-		t.Fatalf("expected re-emitted publish_quarantined notification, got %+v", reemitted)
+	// Re-scan: guard prevents a duplicate signal.
+	engine.Reconcile()
+	sq = readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals after re-scan = %d, want 1", len(sq.Signals))
 	}
 }
 
-// --- D-F1: R7 escalation guard rollback on delivery failure ---
+// --- D-F1: R7 crash window between signal write and guard write converges ---
 
-func TestR7MergeConflict_EscalationDeliveryFailure_RollsBackGuardAndReemits(t *testing.T) {
+func TestR7MergeConflict_WAL_CrashBeforeGuard_Converges(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	failingExecutorFactory(&deps)
 
-	commandID := "cmd_0000000001_r7roll01"
+	commandID := "cmd_0000000001_r7wal001"
 	workerID := "worker1"
 	worker := newWorkerState(commandID, workerID, model.WorktreeStatusConflict, maxConflictResolutionAttempts)
 	state := newWorktreeCommandState(commandID, model.IntegrationStatusConflict, []model.WorktreeState{worker})
 	writeWorktreeState(t, maestroDir, commandID, state)
 
+	// Simulate "crashed after the WAL enqueue, before the guard write": the
+	// signal already exists, ConflictEscalated is still false.
+	now := time.Now().UTC().Format(time.RFC3339)
+	upsertPlannerSignal(newRun(&deps), model.PlannerSignal{
+		Kind: "conflict_escalation", CommandID: commandID, WorkerID: workerID,
+		Message:   "[maestro] kind:conflict_escalation command_id:" + commandID + " worker_id:" + workerID + "\nconflict resolution attempts exhausted — escalating to planner",
+		CreatedAt: now, UpdatedAt: now,
+	})
+
 	engine := NewEngine(deps, R7MergeConflict{})
-	_, notifications := engine.Reconcile()
-	if len(notifications) != 1 || notifications[0].Kind != NotifyConflictEscalation {
-		t.Fatalf("expected 1 conflict_escalation notification, got %+v", notifications)
+	repairs, notifications := engine.Reconcile()
+	if len(repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(repairs))
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("escalation must use the durable signal queue, not notifications; got %+v", notifications)
 	}
 
-	statePath := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	// The retry deduped against the pre-existing signal and set the guard.
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 || sq.Signals[0].Kind != "conflict_escalation" || sq.Signals[0].WorkerID != workerID {
+		t.Fatalf("expected exactly 1 conflict_escalation signal after crash retry, got %+v", sq.Signals)
+	}
 	run := newRun(&deps)
-	persisted, err := run.loadWorktreeState(statePath)
+	persisted, err := run.loadWorktreeState(filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml"))
 	if err != nil {
 		t.Fatalf("reload worktree state: %v", err)
 	}
 	if !persisted.Workers[0].ConflictEscalated {
-		t.Fatal("ConflictEscalated should be persisted optimistically before delivery")
-	}
-
-	failed := engine.ExecuteDeferredNotifications(notifications)
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 failed notification, got %d", len(failed))
-	}
-
-	rolledBack, err := run.loadWorktreeState(statePath)
-	if err != nil {
-		t.Fatalf("reload worktree state after rollback: %v", err)
-	}
-	if rolledBack.Workers[0].ConflictEscalated {
-		t.Fatal("ConflictEscalated should be rolled back after delivery failure")
-	}
-
-	_, reemitted := engine.Reconcile()
-	if len(reemitted) != 1 || reemitted[0].Kind != NotifyConflictEscalation {
-		t.Fatalf("expected re-emitted conflict_escalation notification, got %+v", reemitted)
+		t.Fatal("ConflictEscalated should be set on the crash retry")
 	}
 }
 
-// --- D-F5: R6 delivery failure hands over to the durable signal queue ---
+// --- D-F5: R6 crash window between signal write and state transition converges ---
 
-func TestR6FillTimeout_DeliveryFailure_QueuesDurableSignal(t *testing.T) {
+func TestR6FillTimeout_WAL_CrashBeforeTransition_Converges(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
-	failingExecutorFactory(&deps)
 	now := time.Now().UTC()
 	setClock(&deps, now)
 
-	commandID := "cmd_0000000001_r6sig001"
+	commandID := "cmd_0000000001_r6wal001"
 	pastDeadline := now.Add(-1 * time.Hour).Format(time.RFC3339)
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
@@ -169,31 +154,41 @@ func TestR6FillTimeout_DeliveryFailure_QueuesDurableSignal(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
+	// Simulate "crashed after the WAL enqueue, before the timed_out write":
+	// the signal already exists, the phase is still awaiting_fill.
+	nowStr := now.Format(time.RFC3339)
+	upsertPlannerSignal(newRun(&deps), model.PlannerSignal{
+		Kind: "fill_timeout", CommandID: commandID, PhaseID: "p1", PhaseName: "implementation",
+		Message:   "[maestro] kind:fill_timeout command_id:" + commandID + " phase:implementation\nfill deadline expired",
+		CreatedAt: nowStr, UpdatedAt: nowStr,
+	})
+
 	engine := NewEngine(deps, R6FillTimeout{})
-	_, notifications := engine.Reconcile()
-	if len(notifications) != 1 || notifications[0].Kind != NotifyFillTimeout {
-		t.Fatalf("expected 1 fill_timeout notification, got %+v", notifications)
+	repairs, notifications := engine.Reconcile()
+	if len(repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(repairs))
+	}
+	if len(notifications) != 0 {
+		t.Fatalf("fill_timeout must use the durable signal queue, not notifications; got %+v", notifications)
 	}
 
-	failed := engine.ExecuteDeferredNotifications(notifications)
-	if len(failed) != 1 {
-		t.Fatalf("expected 1 failed notification, got %d", len(failed))
-	}
-
+	// The retry deduped against the pre-existing signal and completed the
+	// transition.
 	sq := readPlannerSignalQueue(t, maestroDir)
 	if len(sq.Signals) != 1 {
-		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
+		t.Fatalf("planner signals after crash retry = %d, want 1 (dedup)", len(sq.Signals))
 	}
 	sig := sq.Signals[0]
 	if sig.Kind != "fill_timeout" || sig.CommandID != commandID || sig.PhaseID != "p1" || sig.PhaseName != "implementation" {
 		t.Fatalf("unexpected planner signal: %+v", sig)
 	}
-
-	// A second failed delivery must not duplicate the signal (canonical dedup key).
-	engine.ExecuteDeferredNotifications(notifications)
-	sq = readPlannerSignalQueue(t, maestroDir)
-	if len(sq.Signals) != 1 {
-		t.Fatalf("planner signals after repeat failure = %d, want 1 (dedup)", len(sq.Signals))
+	run := newRun(&deps)
+	reloaded, err := run.loadState(filepath.Join(maestroDir, "state", "commands", commandID+".yaml"))
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := reloaded.Phases[0].Status; got != model.PhaseStatusTimedOut {
+		t.Fatalf("phase status = %s, want timed_out", got)
 	}
 }
 

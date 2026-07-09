@@ -8,7 +8,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-func TestR8PublishFailed_Quarantined_EmitsNotification(t *testing.T) {
+func TestR8PublishFailed_Quarantined_QueuesDurableSignalAndSetsGuard(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
@@ -34,18 +34,21 @@ func TestR8PublishFailed_Quarantined_EmitsNotification(t *testing.T) {
 		t.Errorf("repair commandID = %s, want %s", r.CommandID, commandID)
 	}
 
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("escalation must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
 	}
-	n := outcome.Notifications[0]
-	if n.Kind != NotifyPublishQuarantined {
-		t.Errorf("notification kind = %s, want %s", n.Kind, NotifyPublishQuarantined)
+
+	// WAL: the durable planner signal is queued.
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
 	}
-	if n.CommandID != commandID {
-		t.Errorf("notification commandID = %s, want %s", n.CommandID, commandID)
+	sig := sq.Signals[0]
+	if sig.Kind != "publish_quarantined" || sig.CommandID != commandID {
+		t.Fatalf("unexpected planner signal: %+v", sig)
 	}
-	if n.Reason == "" {
-		t.Error("notification reason should not be empty")
+	if sig.Message == "" {
+		t.Error("signal message should not be empty")
 	}
 
 	// Verify StallSignaled was set to prevent re-emission.
@@ -181,11 +184,12 @@ func TestR8PublishFailed_MultipleCommands_MixedStates(t *testing.T) {
 	if outcome.Repairs[0].CommandID != cmd1 {
 		t.Errorf("repair commandID = %s, want %s", outcome.Repairs[0].CommandID, cmd1)
 	}
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification (only cmd1), got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("escalation must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
 	}
-	if outcome.Notifications[0].CommandID != cmd1 {
-		t.Errorf("notification commandID = %s, want %s", outcome.Notifications[0].CommandID, cmd1)
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 || sq.Signals[0].CommandID != cmd1 || sq.Signals[0].Kind != "publish_quarantined" {
+		t.Fatalf("expected exactly one publish_quarantined signal for cmd1, got %+v", sq.Signals)
 	}
 
 	// Verify cmd1 StallSignaled was set.

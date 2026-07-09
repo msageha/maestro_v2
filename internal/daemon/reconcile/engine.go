@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -94,18 +93,19 @@ func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 // ExecuteDeferredNotifications sends collected Planner notifications via agent executor.
 // Returns the list of notifications that failed to deliver, enabling the caller to retry.
 //
-// Delivery failures additionally trigger per-kind recovery
-// (recoverFailedNotification): the emitting patterns persist their one-shot
-// guards optimistically during Apply — before delivery is attempted — so a
-// dropped delivery must either roll the guard back (R7/R8) or hand the
-// message to the durable planner-signal queue (R6). Without this, a single
-// transient pane failure permanently silenced the escalation.
+// Only the guard-less kinds travel this direct path: re_fill is backstopped
+// by the daemon's recurring awaiting_fill signals, re_evaluate by R4's guard
+// rollback via backoff, and conflict_resolution by R7's resolving-stall
+// reset — a dropped delivery is re-detected and re-emitted by a later scan.
+// The escalation kinds (fill_timeout, conflict_escalation,
+// publish_quarantined) do NOT use this path: their emitting rules queue a
+// durable planner signal BEFORE their state transition (WAL), and the scan
+// loop's signal delivery owns retry/backoff — see R6/R7/R8.
 func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotification) []DeferredNotification {
 	if e.deps.ExecutorFactory == nil {
 		return notifications
 	}
 	var failed []DeferredNotification
-	var run *Run // lazily created; only needed for failure recovery
 	for _, n := range notifications {
 		var err error
 		switch n.Kind {
@@ -113,47 +113,17 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 			err = e.notifyPlannerOfReFill(n.CommandID)
 		case NotifyReEvaluate:
 			err = e.notifyPlannerOfReEvaluation(n.CommandID, n.Reason)
-		case NotifyFillTimeout:
-			err = e.notifyPlannerOfTimeout(n.CommandID, n.TimedOutPhases)
 		case NotifyConflictResolution:
 			err = e.notifyPlannerOfConflictResolution(n.CommandID, n.WorkerID)
-		case NotifyConflictEscalation:
-			err = e.notifyPlannerOfConflictEscalation(n.CommandID, n.WorkerID)
-		case NotifyPublishQuarantined:
-			err = e.notifyPlannerOfPublishQuarantined(n.CommandID, n.Reason)
 		default:
 			e.deps.DL.Logf(core.LogLevelWarn, "unknown deferred notification kind=%s command=%s", n.Kind, n.CommandID)
 			continue
 		}
 		if err != nil {
-			if run == nil {
-				run = newRun(&e.deps)
-			}
-			recoverFailedNotification(run, n)
 			failed = append(failed, n)
 		}
 	}
 	return failed
-}
-
-// recoverFailedNotification arranges re-delivery for a notification whose
-// pane delivery failed. Guard-bearing kinds roll their persisted one-shot
-// guard back so the next reconcile scan re-detects and re-emits; R6's
-// fill_timeout hands over to the durable planner-signal queue because its
-// state transition (phase → timed_out + cascade cancels) is correct and must
-// not be reverted. Kinds without a persistence guard (re_fill, re_evaluate,
-// conflict_resolution) need no recovery here: re_fill is backstopped by the
-// daemon's recurring awaiting_fill signals and conflict_resolution by R7's
-// resolving-stall reset.
-func recoverFailedNotification(run *Run, n DeferredNotification) {
-	switch n.Kind {
-	case NotifyPublishQuarantined:
-		r8ClearPublishStallSignaled(run, n.CommandID)
-	case NotifyConflictEscalation:
-		r7ClearConflictEscalated(run, n.CommandID, n.WorkerID)
-	case NotifyFillTimeout:
-		r6QueueFillTimeoutSignals(run, n.CommandID, n.TimedOutPhases)
-	}
 }
 
 // createExecutor creates an AgentExecutor via the factory, logging and returning
@@ -224,29 +194,6 @@ func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) error {
 	})
 }
 
-func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[string]bool) error {
-	return e.withExecutor("R6", func(exec core.AgentExecutor) error {
-		phases := make([]string, 0, len(timedOutPhases))
-		for name := range timedOutPhases {
-			phases = append(phases, name)
-		}
-		message := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phases:%s\nfill deadline expired, phases timed out",
-			commandID, strings.Join(phases, ","))
-
-		result := exec.Execute(agent.ExecRequest{
-			AgentID:   "planner",
-			Message:   message,
-			Mode:      agent.ModeDeliver,
-			CommandID: commandID,
-		})
-		if result.Error != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner command=%s error=%v", commandID, result.Error)
-			return result.Error
-		}
-		return nil
-	})
-}
-
 func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) error {
 	return e.withExecutor("R7", func(exec core.AgentExecutor) error {
 		message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
@@ -260,44 +207,6 @@ func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) e
 		})
 		if result.Error != nil {
 			e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_resolution command=%s worker=%s error=%v", commandID, workerID, result.Error)
-			return result.Error
-		}
-		return nil
-	})
-}
-
-func (e *Engine) notifyPlannerOfConflictEscalation(commandID, workerID string) error {
-	return e.withExecutor("R7", func(exec core.AgentExecutor) error {
-		message := fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
-			commandID, workerID)
-
-		result := exec.Execute(agent.ExecRequest{
-			AgentID:   "planner",
-			Message:   message,
-			Mode:      agent.ModeDeliver,
-			CommandID: commandID,
-		})
-		if result.Error != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_escalation command=%s worker=%s error=%v", commandID, workerID, result.Error)
-			return result.Error
-		}
-		return nil
-	})
-}
-
-func (e *Engine) notifyPlannerOfPublishQuarantined(commandID, reason string) error {
-	return e.withExecutor("R8", func(exec core.AgentExecutor) error {
-		message := fmt.Sprintf("[maestro] kind:publish_quarantined command_id:%s\npublish failures reached quarantine threshold — operator intervention required: %s",
-			commandID, reason)
-
-		result := exec.Execute(agent.ExecRequest{
-			AgentID:   "planner",
-			Message:   message,
-			Mode:      agent.ModeDeliver,
-			CommandID: commandID,
-		})
-		if result.Error != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "R8 notify_planner_publish_quarantined command=%s error=%v", commandID, result.Error)
 			return result.Error
 		}
 		return nil

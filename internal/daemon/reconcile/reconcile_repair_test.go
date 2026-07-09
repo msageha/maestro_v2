@@ -858,12 +858,15 @@ func TestR6FillTimeout_MultipleTimedOutPhases(t *testing.T) {
 	if len(outcome.Repairs) != 2 {
 		t.Fatalf("expected 2 repairs, got %d", len(outcome.Repairs))
 	}
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("fill_timeout must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
+	}
+	if sq := readPlannerSignalQueue(t, maestroDir); len(sq.Signals) != 2 {
+		t.Fatalf("planner signals = %d, want 2 (one per timed-out phase)", len(sq.Signals))
 	}
 }
 
-func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
+func TestR6FillTimeout_NoExecutorFactory_StillQueuesSignal(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
@@ -890,7 +893,12 @@ func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
 	if len(outcome.Notifications) != 0 {
-		t.Errorf("expected no notifications without executor factory, got %d", len(outcome.Notifications))
+		t.Errorf("expected no notifications, got %d", len(outcome.Notifications))
+	}
+	// The durable signal is queued regardless of executor availability —
+	// delivery belongs to the scan loop, not the reconcile engine.
+	if sq := readPlannerSignalQueue(t, maestroDir); len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
 	}
 }
 
@@ -1668,10 +1676,10 @@ func TestR6FillTimeout_DeepCascade_ThreeLevelDependency(t *testing.T) {
 		}
 	}
 
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("fill_timeout must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
 	}
-	if outcome.Notifications[0].Kind != NotifyFillTimeout {
-		t.Errorf("notification kind: got %s, want fill_timeout", outcome.Notifications[0].Kind)
+	if sq := readPlannerSignalQueue(t, maestroDir); len(sq.Signals) != 1 || sq.Signals[0].Kind != "fill_timeout" {
+		t.Fatalf("expected 1 fill_timeout signal, got %+v", sq.Signals)
 	}
 }

@@ -217,7 +217,7 @@ func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 	engine.ExecuteDeferredNotifications([]DeferredNotification{
 		{Kind: NotifyReFill, CommandID: "cmd1"},
 		{Kind: NotifyReEvaluate, CommandID: "cmd2", Reason: "tasks not done"},
-		{Kind: NotifyFillTimeout, CommandID: "cmd3", TimedOutPhases: map[string]bool{"p1": true}},
+		{Kind: NotifyConflictResolution, CommandID: "cmd3", WorkerID: "worker1"},
 		{Kind: "unknown_kind", CommandID: "cmd4"},
 	})
 	if len(exec.Calls) != 3 {
@@ -2443,9 +2443,9 @@ func TestR6FillTimeout_NonAwaitingFill_Ignored(t *testing.T) {
 	}
 }
 
-// TestR6FillTimeout_GeneratesNotification verifies that R6 generates a deferred
-// notification with the correct kind and timed-out phases when executor factory is set.
-func TestR6FillTimeout_GeneratesNotification(t *testing.T) {
+// TestR6FillTimeout_QueuesDurableSignal verifies that R6 queues the durable
+// fill_timeout planner signal (WAL) instead of a deferred notification.
+func TestR6FillTimeout_QueuesDurableSignal(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
@@ -2480,17 +2480,16 @@ func TestR6FillTimeout_GeneratesNotification(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("fill_timeout must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
 	}
-	if outcome.Notifications[0].Kind != NotifyFillTimeout {
-		t.Errorf("notification kind: got %s, want fill_timeout", outcome.Notifications[0].Kind)
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
 	}
-	if outcome.Notifications[0].CommandID != "cmd_r6_notif" {
-		t.Errorf("notification commandID: got %s, want cmd_r6_notif", outcome.Notifications[0].CommandID)
-	}
-	if !outcome.Notifications[0].TimedOutPhases["phase-1"] {
-		t.Errorf("expected phase-1 in timed out phases, got %v", outcome.Notifications[0].TimedOutPhases)
+	sig := sq.Signals[0]
+	if sig.Kind != "fill_timeout" || sig.CommandID != "cmd_r6_notif" || sig.PhaseID != "p1" || sig.PhaseName != "phase-1" {
+		t.Fatalf("unexpected planner signal: %+v", sig)
 	}
 }
 

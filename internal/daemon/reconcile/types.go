@@ -41,15 +41,14 @@ const (
 	NotifyReFill NotificationKind = "re_fill"
 	// NotifyReEvaluate requests the planner to re-evaluate task eligibility.
 	NotifyReEvaluate NotificationKind = "re_evaluate"
-	// NotifyFillTimeout signals that a phase fill deadline has expired.
-	NotifyFillTimeout NotificationKind = "fill_timeout"
 	// NotifyConflictResolution requests the planner to generate a __conflict_resolution task.
 	NotifyConflictResolution NotificationKind = "conflict_resolution"
-	// NotifyConflictEscalation signals the planner that conflict resolution attempts are exhausted.
-	NotifyConflictEscalation NotificationKind = "conflict_escalation"
-	// NotifyPublishQuarantined signals the planner that publish failures have
-	// reached the quarantine threshold and operator intervention is required.
-	NotifyPublishQuarantined NotificationKind = "publish_quarantined"
+
+	// The escalation kinds fill_timeout / conflict_escalation /
+	// publish_quarantined no longer travel this deferred-notification path:
+	// R6/R7/R8 queue them as durable planner signals BEFORE their state
+	// transition (WAL, issue #44) and the scan loop's signal delivery owns
+	// retry/backoff. See the respective rule files.
 )
 
 // Repair describes a single repair action performed by a reconciliation pattern.
@@ -62,11 +61,10 @@ type Repair struct {
 
 // DeferredNotification captures a Planner notification to execute outside scanMu.Lock.
 type DeferredNotification struct {
-	Kind           NotificationKind // notification type
-	CommandID      string           // target command
-	Reason         string           // human-readable reason (for re_evaluate, conflict_escalation)
-	TimedOutPhases map[string]bool  // phase names (for fill_timeout)
-	WorkerID       string           // worker ID (for conflict_resolution, conflict_escalation)
+	Kind      NotificationKind // notification type
+	CommandID string           // target command
+	Reason    string           // human-readable reason (for re_evaluate)
+	WorkerID  string           // worker ID (for conflict_resolution)
 }
 
 // Outcome is the result of a single pattern's Apply call.

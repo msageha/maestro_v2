@@ -132,21 +132,21 @@ func TestR7MergeConflict_Escalation_WhenAttemptsExceeded(t *testing.T) {
 		t.Errorf("repair pattern = %s, want %s", r.Pattern, PatternR7)
 	}
 
-	if len(outcome.Notifications) != 1 {
-		t.Fatalf("expected 1 notification, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	if len(outcome.Notifications) != 0 {
+		t.Fatalf("escalation must use the durable signal queue, not notifications; got %+v", outcome.Notifications)
 	}
-	n := outcome.Notifications[0]
-	if n.Kind != NotifyConflictEscalation {
-		t.Errorf("notification kind = %s, want %s", n.Kind, NotifyConflictEscalation)
+
+	// WAL: the durable planner signal is queued.
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
 	}
-	if n.CommandID != commandID {
-		t.Errorf("notification commandID = %s, want %s", n.CommandID, commandID)
+	sig := sq.Signals[0]
+	if sig.Kind != "conflict_escalation" || sig.CommandID != commandID || sig.WorkerID != "worker1" {
+		t.Fatalf("unexpected planner signal: %+v", sig)
 	}
-	if n.WorkerID != "worker1" {
-		t.Errorf("notification workerID = %s, want worker1", n.WorkerID)
-	}
-	if n.Reason == "" {
-		t.Error("notification reason should not be empty for escalation")
+	if sig.Message == "" {
+		t.Error("signal message should not be empty")
 	}
 
 	// Escalation does not change status or attempts, but it now persists the
@@ -183,23 +183,26 @@ func TestR7MergeConflict_Escalation_OnceGuard(t *testing.T) {
 	})
 	writeWorktreeState(t, maestroDir, commandID, state)
 
-	// First scan: escalates once.
+	// First scan: escalates once (durable signal + guard).
 	first := R7MergeConflict{}.Apply(newRun(&deps))
-	if len(first.Notifications) != 1 || first.Notifications[0].Kind != NotifyConflictEscalation {
-		t.Fatalf("first scan: expected 1 escalation notification, got %+v", first.Notifications)
+	if len(first.Notifications) != 0 {
+		t.Fatalf("first scan: escalation must not use notifications, got %+v", first.Notifications)
 	}
 	if len(first.Repairs) != 1 {
 		t.Fatalf("first scan: expected 1 repair, got %d", len(first.Repairs))
+	}
+	if sq := readPlannerSignalQueue(t, maestroDir); len(sq.Signals) != 1 {
+		t.Fatalf("first scan: planner signals = %d, want 1", len(sq.Signals))
 	}
 
 	// Subsequent scans on the unchanged conflict must NOT re-fire.
 	for i := 0; i < 3; i++ {
 		again := R7MergeConflict{}.Apply(newRun(&deps))
-		if len(again.Notifications) != 0 {
-			t.Fatalf("scan %d: expected no re-escalation, got %+v", i+2, again.Notifications)
-		}
 		if len(again.Repairs) != 0 {
 			t.Fatalf("scan %d: expected no repair on re-scan, got %+v", i+2, again.Repairs)
+		}
+		if sq := readPlannerSignalQueue(t, maestroDir); len(sq.Signals) != 1 {
+			t.Fatalf("scan %d: planner signals = %d, want 1 (no duplicates)", i+2, len(sq.Signals))
 		}
 	}
 }
@@ -268,31 +271,15 @@ func TestR7MergeConflict_MultipleWorkers_MixedResolutionAndEscalation(t *testing
 	if len(outcome.Repairs) != 2 {
 		t.Fatalf("expected 2 repairs (resolution + escalation), got %d: %+v", len(outcome.Repairs), outcome.Repairs)
 	}
-	if len(outcome.Notifications) != 2 {
-		t.Fatalf("expected 2 notifications, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	if len(outcome.Notifications) != 1 {
+		t.Fatalf("expected 1 notification (resolution only; escalation uses the signal queue), got %d: %+v", len(outcome.Notifications), outcome.Notifications)
 	}
-
-	// Find resolution and escalation notifications by kind.
-	var resolutionN, escalationN *DeferredNotification
-	for i := range outcome.Notifications {
-		switch outcome.Notifications[i].Kind {
-		case NotifyConflictResolution:
-			resolutionN = &outcome.Notifications[i]
-		case NotifyConflictEscalation:
-			escalationN = &outcome.Notifications[i]
-		}
+	if outcome.Notifications[0].Kind != NotifyConflictResolution || outcome.Notifications[0].WorkerID != "worker1" {
+		t.Fatalf("expected resolution notification for worker1, got %+v", outcome.Notifications[0])
 	}
-	if resolutionN == nil {
-		t.Fatal("expected a ConflictResolution notification")
-	}
-	if resolutionN.WorkerID != "worker1" {
-		t.Errorf("resolution workerID = %s, want worker1", resolutionN.WorkerID)
-	}
-	if escalationN == nil {
-		t.Fatal("expected a ConflictEscalation notification")
-	}
-	if escalationN.WorkerID != "worker2" {
-		t.Errorf("escalation workerID = %s, want worker2", escalationN.WorkerID)
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 || sq.Signals[0].Kind != "conflict_escalation" || sq.Signals[0].WorkerID != "worker2" {
+		t.Fatalf("expected conflict_escalation signal for worker2, got %+v", sq.Signals)
 	}
 
 	// Verify state: worker1 should be resolving, worker2 unchanged.
@@ -453,19 +440,14 @@ func TestR7MergeConflict_MultipleCommands(t *testing.T) {
 	if len(outcome.Repairs) != 2 {
 		t.Fatalf("expected 2 repairs across 2 commands, got %d: %+v", len(outcome.Repairs), outcome.Repairs)
 	}
-	if len(outcome.Notifications) != 2 {
-		t.Fatalf("expected 2 notifications, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	if len(outcome.Notifications) != 1 {
+		t.Fatalf("expected 1 notification (resolution only; escalation uses the signal queue), got %d: %+v", len(outcome.Notifications), outcome.Notifications)
 	}
-
-	// Check that we got one resolution and one escalation.
-	kinds := map[NotificationKind]bool{}
-	for _, n := range outcome.Notifications {
-		kinds[n.Kind] = true
+	if outcome.Notifications[0].Kind != NotifyConflictResolution {
+		t.Errorf("expected a ConflictResolution notification, got %s", outcome.Notifications[0].Kind)
 	}
-	if !kinds[NotifyConflictResolution] {
-		t.Error("expected a ConflictResolution notification")
-	}
-	if !kinds[NotifyConflictEscalation] {
-		t.Error("expected a ConflictEscalation notification")
+	sq := readPlannerSignalQueue(t, maestroDir)
+	if len(sq.Signals) != 1 || sq.Signals[0].Kind != "conflict_escalation" || sq.Signals[0].CommandID != cmd2 {
+		t.Fatalf("expected conflict_escalation signal for %s, got %+v", cmd2, sq.Signals)
 	}
 }

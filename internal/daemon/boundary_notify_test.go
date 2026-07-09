@@ -931,8 +931,9 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 	}
 }
 
-// TestDeferredNotification_R6_FillTimeout verifies that R6 produces a
-// "fill_timeout" deferred notification with the correct TimedOutPhases.
+// TestDeferredNotification_R6_FillTimeout verifies that R6 queues a durable
+// "fill_timeout" planner signal (WAL — the signal precedes the timed_out
+// transition, issue #44) instead of a deferred notification.
 func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
@@ -977,24 +978,24 @@ func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 		t.Fatalf("expected 1 R6 repair, got %d: %+v", len(r6), r6)
 	}
 
-	// Verify DeferredNotification content
-	if len(notifications) != 1 {
-		t.Fatalf("expected 1 deferred notification from R6, got %d", len(notifications))
+	// The escalation travels the durable planner-signal queue, not the
+	// deferred-notification path.
+	if len(notifications) != 0 {
+		t.Fatalf("expected no deferred notifications from R6, got %+v", notifications)
 	}
-	n := notifications[0]
-	if n.Kind != reconcile.NotifyFillTimeout {
-		t.Errorf("notification kind: got %s, want fill_timeout", n.Kind)
+	data, err := os.ReadFile(filepath.Join(maestroDir, "queue", "planner_signals.yaml"))
+	if err != nil {
+		t.Fatalf("read planner signal queue: %v", err)
 	}
-	if n.CommandID != "cmd_r6_ntf" {
-		t.Errorf("notification command_id: got %s, want cmd_r6_ntf", n.CommandID)
+	var sq model.PlannerSignalQueue
+	if err := yamlv3.Unmarshal(data, &sq); err != nil {
+		t.Fatalf("unmarshal planner signal queue: %v", err)
 	}
-	if n.TimedOutPhases == nil {
-		t.Fatal("notification timed_out_phases should not be nil")
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
 	}
-	if !n.TimedOutPhases["implementation"] {
-		t.Errorf("timed_out_phases should contain 'implementation', got %v", n.TimedOutPhases)
-	}
-	if len(n.TimedOutPhases) != 1 {
-		t.Errorf("expected 1 timed out phase, got %d: %v", len(n.TimedOutPhases), n.TimedOutPhases)
+	sig := sq.Signals[0]
+	if sig.Kind != "fill_timeout" || sig.CommandID != "cmd_r6_ntf" || sig.PhaseID != "p2" || sig.PhaseName != "implementation" {
+		t.Fatalf("unexpected planner signal: %+v", sig)
 	}
 }

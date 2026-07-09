@@ -169,9 +169,10 @@ func signalKindPriority(kind string) int {
 		return 0
 	case "conflict_resolution_requested",
 		"conflict_resolution_ready",
-		"conflict_resolution_failed":
+		"conflict_resolution_failed",
+		"conflict_escalation":
 		return 1
-	case "circuit_breaker_tripped":
+	case "circuit_breaker_tripped", "publish_quarantined":
 		return 2
 	case "fill_timeout":
 		return 3
