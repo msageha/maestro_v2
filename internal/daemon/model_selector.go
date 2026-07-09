@@ -1,6 +1,11 @@
 package daemon
 
 import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -69,7 +74,12 @@ type banditModelSelector struct {
 	enabled    bool
 	traceReq   int
 	minSamples int
-	log        logFunc
+	// featureEnabled, when non-nil, gates adaptive selection per task
+	// difficulty via the feature_profiles config (adaptive_model_selection).
+	// SelectModel returns "" (static mapping) for gated-off levels; reward
+	// recording is NOT gated so learning continues while selection is off.
+	featureEnabled func(bloomLevel int) bool
+	log            logFunc
 }
 
 // newBanditModelSelector wraps the daemon's phaseC bandit selector.
@@ -143,6 +153,10 @@ func (b *banditModelSelector) SelectModel(bloomLevel int, _ string) string {
 	if b == nil || !b.enabled || b.global == nil {
 		return ""
 	}
+	if b.featureEnabled != nil && !b.featureEnabled(bloomLevel) {
+		b.log(LogLevelDebug, "bandit_select source=static bloom=%d (adaptive_model_selection gated off for this level)", bloomLevel)
+		return ""
+	}
 	if bucket := bloomBucket(bloomLevel); bucket != bloomBucketInvalid && b.buckets != nil {
 		if bs := b.buckets[bucket]; b.warmedUp(bs) {
 			if arm, err := bs.SelectArm(); err == nil {
@@ -162,6 +176,87 @@ func (b *banditModelSelector) SelectModel(bloomLevel int, _ string) string {
 	}
 	b.log(LogLevelDebug, "bandit_select source=global bloom=%d arm=%s", bloomLevel, arm)
 	return arm
+}
+
+// banditPersistedState is the JSON schema of the bandit statistics snapshot
+// persisted at state/bandit_state.json. Only observed statistics travel;
+// arm registration and the exploration coefficient stay config-owned, so a
+// changed model set simply drops the orphaned arms on restore.
+type banditPersistedState struct {
+	SchemaVersion int            `json:"schema_version"`
+	Global        bandit.State   `json:"global"`
+	Buckets       []bandit.State `json:"buckets,omitempty"`
+}
+
+// banditStatePath returns the persisted bandit snapshot location.
+func banditStatePath(maestroDir string) string {
+	return filepath.Join(maestroDir, "state", "bandit_state.json")
+}
+
+// LoadState restores previously persisted arm statistics into the global and
+// bucket selectors. Missing file is a clean first start; parse errors start
+// fresh with a warning (the snapshot is advisory learning state, never
+// authoritative). Without this restore the UCB1 warm-up thresholds
+// (trace_data_requirement + min_samples_before_use per arm) reset on every
+// daemon restart and adaptive selection effectively never activated (X-A
+// audit 2026-07-09).
+func (b *banditModelSelector) LoadState(path string) {
+	if b == nil {
+		return
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from the controlled state directory
+	if err != nil {
+		if !os.IsNotExist(err) {
+			b.log(LogLevelWarn, "bandit state load failed path=%s error=%v; starting fresh", path, err)
+		}
+		return
+	}
+	var st banditPersistedState
+	if err := json.Unmarshal(data, &st); err != nil {
+		b.log(LogLevelWarn, "bandit state parse failed path=%s error=%v; starting fresh", path, err)
+		return
+	}
+	b.global.RestoreState(st.Global)
+	if b.buckets != nil {
+		for i := range b.buckets {
+			if i < len(st.Buckets) {
+				b.buckets[i].RestoreState(st.Buckets[i])
+			}
+		}
+	}
+	var total int64
+	for _, n := range b.global.PullCounts() {
+		total += n
+	}
+	b.log(LogLevelInfo, "bandit state restored path=%s global_pulls=%d", path, total)
+}
+
+// SaveState persists the current arm statistics. Called at daemon shutdown
+// (same lifecycle as FingerprintDB persistence); a crash loses at most the
+// statistics accumulated since the last clean shutdown.
+func (b *banditModelSelector) SaveState(path string) error {
+	if b == nil {
+		return nil
+	}
+	st := banditPersistedState{SchemaVersion: 1, Global: b.global.ExportState()}
+	if b.buckets != nil {
+		st.Buckets = make([]bandit.State, len(b.buckets))
+		for i, bs := range b.buckets {
+			st.Buckets[i] = bs.ExportState()
+		}
+	}
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal bandit state: %w", err)
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil { //nolint:gosec // learning statistics, not secrets
+		return fmt.Errorf("write bandit state: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		return fmt.Errorf("rename bandit state: %w", err)
+	}
+	return nil
 }
 
 // RecordResult feeds an observed reward into the global selector and, when

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/msageha/maestro_v2/internal/contract"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -89,28 +88,12 @@ func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 	return "sonnet"
 }
 
-// modelFamily returns the canonical family alias ("sonnet" / "opus" / "haiku")
-// for a given model identifier. Short aliases pass through unchanged; full
-// Claude model IDs such as "claude-opus-4-7" or "claude-haiku-4-5-20251001"
-// are mapped to their family. Unknown names are returned unchanged so custom
-// / third-party model names still compare equal to themselves.
+// modelFamily returns the canonical family alias for a model identifier.
+// Delegates to model.ModelFamily — the shared definition also keys the
+// daemon-side bandit arms, keeping selection and reward attribution aligned
+// with worker eligibility.
 func modelFamily(name string) string {
-	switch name {
-	case "", "sonnet", "opus", "haiku":
-		return name
-	}
-	// Full Claude model IDs have the form "claude-<family>-<version>[-<suffix>]".
-	if rest, ok := strings.CutPrefix(name, "claude-"); ok {
-		family := rest
-		if i := strings.IndexByte(rest, '-'); i >= 0 {
-			family = rest[:i]
-		}
-		switch family {
-		case "sonnet", "opus", "haiku":
-			return family
-		}
-	}
-	return name
+	return model.ModelFamily(name)
 }
 
 // GetWorkerModel returns the model configured for the given worker, falling back to the default.

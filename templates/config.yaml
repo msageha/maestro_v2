@@ -507,11 +507,12 @@ evolution:
   strategies: ["diff", "full", "cross"]
 
 # --- Bandit (Adaptive Model Selection) ---
-# UCB1 ベースの適応的モデル選択機能。
-# 注意 (現状の実効性): モデル選択への配線自体はあるが、統計は非永続で daemon
-# 再起動ごとに warm-up (trace_data_requirement + min_samples_before_use) が
-# ゼロに戻る。warm-up 未達では静的な BloomLevel→model マッピングに
-# フォールバックするため、実運用ではほぼ静的選択のままになる。
+# UCB1 ベースの適応的モデル選択機能。arm はモデルファミリ (sonnet/opus/haiku)
+# 単位で管理され、統計は .maestro/state/bandit_state.json に永続化されて
+# warm-up (trace_data_requirement + min_samples_before_use) が daemon 再起動を
+# またぐ。warm-up 未達では静的な BloomLevel→model マッピングにフォールバック
+# する。feature_profiles の adaptive_model_selection が複雑度レベル単位で
+# 選択を gate する (off のレベルは静的マッピング、報酬の学習は継続)。
 bandit:
   # enabled: バンディット機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -658,11 +659,11 @@ complexity:
 # を使用する。
 # 標準キー: simple / standard / complex / critical
 #
-# 注意 (現状テレメトリのみ): プロファイルの算出・分類はタスク単位でログされる
-# が、算出結果を機能 on/off に接続する実ゲーティングは未配線
-# (IsFeatureEnabled に production 呼び出しが無い)。各機能の発火は上記の
-# グローバル enabled フラグ (bandit.enabled 等) でのみ決まるため、本セクション
-# を書き換えても挙動は変わらない (REQUIREMENTS.md §5 C-8 の注記参照)。
+# 注意 (実ゲーティングの範囲): 現時点で実ゲーティングに接続されているのは
+# adaptive_model_selection のみ (Bloom レベルから導出した複雑度レベル単位で
+# バンディット選択を on/off。off のレベルは静的マッピング、報酬の学習は継続)。
+# その他のキー (cross_agent_review 等) はテレメトリのみで、各機能の発火は
+# 上記のグローバル enabled フラグでのみ決まる (REQUIREMENTS.md §5 C-8 参照)。
 feature_profiles:
   simple:
     # cross_agent_review: クロスエージェントレビューの有効化

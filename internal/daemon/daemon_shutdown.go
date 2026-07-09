@@ -127,6 +127,13 @@ func (d *Daemon) Shutdown() {
 
 		// Phase C cleanup: persist and log stats for stateful components.
 		d.phaseC.SaveState(d.log)
+		if d.modelSelector != nil {
+			if err := d.modelSelector.SaveState(banditStatePath(d.maestroDir)); err != nil {
+				d.log(LogLevelWarn, "bandit state save failed: %v", err)
+			} else {
+				d.log(LogLevelInfo, "bandit state saved path=%s", banditStatePath(d.maestroDir))
+			}
+		}
 		d.phaseC.LogShutdownStats(d.log)
 
 		// 3. Cancel context — forces loops and handlers to exit.

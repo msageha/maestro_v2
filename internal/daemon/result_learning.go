@@ -102,7 +102,11 @@ func (rh *ResultHandler) recordBanditReward(r *model.TaskResult, workerID string
 		return
 	}
 	bloomLevel := rh.getPhaseC().ConsumeTaskBloom(r.TaskID)
-	modelName := rh.workerModelName(workerID)
+	// Family normalisation (E-4): the bandit arms are keyed by model family,
+	// while workerModelName can resolve to an alias ("opus" under boost,
+	// the "sonnet" fallback) or the raw config spelling ("claude-opus-4-7").
+	// Without the shared normalisation the reward silently missed the arm.
+	modelName := model.ModelFamily(rh.workerModelName(workerID))
 	if modelName == "" {
 		return
 	}

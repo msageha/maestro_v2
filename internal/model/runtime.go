@@ -42,3 +42,32 @@ func ParseRuntimeFromModel(modelName string) (runtime, effectiveModel string) {
 		return RuntimeClaudeCode, modelName
 	}
 }
+
+// ModelFamily returns the canonical family alias ("sonnet" / "opus" / "haiku")
+// for a given model identifier. Short aliases pass through unchanged; full
+// Claude model IDs such as "claude-opus-4-7" or "claude-haiku-4-5-20251001"
+// are mapped to their family. Unknown names (codex / gemini / custom) are
+// returned unchanged so they still compare equal to themselves.
+//
+// This is the canonical comparison granularity across the daemon and plan
+// packages: worker eligibility matches by family, and the bandit's model
+// arms and reward attribution are keyed by family so a config spelled with
+// full IDs and a reward path that resolves an alias land on the same arm.
+func ModelFamily(name string) string {
+	switch name {
+	case "", "sonnet", "opus", "haiku":
+		return name
+	}
+	// Full Claude model IDs have the form "claude-<family>-<version>[-<suffix>]".
+	if rest, ok := strings.CutPrefix(name, "claude-"); ok {
+		family := rest
+		if i := strings.IndexByte(rest, '-'); i >= 0 {
+			family = rest[:i]
+		}
+		switch family {
+		case "sonnet", "opus", "haiku":
+			return family
+		}
+	}
+	return name
+}

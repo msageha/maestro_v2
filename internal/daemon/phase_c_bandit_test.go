@@ -190,6 +190,38 @@ func TestRecordBanditReward_ConsumesAndRoutesBloom(t *testing.T) {
 	}
 }
 
+// TestRecordBanditReward_FamilyNormalization pins the E-4 fix: arms are keyed
+// by model family, and a reward whose worker resolves to a full Claude model
+// ID (or a boost-mode alias) must land on the family arm instead of being
+// silently dropped on the arm-name mismatch.
+func TestRecordBanditReward_FamilyNormalization(t *testing.T) {
+	rh, _ := newTestResultHandler(t.TempDir())
+	m := newTestTaskBloomManager(t)
+	// Production registration path: family-normalised arms.
+	for _, name := range []string{"claude-opus-4-7", "sonnet"} {
+		m.BanditSelector.AddArm(model.ModelFamily(name))
+	}
+	rh.SetPhaseCManager(m)
+	// Worker configured with the full model ID spelling.
+	rh.config.Agents.Workers.Models = map[string]string{"worker1": "claude-opus-4-7"}
+
+	cfg := model.BanditConfig{
+		Enabled:          ptr.Bool(true),
+		ExplorationCoeff: ptr.Float64(1.41),
+	}
+	sel := newBanditModelSelector(m.BanditSelector, cfg, nil)
+	rh.SetModelSelector(sel)
+
+	m.RecordTaskBloom("task-1", 5)
+	rh.recordBanditReward(&model.TaskResult{TaskID: "task-1", Status: model.StatusCompleted}, "worker1")
+	if got := m.BanditSelector.GetStats()["opus"].PullCount; got != 1 {
+		t.Errorf("family arm opus PullCount = %d, want 1 (full-ID reward must normalise to the family arm)", got)
+	}
+	if got := m.BanditSelector.GetStats()["claude-opus-4-7"].PullCount; got != 0 {
+		t.Errorf("raw-ID arm must not exist/receive rewards, got PullCount=%d", got)
+	}
+}
+
 // TestTaskBloom_OrderCompaction drives steady record→consume traffic (the
 // map stays tiny while the order slice accumulates consumed IDs) and checks
 // that compaction keeps the order slice bounded instead of growing without

@@ -308,3 +308,58 @@ func TestUCB1Score_ZeroPulls_ReturnsZero(t *testing.T) {
 		t.Errorf("expected 0 for unpulled arm, got %f", score)
 	}
 }
+
+// TestSelector_ExportRestoreState_RoundTrip pins the persistence snapshot:
+// statistics survive an export/restore cycle onto a freshly registered
+// selector, orphaned snapshot arms are dropped, and newly registered arms
+// keep zero stats so the warm-up gate demands fresh samples for them.
+func TestSelector_ExportRestoreState_RoundTrip(t *testing.T) {
+	src, err := NewSelector(1.41)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	for _, arm := range []string{"sonnet", "opus", "legacy"} {
+		src.AddArm(arm)
+	}
+	for i := 0; i < 4; i++ {
+		src.UpdateReward("sonnet", 1.0)
+	}
+	src.UpdateReward("opus", 0.5)
+	src.UpdateReward("legacy", 0.2)
+
+	st := src.ExportState()
+	if len(st.Arms) != 3 {
+		t.Fatalf("exported arms = %d, want 3", len(st.Arms))
+	}
+
+	// New process: "legacy" was dropped from config, "haiku" was added.
+	dst, err := NewSelector(1.41)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	for _, arm := range []string{"sonnet", "opus", "haiku"} {
+		dst.AddArm(arm)
+	}
+	dst.RestoreState(st)
+
+	pulls := dst.PullCounts()
+	if pulls["sonnet"] != 4 || pulls["opus"] != 1 {
+		t.Errorf("restored pulls = %v, want sonnet=4 opus=1", pulls)
+	}
+	if pulls["haiku"] != 0 {
+		t.Errorf("new arm haiku pulls = %d, want 0", pulls["haiku"])
+	}
+	if _, ok := pulls["legacy"]; ok {
+		t.Error("orphaned snapshot arm 'legacy' must not be resurrected")
+	}
+	stats := dst.GetStats()
+	if got := stats["sonnet"].AvgReward; got != 1.0 {
+		t.Errorf("sonnet AvgReward = %v, want 1.0", got)
+	}
+	// totalPulls is recomputed from surviving arms (5, not the source's 6):
+	// with 5 total pulls the UCB1 exploration term stays consistent.
+	best, avg, err := dst.BestArm()
+	if err != nil || best != "sonnet" || avg != 1.0 {
+		t.Errorf("BestArm = (%s, %v, %v), want (sonnet, 1.0, nil)", best, avg, err)
+	}
+}

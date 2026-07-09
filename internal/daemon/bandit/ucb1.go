@@ -9,12 +9,13 @@ import (
 	"sync"
 )
 
-// ArmStats holds statistics for a single arm.
+// ArmStats holds statistics for a single arm. The JSON tags define the
+// persisted snapshot schema (see State) and must stay stable.
 type ArmStats struct {
-	Name        string
-	TotalReward float64
-	PullCount   int64
-	AvgReward   float64
+	Name        string  `json:"name"`
+	TotalReward float64 `json:"total_reward"`
+	PullCount   int64   `json:"pull_count"`
+	AvgReward   float64 `json:"avg_reward"`
 }
 
 // Selector implements the UCB1 algorithm for arm selection.
@@ -106,6 +107,57 @@ func (s *Selector) UpdateReward(armName string, reward float64) {
 	arm.TotalReward += reward
 	s.totalPulls++
 	arm.AvgReward += (reward - arm.AvgReward) / float64(arm.PullCount) //nolint:gosec // PullCount is bounded by usage
+}
+
+// State is a serializable snapshot of a Selector's arm statistics, used to
+// persist learning across daemon restarts. The exploration coefficient and
+// arm registration stay config-owned — only the observed statistics travel.
+type State struct {
+	Arms []ArmStats `json:"arms"`
+}
+
+// ExportState returns a snapshot of the selector's arm statistics in
+// deterministic (name-sorted) order.
+func (s *Selector) ExportState() State {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	names := make([]string, 0, len(s.arms))
+	for name := range s.arms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	st := State{Arms: make([]ArmStats, 0, len(names))}
+	for _, name := range names {
+		st.Arms = append(st.Arms, *s.arms[name])
+	}
+	return st
+}
+
+// RestoreState overwrites the statistics of arms that are currently
+// registered with the snapshot's values. Snapshot entries for unregistered
+// arms are dropped (the operator changed the configured model set), and
+// registered arms missing from the snapshot keep their zero stats — the
+// warm-up gate then requires fresh samples for them before selection, which
+// is the safe behaviour for a newly introduced model. totalPulls is
+// recomputed from the restored pull counts so the UCB1 exploration term
+// stays consistent with the arms that actually exist.
+func (s *Selector) RestoreState(st State) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var total int64
+	for _, saved := range st.Arms {
+		arm, ok := s.arms[saved.Name]
+		if !ok {
+			continue
+		}
+		arm.TotalReward = saved.TotalReward
+		arm.PullCount = saved.PullCount
+		arm.AvgReward = saved.AvgReward
+	}
+	for _, arm := range s.arms {
+		total += arm.PullCount
+	}
+	s.totalPulls = total
 }
 
 // GetStats returns a snapshot of all arm statistics.

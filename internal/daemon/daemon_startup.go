@@ -15,7 +15,9 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/complexity"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -274,6 +276,20 @@ func (d *Daemon) initComponents() {
 	// now — after PhaseC is ready but before any plan traffic arrives.
 	d.modelSelector = newBanditModelSelector(d.phaseC.BanditSelector, d.config.Bandit, d.log)
 	if d.modelSelector != nil {
+		// Restore persisted arm statistics so warm-up survives restarts —
+		// without this the trace/min-sample thresholds reset every boot and
+		// adaptive selection never activated in practice.
+		d.modelSelector.LoadState(banditStatePath(d.maestroDir))
+		// Gate SelectModel on the feature_profiles config: adaptive model
+		// selection only applies at difficulty levels whose profile enables
+		// it. The level is derived from the task's Bloom level (the only
+		// complexity signal available at the selection call site); reward
+		// recording stays ungated so learning continues while gated off.
+		phaseC := d.phaseC
+		d.modelSelector.featureEnabled = func(bloomLevel int) bool {
+			level := phaseC.EvaluateLevel(complexity.Input{BloomLevel: bloomLevel})
+			return phaseC.IsFeatureEnabled(level, featuregate.FeatureAdaptiveModelSelection)
+		}
 		if settable, ok := d.planExecutor.(core.PlanExecutorModelSelectorSettable); ok {
 			settable.SetModelSelector(d.modelSelector)
 			d.log(LogLevelInfo, "adaptive model selector wired into plan executor (contextual buckets=%d)", bloomBucketCount)

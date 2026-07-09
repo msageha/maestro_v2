@@ -119,8 +119,15 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 			log(LogLevelError, "bandit selector initialization failed: %v", err)
 		} else {
 			m.BanditSelector = sel
-			for _, model := range availableModels {
-				m.BanditSelector.AddArm(model)
+			// Arms are keyed by model FAMILY (E-4): worker eligibility in
+			// plan.AssignWorkers matches by family, and the reward path
+			// resolves aliases ("opus" under boost, "sonnet" fallback) —
+			// keying arms by the raw config spelling ("claude-opus-4-7")
+			// silently dropped those rewards on the arm-name mismatch.
+			// AddArm dedups, so several spellings of one family collapse
+			// into a single arm.
+			for _, name := range availableModels {
+				m.BanditSelector.AddArm(model.ModelFamily(name))
 			}
 			log(LogLevelInfo, "bandit selector initialized arms=%d", len(m.BanditSelector.GetStats()))
 		}
