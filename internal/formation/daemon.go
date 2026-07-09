@@ -51,9 +51,12 @@ func daemonStartupLogPath(maestroDir string) string {
 // "daemon not ready: ping timeout" (Report 2026-05-05). Append mode;
 // rotation is the operator's responsibility.
 func startDaemon(maestroDir string) error {
+	// Fail fast instead of falling back to a PATH lookup: PATH may resolve a
+	// different (older) maestro binary than the one running this formation,
+	// silently introducing version skew between CLI and daemon.
 	execPath, err := os.Executable()
 	if err != nil {
-		execPath = "maestro" // fallback to PATH lookup
+		return fmt.Errorf("resolve current executable for daemon spawn: %w", err)
 	}
 	cmd := exec.Command(execPath, "daemon") //nolint:gosec // execPath is the current binary path from os.Executable
 	logPath := daemonStartupLogPath(maestroDir)

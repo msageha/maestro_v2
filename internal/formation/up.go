@@ -49,8 +49,15 @@ func RunUp(opts UpOptions) (err error) {
 	// fully isolated and the shared-server races vanish structurally.
 	tmux.SetTmuxSocket(tmux.BuildMaestroSocketName(opts.Config.Project.Name, opts.MaestroDir))
 
-	// Guard: refuse to destroy a running session unless --force is set
-	if tmux.SessionExists() && !opts.Force {
+	// Guard: refuse to destroy a running session unless --force is set.
+	// The check must not fail open: if tmux cannot be queried at all
+	// (e.g. a sandbox denying socket access), proceeding would tear down
+	// and recreate state on top of a possibly-live formation.
+	sessionAlive, err := tmux.SessionExistsChecked()
+	if err != nil {
+		return fmt.Errorf("check existing session: %w", err)
+	}
+	if sessionAlive && !opts.Force {
 		return ErrSessionExists
 	}
 

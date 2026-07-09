@@ -118,12 +118,13 @@ type ErrorKind int
 
 // ErrorKind constants enumerate the categories of tmux command failures.
 const (
-	ErrKindServer   ErrorKind = iota + 1 // tmux server unreachable
-	ErrKindSession                       // session not found
-	ErrKindPane                          // pane or window not found
-	ErrKindTimeout                       // command timed out
-	ErrKindCommand                       // other command error
-	ErrKindCanceled                      // context was canceled (not timeout)
+	ErrKindServer     ErrorKind = iota + 1 // tmux server unreachable
+	ErrKindSession                         // session not found
+	ErrKindPane                            // pane or window not found
+	ErrKindTimeout                         // command timed out
+	ErrKindCommand                         // other command error
+	ErrKindCanceled                        // context was canceled (not timeout)
+	ErrKindPermission                      // socket access denied (sandbox, file permissions)
 )
 
 func (k ErrorKind) String() string {
@@ -140,6 +141,8 @@ func (k ErrorKind) String() string {
 		return "command"
 	case ErrKindCanceled:
 		return "canceled"
+	case ErrKindPermission:
+		return "permission"
 	default:
 		return "unknown"
 	}
@@ -173,8 +176,9 @@ func (e *Error) Is(target error) bool {
 
 // Sentinel errors for use with errors.Is().
 var (
-	ErrTmuxServer  = &Error{Kind: ErrKindServer}
-	ErrTmuxSession = &Error{Kind: ErrKindSession}
+	ErrTmuxServer     = &Error{Kind: ErrKindServer}
+	ErrTmuxSession    = &Error{Kind: ErrKindSession}
+	ErrTmuxPermission = &Error{Kind: ErrKindPermission}
 )
 
 // classifyError parses tmux stderr to determine the error category.
@@ -183,12 +187,19 @@ func classifyError(op, stderr string, err error) *Error {
 
 	var kind ErrorKind
 	switch {
+	// Permission failures must be classified BEFORE the server-unreachable
+	// case: a sandbox denying tmux socket access is NOT equivalent to "the
+	// server/session is already gone". Idempotent callers (KillSession,
+	// cleanup paths) treat ErrKindServer/ErrKindSession as success, and
+	// folding permission errors into ErrKindServer made KillSession report
+	// success while the session was still alive behind the denied socket.
+	case strings.Contains(lower, "operation not permitted") ||
+		strings.Contains(lower, "permission denied"):
+		kind = ErrKindPermission
 	case strings.Contains(lower, "no server running") ||
 		strings.Contains(lower, "server exited") ||
 		strings.Contains(lower, "error connecting") ||
-		strings.Contains(lower, "connect failed") ||
-		strings.Contains(lower, "operation not permitted") ||
-		strings.Contains(lower, "permission denied"):
+		strings.Contains(lower, "connect failed"):
 		kind = ErrKindServer
 	case strings.Contains(lower, "session not found") ||
 		strings.Contains(lower, "can't find session") ||
@@ -457,8 +468,31 @@ func SessionExists() bool {
 	return exists
 }
 
+// SessionExistsChecked reports whether the maestro session exists,
+// distinguishing "definitely absent" (session/server not found — false, nil)
+// from "could not determine" (permission denied, timeout, IPC failure —
+// false, non-nil error). Guards that must not fail open on an unreadable
+// tmux socket (e.g. RunUp's destroy-and-recreate protection) use this
+// instead of the boolean-only SessionExists.
+func SessionExistsChecked() (bool, error) {
+	err := run("has-session", "-t", exactSessionTarget())
+	if err == nil {
+		debugLog("SessionExistsChecked session=%s exists=true", GetSessionName())
+		return true, nil
+	}
+	if errors.Is(err, ErrTmuxSession) || errors.Is(err, ErrTmuxServer) {
+		debugLog("SessionExistsChecked session=%s exists=false", GetSessionName())
+		return false, nil
+	}
+	debugLog("SessionExistsChecked session=%s indeterminate error=%v", GetSessionName(), err)
+	return false, err
+}
+
 // KillSession destroys the maestro tmux session.
 // It is idempotent: if the session (or tmux server) does not exist, it returns nil.
+// Permission failures (ErrKindPermission — e.g. a sandbox denying tmux socket
+// access) are NOT treated as idempotent success: the session may still be
+// alive behind the denied socket, so the error is surfaced to the caller.
 func KillSession() error {
 	caller := callerInfo(2)
 	debugLog("KillSession called session=%s caller=%s", GetSessionName(), caller)
@@ -543,9 +577,31 @@ func SessionHealthCheckDetailed() SessionHealthResult {
 	return result
 }
 
-// CreateWindow creates a new window in the maestro session.
-func CreateWindow(name string) error {
-	return run("new-window", "-t", exactSessionTarget(), "-n", name)
+// CreateWindow creates a new window in the maestro session and returns its
+// immutable window ID (@N). Callers must target the window via this ID
+// instead of assuming a numeric index: with `set -g base-index 1` in the
+// user's tmux.conf (which per-instance sockets still read), window indices
+// do not start at 0 and any hardcoded ":N" target breaks.
+func CreateWindow(name string) (string, error) {
+	out, err := output("new-window", "-t", exactSessionTarget(), "-P", "-F", "#{window_id}", "-n", name)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
+// WindowActivePane returns the immutable pane ID (%N) of the window's
+// active pane. For a freshly created window this is its only pane.
+func WindowActivePane(windowTarget string) (string, error) {
+	out, err := output("display-message", "-t", windowTarget, "-p", "#{pane_id}")
+	if err != nil {
+		return "", err
+	}
+	pane := strings.TrimSpace(out)
+	if pane == "" {
+		return "", fmt.Errorf("window %s: empty pane id from display-message", windowTarget)
+	}
+	return pane, nil
 }
 
 // splitPane splits the current pane in the given window horizontally or vertically.
@@ -716,8 +772,10 @@ func SendCommand(paneTarget, command string) error {
 		return fmt.Errorf("command size %d exceeds maximum %d bytes", len(command), maxMessageSize)
 	}
 	debugLog("SendCommand pane=%s command=%q", paneTarget, command)
-	// Send command text literally (no special key interpretation).
-	if err := SendKeys(paneTarget, "-l", command); err != nil {
+	// Send command text literally (no special key interpretation). The "--"
+	// terminator stops tmux flag parsing so a command starting with "-" is
+	// delivered as text instead of being misread as a send-keys flag.
+	if err := SendKeys(paneTarget, "-l", "--", command); err != nil {
 		return err
 	}
 	// Send Enter as a key press to submit.
@@ -756,6 +814,9 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list pane ids: %w", err)
 	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("window %s has no panes", windowTarget)
+	}
 	firstPaneID := strings.TrimSpace(ids[0])
 
 	for i := 1; i < totalRows; i++ {
@@ -768,6 +829,9 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	rowIDs, err := ListPanes(windowTarget, "#{pane_id}")
 	if err != nil {
 		return nil, fmt.Errorf("list row pane ids: %w", err)
+	}
+	if len(rowIDs) < totalRows {
+		return nil, fmt.Errorf("window %s: expected %d row panes after splits, got %d", windowTarget, totalRows, len(rowIDs))
 	}
 
 	// Step 2: Split each full row horizontally to create 2 columns.
@@ -801,23 +865,33 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 //
 // The iteration order of serverOptions does not affect correctness because
 // tmux applies each option synchronously within the chain.
-func CreateSessionWithServerOptions(windowName string, serverOptions map[string]string) error {
+//
+// Returns the immutable window ID (@N) of the session's initial window
+// (via new-session -P -F). Callers must use this ID instead of assuming
+// the initial window is index 0: `set -g base-index 1` in the user's
+// tmux.conf shifts the first index and breaks hardcoded ":0" targets.
+func CreateSessionWithServerOptions(windowName string, serverOptions map[string]string) (string, error) {
 	debugLog("CreateSessionWithServerOptions session=%s window=%s options=%v",
 		GetSessionName(), windowName, serverOptions)
 
-	args := make([]string, 0, 6+5*len(serverOptions))
-	args = append(args, "new-session", "-d", "-s", GetSessionName(), "-n", windowName)
+	args := make([]string, 0, 9+5*len(serverOptions))
+	args = append(args, "new-session", "-d", "-P", "-F", "#{window_id}", "-s", GetSessionName(), "-n", windowName)
 	for name, value := range serverOptions {
 		args = append(args, ";", "set-option", "-s", name, value)
 	}
 
-	err := run(args...)
+	out, err := output(args...)
 	if err != nil {
 		debugLog("CreateSessionWithServerOptions FAILED session=%s error=%v", GetSessionName(), err)
-	} else {
-		debugLog("CreateSessionWithServerOptions OK session=%s", GetSessionName())
+		return "", err
 	}
-	return err
+	windowID := strings.TrimSpace(out)
+	if windowID == "" {
+		debugLog("CreateSessionWithServerOptions FAILED session=%s error=empty window id", GetSessionName())
+		return "", fmt.Errorf("new-session: empty window id for session %q", GetSessionName())
+	}
+	debugLog("CreateSessionWithServerOptions OK session=%s window_id=%s", GetSessionName(), windowID)
+	return windowID, nil
 }
 
 // SetServerOption sets a server-level tmux option.
@@ -975,6 +1049,12 @@ func debugLevelForErrorKind(kind ErrorKind) string {
 }
 
 // outputCtx executes a tmux command that returns output, with context support and error classification.
+//
+// stdout and stderr are kept separate (cmd.Output + ExitError.Stderr) so
+// tmux warnings emitted on stderr during an otherwise-successful command can
+// never leak into the returned value. Callers parse the result (pane IDs,
+// content hashes, user vars); mixing in stderr — the old CombinedOutput
+// behavior — silently corrupted those parses.
 func outputCtx(ctx context.Context, args ...string) (string, error) {
 	// Fast path: if context is already done, don't spawn a process.
 	if err := ctx.Err(); err != nil {
@@ -984,9 +1064,13 @@ func outputCtx(ctx context.Context, args ...string) (string, error) {
 	defer cancel()
 	op := args[0]
 	cmd := exec.CommandContext(ctx, "tmux", tmuxArgs(args)...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
-	out, err := cmd.CombinedOutput()
+	out, err := cmd.Output()
 	if err != nil {
-		stderr := strings.TrimSpace(string(out))
+		var stderr string
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
+			stderr = strings.TrimSpace(string(exitErr.Stderr))
+		}
 		if ctx.Err() != nil {
 			return "", &Error{Kind: contextErrorKind(ctx.Err()), Op: op, Stderr: stderr, Err: ctx.Err()}
 		}

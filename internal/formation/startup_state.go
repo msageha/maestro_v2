@@ -95,7 +95,16 @@ func resetFormation(maestroDir string) error {
 }
 
 // reflectFlags updates config.yaml with CLI flags (only when explicitly set).
+//
+// When no flag was explicitly set, config.yaml is NOT rewritten: the write
+// path re-serializes the file through the Config struct, which strips user
+// comments and unknown fields, so an unconditional write destroyed hand-
+// edited config on every `maestro up`.
 func reflectFlags(opts UpOptions) error {
+	if !opts.BoostSet && !opts.ContinuousSet {
+		return nil
+	}
+
 	cfg, err := model.LoadConfig(opts.MaestroDir)
 	if err != nil {
 		return err

@@ -41,11 +41,12 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	//     between new-session and the follow-up set-option" race.
 	slog.Debug("createFormation: creating session with server hardening (atomic)")
 
-	if err := tmux.CreateSessionWithServerOptions("orchestrator", map[string]string{
+	orchWindow, err := tmux.CreateSessionWithServerOptions("orchestrator", map[string]string{
 		"exit-empty":      "off",
 		"exit-unattached": "off",
-	}); err != nil {
-		if errors.Is(err, tmux.ErrTmuxServer) {
+	})
+	if err != nil {
+		if errors.Is(err, tmux.ErrTmuxServer) || errors.Is(err, tmux.ErrTmuxPermission) {
 			return fmt.Errorf("create session with server options: %w; tmux server is unavailable, and this often means the current sandbox or container blocks tmux socket creation", err)
 		}
 		return fmt.Errorf("create session with server options: %w", err)
@@ -68,44 +69,55 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		return fmt.Errorf("set destroy-unattached: %w", err)
 	}
 
+	// Windows and panes are addressed by the immutable IDs returned at
+	// creation time (@N / %N), never by numeric index: the user's tmux.conf
+	// is still read on per-instance sockets, and `set -g base-index 1` /
+	// `set -g pane-base-index 1` shift every index so hardcoded ":0"-style
+	// targets fail with "no such window".
+
 	// Set remain-on-exit for orchestrator window.
-	orchWindow := fmt.Sprintf("=%s:0", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(orchWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for orchestrator: %w", err)
 	}
 
-	orchPane := fmt.Sprintf("%s:0.0", tmux.GetSessionName())
+	orchPane, err := tmux.WindowActivePane(orchWindow)
+	if err != nil {
+		return fmt.Errorf("resolve orchestrator pane: %w", err)
+	}
 	orchRuntime, orchModel := model.ParseRuntimeFromModel(resolveModel(cfg, "orchestrator"))
 	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", orchModel, orchRuntime); err != nil {
 		return err
 	}
 
-	// Window 1: planner
-	if err := tmux.CreateWindow("planner"); err != nil {
+	// Planner window
+	plannerWindow, err := tmux.CreateWindow("planner")
+	if err != nil {
 		return fmt.Errorf("create planner window: %w", err)
 	}
 
 	// Set remain-on-exit for planner window
-	plannerWindow := fmt.Sprintf("=%s:1", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(plannerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for planner: %w", err)
 	}
 
-	plannerPane := fmt.Sprintf("%s:1.0", tmux.GetSessionName())
+	plannerPane, err := tmux.WindowActivePane(plannerWindow)
+	if err != nil {
+		return fmt.Errorf("resolve planner pane: %w", err)
+	}
 	plannerRuntime, plannerModel := model.ParseRuntimeFromModel(resolveModel(cfg, "planner"))
 	if err := setAgentVars(plannerPane, "planner", "planner", plannerModel, plannerRuntime); err != nil {
 		return err
 	}
 
-	// Window 2: workers
+	// Workers window
 	workerCount := max(cfg.Agents.Workers.Count, 1)
 
-	if err := tmux.CreateWindow("workers"); err != nil {
+	workerWindow, err := tmux.CreateWindow("workers")
+	if err != nil {
 		return fmt.Errorf("create workers window: %w", err)
 	}
 
 	// Set remain-on-exit for workers window
-	workerWindow := fmt.Sprintf("=%s:2", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(workerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for workers: %w", err)
 	}
@@ -193,7 +205,7 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	}
 
 	// Select orchestrator window so `tmux attach` lands there
-	if err := tmux.SelectWindow(fmt.Sprintf("=%s:0", tmux.GetSessionName())); err != nil {
+	if err := tmux.SelectWindow(orchWindow); err != nil {
 		return fmt.Errorf("select orchestrator window: %w", err)
 	}
 

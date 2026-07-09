@@ -58,11 +58,14 @@ func requireTmux(t *testing.T) {
 	out, err := exec.Command("tmux", "list-sessions").CombinedOutput()
 	if err != nil {
 		outStr := string(out)
-		// "no server running" is expected — tmux will start on CreateSession.
-		// But connectivity/permission errors mean tmux is unusable.
-		if strings.Contains(outStr, "error connecting") ||
-			strings.Contains(outStr, "Operation not permitted") ||
-			strings.Contains(outStr, "Permission denied") {
+		// "no server running" and "error connecting ... (No such file or
+		// directory)" are both expected when no server has started yet —
+		// tmux will start one on CreateSession. Only permission and other
+		// connectivity errors mean tmux is genuinely unusable.
+		if strings.Contains(outStr, "Operation not permitted") ||
+			strings.Contains(outStr, "Permission denied") ||
+			(strings.Contains(outStr, "error connecting") &&
+				!strings.Contains(outStr, "No such file or directory")) {
 			t.Skipf("tmux server not accessible: %s", strings.TrimSpace(outStr))
 		}
 	}
@@ -205,7 +208,7 @@ func TestSessionLifecycle(t *testing.T) {
 		t.Fatal("session should not exist initially")
 	}
 
-	if err := CreateSessionWithServerOptions("test-window", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test-window", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -226,7 +229,7 @@ func TestUserVariables(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -261,11 +264,11 @@ func TestCreateWindowAndListPanes(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	if err := CreateWindow("planner"); err != nil {
+	if _, err := CreateWindow("planner"); err != nil {
 		t.Fatalf("create window: %v", err)
 	}
 
@@ -292,10 +295,10 @@ func TestSetupWorkerGrid(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("orchestrator", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if err := CreateWindow("workers"); err != nil {
+	if _, err := CreateWindow("workers"); err != nil {
 		t.Fatalf("create window: %v", err)
 	}
 
@@ -358,7 +361,7 @@ func TestCapturePane(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -382,7 +385,7 @@ func TestFindPaneByAgentID(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -393,11 +396,15 @@ func TestFindPaneByAgentID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("find pane: %v", err)
 	}
-	// FindPaneByAgentID returns the raw pane target from tmux (without "=" prefix)
-	// because tmux's #{session_name} format returns the actual session name.
-	wantRaw := GetSessionName() + ":0.0"
-	if found != wantRaw {
-		t.Errorf("got %q, want %q", found, wantRaw)
+	// FindPaneByAgentID returns the immutable pane ID (%N), not the
+	// session:window.pane form — pane indices are renumbered when panes
+	// close, which would retarget in-flight sends (see its doc comment).
+	wantID, err := output("display-message", "-t", paneTarget, "-p", "#{pane_id}")
+	if err != nil {
+		t.Fatalf("resolve expected pane id: %v", err)
+	}
+	if want := strings.TrimSpace(wantID); found != want {
+		t.Errorf("got %q, want %q", found, want)
 	}
 
 	// Non-existent agent
@@ -407,17 +414,43 @@ func TestFindPaneByAgentID(t *testing.T) {
 	}
 }
 
-// waitForShell waits until the shell is ready by polling CapturePane for the prompt.
+// waitForShell waits until the pane is running an interactive shell and
+// accepting input. Prompt-glyph detection (looking for $ / > / %) is
+// deliberately avoided: customised prompts (powerline, p10k, starship)
+// often contain none of those characters, which made every capture-based
+// test fail on such machines. This mirrors the production readiness probe
+// (waitForShellReady): wait for pane_current_command to become a known
+// shell, then confirm interactivity with a sentinel echo.
 func waitForShell(t *testing.T, paneTarget string) {
 	t.Helper()
 	require.Eventually(t, func() bool {
-		content, err := CapturePane(paneTarget, 5)
-		if err != nil {
-			return false
+		cmd, err := GetPaneCurrentCommand(paneTarget)
+		return err == nil && IsShellCommand(cmd)
+	}, 5*time.Second, 100*time.Millisecond, "shell not running in pane %s", paneTarget)
+
+	// Confirm the shell is accepting interactive input with a sentinel echo.
+	// The sentinel is resent periodically: a shell whose rc init is still
+	// running can swallow the first send — the exact race production's
+	// confirmShellInteractive handles (fail-open there; tests fail closed).
+	sentinel := fmt.Sprintf("__TMUXTEST_RDY_%d_%d__", time.Now().UnixNano(), testSessionSeq.Add(1))
+	deadline := time.Now().Add(10 * time.Second)
+	for attempt := 1; time.Now().Before(deadline); attempt++ {
+		if err := SendCommand(paneTarget, "echo "+sentinel); err != nil {
+			t.Logf("waitForShell: sentinel send attempt %d to %s failed: %v", attempt, paneTarget, err)
 		}
-		// Fish/zsh/bash shell prompts typically contain $ or > or %
-		return strings.Contains(content, "$") || strings.Contains(content, ">") || strings.Contains(content, "%")
-	}, 5*time.Second, 250*time.Millisecond, "shell prompt not detected in pane %s", paneTarget)
+		settle := time.Now().Add(1 * time.Second)
+		for time.Now().Before(settle) {
+			// Joined capture: narrow panes (e.g. a 4-way split) wrap the
+			// sentinel across visual lines, which a non-joined capture
+			// would never match as a contiguous string.
+			content, err := CapturePaneJoined(paneTarget, 15)
+			if err == nil && strings.Contains(content, sentinel) {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	t.Fatalf("readiness sentinel not echoed in pane %s", paneTarget)
 }
 
 // TestBufNamePID_IncludesProcessPID pins the cross-process tmux buffer
@@ -442,7 +475,7 @@ func TestSendTextAndSubmit(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -483,7 +516,7 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -537,7 +570,7 @@ func TestSetSessionOption(t *testing.T) {
 	requireTmux(t)
 	useTestSession(t)
 
-	if err := CreateSessionWithServerOptions("test", nil); err != nil {
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
@@ -584,5 +617,224 @@ func TestDebugLevelForErrorKind(t *testing.T) {
 		if got := debugLevelForErrorKind(tc.kind); got != tc.want {
 			t.Errorf("debugLevelForErrorKind(%v) = %q, want %q", tc.kind, got, tc.want)
 		}
+	}
+}
+
+// TestClassifyError_PermissionDistinctFromServer pins that permission
+// failures (sandbox denying tmux socket access) are classified as
+// ErrKindPermission, NOT as ErrKindServer. KillSession treats
+// ErrKindServer/ErrKindSession as idempotent success ("already gone");
+// folding permission errors into ErrKindServer made KillSession report
+// success while the session was still alive behind the denied socket.
+func TestClassifyError_PermissionDistinctFromServer(t *testing.T) {
+	t.Parallel()
+	cases := []string{
+		"operation not permitted",
+		"error connecting to /private/tmp/tmux-501/default (Operation not permitted)",
+		"permission denied",
+	}
+	for _, stderr := range cases {
+		t.Run(stderr, func(t *testing.T) {
+			t.Parallel()
+			cls := classifyError("kill-session", stderr, fmt.Errorf("exit status 1"))
+			if cls.Kind != ErrKindPermission {
+				t.Fatalf("classifyError(%q) kind = %v, want ErrKindPermission", stderr, cls.Kind)
+			}
+			if !errors.Is(cls, ErrTmuxPermission) {
+				t.Fatalf("classifyError(%q) should match ErrTmuxPermission via errors.Is", stderr)
+			}
+			if errors.Is(cls, ErrTmuxServer) {
+				t.Fatalf("classifyError(%q) must NOT match ErrTmuxServer (KillSession would treat it as idempotent success)", stderr)
+			}
+			if errors.Is(cls, ErrTmuxSession) {
+				t.Fatalf("classifyError(%q) must NOT match ErrTmuxSession", stderr)
+			}
+		})
+	}
+}
+
+// TestSessionExistsChecked pins the fail-closed session guard: absence of
+// the session (or server) is (false, nil), while indeterminate failures
+// must surface as an error so callers like RunUp do not destroy a
+// possibly-live formation.
+func TestSessionExistsChecked(t *testing.T) {
+	requireTmux(t)
+	useTestSession(t)
+
+	exists, err := SessionExistsChecked()
+	if err != nil {
+		t.Fatalf("SessionExistsChecked before create: unexpected error: %v", err)
+	}
+	if exists {
+		t.Fatal("session should not exist before creation")
+	}
+
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	exists, err = SessionExistsChecked()
+	if err != nil {
+		t.Fatalf("SessionExistsChecked after create: unexpected error: %v", err)
+	}
+	if !exists {
+		t.Fatal("session should exist after creation")
+	}
+}
+
+// TestOutput_ErrorCarriesStderr pins that outputCtx extracts stderr from
+// ExitError after the switch from CombinedOutput to Output: without the
+// extraction, classifyError would receive an empty string and misclassify
+// every failure as ErrKindCommand, breaking the idempotent-cleanup and
+// pane-missing code paths that depend on error kinds.
+func TestOutput_ErrorCarriesStderr(t *testing.T) {
+	requireTmux(t)
+	useTestSession(t)
+
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	_, err := CapturePane("="+GetSessionName()+":nonexistent-window-xyz", 0)
+	if err == nil {
+		t.Fatal("expected error for nonexistent window target")
+	}
+	var terr *Error
+	if !errors.As(err, &terr) {
+		t.Fatalf("expected *tmux.Error, got %T: %v", err, err)
+	}
+	if terr.Stderr == "" {
+		t.Fatal("Error.Stderr must carry tmux stderr (ExitError.Stderr extraction)")
+	}
+	if terr.Kind != ErrKindPane {
+		t.Fatalf("kind = %v, want ErrKindPane (stderr-driven classification)", terr.Kind)
+	}
+}
+
+// TestSendCommand_LeadingDashLiteral pins the "--" terminator in
+// SendCommand: a command starting with "-" must be delivered literally
+// instead of being parsed as a send-keys flag (which previously failed
+// the send outright with "unknown flag").
+func TestSendCommand_LeadingDashLiteral(t *testing.T) {
+	requireTmux(t)
+	useTestSession(t)
+
+	if _, err := CreateSessionWithServerOptions("test", nil); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	paneTarget := "=" + GetSessionName() + ":0.0"
+	waitForShell(t, paneTarget)
+
+	if err := SendCommand(paneTarget, "-n leading-dash-marker"); err != nil {
+		t.Fatalf("SendCommand with leading dash: %v", err)
+	}
+	require.Eventually(t, func() bool {
+		content, err := CapturePane(paneTarget, 10)
+		return err == nil && strings.Contains(content, "-n leading-dash-marker")
+	}, 5*time.Second, 100*time.Millisecond, "pane should contain the literal leading-dash command")
+}
+
+// TestFormationPrimitives_NonZeroBaseIndex is the regression test for the
+// base-index bug: with `set -g base-index 1` and `set -g pane-base-index 1`
+// in tmux.conf (which per-instance sockets still read), the first window of
+// a new session is index 1, so any hardcoded ":0" target fails with
+// "no such window". The formation flow therefore addresses windows/panes
+// exclusively via the IDs returned at creation time; this test runs those
+// primitives against a dedicated server whose config shifts both indices.
+func TestFormationPrimitives_NonZeroBaseIndex(t *testing.T) {
+	requireTmux(t)
+
+	confPath := filepath.Join(t.TempDir(), "tmux.conf")
+	if err := os.WriteFile(confPath, []byte("set -g base-index 1\nset -g pane-base-index 1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	sock := fmt.Sprintf("maestro-test-bi-%d-%d", os.Getpid(), testSessionSeq.Add(1))
+	// Seed session: starts the dedicated server with the custom config and
+	// keeps it alive (default exit-empty would stop an empty server).
+	seed := exec.Command("tmux", "-L", sock, "-f", confPath, "new-session", "-d", "-s", "seed")
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Skipf("cannot start dedicated tmux server: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	t.Cleanup(func() {
+		_ = exec.Command("tmux", "-L", sock, "kill-server").Run()
+	})
+
+	origSocket := GetTmuxSocket()
+	origName := GetSessionName()
+	SetTmuxSocket(sock)
+	SetSessionName(fmt.Sprintf("maestro-test-bi-%d", testSessionSeq.Add(1)))
+	t.Cleanup(func() {
+		SetTmuxSocket(origSocket)
+		SetSessionName(origName)
+	})
+
+	orchWindow, err := CreateSessionWithServerOptions("orchestrator", map[string]string{
+		"exit-empty": "off",
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if !strings.HasPrefix(orchWindow, "@") {
+		t.Fatalf("expected window ID (@N), got %q", orchWindow)
+	}
+
+	idx, err := output("display-message", "-t", orchWindow, "-p", "#{window_index}")
+	if err != nil {
+		t.Fatalf("query window index: %v", err)
+	}
+	if strings.TrimSpace(idx) != "1" {
+		t.Fatalf("initial window index = %q, want 1 (base-index config not effective; test setup broken)", strings.TrimSpace(idx))
+	}
+
+	// Window options must be settable via the returned ID.
+	if err := SetWindowOption(orchWindow, "remain-on-exit", "on"); err != nil {
+		t.Fatalf("SetWindowOption on window ID: %v", err)
+	}
+
+	// The active pane must resolve through the window ID and accept user vars.
+	orchPane, err := WindowActivePane(orchWindow)
+	if err != nil {
+		t.Fatalf("WindowActivePane: %v", err)
+	}
+	if !strings.HasPrefix(orchPane, "%") {
+		t.Fatalf("expected pane ID (%%N), got %q", orchPane)
+	}
+	if err := SetUserVar(orchPane, "agent_id", "orchestrator"); err != nil {
+		t.Fatalf("SetUserVar on pane ID: %v", err)
+	}
+	got, err := GetUserVar(orchPane, "agent_id")
+	if err != nil {
+		t.Fatalf("GetUserVar: %v", err)
+	}
+	if got != "orchestrator" {
+		t.Fatalf("agent_id = %q, want orchestrator", got)
+	}
+
+	// CreateWindow must also return a usable ID under base-index 1.
+	workersWindow, err := CreateWindow("workers")
+	if err != nil {
+		t.Fatalf("CreateWindow: %v", err)
+	}
+	if !strings.HasPrefix(workersWindow, "@") {
+		t.Fatalf("expected window ID (@N), got %q", workersWindow)
+	}
+
+	panes, err := SetupWorkerGrid(workersWindow, 2)
+	if err != nil {
+		t.Fatalf("SetupWorkerGrid under pane-base-index 1: %v", err)
+	}
+	if len(panes) != 2 {
+		t.Fatalf("expected 2 worker panes, got %d", len(panes))
+	}
+	for _, pane := range panes {
+		if _, err := output("display-message", "-t", pane, "-p", "#{pane_id}"); err != nil {
+			t.Fatalf("worker pane target %q not addressable: %v", pane, err)
+		}
+	}
+
+	if err := SelectWindow(orchWindow); err != nil {
+		t.Fatalf("SelectWindow on window ID: %v", err)
 	}
 }

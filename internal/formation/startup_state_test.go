@@ -191,6 +191,49 @@ func TestActivateContinuousMode_CorruptExistingYAML(t *testing.T) {
 	}
 }
 
+// TestReflectFlags_NoExplicitFlags_PreservesConfigFile pins that reflectFlags
+// does not touch config.yaml when no CLI flag was explicitly set: the write
+// path re-serializes through the Config struct, which strips user comments
+// and unknown fields, so an unconditional write destroyed hand-edited config
+// on every `maestro up`.
+func TestReflectFlags_NoExplicitFlags_PreservesConfigFile(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	configPath := filepath.Join(maestroDir, "config.yaml")
+	original := []byte(`# operator notes: keep worker count at 2 until CI stabilises
+schema_version: 1
+file_type: config
+project:
+  name: test
+maestro:
+  version: "2.0.0"
+agents:
+  workers:
+    count: 2 # inline comment
+custom_unknown_field: preserved
+`)
+	if err := os.WriteFile(configPath, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := UpOptions{
+		MaestroDir: maestroDir,
+		// Boost/Continuous carry values but are NOT explicitly set.
+		Boost:      true,
+		Continuous: true,
+	}
+	if err := reflectFlags(opts); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(original) {
+		t.Errorf("config.yaml was rewritten without explicit flags:\n--- before ---\n%s\n--- after ---\n%s", original, after)
+	}
+}
+
 func TestActivateContinuousMode_MissingStateDir(t *testing.T) {
 	tmpDir := t.TempDir()
 	maestroDir := filepath.Join(tmpDir, ".maestro")
