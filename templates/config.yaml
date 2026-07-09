@@ -85,15 +85,15 @@ agents:
     count: 4
     # default_model: Worker のデフォルトモデル名
     # type: string | default: なし | range: 制限なし
-    default_model: "claude-sonnet-4-6[1m]"
+    default_model: "claude-sonnet-5[1m]"
     # base_prompt_mode: システムプロンプトの適用方法
     # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "append"
     # models: Worker ごとのモデルオーバーライド (worker_id -> model_name)
     # type: map[string]string | default: なし | range: 制限なし
     models:
-      worker1: "claude-sonnet-4-6[1m]"
-      worker2: "claude-sonnet-4-6[1m]"
+      worker1: "claude-sonnet-5[1m]"
+      worker2: "claude-sonnet-5[1m]"
       worker3: "claude-opus-4-8[1m]"
       worker4: "claude-opus-4-8[1m]"
     # boost: Worker のブーストモード有効化
