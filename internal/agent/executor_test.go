@@ -676,6 +676,48 @@ func TestExecute_ModeIsBusy_ContextCancelled_ReturnsBusy(t *testing.T) {
 	}
 }
 
+// TestExecute_ModeCheckAgentError_Detected and
+// TestExecute_ModeCheckAgentError_NoError cover the read-only R0-dispatch
+// diagnostic probe added alongside the CyberGym arvo:10400 stall fix: R0
+// uses ModeCheckAgentError to tell the daemon log whether a stuck Planner
+// pane is showing an agent-runtime API error banner instead of being wedged
+// or dead.
+func TestExecute_ModeCheckAgentError_Detected(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+	mock.captureContent = "⏺ API Error: Opus 4.8 (1M context)'s safeguards flagged this message\n❯ \n"
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID: "planner",
+		Mode:    ModeCheckAgentError,
+	})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Error("expected Success=true when the pane shows an API Error banner")
+	}
+}
+
+func TestExecute_ModeCheckAgentError_NoError(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+	mock.captureContent = "⏺ Thinking...\n"
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID: "planner",
+		Mode:    ModeCheckAgentError,
+	})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if result.Success {
+		t.Error("expected Success=false when no API Error banner is visible")
+	}
+}
+
 func TestExecute_ModeDeliver_Success(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()

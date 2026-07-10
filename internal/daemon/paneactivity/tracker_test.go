@@ -1018,6 +1018,22 @@ API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message"
 			name:    "authentication_error",
 			content: `authentication_error: revoked api key`,
 		},
+		{
+			// Reproduces the CyberGym arvo:10400 benchmark stall: the
+			// Anthropic safety classifier rejects a message on a
+			// cybersecurity-flagged topic. Before this pattern was added,
+			// this frame slipped past terminalErrorRegex entirely (it has
+			// no "4xx" code or content-filter/invalid_request_error
+			// wording), so the pane sat "active" for max_in_progress_min
+			// while the task could never make progress.
+			name: "anthropic safety classifier rejection",
+			content: `⏺ API Error: Opus 4.8 (1M context)'s
+  safeguards flagged this message for
+  a cybersecurity topic. If your work
+  requires this access, you can apply
+  for an exemption: https://claude.
+  com/form/cyber-use-case`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

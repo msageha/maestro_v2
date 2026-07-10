@@ -400,7 +400,16 @@ var terminalErrorRegex = regexp.MustCompile(
 		`|permission_error\b` +
 		// authentication_error: stale or revoked credentials. Operator
 		// must rotate the key — definitively terminal.
-		`|authentication_error\b`)
+		`|authentication_error\b` +
+		// Anthropic safety-classifier rejection: "<model>'s safeguards
+		// flagged this message for a <topic> topic. ... apply for an
+		// exemption: https://claude.com/form/cyber-use-case". Observed
+		// in production blocking both Planner and Worker panes on a
+		// CyberGym benchmark task (cybersecurity-flagged content) — the
+		// classifier verdict is deterministic on the same content, so
+		// this is exactly as terminal as the 4xx / content-filter cases
+		// above: extending the lease only re-renders the same banner.
+		`|safeguards flagged this message`)
 
 // contextBudgetExhaustedRegex detects the Claude Code TUI context-usage
 // indicator (`97% used`, `99% used`, `100% used`). At >=97% the next turn

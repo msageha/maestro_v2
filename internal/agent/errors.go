@@ -25,4 +25,10 @@ var (
 	ErrClearSendFailed        = errors.New("send /clear failed")
 	ErrClearNotConfirmed      = errors.New("/clear not confirmed")
 	ErrSubmitConfirmUncertain = errors.New("submit confirmation uncertain")
+	// ErrAgentAPIError is returned when the runtime pane shows an "API Error"
+	// banner (e.g. Claude Code's safety-classifier rejection) instead of
+	// processing the delivered message. Distinct from
+	// ErrSubmitConfirmUncertain: the pane state here is definitively known
+	// (the agent surfaced an error), not ambiguous.
+	ErrAgentAPIError = errors.New("agent runtime reported an API error instead of processing the message")
 )

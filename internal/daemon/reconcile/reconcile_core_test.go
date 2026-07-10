@@ -419,6 +419,68 @@ func TestR0Dispatch_PlannerBusy_HardCapForcesRevert(t *testing.T) {
 	}
 }
 
+// TestR0Dispatch_PlannerAPIError_DoesNotBlockRevert verifies the
+// plannerPaneShowsAPIError diagnostic probe (added for the CyberGym
+// arvo:10400 stall fix) is purely informational: even when the Planner pane
+// shows an agent-runtime API error banner, R0 still reverts the stuck
+// command to pending on the normal threshold-age schedule. A message the
+// runtime rejected outright will never produce a state file on its own, so
+// there is nothing to defer for — unlike the plannerBusy defer path, this
+// probe only annotates the dispatch_deadlock log with the likely cause.
+func TestR0Dispatch_PlannerAPIError_DoesNotBlockRevert(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Call 1 = plannerPaneActivelyProcessing probe (ModeIsBusy) → idle.
+	// Call 2 = plannerPaneShowsAPIError probe (ModeCheckAgentError) → detected.
+	callCount := 0
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		callCount++
+		if callCount == 1 {
+			return &mocks.MockExecutor{Result: agent.ExecResult{Success: false}}, nil
+		}
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	}
+
+	oldTime := now.Add(-20 * time.Minute).Format(time.RFC3339)
+	owner := "planner"
+	expiresAt := now.Add(-15 * time.Minute).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:             "cmd_dispatch_api_error",
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &expiresAt,
+				UpdatedAt:      oldTime,
+				CreatedAt:      oldTime,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair (API-error probe is diagnostic-only, revert must still proceed), got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusPending {
+		t.Errorf("status: got %s, want pending", updated.Commands[0].Status)
+	}
+	if callCount < 2 {
+		t.Fatalf("expected both plannerBusy and plannerAPIError probes to run, got %d executor factory calls", callCount)
+	}
+}
+
 func TestR0Dispatch_StateFileExists_NoRepair(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)

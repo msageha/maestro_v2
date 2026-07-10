@@ -21,11 +21,12 @@ type ExecMode = model.ExecMode
 
 // Mode constants are re-exported from model for backward compatibility.
 const (
-	ModeDeliver   = model.ModeDeliver
-	ModeWithClear = model.ModeWithClear
-	ModeInterrupt = model.ModeInterrupt
-	ModeIsBusy    = model.ModeIsBusy
-	ModeClear     = model.ModeClear
+	ModeDeliver         = model.ModeDeliver
+	ModeWithClear       = model.ModeWithClear
+	ModeInterrupt       = model.ModeInterrupt
+	ModeIsBusy          = model.ModeIsBusy
+	ModeClear           = model.ModeClear
+	ModeCheckAgentError = model.ModeCheckAgentError
 )
 
 // busyVerdict is the result of busy detection.
@@ -412,6 +413,8 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	switch req.Mode {
 	case ModeIsBusy:
 		return e.execIsBusy(ctx, paneTarget)
+	case ModeCheckAgentError:
+		return e.execCheckAgentError(paneTarget)
 	case ModeClear:
 		return e.execClear(ctx, req, paneTarget)
 	case ModeInterrupt:
@@ -443,6 +446,22 @@ func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult
 	default: // VerdictIdle
 		return ExecResult{Success: false}
 	}
+}
+
+// execCheckAgentError is a read-only probe (no message sent) that reports
+// whether the pane currently shows an agent-runtime API error banner (see
+// agentAPIErrorVisible). Used by dispatch-stuck recovery (R0-dispatch) to
+// tell "the agent rejected/failed on the last message" apart from "the pane
+// is idle/wedged for some other reason" before reverting a command to
+// pending — the two causes look identical from the queue alone (no state
+// file, lease expired), but only one of them explains itself in the daemon
+// log without an operator manually inspecting the pane.
+func (e *Executor) execCheckAgentError(paneTarget string) ExecResult {
+	content, err := e.paneIO.CapturePaneJoined(paneTarget, e.execCfg.PromptReadyLines)
+	if err != nil {
+		return ExecResult{Error: fmt.Errorf("capture pane: %w", err)}
+	}
+	return ExecResult{Success: agentAPIErrorVisible(content)}
 }
 
 // execClear sends /clear and waits for stability.

@@ -77,6 +77,13 @@ const (
 	submitProbeRetried       submitProbeStatus = "retried"
 	submitProbeCaptureFailed submitProbeStatus = "capture_failed"
 	submitProbeExhausted     submitProbeStatus = "exhausted"
+	// submitProbeAgentError means the pane showed an "API Error" banner
+	// instead of processing the delivered message. Unlike submitProbeExhausted
+	// (no signal observed) this is a definitive negative signal: the agent
+	// runtime rejected or failed on the message. Kept distinct from
+	// Uncertain() so callers surface it as a clear error rather than an
+	// ambiguous one.
+	submitProbeAgentError submitProbeStatus = "agent_error"
 )
 
 type submitProbeResult struct {
@@ -158,6 +165,23 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("confirm submitted: %w", err), Retryable: true}
 	}
+	if probe.AgentError() {
+		// Definitive negative signal: the runtime rejected or failed on the
+		// message (e.g. Claude Code's safety-classifier "API Error" banner).
+		// Logged at WARN — unlike the uncertain path below, this is not a
+		// detection gap, it is direct evidence the agent never processed the
+		// envelope. Retryable stays false: the classifier verdict is
+		// deterministic on the same content, so an inline resend would just
+		// waste another API round trip for the same rejection. The command
+		// stays in_progress and the queue-scan / R0-dispatch recovery path
+		// re-delivers it on its own schedule, which at least spaces out the
+		// repeated attempts instead of retrying immediately.
+		d.log(logLevelWarn, "delivery_agent_api_error agent_id=%s task_id=%s command_id=%s attempts=%d "+
+			"(agent runtime showed an API Error banner instead of processing the message; the message content "+
+			"may have tripped a safety classifier — inspect the pane manually, e.g. `tmux capture-pane`)",
+			req.AgentID, req.TaskID, req.CommandID, probe.Attempts)
+		return ExecResult{Error: fmt.Errorf("%w: attempts=%d", ErrAgentAPIError, probe.Attempts), Retryable: false}
+	}
 	if probe.Uncertain() {
 		err := fmt.Errorf("%w: status=%s attempts=%d", ErrSubmitConfirmUncertain, probe.Status, probe.Attempts)
 		// Logged at INFO (not WARN) because this is the *upstream* false-
@@ -187,6 +211,13 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 
 func (r submitProbeResult) Uncertain() bool {
 	return r.Status == submitProbeCaptureFailed || r.Status == submitProbeExhausted
+}
+
+// AgentError reports whether the probe observed a definitive agent-runtime
+// API error rather than ambiguous silence. Checked before Uncertain() by
+// callers so a confirmed error is never downgraded to "uncertain".
+func (r submitProbeResult) AgentError() bool {
+	return r.Status == submitProbeAgentError
 }
 
 // submitProbeBaseline captures a pane snapshot used to seed the Claude
@@ -317,6 +348,24 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 			retried = true
 			haveChangeBaseline = false
 			continue
+		}
+		// API-error banner check: MUST run before the activity-marker probe
+		// below. The banner is itself prefixed with "⏺" (see
+		// agentAPIErrorMarker doc comment), so submittedActivityVisible would
+		// otherwise treat a rejected/failed message as a confirmed delivery —
+		// which is exactly the false positive that let a Planner pane showing
+		// "⏺ API Error: ...safeguards flagged..." be logged as delivered while
+		// the agent never processed the envelope (root cause of the recurring
+		// dispatch_deadlock / no_state_file loop). Same stale-content caveat
+		// as submittedActivityVisible below: Planner/Orchestrator panes are
+		// delivered without a preceding /clear, so a banner from a PRIOR turn
+		// can still be in the captured viewport; accepted for the same reason
+		// activity markers accept it (scoping to the bottom line only would
+		// miss a banner that has scrolled up by the time this probe samples).
+		if agentAPIErrorVisible(content) {
+			d.log(logLevelWarn, "submit_confirm agent_api_error agent_id=%s task_id=%s attempt=%d/%d",
+				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
+			return submitProbeResult{Status: submitProbeAgentError, Attempts: attempt}, nil
 		}
 		// No unsubmitted placeholder at the prompt: a visible activity marker
 		// ("Thinking", tool invocation, ⏺ status, …) means the message was
@@ -481,6 +530,26 @@ func submittedActivityVisible(content string) bool {
 		}
 	}
 	return false
+}
+
+// agentAPIErrorMarker is the literal banner Claude Code prints when the
+// runtime API rejects or fails on a message (e.g. a safety-classifier
+// rejection for cybersecurity-flagged content, or a transient API failure).
+// The banner is itself prefixed with the same "⏺" glyph used for normal
+// activity output ("⏺ API Error: ..."), so it MUST be checked before
+// submittedActivityVisible: otherwise the "⏺" match alone would confirm
+// delivery even though the agent never processed the message.
+const agentAPIErrorMarker = "API Error"
+
+// agentAPIErrorVisible reports whether the captured pane content shows the
+// Claude Code "API Error" banner anywhere in the viewport. Unlike the
+// pasted-text-placeholder check (scoped to the bottom prompt line only), this
+// intentionally scans the whole captured content: the banner can still be
+// visible a few lines above the prompt on the next probe tick, and missing it
+// there would let the content-growth fallback confirm a delivery that never
+// actually landed.
+func agentAPIErrorVisible(content string) bool {
+	return strings.Contains(stripANSI(content), agentAPIErrorMarker)
 }
 
 // pastedTextPlaceholderAtPrompt reports whether the live input area at the

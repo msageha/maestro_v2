@@ -130,6 +130,16 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 	plannerBusy := plannerPaneActivelyProcessing(run)
 	busyDeferCap := time.Duration(run.Deps.Config.Watcher.EffectiveMaxInProgressMin()) * time.Minute
 
+	// Diagnostic-only probe: does the Planner pane show an agent-runtime API
+	// error banner (e.g. a safety-classifier rejection) instead of having
+	// processed the dispatched command? This never changes the revert
+	// decision below — it only annotates the dispatch_deadlock log so an
+	// operator does not have to manually inspect tmux to learn that the
+	// pane's silence is explained by the runtime rejecting the message, not
+	// by a wedged or dead agent. Computed once per Apply call for the same
+	// reason plannerBusy is: the Planner is a singleton.
+	plannerAPIError := plannerPaneShowsAPIError(run)
+
 	// Phase 3: apply repairs under queue lock, re-verifying each command.
 	run.Deps.LockMap.Lock(lockKey)
 	defer run.Deps.LockMap.Unlock(lockKey)
@@ -176,6 +186,15 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 				continue
 			}
 
+			if plannerAPIError {
+				run.Log(core.LogLevelWarn,
+					"R0-dispatch planner_api_error_detected command=%s "+
+						"(planner pane shows an agent-runtime API Error banner instead of processing the "+
+						"dispatched message — likely a safety-classifier rejection or a runtime API failure, "+
+						"not a wedged/dead pane; a plain retry will probably repeat the same rejection. "+
+						"Inspect the pane manually, e.g. `tmux capture-pane`, before relying on further retries.)",
+					cmd.ID)
+			}
 			run.Log(core.LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file planner_busy=%t",
 				cmd.ID, age.Seconds(), cmd.Attempts, plannerBusy)
 
@@ -235,5 +254,36 @@ func plannerPaneActivelyProcessing(run *Run) bool {
 	// ModeIsBusy: Success==true means confirmed busy. Idle (Success==false)
 	// and undecided (Error set, e.g. ErrBusyUndecided) both yield false so the
 	// revert proceeds.
+	return result.Error == nil && result.Success
+}
+
+// plannerPaneShowsAPIError returns true only when a read-only probe of the
+// Planner pane finds a visible agent-runtime API error banner (e.g. Claude
+// Code's "API Error: ...safeguards flagged..." rejection banner). Purely
+// diagnostic: it never changes R0's revert-to-pending decision, it only lets
+// the dispatch_deadlock log name the real cause — that the agent rejected or
+// failed on the message rather than the pane being wedged or dead — so an
+// operator does not have to attach to tmux to learn that a plain retry will
+// most likely repeat the same rejection. Any non-confirmed outcome (no
+// banner, probe error, no executor factory wired) returns false. The probe
+// is read-only (capture-pane only; no message is sent) and runs outside the
+// queue lock, mirroring plannerPaneActivelyProcessing.
+func plannerPaneShowsAPIError(run *Run) bool {
+	if run.Deps.ExecutorFactory == nil {
+		return false
+	}
+	exec, err := run.Deps.ExecutorFactory(run.Deps.MaestroDir, run.Deps.Config.Watcher, run.Deps.Config.Logging.Level)
+	if err != nil || exec == nil {
+		return false
+	}
+	defer func() {
+		if cerr := exec.Close(); cerr != nil {
+			run.Log(core.LogLevelDebug, "R0-dispatch planner_api_error_probe close_executor error=%v", cerr)
+		}
+	}()
+	result := exec.Execute(model.ExecRequest{
+		AgentID: "planner",
+		Mode:    model.ModeCheckAgentError,
+	})
 	return result.Error == nil && result.Success
 }

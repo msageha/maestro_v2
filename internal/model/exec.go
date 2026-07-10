@@ -16,6 +16,13 @@ const (
 	ModeIsBusy ExecMode = "is_busy"
 	// ModeClear resets context without delivery.
 	ModeClear ExecMode = "clear"
+	// ModeCheckAgentError probes the pane (read-only, no message sent) for a
+	// visible agent-runtime API error banner (e.g. Claude Code's "API Error:
+	// ..." rejection). Used by dispatch-stuck recovery to distinguish "the
+	// agent is alive but never processed the message because the runtime
+	// rejected it" from a genuinely wedged/dead pane, so the operator-facing
+	// log names the real cause instead of a generic timeout.
+	ModeCheckAgentError ExecMode = "check_agent_error"
 )
 
 // ExecRequest contains parameters for executing a message delivery.

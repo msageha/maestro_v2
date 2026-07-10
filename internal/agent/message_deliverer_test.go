@@ -347,6 +347,55 @@ func TestSubmittedActivityVisible(t *testing.T) {
 	}
 }
 
+func TestAgentAPIErrorVisible(t *testing.T) {
+	t.Parallel()
+	if !agentAPIErrorVisible("⏺ API Error: Opus 4.8 (1M context)'s safeguards flagged this message\n") {
+		t.Fatal("expected API Error banner to be detected")
+	}
+	if agentAPIErrorVisible("⏺ Thinking...\n") {
+		t.Fatal("plain activity marker must not be misdetected as an API error")
+	}
+}
+
+// TestSendAndConfirm_AgentAPIErrorDetected reproduces the maestro_v2 root
+// cause behind the CyberGym arvo:10400 stall: Claude Code's API-error banner
+// ("⏺ API Error: ...safeguards flagged...") is itself prefixed with the same
+// "⏺" glyph submittedActivityVisible treats as a delivery-confirmed activity
+// marker. Before this fix, that banner made sendAndConfirm report
+// Success=true even though the agent never processed the message, so the
+// daemon waited forever (dispatch_deadlock loop) for a state file that would
+// never appear. This test locks in that the banner is now detected as a
+// definitive agent error rather than a confirmed delivery.
+func TestSendAndConfirm_AgentAPIErrorDetected(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{
+		{val: "Welcome\n❯ \n"}, // pre-paste baseline
+		{val: "⏺ API Error: Opus 4.8 (1M context)'s safeguards flagged this message for\n" +
+			"  a cybersecurity topic.\n❯ \n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID:   "planner",
+		CommandID: "cmd_001",
+		Message:   "line one\nline two",
+		Context:   context.Background(),
+	}, "%0")
+
+	if result.Success {
+		t.Fatal("expected Success=false when the pane shows an API Error banner")
+	}
+	if !errors.Is(result.Error, ErrAgentAPIError) {
+		t.Fatalf("expected ErrAgentAPIError, got %v", result.Error)
+	}
+	if result.Retryable {
+		t.Fatal("agent API error must not be retryable: the classifier verdict is deterministic on the same content, so an inline resend would just repeat the same rejection")
+	}
+}
+
 func TestSendAndConfirm_SingleLineSkipsSubmitConfirmation(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
