@@ -12,7 +12,7 @@ import (
 
 // version is the release version. Keep in sync with the git tag (vX.Y.Z)
 // when cutting a release.
-const version = "2.4.0"
+const version = "2.5.0"
 const maestroDirEnv = "MAESTRO_DIR"
 
 // ExitCodeRetryable is the exit code used when the CLI operation can be
