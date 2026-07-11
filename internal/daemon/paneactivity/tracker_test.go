@@ -1034,6 +1034,32 @@ API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message"
   for an exemption: https://claude.
   com/form/cyber-use-case`,
 		},
+		{
+			// Reproduces a live production miss (2026-07-11, same CyberGym
+			// arvo:10400 task, Sonnet 5 worker pane): the phrase above added
+			// "safeguards flagged this message" as a literal-space pattern,
+			// which happened to fit "...this message..." on one wrapped
+			// line in that fixture. Claude Code wraps its own long lines by
+			// printing a real newline + hanging indent (not relying on
+			// terminal soft-wrap), and the exact wrap point shifts with
+			// window width and model name length ("Opus 4.8" vs "Sonnet
+			// 5"). Confirmed by reproducing directly against a live tmux
+			// pane that `capture-pane -J` rejoins terminal soft-wraps only —
+			// it cannot and does not rejoin an application's own hard
+			// newlines. In this real capture, the phrase split between
+			// "this" and "message", so the literal-space pattern never
+			// matched: the banner sat on the pane for 20+ minutes across
+			// dozens of scan ticks with zero detections before \s+ was
+			// used in place of literal spaces.
+			name: "anthropic safety classifier rejection, phrase wrapped mid-sentence",
+			content: `⏺ API Error: Sonnet 5's
+  safeguards flagged this
+  message for a cybersecurity
+  topic. If your work requires
+  this access, you can apply for
+  an exemption: https://claude.
+  com/form/cyber-use-case`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

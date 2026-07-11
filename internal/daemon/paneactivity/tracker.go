@@ -380,13 +380,26 @@ var blockedHintRegex = regexp.MustCompile(`(?m)❯|\bYes\b/\bNo\b|Proceed\?|Do y
 // (ECONNRESET, 502, 503) are NOT matched here because the runtime
 // usually retries them internally; matching them would convert a
 // transient hiccup into a hard task failure.
+//
+// Multi-word phrases use \s+ between words, NOT literal spaces. Claude
+// Code's TUI wraps long lines itself (printing a real "\n" plus a hanging
+// indent, not relying on terminal soft-wrap), so a phrase like "safeguards
+// flagged this message" can be captured as "...this\n  message...". tmux's
+// capture-pane -J only rejoins *terminal* soft-wraps; it cannot and does
+// not rejoin an application's own hard newlines (confirmed by reproducing
+// this directly against a live tmux pane). A literal-space pattern quietly
+// never matches in that case, missing the terminal-error fast path for the
+// entire lifetime of the pane (observed in production on a CyberGym
+// benchmark task run: the safeguards-rejection banner sat on a Worker pane
+// for 20+ minutes across dozens of scan ticks with zero detections, before
+// this fix).
 var terminalErrorRegex = regexp.MustCompile(
 	`(?i)` +
 		// Claude API HTTP error envelope. The runtime renders this as a
 		// boxed "API Error: <code> <body>" frame on the TUI when the
 		// request fails irrecoverably (content filter, invalid request,
 		// model-not-found, organization disabled, etc.).
-		`API Error: 4\d\d\b` +
+		`API\s+Error:\s+4\d\d\b` +
 		// Anthropic / OpenAI structured error type for malformed or
 		// policy-violating requests. Surfaces directly in some runtime
 		// error envelopes when streaming JSON is rendered to the pane.
@@ -394,7 +407,7 @@ var terminalErrorRegex = regexp.MustCompile(
 		// Anthropic content-filter rejection. The pane shows the policy
 		// reason verbatim; this is the canonical terminal-error string
 		// from Report 2026-05-06 P0-2.
-		`|Output blocked by content filtering policy` +
+		`|Output\s+blocked\s+by\s+content\s+filtering\s+policy` +
 		// Anthropic permission_error: organization or API key restricted
 		// from the requested action. Always terminal.
 		`|permission_error\b` +
@@ -409,7 +422,7 @@ var terminalErrorRegex = regexp.MustCompile(
 		// classifier verdict is deterministic on the same content, so
 		// this is exactly as terminal as the 4xx / content-filter cases
 		// above: extending the lease only re-renders the same banner.
-		`|safeguards flagged this message`)
+		`|safeguards\s+flagged\s+this\s+message`)
 
 // contextBudgetExhaustedRegex detects the Claude Code TUI context-usage
 // indicator (`97% used`, `99% used`, `100% used`). At >=97% the next turn
