@@ -57,17 +57,10 @@ description = "Go バイナリをビルド"
 run = "go build -o maestro ./cmd/maestro/"
 
 [tasks.install]
-description = "ビルドしてインストール（MAESTRO_INSTALL_DIR > ~/bin > /usr/local/bin）"
+description = "ビルドしてインストール（デフォルト: ~/.local/bin、MAESTRO_INSTALL_DIR で上書き可）"
 depends = ["check-deps", "build"]
 run = '''
-INSTALL_DIR="${MAESTRO_INSTALL_DIR:-}"
-if [ -z "$INSTALL_DIR" ]; then
-  if [ -d "$HOME/bin" ]; then
-    INSTALL_DIR="$HOME/bin"
-  else
-    INSTALL_DIR="/usr/local/bin"
-  fi
-fi
+INSTALL_DIR="${MAESTRO_INSTALL_DIR:-$HOME/.local/bin}"
 mkdir -p "$INSTALL_DIR"
 mv maestro "$INSTALL_DIR/maestro"
 chmod +x "$INSTALL_DIR/maestro"

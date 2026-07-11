@@ -34,7 +34,7 @@ User → Orchestrator(opus) → Planner(opus) → Daemon → Workers(sonnet/opus
 # インストール
 git clone https://github.com/msageha/maestro_v2.git
 cd maestro_v2
-mise run install      # 依存チェック → ビルド → ~/bin 等へインストール
+mise run install      # 依存チェック → ビルド → ~/.local/bin へインストール
 
 # プロジェクトで初期化
 cd /path/to/your-project
@@ -336,7 +336,7 @@ gofmt + goimports でフォーマット
 
 - **Usage**: `install`
 
-ビルドしてインストール（MAESTRO_INSTALL_DIR > ~/bin > /usr/local/bin）
+ビルドしてインストール（デフォルト: ~/.local/bin、MAESTRO_INSTALL_DIR で上書き可）
 
 ## `lint`
 
@@ -390,7 +390,7 @@ mise run test-cover   # カバレッジレポート生成（coverage.html）
 mise run lint         # golangci-lint 実行
 mise run lint-fix     # 自動修正付き lint
 mise run format       # gofmt + goimports
-mise run install      # check-deps → ビルド → ($MAESTRO_INSTALL_DIR > ~/bin > /usr/local/bin) へ配置
+mise run install      # check-deps → ビルド → ~/.local/bin（$MAESTRO_INSTALL_DIR で上書き可）へ配置
 mise run check-deps   # tmux / go / claude / jq の存在チェック
 mise run clean        # 成果物削除
 ```
