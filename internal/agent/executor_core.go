@@ -94,8 +94,14 @@ type ExecutorConfig struct {
 // DefaultExecutorConfig returns production-safe defaults.
 func DefaultExecutorConfig() ExecutorConfig {
 	return ExecutorConfig{
-		PromptReadyLines:           12, // 12 lines to accommodate status bars
-		BusyHintLines:              5,
+		PromptReadyLines: 12, // 12 lines to accommodate status bars
+		// 12 lines (was 5): at 5 lines the spinner/"esc to interrupt" status
+		// row scrolls out of the window while Claude Code's input box (❯)
+		// stays visible, so isClaudeReadyFast sees a prompt with no busy
+		// pattern match and misreports a genuinely busy pane (e.g. mid
+		// silent compile/build) as idle. Match PromptReadyLines so both
+		// signals are captured from the same window.
+		BusyHintLines:              12,
 		StableCheckRounds:          1,
 		DefaultExecTimeout:         5 * time.Minute,
 		ClaudeLaunchTimeout:        60 * time.Second,

@@ -1165,8 +1165,8 @@ func TestDefaultExecutorConfig_Values(t *testing.T) {
 	if cfg.PromptReadyLines != 12 {
 		t.Errorf("PromptReadyLines: got %d, want 12", cfg.PromptReadyLines)
 	}
-	if cfg.BusyHintLines != 5 {
-		t.Errorf("BusyHintLines: got %d, want 5", cfg.BusyHintLines)
+	if cfg.BusyHintLines != 12 {
+		t.Errorf("BusyHintLines: got %d, want 12", cfg.BusyHintLines)
 	}
 	if cfg.StableCheckRounds != 1 {
 		t.Errorf("StableCheckRounds: got %d, want 1", cfg.StableCheckRounds)

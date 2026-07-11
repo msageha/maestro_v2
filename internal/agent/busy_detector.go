@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -16,6 +18,20 @@ type busyDetectorConfig struct {
 	BusyCheckMaxRetries int
 	BusyCheckInterval   int
 	BusyHintLines       int
+	// CPUProbeWindow is the sampling window for the CPU-based busy override
+	// used by the Stage 2 fast path (see processBusyProbe), which has no
+	// existing sleep to piggyback on. Normalized to defaultCPUProbeWindow
+	// when <= 0 by newBusyDetector; tests constructing busyDetector directly
+	// can leave it at the zero value for an instant (non-sleeping) probe.
+	// Stage 3 reuses its own activity-probe sleep instead of this window
+	// (see detectBusy) and pays no extra latency.
+	CPUProbeWindow time.Duration
+	// DisableCPUProbe turns the CPU-based override off entirely (kill switch
+	// for the rare deployment where a pane's process tree legitimately runs
+	// noisy long-lived children -- e.g. a dev server or headless browser
+	// spawned as an MCP tool -- that would otherwise pin every idle check to
+	// "busy"). Not normalized; false (enabled) is the zero value default.
+	DisableCPUProbe bool
 }
 
 // busyDetector performs 3-stage busy detection on tmux panes.
@@ -23,27 +39,58 @@ type busyDetectorConfig struct {
 // Stage 1: pane_current_command — quick gate (shell → idle).
 // Stage 2: Pattern hint — regex match on last busyHintLines lines.
 // Stage 3: Activity probe — hash comparison over IdleStableSec.
+//
+// Both idle-leaning stages (the Stage 2 fast-path and Stage 3's stable-content
+// branch) are text/rendering based and can misjudge a pane as idle while a
+// silent, long-running subprocess (e.g. `make`, a fuzzer) is genuinely
+// executing with no terminal output for minutes at a time. Before committing
+// to either idle verdict, processBusyProbe cross-checks ground truth: did any
+// process in the pane's process tree accumulate CPU time during a short
+// window? See processBusyProbe.
 type busyDetector struct {
-	paneIO    PaneIO
-	busyRegex *regexp.Regexp
-	config    busyDetectorConfig
-	logger    *log.Logger
-	logLevel  logLevel
+	paneIO         PaneIO
+	busyRegex      *regexp.Regexp
+	config         busyDetectorConfig
+	logger         *log.Logger
+	logLevel       logLevel
+	processSampler processSampler
 }
+
+// defaultCPUProbeWindow is the sampling window for the fast-path CPU probe.
+// Short: cpuSeconds now carries fractional (centisecond) precision (see
+// process_sampler.go), so even a 300ms window reliably observes a delta from
+// a genuinely compute-bound subprocess (which pins a core near 100%), while
+// staying far below IdleStableSec's multi-second cost.
+const defaultCPUProbeWindow = 300 * time.Millisecond
+
+// cpuProbeBusyThresholdRatio is the fraction of the sampling window that must
+// be accounted for by accumulated CPU time before the override fires "busy".
+// A plain "any increase" check (ratio 0) is too sensitive: idle MCP servers,
+// dev servers, or headless browsers spawned as tools routinely burn a few
+// percent CPU while genuinely idle, and would otherwise pin the pane to
+// VerdictBusy forever. Requiring >=50% of the window as accumulated CPU time
+// demands sustained, substantial work (a real compile/fuzz process), which
+// idle background chatter will not produce.
+const cpuProbeBusyThresholdRatio = 0.5
 
 // newBusyDetector creates a busyDetector. IdleStableSec, BusyCheckMaxRetries,
 // and BusyCheckInterval must be pre-normalized via applyDefaults before use.
-// Only BusyHintLines is normalized here (sourced from ExecutorConfig, not WatcherConfig).
+// BusyHintLines and CPUProbeWindow are normalized here (sourced from
+// ExecutorConfig, not WatcherConfig).
 func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorConfig, logger *log.Logger, logLevel logLevel) *busyDetector {
 	if cfg.BusyHintLines <= 0 {
-		cfg.BusyHintLines = 5
+		cfg.BusyHintLines = 12
+	}
+	if cfg.CPUProbeWindow <= 0 {
+		cfg.CPUProbeWindow = defaultCPUProbeWindow
 	}
 	return &busyDetector{
-		paneIO:    paneIO,
-		busyRegex: busyRegex,
-		config:    cfg,
-		logger:    logger,
-		logLevel:  logLevel,
+		paneIO:         paneIO,
+		busyRegex:      busyRegex,
+		config:         cfg,
+		logger:         logger,
+		logLevel:       logLevel,
+		processSampler: psProcessSampler{},
 	}
 }
 
@@ -105,6 +152,10 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 	// runtimes (codex, gemini) lack a stable prompt glyph and fall through
 	// to the activity probe.
 	if !patternMatched && bd.isClaudeReadyFast(paneTarget, content) {
+		if bd.processBusyProbe(ctx, paneTarget) {
+			bd.log("busy_detection cpu_probe_overrides_fast_path prompt_visible pattern_hint=%s → busy", hintStr)
+			return VerdictBusy
+		}
 		bd.log("busy_detection claude_fast_path_idle prompt_visible pattern_hint=%s", hintStr)
 		return VerdictIdle
 	}
@@ -117,6 +168,13 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
+
+	// Sample CPU now so the activity-probe sleep below doubles as the CPU
+	// sampling window too -- this path pays no extra latency for the
+	// ground-truth check, unlike the fast path above which has no sleep to
+	// reuse and runs its own short dedicated probe.
+	cpuBefore, cpuBeforeOK := bd.sampleCPUSeconds(ctx, paneTarget)
+
 	if err := sleepCtx(ctx, time.Duration(stableSec)*time.Second); err != nil {
 		// Context cancelled during activity probe. We already confirmed Claude is
 		// running (Stage 1) and captured initial content (Stage 3a), but couldn't
@@ -136,11 +194,29 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 
 	hashChanged := hashA != hashB
 
+	cpuBusy := false
+	if !hashChanged && cpuBeforeOK {
+		if cpuAfter, ok := bd.sampleCPUSeconds(ctx, paneTarget); ok {
+			delta := cpuAfter - cpuBefore
+			threshold := float64(stableSec) * cpuProbeBusyThresholdRatio
+			cpuBusy = delta >= threshold
+			bd.log("busy_detection stage3_cpu_probe before=%.2fs after=%.2fs delta=%.2fs threshold=%.2fs busy=%v",
+				cpuBefore, cpuAfter, delta, threshold, cpuBusy)
+		}
+	}
+
 	var verdict busyVerdict
-	if hashChanged {
+	switch {
+	case hashChanged:
 		verdict = VerdictBusy
-	} else {
-		// Stable content → idle, regardless of pattern match.
+	case cpuBusy:
+		// Stable content but the pane's process tree accumulated substantial
+		// CPU time during the same window: a silent build/fuzz command with
+		// no terminal output would otherwise be misjudged idle here.
+		bd.log("busy_detection cpu_probe_overrides_stage3 stable_content pattern_hint=%s → busy", hintStr)
+		verdict = VerdictBusy
+	default:
+		// Stable content, no CPU activity → idle, regardless of pattern match.
 		// When content hasn't changed over the probe interval, any matching
 		// busy pattern is stale output from a previous agent turn — not
 		// evidence of current activity. This eliminates false undecided
@@ -307,6 +383,75 @@ func (bd *busyDetector) isClaudeReadyFast(paneTarget, content string) bool {
 		return false
 	}
 	return isPromptReady(content)
+}
+
+// sampleCPUSeconds returns the cumulative CPU time (fractional seconds)
+// across the pane's process tree at this instant, or ok=false if the signal
+// is unavailable (disabled, no sampler configured, pane_pid unreadable, or
+// the sampler itself errored — e.g. a systemic `ps` output parse failure).
+// A false result is NOT evidence of idleness; see processBusyProbe.
+func (bd *busyDetector) sampleCPUSeconds(ctx context.Context, paneTarget string) (float64, bool) {
+	if bd.config.DisableCPUProbe || bd.processSampler == nil {
+		return 0, false
+	}
+	panePID, err := bd.paneIO.GetPanePID(paneTarget)
+	if err != nil {
+		bd.log("cpu_probe get_pane_pid error=%v", err)
+		return 0, false
+	}
+	root, err := strconv.Atoi(strings.TrimSpace(panePID))
+	if err != nil {
+		bd.log("cpu_probe parse_pane_pid pid=%q error=%v", panePID, err)
+		return 0, false
+	}
+	seconds, err := bd.processSampler.descendantCPUSeconds(ctx, root)
+	if err != nil {
+		bd.log("cpu_probe sample error=%v", err)
+		return 0, false
+	}
+	return seconds, true
+}
+
+// processBusyProbe runs a short, self-contained CPU-time probe (its own
+// sampling window: before-sample, sleep, after-sample) and reports whether
+// the pane's process tree accumulated enough CPU time — at least
+// cpuProbeBusyThresholdRatio of the window — to count as ground-truth
+// evidence of real work. Used by the Stage 2 fast path, which has no
+// existing sleep to piggyback on; Stage 3 instead reuses its own
+// activity-probe sleep for the same check (see detectBusy) at no added cost.
+//
+// This is independent of anything rendered on screen — it catches a
+// genuinely busy but silent subprocess (e.g. `make`/`configure`/a fuzzer
+// producing no terminal output for minutes) that the text-hash and
+// pattern-based checks above cannot see.
+//
+// A false result is NOT evidence of idleness: it only means this particular
+// signal was inconclusive (disabled, no sampler, pane_pid unavailable, or
+// truly insufficient CPU consumed during the window — which also covers
+// I/O-bound waits). Callers must treat this as a veto only in the busy
+// direction and keep their existing idle verdict otherwise. The one
+// exception is context cancellation during the probe sleep, which — like
+// every other sleep in this file — fails closed to "busy" rather than
+// silently preserving whatever idle verdict the caller was about to return.
+func (bd *busyDetector) processBusyProbe(ctx context.Context, paneTarget string) bool {
+	before, ok := bd.sampleCPUSeconds(ctx, paneTarget)
+	if !ok {
+		return false
+	}
+	if err := sleepCtx(ctx, bd.config.CPUProbeWindow); err != nil {
+		bd.log("cpu_probe sleep cancelled: %v → treating as busy", err)
+		return true
+	}
+	after, ok := bd.sampleCPUSeconds(ctx, paneTarget)
+	if !ok {
+		return false
+	}
+
+	delta := after - before
+	threshold := bd.config.CPUProbeWindow.Seconds() * cpuProbeBusyThresholdRatio
+	busy := delta >= threshold
+	bd.log("cpu_probe before=%.2fs after=%.2fs delta=%.2fs threshold=%.2fs busy=%v", before, after, delta, threshold, busy)
+	return busy
 }
 
 func (bd *busyDetector) log(format string, args ...any) {

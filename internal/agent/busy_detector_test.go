@@ -128,6 +128,271 @@ func TestDetectBusy_JoinedCaptureError_ReturnsUndecided(t *testing.T) {
 	}
 }
 
+// --- CPU-based busy override (silent subprocess detection) ---
+
+// fakeProcessSampler returns values from seq in order (clamped to the last
+// entry once exhausted), or err on every call if set. rootPID is recorded so
+// tests can assert the probe forwarded the parsed pane_pid correctly.
+type fakeProcessSampler struct {
+	seq        []float64
+	idx        int
+	err        error
+	gotRootPID []int
+}
+
+func (f *fakeProcessSampler) descendantCPUSeconds(_ context.Context, rootPID int) (float64, error) {
+	f.gotRootPID = append(f.gotRootPID, rootPID)
+	if f.err != nil {
+		return 0, f.err
+	}
+	if len(f.seq) == 0 {
+		return 0, nil
+	}
+	i := f.idx
+	if i >= len(f.seq) {
+		i = len(f.seq) - 1
+	}
+	f.idx++
+	return f.seq[i], nil
+}
+
+// fastCPUConfig is fastConfig() plus a short, real (but sub-100ms) CPU probe
+// window so the fast-path override tests exercise the actual sleep+threshold
+// logic without materially slowing the suite. Threshold = window * 0.5.
+func fastCPUConfig() busyDetectorConfig {
+	cfg := fastConfig()
+	cfg.CPUProbeWindow = 20 * time.Millisecond // threshold = 10ms
+	return cfg
+}
+
+func TestDetectBusy_FastPathWouldBeIdle_CPUIncreaseOverridesToBusy(t *testing.T) {
+	// Prompt glyph visible, no busy pattern: would hit the Bug-N fast path
+	// and return VerdictIdle, except a live subprocess is silently
+	// accumulating CPU time (e.g. a `make` build with no terminal output).
+	// Delta (1.0s) is far above the 10ms threshold.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "❯ ",
+		panePID:        "4242",
+	}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 11}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy (CPU probe overrides fast-path idle), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_FastPathIdle_NoCPUIncrease_StaysIdle(t *testing.T) {
+	// Same setup as above, but the sampler shows no CPU movement: the
+	// override must not fire, preserving the existing fast-path idle verdict.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "❯ ",
+		panePID:        "4242",
+	}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 10}} // no change
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (no CPU movement), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_FastPathIdle_CPUIncreaseBelowThreshold_StaysIdle(t *testing.T) {
+	// A small delta (light background chatter from an idle MCP server, dev
+	// server, etc.) below the 50%-of-window threshold must not flip the
+	// verdict -- otherwise any pane with a noisy-but-idle child process
+	// would be permanently misjudged busy.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "❯ ",
+		panePID:        "4242",
+	}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig()) // threshold = 10ms
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 10.001}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (delta below threshold), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_Stage3StableContent_CPUIncreaseOverridesToBusy(t *testing.T) {
+	// No prompt glyph in the captured content, so the Bug-N fast path is
+	// skipped and Stage 3 runs. Joined content is stable (same hash both
+	// captures), which would normally mean idle -- except CPU time in the
+	// pane's process tree increased substantially during the reused
+	// activity-probe window (stableSec=1s, threshold=0.5s).
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "compiling silently, no prompt marker here",
+		joinedContent:  []string{"same stable content"}, // rotates: same hash both captures
+		panePID:        "4242",
+	}
+	cfg := fastConfig()
+	cfg.IdleStableSec = 1
+	bd := newTestBusyDetector(mock, nil, cfg)
+	bd.processSampler = &fakeProcessSampler{seq: []float64{100, 101}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy (CPU probe overrides Stage 3 idle), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_Stage3StableContent_NoCPUIncrease_StaysIdle(t *testing.T) {
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "compiling silently, no prompt marker here",
+		joinedContent:  []string{"same stable content"},
+		panePID:        "4242",
+	}
+	cfg := fastConfig()
+	cfg.IdleStableSec = 1
+	bd := newTestBusyDetector(mock, nil, cfg)
+	bd.processSampler = &fakeProcessSampler{seq: []float64{100, 100}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (no CPU movement), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_Stage3StableContent_CPUIncreaseBelowThreshold_StaysIdle(t *testing.T) {
+	// Small delta (0.1s) well below the 0.5s threshold (stableSec=1s): must
+	// not override, same rationale as the fast-path threshold test above.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "compiling silently, no prompt marker here",
+		joinedContent:  []string{"same stable content"},
+		panePID:        "4242",
+	}
+	cfg := fastConfig()
+	cfg.IdleStableSec = 1
+	bd := newTestBusyDetector(mock, nil, cfg)
+	bd.processSampler = &fakeProcessSampler{seq: []float64{100, 100.1}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (delta below threshold), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_NoProcessSampler_UnaffectedByCPUProbe(t *testing.T) {
+	// processSampler left nil (the zero value from newTestBusyDetector):
+	// processBusyProbe must short-circuit to false without touching the OS,
+	// preserving pre-existing behavior for every caller that doesn't opt in.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "❯ ",
+		panePID:        "4242",
+	}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (no processSampler configured), got %s", verdict)
+	}
+}
+
+func TestDetectBusy_DisableCPUProbe_UnaffectedByCPUProbe(t *testing.T) {
+	// DisableCPUProbe is the operator kill switch: even with a sampler
+	// configured and a real CPU increase, the override must not fire.
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "❯ ",
+		panePID:        "4242",
+	}
+	cfg := fastCPUConfig()
+	cfg.DisableCPUProbe = true
+	bd := newTestBusyDetector(mock, nil, cfg)
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 11}}
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (CPU probe disabled), got %s", verdict)
+	}
+}
+
+func TestProcessBusyProbe_ForwardsParsedPanePID(t *testing.T) {
+	mock := &mockPaneIO{panePID: "4242"}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	sampler := &fakeProcessSampler{seq: []float64{10, 20}}
+	bd.processSampler = sampler
+
+	bd.processBusyProbe(context.Background(), "%0")
+
+	if len(sampler.gotRootPID) != 2 {
+		t.Fatalf("expected 2 sampler calls (before+after), got %d", len(sampler.gotRootPID))
+	}
+	for _, got := range sampler.gotRootPID {
+		if got != 4242 {
+			t.Errorf("expected rootPID=4242 forwarded to sampler, got %d", got)
+		}
+	}
+}
+
+func TestProcessBusyProbe_PanePIDError_ReturnsFalse(t *testing.T) {
+	mock := &mockPaneIO{getPIDErr: fmt.Errorf("tmux display-message failed")}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 20}}
+
+	if bd.processBusyProbe(context.Background(), "%0") {
+		t.Error("expected false when GetPanePID errors")
+	}
+}
+
+func TestProcessBusyProbe_UnparsablePanePID_ReturnsFalse(t *testing.T) {
+	mock := &mockPaneIO{panePID: "not-a-pid"}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 20}}
+
+	if bd.processBusyProbe(context.Background(), "%0") {
+		t.Error("expected false when pane_pid is not a valid integer")
+	}
+}
+
+func TestProcessBusyProbe_SamplerError_ReturnsFalse(t *testing.T) {
+	mock := &mockPaneIO{panePID: "4242"}
+	bd := newTestBusyDetector(mock, nil, fastCPUConfig())
+	bd.processSampler = &fakeProcessSampler{err: fmt.Errorf("ps: command not found")}
+
+	if bd.processBusyProbe(context.Background(), "%0") {
+		t.Error("expected false when the process sampler errors")
+	}
+}
+
+func TestProcessBusyProbe_ContextCancelled_ReturnsTrue(t *testing.T) {
+	// Fails closed to "busy" during the probe sleep, consistent with every
+	// other sleep in this file (Stage 3, busy retry, soft retry): an
+	// idle-preserving false here would be the one sleep that treats
+	// cancellation as evidence of idleness instead of "state unknown".
+	mock := &mockPaneIO{panePID: "4242"}
+	// Non-zero probe window so the cancellation actually races the sleep.
+	cfg := fastConfig()
+	cfg.CPUProbeWindow = 5 * time.Second
+	bd := newTestBusyDetector(mock, nil, cfg)
+	bd.processSampler = &fakeProcessSampler{seq: []float64{10, 20}}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if !bd.processBusyProbe(ctx, "%0") {
+		t.Error("expected true (fail-closed to busy) when context is cancelled during the probe sleep")
+	}
+}
+
 // --- Context Cancellation ---
 
 func TestDetectBusy_ContextCancelled_ReturnsBusy(t *testing.T) {
@@ -360,9 +625,12 @@ func TestBusyDetector_LogPrefix(t *testing.T) {
 func TestNewBusyDetector_ZeroConfig_BusyHintLinesNormalized(t *testing.T) {
 	bd := newBusyDetector(&mockPaneIO{}, nil, busyDetectorConfig{}, log.New(&bytes.Buffer{}, "", 0), logLevelDebug)
 
-	// BusyHintLines is the only field normalized by newBusyDetector
-	if bd.config.BusyHintLines != 5 {
-		t.Errorf("BusyHintLines: got %d, want 5", bd.config.BusyHintLines)
+	// BusyHintLines and CPUProbeWindow are the fields normalized by newBusyDetector.
+	if bd.config.BusyHintLines != 12 {
+		t.Errorf("BusyHintLines: got %d, want 12", bd.config.BusyHintLines)
+	}
+	if bd.config.CPUProbeWindow != defaultCPUProbeWindow {
+		t.Errorf("CPUProbeWindow: got %v, want %v", bd.config.CPUProbeWindow, defaultCPUProbeWindow)
 	}
 	// Other fields are expected to be pre-normalized via applyDefaults;
 	// newBusyDetector no longer normalizes them.
