@@ -1270,6 +1270,14 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 }
 
 func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and SaveState
+		// would succeed instead of failing as this test requires (observed
+		// running as root in a default Docker container on Linux).
+		t.Skip("test requires non-root user")
+	}
+
 	// Setup a valid retry scenario, but make SaveState fail by removing the state directory
 	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
 	cfg := testConfig()

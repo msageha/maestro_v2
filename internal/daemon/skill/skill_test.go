@@ -493,6 +493,12 @@ func TestReadAllSkillsForRole_BrokenRoleSpecificBlocksSharedFallback(t *testing.
 // ---------------------------------------------------------------------------
 
 func TestListSkillsWithRole_PermissionDenied(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the read
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 
@@ -519,6 +525,12 @@ func TestListSkillsWithRole_PermissionDenied(t *testing.T) {
 }
 
 func TestReadAllSkillsForRole_PermissionDenied(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the read
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	dir := t.TempDir()
 

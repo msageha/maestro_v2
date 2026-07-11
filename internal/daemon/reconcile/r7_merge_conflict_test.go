@@ -383,6 +383,12 @@ func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
 }
 
 func TestR7MergeConflict_StateWriteFailure_SuppressesNotifications(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)

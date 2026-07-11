@@ -320,6 +320,14 @@ func TestAddTask_NilLockMap(t *testing.T) {
 // opts.LockMap into rollbackRetryQueueEntries while AddTask still holds
 // `queue:<worker>` (and `state:<command>`) self-deadlocked the daemon.
 func TestAddTask_SaveStateFailureRollsBackWithoutDeadlock(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and SaveState
+		// would succeed instead of failing as this test requires (observed
+		// running as root in a default Docker container on Linux).
+		t.Skip("test requires non-root user")
+	}
+
 	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
 	cfg := testConfig()
 	lm := lock.NewMutexMap()

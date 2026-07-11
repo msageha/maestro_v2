@@ -661,6 +661,12 @@ func TestMergeResolvedWorker_CheckoutFail_ErrorContainsContext(t *testing.T) {
 // abort error and recovery error are included in the returned error message.
 // This exercises the error wrapping fix at recover.go:531-534.
 func TestMergeResolvedWorker_AbortAndRecoveryFail_BothErrorsWrapped(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 

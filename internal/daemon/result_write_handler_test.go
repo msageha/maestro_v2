@@ -1040,6 +1040,12 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 // is returned (the result entry is cleaned up). This is the atomicity recovery
 // path: queue and result stay consistent (neither committed).
 func TestResultWrite_QueueWriteFailed_RollbackSucceeds(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"

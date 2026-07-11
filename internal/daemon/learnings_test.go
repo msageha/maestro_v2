@@ -360,6 +360,12 @@ func TestLearnings_EmptyContentSkipped(t *testing.T) {
 }
 
 func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"

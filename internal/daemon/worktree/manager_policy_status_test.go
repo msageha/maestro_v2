@@ -718,6 +718,13 @@ func TestEnsureWorkerWorktree_RollbackSuccessReturnsOriginalError(t *testing.T) 
 // TestEnsureWorkerWorktree_RollbackFailurePropagation tests that when both
 // the original operation and rollback fail, the returned error contains both.
 func TestEnsureWorkerWorktree_RollbackFailurePropagation(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and SaveState
+		// would succeed instead of failing as this test requires (observed
+		// running as root in a default Docker container on Linux).
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)

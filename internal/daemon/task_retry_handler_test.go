@@ -1954,6 +1954,12 @@ func TestRetryTaskAtomically_StateFailure(t *testing.T) {
 
 // TC-RT-022: RetryTaskAtomically — queue 追加失敗時に state ロールバック
 func TestRetryTaskAtomically_QueueFailureRollsBackState(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_atomic_qfail"
@@ -2031,6 +2037,12 @@ func TestRetryTaskAtomically_QueueFailureRollsBackState(t *testing.T) {
 
 // TC-RT-022b: RetryTaskAtomically — queue失敗+rollback失敗時に enqueue-failed マーク
 func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_atomic_double_fail"

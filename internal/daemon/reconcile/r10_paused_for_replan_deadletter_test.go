@@ -296,6 +296,12 @@ func TestR10PausedForReplan_DisabledByZeroThreshold(t *testing.T) {
 //   - no Repair record is emitted (so reconciler doesn't think it is done)
 //   - the next scan (read-only restored) re-attempts and succeeds
 func TestR10PausedForReplan_QueueWriteFailure_LeavesStateRetryable(t *testing.T) {
+	if os.Getuid() == 0 {
+		// root bypasses directory write-permission bits entirely, so the
+		// chmod-based failure injection below is a no-op and the write
+		// would succeed instead of failing as this test requires.
+		t.Skip("test requires non-root user")
+	}
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	tenMinSec2 := 600
