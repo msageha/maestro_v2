@@ -142,6 +142,13 @@ func TestPolicyChecker_HookSettings_SandboxFilesystemAllowWrite(t *testing.T) {
 	if !ok {
 		t.Fatalf("settings missing sandbox object: %s", settings)
 	}
+	network, ok := sandbox["network"].(map[string]any)
+	if !ok {
+		t.Fatalf("settings missing sandbox.network object: %s", settings)
+	}
+	if v, ok := network["allowAllUnixSockets"].(bool); !ok || !v {
+		t.Fatalf("sandbox.network.allowAllUnixSockets = %v, want true; settings: %s", network["allowAllUnixSockets"], settings)
+	}
 	filesystem, ok := sandbox["filesystem"].(map[string]any)
 	if !ok {
 		t.Fatalf("settings missing sandbox.filesystem object: %s", settings)
@@ -457,6 +464,20 @@ func assertHookUnsandboxed(t *testing.T, out, wantCommand string) {
 	}
 	if got, _ := ui["command"].(string); got != wantCommand {
 		t.Fatalf("updatedInput.command = %q, want original command %q", got, wantCommand)
+	}
+}
+
+// assertHookSandboxedAllow asserts the hook allowed the command WITHOUT an
+// unsandbox rewrite: decision=allow and no updatedInput (so the command runs
+// inside the OS sandbox).
+func assertHookSandboxedAllow(t *testing.T, out string) {
+	t.Helper()
+	decoded := decodeHookOutput(t, out)
+	if decoded.HookSpecificOutput.PermissionDecision != "allow" {
+		t.Fatalf("decision = %q, want allow; output=%s", decoded.HookSpecificOutput.PermissionDecision, out)
+	}
+	if decoded.HookSpecificOutput.UpdatedInput != nil {
+		t.Fatalf("command must stay sandboxed (no unsandbox rewrite), got: %s", out)
 	}
 }
 
@@ -1014,10 +1035,9 @@ func TestHookScript_P3_BlocksProtectedConfigBashWrites(t *testing.T) {
 			wantDecision: "allow",
 		},
 		{
-			name:            "protected path as maestro summary data",
-			cmd:             `maestro result write --summary "I edited .vscode/settings.json"`,
-			wantDecision:    "allow",
-			wantUnsandboxed: true,
+			name:         "protected path as maestro summary data",
+			cmd:          `maestro result write --summary "I edited .vscode/settings.json"`,
+			wantDecision: "allow",
 		},
 		{
 			name:         "vscodex is not vscode",
@@ -2227,7 +2247,12 @@ func TestHookScript_SBX_DenyRulesStillWinOverRewrite(t *testing.T) {
 	}
 }
 
-func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testing.T) {
+// Maestro CLI calls are allowed but stay SANDBOXED (no dangerouslyDisableSandbox
+// rewrite). PolicyChecker.HookSettings injects
+// sandbox.network.allowAllUnixSockets so the daemon UDS connect() works from
+// inside the sandbox; unsandboxing was removed because it wedges managed panes
+// where disableBypassPermissionsMode downgrades --dangerously-skip-permissions.
+func TestHookScript_SBX_MaestroCommandsStaySandboxedForAllRoles(t *testing.T) {
 	requireJq(t)
 	dir := t.TempDir()
 	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
@@ -2240,7 +2265,7 @@ func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testin
 		t.Run(role+"_result_write", func(t *testing.T) {
 			cmd := "maestro result write --summary x"
 			out := runHookScript(t, scriptPath, makeBashInput(cmd), role)
-			assertHookUnsandboxed(t, out, cmd)
+			assertHookSandboxedAllow(t, out)
 		})
 	}
 
@@ -2251,7 +2276,7 @@ func TestHookScript_SBX_MaestroCommandsRewrittenUnsandboxedForAllRoles(t *testin
 	} {
 		t.Run(cmd, func(t *testing.T) {
 			out := runHookScript(t, scriptPath, makeBashInput(cmd))
-			assertHookUnsandboxed(t, out, cmd)
+			assertHookSandboxedAllow(t, out)
 		})
 	}
 }
@@ -2265,11 +2290,11 @@ func TestHookScript_SBX_MaestroCommandsWithShellExpansionStaySandboxed(t *testin
 		t.Fatalf("WriteHookScript: %v", err)
 	}
 
-	plainUnsandboxed := "maestro result write --summary-file /tmp/x"
-	out := runHookScript(t, scriptPath, makeBashInput(plainUnsandboxed))
-	assertHookUnsandboxed(t, out, plainUnsandboxed)
-
+	// Every maestro CLI form — plain, command-substitution, process-substitution,
+	// subshell — is allowed and stays sandboxed. The UDS connect() works inside
+	// the sandbox via the injected allowAllUnixSockets.
 	for _, cmd := range []string{
+		"maestro result write --summary-file /tmp/x",
 		`maestro result write --summary "$(cat /etc/hosts)"`,
 		"maestro result write --summary `cat /etc/hosts`",
 		"maestro result write --summary-file <(cat /etc/hosts)",
@@ -2278,13 +2303,7 @@ func TestHookScript_SBX_MaestroCommandsWithShellExpansionStaySandboxed(t *testin
 	} {
 		t.Run(cmd, func(t *testing.T) {
 			out := runHookScript(t, scriptPath, makeBashInput(cmd))
-			decoded := decodeHookOutput(t, out)
-			if decoded.HookSpecificOutput.PermissionDecision != "allow" {
-				t.Fatalf("decision = %q, want allow; output=%s", decoded.HookSpecificOutput.PermissionDecision, out)
-			}
-			if decoded.HookSpecificOutput.UpdatedInput != nil {
-				t.Fatalf("maestro command with shell expansion/form must stay sandboxed, got: %s", out)
-			}
+			assertHookSandboxedAllow(t, out)
 		})
 	}
 }
@@ -2331,9 +2350,9 @@ func TestHookScript_FixC_CompoundCommandsStaySandboxed(t *testing.T) {
 		})
 	}
 
-	// Control: the single-command spellings are still rewritten.
+	// Control: the single-command package-manager spelling is still rewritten
+	// unsandboxed (maestro CLI now stays sandboxed and is asserted elsewhere).
 	for _, cmd := range []string{
-		"maestro result write --summary y",
 		"pnpm install",
 	} {
 		t.Run("single "+cmd, func(t *testing.T) {
@@ -2389,7 +2408,7 @@ func TestHookScript_SBX_MaestroMentionAsDataNotRewritten(t *testing.T) {
 	}
 }
 
-func TestHookScript_SBX_RunOnMainAllowsMaestroResultWriteUnsandboxed(t *testing.T) {
+func TestHookScript_SBX_RunOnMainAllowsMaestroResultWriteSandboxed(t *testing.T) {
 	scriptPath, env := runOnMainBashEnv(t, "1")
 	cmdText := "maestro result write --summary x"
 
@@ -2400,7 +2419,9 @@ func TestHookScript_SBX_RunOnMainAllowsMaestroResultWriteUnsandboxed(t *testing.
 	if err != nil {
 		t.Fatalf("hook script failed: %v, output: %s", err, out)
 	}
-	assertHookUnsandboxed(t, string(out), cmdText)
+	// run_on_main Worker reports its result via a SANDBOXED maestro call; the
+	// UDS connect() succeeds via the injected allowAllUnixSockets.
+	assertHookSandboxedAllow(t, string(out))
 }
 
 func TestHookScript_SBX_RunOnMainMutationDenyStillWinsBeforeMaestroRewrite(t *testing.T) {

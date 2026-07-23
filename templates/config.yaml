@@ -333,8 +333,12 @@ worktree:
   # enabled: Worker worktree 隔離の有効化フラグ
   # type: bool | default: false | range: true/false
   enabled: true
-  # base_branch: worktree のベースブランチ
-  # type: string | default: "main" (DefaultBaseBranch) | range: 制限なし
+  # base_branch: worktree のベースブランチ / ベース committish
+  # setup 時に対象リポジトリの現在の HEAD を自動検出して上書きする:
+  #   - ブランチ上なら そのブランチ名 (例: main)
+  #   - detached HEAD (commit 固定の submodule 等) なら その commit SHA
+  # 非 git ディレクトリの場合はこの既定値 ("main") が残る。
+  # type: string | default: 対象の現在 HEAD (fallback "main") | range: 制限なし
   base_branch: "main"
   # path_prefix: worktree 作成先ディレクトリプレフィックス
   # type: string | default: ".maestro/worktrees" (DefaultPathPrefix) | range: 制限なし

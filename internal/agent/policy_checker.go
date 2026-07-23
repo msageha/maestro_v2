@@ -79,10 +79,15 @@ type hookSettingsHooks struct {
 
 type hookSettingsSandbox struct {
 	Filesystem *hookSettingsSandboxFilesystem `json:"filesystem,omitempty"`
+	Network    *hookSettingsSandboxNetwork    `json:"network,omitempty"`
 }
 
 type hookSettingsSandboxFilesystem struct {
 	AllowWrite []string `json:"allowWrite,omitempty"`
+}
+
+type hookSettingsSandboxNetwork struct {
+	AllowAllUnixSockets bool `json:"allowAllUnixSockets"`
 }
 
 type hookMatcherGroup struct {
@@ -102,24 +107,37 @@ type hookEntry struct {
 // rationale. This produces a single --settings flag so that the existing argv
 // plumbing stays simple.
 //
-// Sandbox settings add only filesystem.allowWrite entries for Maestro-managed
-// toolchain caches. Claude Code merges sandbox keys individually and merges
-// filesystem.allowWrite additively (verified 2026-07-03/04), so omitting
-// sandbox.enabled preserves the user / managed layer's value: this payload does
-// not start the sandbox on non-sandbox machines and does not affect /sandbox
-// there. In org-managed environments sandbox.enabled is already forced, so the
-// extra writable cache paths prevent common toolchain EPERM failures and
-// complement buildLaunchEnvForAgent, which points cache env vars at
-// <maestroDir>/cache.
+// Sandbox settings add sandbox.network.allowAllUnixSockets (so the maestro CLI
+// can reach the daemon UDS while sandboxed) and filesystem.allowWrite entries
+// for Maestro-managed toolchain caches. Claude Code merges sandbox keys
+// individually and merges filesystem.allowWrite additively (verified
+// 2026-07-03/04), so omitting sandbox.enabled preserves the user / managed
+// layer's value: this payload does not start the sandbox on non-sandbox
+// machines and does not affect /sandbox there. In org-managed environments
+// sandbox.enabled is already forced, so allowing the UDS keeps maestro CLI
+// calls promptless and the extra writable cache paths prevent common toolchain
+// EPERM failures, complementing buildLaunchEnvForAgent, which points cache env
+// vars at <maestroDir>/cache.
 func (pc *PolicyChecker) HookSettings(scriptPath, role string) (string, error) {
 	if !knownRoles[role] {
 		return "", fmt.Errorf("unknown policy role %q", role)
 	}
 	settings := hookSettingsJSON{}
+	// Always allow Unix-domain sockets inside the OS sandbox so the maestro CLI
+	// can connect to the daemon UDS from a sandboxed pane without a
+	// dangerouslyDisableSandbox rewrite. In managed/enterprise environments
+	// where remote settings force sandbox.enabled=true and
+	// permissions.disableBypassPermissionsMode=disable, unsandboxing a maestro
+	// CLI call surfaces an approval prompt that no hook `allow` can
+	// short-circuit, wedging the pane. Keeping the call sandboxed + allowing the
+	// UDS avoids the wedge while preserving the filesystem denyRead secret
+	// barrier. Sandbox keys merge individually and sandbox.enabled is left
+	// untouched, so this does not start the sandbox on non-sandbox machines.
+	settings.Sandbox = &hookSettingsSandbox{
+		Network: &hookSettingsSandboxNetwork{AllowAllUnixSockets: true},
+	}
 	if allowWrite := pc.sandboxFilesystemAllowWrite(); len(allowWrite) > 0 {
-		settings.Sandbox = &hookSettingsSandbox{
-			Filesystem: &hookSettingsSandboxFilesystem{AllowWrite: allowWrite},
-		}
+		settings.Sandbox.Filesystem = &hookSettingsSandboxFilesystem{AllowWrite: allowWrite}
 	}
 	// Match every tool. When managed settings downgrade
 	// --dangerously-skip-permissions to default permission mode, any tool call

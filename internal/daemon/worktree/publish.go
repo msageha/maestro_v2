@@ -130,6 +130,21 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	return wm.finalizePublishState(state, commandID, baseBranch, now)
 }
 
+// resolveBaseRef returns the git ref publish advances for baseBranch:
+// refs/heads/<baseBranch> when it names an existing local branch, or "HEAD"
+// when it does not (setup writes a detached-HEAD commit SHA as base_branch when
+// projectRoot is on a detached HEAD, e.g. a pinned git submodule). Advancing
+// HEAD in the detached case moves the checkout forward in place instead of
+// creating a spurious refs/heads/<sha> branch. On a probe error we assume a
+// branch and fall back to refs/heads/<baseBranch> — the subsequent CAS
+// update-ref then fails safely rather than mutating the wrong ref.
+func (wm *Manager) resolveBaseRef(baseBranch string) string {
+	if exists, err := wm.localBranchExists(baseBranch); err == nil && !exists {
+		return "HEAD"
+	}
+	return "refs/heads/" + baseBranch
+}
+
 // createTempPublishBranch creates a temporary branch from baseBranch for the
 // publish merge. Returns the temp branch name, the base SHA, or an error.
 func (wm *Manager) createTempPublishBranch(commandID, baseBranch string) (tempBranch, baseSHA string, err error) {
@@ -276,11 +291,28 @@ func (wm *Manager) fastForwardBaseBranchRef(
 		return false, fmt.Errorf("restore integration branch checkout after publish: %w", checkoutErr)
 	}
 
-	// Determine whether baseBranch is checked out in projectRoot — if so we
-	// must sync the working tree after update-ref. We check BEFORE update-ref
-	// so a dirty projectRoot can be surfaced as a sentinel error.
-	currentBranch, _ := wm.gitOutput("symbolic-ref", "--short", "HEAD")
-	baseBranchCheckedOut := strings.TrimSpace(currentBranch) == baseBranch
+	// Resolve the ref publish advances. When baseBranch names a local branch
+	// (e.g. "main") we advance refs/heads/<branch>; when it is a detached-HEAD
+	// commit SHA (setup writes the SHA when projectRoot is on a detached HEAD,
+	// as for a pinned git submodule) we advance HEAD in place instead of
+	// creating a spurious refs/heads/<sha>.
+	baseRef := wm.resolveBaseRef(baseBranch)
+
+	// Determine whether the base checkout is projectRoot — if so we must sync
+	// the working tree after update-ref. We check BEFORE update-ref so a dirty
+	// projectRoot can be surfaced as a sentinel error. For a branch base this
+	// means projectRoot has that branch checked out; for a detached-HEAD SHA
+	// base it means projectRoot is detached exactly at baseSHA (the state setup
+	// captured — the thing we are advancing).
+	var baseBranchCheckedOut bool
+	if baseRef == "HEAD" {
+		headSHA, _ := wm.gitOutput("rev-parse", "HEAD")
+		_, symErr := wm.gitOutput("symbolic-ref", "--quiet", "HEAD")
+		baseBranchCheckedOut = symErr != nil && strings.TrimSpace(headSHA) == baseSHA
+	} else {
+		currentBranch, _ := wm.gitOutput("symbolic-ref", "--short", "HEAD")
+		baseBranchCheckedOut = strings.TrimSpace(currentBranch) == baseBranch
+	}
 
 	if baseBranchCheckedOut {
 		statusOut, err := wm.gitOutput("status", "--porcelain", "--untracked-files=no")
@@ -305,11 +337,11 @@ func (wm *Manager) fastForwardBaseBranchRef(
 		}
 	}
 
-	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
+	if err := wm.gitRun("update-ref", baseRef, mergeSHA, baseSHA); err != nil {
 		if baseBranchCheckedOut {
 			wm.deletePublishSyncPendingRef(commandID)
 		}
-		return false, fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
+		return false, fmt.Errorf("update base ref %s (CAS failed — base may have been modified concurrently): %w", baseRef, err)
 	}
 	return baseBranchCheckedOut, nil
 }
@@ -466,8 +498,10 @@ func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, m
 		wm.Log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s — attempting CAS rollback",
 			commandID, resetErr, durableRef)
 
-		// CAS rollback: restore baseBranch to baseSHA only if still at mergeSHA.
-		refSpec := fmt.Sprintf("refs/heads/%s", baseBranch)
+		// CAS rollback: restore the base ref to baseSHA only if still at
+		// mergeSHA. Uses the same ref publish advanced (refs/heads/<branch> or
+		// the detached HEAD).
+		refSpec := wm.resolveBaseRef(baseBranch)
 		rollbackErr := wm.gitRun("update-ref", refSpec, baseSHA, mergeSHA)
 		if rollbackErr != nil {
 			wm.Log(core.LogLevelError,
