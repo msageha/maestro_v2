@@ -24,6 +24,11 @@ type dispatchItem struct {
 	WorkerID     string              // worker ID (tasks only)
 	Epoch        int                 // lease_epoch at time of decision
 	ExpiresAt    string              // lease_expires_at snapshot for fencing
+	// Resume marks a continuation-nudge dispatch (issue #55): the task's
+	// previous epoch was hang-released after observed progress, so Phase B
+	// delivers a short resume message without /clear instead of the full
+	// envelope. Consumed from Task.ResumeRequested at lease acquisition.
+	Resume bool
 }
 
 // busyCheckItem captures an expired-lease busy probe to execute in Phase B.

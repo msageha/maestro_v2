@@ -109,6 +109,7 @@ func buildQueueTasksByWorker(assignments []WorkerAssignment, tasks []TaskInput, 
 			// "統合 worktree で解決" tasks without requiring a follow-up add-task.
 			RunOnMain:        t.RunOnMain,
 			RunOnIntegration: t.RunOnIntegration,
+			ResumeHint:       t.ResumeHint,
 			OperationType:    opType,
 			Priority:         100,
 			Status:           model.StatusPending,

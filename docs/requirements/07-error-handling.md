@@ -62,6 +62,8 @@ deferred フェーズの fill タイムアウト（Planner が fill_deadline_at 
     → Agent が停止/ハングしていると判断し、**lease-release-to-pending による再配信**を行う:
     1. ステータスを `pending` に戻す（lease も解放）
     2. 次のスキャンで再配信
+  - **進捗観測後の中断（progress-interrupt）の別勘定**: release 対象の epoch で pane activity（`lease_extend_pane_active`）またはビジー確定プローブによる実進捗が観測されていた場合、そのタスクは wedge ではなく「実進捗 → mid-stream 中断」と分類し、`attempts`（dispatch budget）を消費しない。代わりにタスクごとの `progress_interrupts` カウンタ（上限 `retry.task_progress_interrupts`、既定 6）に計上する。上限超過後は従来の attempts 会計に戻る（wall-clock の backstop は従来どおり `max_in_progress_min`）
+  - **継続 nudge（resume）による回復**: progress-interrupt かつタスクが resume 可能（既定: `run_on_integration` 以外。タスクの `resume_hint: allow|deny` で上書き可）で resume budget（`retry.task_resume`、既定 3）が残っている場合、次回配信は `/clear` フル再投入ではなく短い継続メッセージを同一 pane に送る。配信前に新 lease epoch を取得し nudge に埋め込むため、Worker の後続 `result write` はフェンシングを通過する。pane のセッション同一性（pane PID / clear_ready / `@last_task_id` / cwd / agent プロセス生存）が確認できない場合は `/clear` フル再投入にフォールバックする（fail-safe）
   - 現行実装は上記の lease 解放のみで、エージェントへの `/clear` 自動送信は配線されていない（busy-check 経路は `releaseLease` だけを呼ぶ。タスクは未確定のまま queue に残るため恒久ロストは発生しない）[^clear-unwired]
 
 [^clear-unwired]: ハングセッションの実体的な復旧（プロンプト残渣の破棄・ペイン再生成）は別経路の blocked-pane recovery が担う。ブロック検出ペインは短時間タイムアウトでタスクを `failed` にし、Worker ペインを respawn して次回 dispatch の入力衝突を断つ。
@@ -129,6 +131,7 @@ deferred フェーズの fill タイムアウト（Planner が fill_deadline_at 
 ## 7.9 リトライ上限と dead-letter
 
 - dead-letter は **配信（dispatch）系リトライ専用**である。各 queue エントリは `attempts`（配信試行回数）をカウントし、`status` が `pending` のまま該当する dispatch 上限（`retry.command_dispatch` / `retry.task_dispatch` / `retry.orchestrator_notification_dispatch`）に到達した場合（条件: `status == pending && attempts >= max_attempts`）に `dead_letter` へ遷移する
+- **進捗観測後の hang-release と resume 配信は `attempts` を消費しない**（§7.3 progress-interrupt / resume。それぞれ `retry.task_progress_interrupts` / `retry.task_resume` の別勘定で bounded）。外的な API 不安定による mid-stream 中断の反復だけで実進捗のあるタスクが dead-letter に到達しないための会計分離である
 - **タスク実行リトライ（`retry.task_execution`）は dead-letter の対象外**。実行失敗の終端は `failed`（terminal）または `paused_for_replan`（Circuit Breaker / 自動リトライ枯渇時。§7.12）であり、dispatch 上限とは別系統
 - dead-letter エントリは `.maestro/dead_letters/` にアーカイブされ、queue ファイルからは除去される
 - dead-letter は terminal であり、変更不可

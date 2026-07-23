@@ -82,15 +82,39 @@ type Task struct {
 	ExecutionRetries   int                `yaml:"execution_retries,omitempty"` // Number of actual retry executions (not dispatch attempts)
 	OriginalTaskID     string             `yaml:"original_task_id,omitempty"`  // For tracking retry lineage
 	NotBefore          *string            `yaml:"not_before,omitempty"`        // RFC3339 timestamp for cooldown
-	LastError          *string            `yaml:"last_error"`
-	DeadLetteredAt     *string            `yaml:"dead_lettered_at"`
-	DeadLetterReason   *string            `yaml:"dead_letter_reason"`
-	LeaseOwner         *string            `yaml:"lease_owner"`
-	LeaseExpiresAt     *string            `yaml:"lease_expires_at"`
-	LeaseEpoch         int                `yaml:"lease_epoch"`
-	InProgressAt       *string            `yaml:"in_progress_at,omitempty"`
-	CreatedAt          string             `yaml:"created_at"`
-	UpdatedAt          string             `yaml:"updated_at"`
+	// LastProgressEpoch records the lease epoch during which the daemon last
+	// observed forward progress for this task (pane-activity VerdictActive
+	// lease extension, or a confirmed-busy probe). The hang-release path
+	// compares it against the current LeaseEpoch to distinguish "worker made
+	// real progress and was then interrupted mid-stream" (progress-interrupt,
+	// budget-exempt) from "worker wedged without ever producing output"
+	// (consumes the task_dispatch budget as before). Issue #54.
+	LastProgressEpoch int `yaml:"last_progress_epoch,omitempty"`
+	// ProgressInterrupts counts hang-releases that followed observed progress
+	// in the same epoch. These do NOT consume Attempts (the task_dispatch
+	// dead-letter budget) up to retry.task_progress_interrupts; beyond the
+	// cap the release falls back to the legacy Attempts accounting so a
+	// pathological progress-then-idle loop still terminates. Issue #54.
+	ProgressInterrupts int `yaml:"progress_interrupts,omitempty"`
+	// ResumeAttempts counts continuation-nudge dispatches (resume without
+	// /clear) consumed by this task. Bounded by retry.task_resume; beyond the
+	// cap re-dispatch reverts to the full /clear envelope. Issue #55.
+	ResumeAttempts int `yaml:"resume_attempts,omitempty"`
+	// ResumeRequested marks that the most recent hang-release qualified for
+	// an in-place resume (progress observed, task resume-eligible, resume
+	// budget remaining). Consumed (cleared) by the next lease acquisition,
+	// which turns that dispatch into a continuation nudge instead of a
+	// /clear full re-delivery. Issue #55.
+	ResumeRequested  bool    `yaml:"resume_requested,omitempty"`
+	LastError        *string `yaml:"last_error"`
+	DeadLetteredAt   *string `yaml:"dead_lettered_at"`
+	DeadLetterReason *string `yaml:"dead_letter_reason"`
+	LeaseOwner       *string `yaml:"lease_owner"`
+	LeaseExpiresAt   *string `yaml:"lease_expires_at"`
+	LeaseEpoch       int     `yaml:"lease_epoch"`
+	InProgressAt     *string `yaml:"in_progress_at,omitempty"`
+	CreatedAt        string  `yaml:"created_at"`
+	UpdatedAt        string  `yaml:"updated_at"`
 
 	// Runtime selection is retained for schema compatibility. Managed roles
 	// currently accept claude-code only; config/launcher reject codex/gemini.
@@ -114,6 +138,16 @@ type Task struct {
 	// resolution tasks that must operate directly on the integration branch to
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
+	// ResumeHint optionally overrides the resume-eligibility policy for this
+	// task ("allow" / "deny"). When empty, the default policy applies: resume
+	// is allowed for worker-worktree tasks (mutations are isolated to the
+	// task-private worktree and reconciled at merge/verify time — the same
+	// exposure the /clear full re-dispatch already has, since neither path
+	// discards the worktree) and RunOnMain tasks (read-only enforced by the
+	// @run_on_main hook), and denied for RunOnIntegration tasks (they mutate
+	// the shared integration tree, where a double-executed tool call is not
+	// contained). Planner-settable per task. Issue #55.
+	ResumeHint string `yaml:"resume_hint,omitempty" json:"resume_hint,omitempty"`
 	// OperationType classifies the task for admission control. Permitted
 	// values are OperationTypeVerify / Repair, or empty for normal
 	// (unconstrained) tasks. Classification is deterministic and explicit:
@@ -136,6 +170,28 @@ const (
 	OperationTypeVerify = "verify"
 	OperationTypeRepair = "repair"
 )
+
+// Resume hint values used by Task.ResumeHint (issue #55).
+const (
+	ResumeHintAllow = "allow"
+	ResumeHintDeny  = "deny"
+)
+
+// ResumeEligible reports whether this task may be recovered via an in-place
+// continuation nudge (resume) instead of a /clear full re-dispatch after a
+// progress-interrupt hang-release. The explicit ResumeHint wins; otherwise
+// RunOnIntegration tasks are denied because they mutate the shared
+// integration worktree where double-executed tool calls are not contained
+// (see the ResumeHint field comment for the full policy rationale).
+func (t *Task) ResumeEligible() bool {
+	switch t.ResumeHint {
+	case ResumeHintAllow:
+		return true
+	case ResumeHintDeny:
+		return false
+	}
+	return !t.RunOnIntegration
+}
 
 // GetDoneConditions は完了条件を返す。
 // DefinitionOfDone が設定されている場合はそちらを優先し、

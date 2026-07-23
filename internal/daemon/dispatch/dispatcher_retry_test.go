@@ -74,7 +74,7 @@ func TestDispatchTask_ContextCancellation(t *testing.T) {
 	cancel() // cancel immediately
 
 	start := time.Now()
-	err := d.DispatchTask(ctx, &model.Task{ID: "task_test", CommandID: "cmd_test"}, "worker1")
+	err := d.DispatchTask(ctx, &model.Task{ID: "task_test", CommandID: "cmd_test"}, "worker1", false)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, context.Canceled) {
@@ -149,7 +149,7 @@ func TestDispatchTask_AbortsRetryWhenAliveCheckerReportsTerminal(t *testing.T) {
 
 	err := d.DispatchTask(context.Background(),
 		&model.Task{ID: "task_abort_test", CommandID: "cmd_abort_test", LeaseEpoch: 3},
-		"worker1")
+		"worker1", false)
 	if err == nil {
 		t.Fatalf("expected the inline retry loop to surface the last transient error after aborting, got nil")
 	}
@@ -178,7 +178,7 @@ func TestDispatchTask_AliveCheckerNotInvokedOnFirstAttempt(t *testing.T) {
 
 	if err := d.DispatchTask(context.Background(),
 		&model.Task{ID: "task_first_attempt", CommandID: "cmd_first_attempt", LeaseEpoch: 1},
-		"worker1"); err != nil {
+		"worker1", false); err != nil {
 		t.Fatalf("first-attempt success path must not consult the alive checker, got error: %v", err)
 	}
 	if checker.probes != 0 {

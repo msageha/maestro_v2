@@ -182,6 +182,7 @@ tasks:
     operation_type: "" # 操作種別ヒント（省略可）
     run_on_main: false # 実 main checkout 上で実行するか（true は非 claude worker に割り当てない。C-7）
     run_on_integration: false # integration worktree 上で実行するか
+    resume_hint: "" # "allow" | "deny" | ""。中断タスクの継続 nudge (resume) 回復可否の上書き（省略可。既定: run_on_integration のみ deny）
     complexity_level: "" # simple | standard | complex | critical（C-8。未指定時 Planner 自動判定）
     priority: 100 # 優先度（小さいほど高優先。デフォルト 100。デーモンが自動設定）
     status: "pending" # pending ⇄ in_progress → completed | failed | cancelled; pending → dead_letter [attempts >= max]（配信失敗時 in_progress → pending に戻る）
@@ -215,12 +216,13 @@ tasks:
 | `operation_type`      | 任意 | 操作種別ヒント                                                                                                                                                                                                                                     |
 | `run_on_main`         | 任意 | 実 main checkout 上で実行するか（既定 false）。`true` は非 claude worker に割り当てない（C-7）                                                                                                                                                     |
 | `run_on_integration`  | 任意 | integration worktree 上で実行するか（既定 false）                                                                                                                                                                                                  |
+| `resume_hint`         | 任意 | `allow` / `deny` / 空。mid-stream 中断後の継続 nudge（resume）回復の可否を上書き（[§7.3](07-error-handling.md)）。既定ポリシーは `run_on_integration` のみ deny                                                                                    |
 | `complexity_level`    | 任意 | `simple` / `standard` / `complex` / `critical`（C-8）。未指定時 Planner 自動判定、Orchestrator オーバーライド可                                                                                                                                    |
 | `priority`            | 任意 | 優先度（小さいほど高優先。デフォルト 100）。デーモンが自動設定。Agent は指定しない                                                                                                                                                                 |
 
 **実装拡張フィールド（デーモン管理。Agent は指定しない。いずれも `omitempty`）**:
 
-`queue/worker{N}.yaml` のタスク型はデーモンが配信制御・リトライ追跡・ランタイム解決のために用いる内部管理フィールド群（`dispatch_id` / `execution_retries` / `original_task_id` / `not_before` / `in_progress_at` / `runtime` / `model_override` 等）を持つ。これらは Agent が指定するものではなく、各フィールドの型・意味・不変条件は **source of truth である `internal/model/queue.go` の定義（godoc コメント）を正本**とする。本書はこれら実装詳細を逐一ミラーせず、Agent が関与しない旨の明示に留める（要件文書が実装を後追いミラーする構造を避けるため）。
+`queue/worker{N}.yaml` のタスク型はデーモンが配信制御・リトライ追跡・ランタイム解決のために用いる内部管理フィールド群（`dispatch_id` / `execution_retries` / `original_task_id` / `not_before` / `in_progress_at` / `runtime` / `model_override` / `last_progress_epoch` / `progress_interrupts` / `resume_attempts` / `resume_requested` 等）を持つ。これらは Agent が指定するものではなく、各フィールドの型・意味・不変条件は **source of truth である `internal/model/queue.go` の定義（godoc コメント）を正本**とする。本書はこれら実装詳細を逐一ミラーせず、Agent が関与しない旨の明示に留める（要件文書が実装を後追いミラーする構造を避けるため）。
 
 ## 4.4 results/worker{N}.yaml（Worker → Planner: タスク実行結果）
 

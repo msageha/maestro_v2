@@ -238,6 +238,18 @@ retry:
   # task_dispatch_inline_retry_delay_sec: タスクディスパッチインラインリトライの遅延 (秒)
   # type: int | default: 1 (DefaultTaskDispatchInlineRetryDelaySec) | range: >= 0
   task_dispatch_inline_retry_delay_sec: 1
+  # task_progress_interrupts: 「実進捗観測後の hang-release」をタスクごとに何回まで
+  # task_dispatch budget (attempts) の消費なしで許容するか。pane activity で進捗が
+  # 観測された epoch の mid-stream 中断は wedge ではないため別勘定で計上する。
+  # 上限超過後は従来どおり attempts を消費し dead-letter に到達し得る。0 で免除を無効化。
+  # type: int | default: 6 (DefaultTaskProgressInterrupts) | range: >= 0
+  task_progress_interrupts: 6
+  # task_resume: 中断タスクを /clear フル再投入でなく「継続 nudge (resume)」で
+  # 回復する試行のタスクごとの上限。pane のセッション同一性が確認できた場合のみ
+  # /clear せずに継続メッセージを送る。上限超過・同一性不成立時は /clear に
+  # フォールバックする。0 で resume 経路を無効化。
+  # type: int | default: 3 (DefaultTaskResume) | range: >= 0
+  task_resume: 3
   task_execution:
     # enabled: タスク実行の自動リトライの有効化フラグ
     # type: bool | default: true in generated config | range: true/false

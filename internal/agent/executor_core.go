@@ -569,6 +569,24 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		return e.execDeliver(ctx, req, paneTarget)
 	}
 
+	// Resume path (issue #55): when the dispatcher marked this delivery as a
+	// continuation of a mid-stream-interrupted turn, probe — read-only,
+	// BEFORE any pane mutation (working-dir change, run_on_main stamp,
+	// agent relaunch) — whether the pane still holds the same session for
+	// the same task. If it does, deliver the short nudge without /clear so
+	// the worker keeps its accumulated context. Any mismatch falls through
+	// to the normal /clear full delivery below (fail-safe).
+	if req.ResumeMessage != "" {
+		if ok, reason := e.canResumeInPlace(paneTarget, req); ok {
+			return e.execResumeNudge(ctx, req, paneTarget)
+		} else { //nolint:revive // symmetric if/else keeps the fallthrough explicit
+			e.log(logLevelInfo,
+				"resume_fallback_full_dispatch agent_id=%s task_id=%s reason=%s "+
+					"(pane session changed since interruption; delivering full envelope with /clear)",
+				req.AgentID, req.TaskID, reason)
+		}
+	}
+
 	// Handle working directory change (worktree mode).
 	if req.WorkingDir != "" {
 		if err := e.processManager.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
@@ -614,6 +632,91 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	return e.execClearAndDeliver(ctx, req, paneTarget)
 }
 
+// canResumeInPlace reports whether the pane still holds the interrupted
+// task's live session, i.e. a continuation nudge would land in the same
+// conversation the task was dispatched into. All probes are read-only except
+// DetectProcessRestart's clear_ready reset on a detected restart — which is
+// exactly the state the subsequent full-dispatch fallback needs anyway.
+// Returns a stable reason token for the fallback log on mismatch.
+//
+// Checks, in order:
+//  1. pane root PID unchanged since the last successful dispatch
+//     (DetectProcessRestart) — catches pane respawns;
+//  2. clear_ready set — a prior task envelope actually landed on this
+//     process (reset by respawn / relaunch / working-dir change);
+//  3. pane is NOT sitting at a shell — a crashed agent keeps the pane PID
+//     (the shell is the pane root process), so PID identity alone cannot
+//     rule out a crash-and-not-yet-relaunched pane;
+//  4. @last_task_id matches — the pane's current conversation belongs to
+//     THIS task, not a sibling task the worker ran in between;
+//  5. pane cwd still under the task's working dir (worktree mode).
+func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, string) {
+	restarted, _, err := e.paneState.DetectProcessRestart(paneTarget)
+	if err != nil {
+		return false, "pid_probe_failed"
+	}
+	if restarted {
+		return false, "pane_process_restarted"
+	}
+	if !e.paneState.IsClearReady(paneTarget) {
+		return false, "no_prior_dispatch_on_pane"
+	}
+	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
+	if err != nil {
+		return false, "pane_command_probe_failed"
+	}
+	if e.paneIO.IsShellCommand(cmd) {
+		return false, "agent_process_not_running"
+	}
+	lastTask, err := e.paneIO.GetUserVar(paneTarget, "last_task_id")
+	if err != nil || lastTask == "" {
+		return false, "last_task_id_unavailable"
+	}
+	if lastTask != req.TaskID {
+		return false, "pane_holds_different_task"
+	}
+	if req.WorkingDir != "" {
+		cwd, cwdErr := e.paneIO.GetPaneCurrentPath(paneTarget)
+		if cwdErr != nil || !isPathUnder(cwd, req.WorkingDir) {
+			return false, "working_dir_mismatch"
+		}
+	}
+	return true, ""
+}
+
+// execResumeNudge delivers the continuation nudge into the still-live
+// session. No /clear, no busy detection: the daemon only marks a task for
+// resume after the pane was observed idle across scans and the hang-release
+// cooldown elapsed, and waitReady re-confirms a painted prompt. The nudge
+// message carries the new lease epoch (see BuildWorkerResumeEnvelope).
+func (e *Executor) execResumeNudge(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
+	e.log(logLevelInfo,
+		"resume_dispatch agent_id=%s task_id=%s lease_epoch=%d (continuation nudge without /clear; session context preserved)",
+		req.AgentID, req.TaskID, req.LeaseEpoch)
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
+		e.log(logLevelWarn, "resume_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("resume wait ready: %w", err), Retryable: true}
+	}
+	nudgeReq := req
+	nudgeReq.Message = req.ResumeMessage
+	return e.sendAndConfirm(nudgeReq, paneTarget)
+}
+
+// stampLastTaskID records the task whose conversation currently occupies the
+// pane (@last_task_id). The resume preflight (canResumeInPlace) requires an
+// exact match, so a continuation nudge can never land in a pane that has
+// since been re-used for a different task. A stamp failure only disables
+// future resume on this pane (fail-safe toward /clear), so it is logged and
+// swallowed rather than failing the dispatch that already succeeded.
+func (e *Executor) stampLastTaskID(paneTarget, agentID, taskID string) {
+	if taskID == "" {
+		return
+	}
+	if err := e.paneIO.SetUserVar(paneTarget, "last_task_id", taskID); err != nil {
+		e.log(logLevelWarn, "stamp_last_task_id_failed agent_id=%s task_id=%s error=%v", agentID, taskID, err)
+	}
+}
+
 // checkProcessRestart detects pane process restarts and logs accordingly.
 // Returns (restarted, currentPID, error).
 func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string, error) {
@@ -657,6 +760,7 @@ func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneT
 		if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
 			e.log(logLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		}
+		e.stampLastTaskID(paneTarget, req.AgentID, req.TaskID)
 	}
 	return result
 }
@@ -682,7 +786,11 @@ func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, pan
 	}
 
 	// Step 5: Deliver
-	return e.sendAndConfirm(req, paneTarget)
+	result := e.sendAndConfirm(req, paneTarget)
+	if result.Success {
+		e.stampLastTaskID(paneTarget, req.AgentID, req.TaskID)
+	}
+	return result
 }
 
 // handleClearFailure processes a /clear confirmation failure, resetting clear_ready state.
