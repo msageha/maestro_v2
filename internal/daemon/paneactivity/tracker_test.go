@@ -240,6 +240,41 @@ func TestTracker_VerbAnimationKeepsActiveByDefaultHint(t *testing.T) {
 	}
 }
 
+// TestTracker_APIRetryBannerStaysActive pins that the runtime's transient
+// network / API auto-retry banner keeps the pane Active even when the only
+// per-scan change is the countdown timer (collapsed by liveness
+// normalization). Without the Waiting / Retrying active-hint verb the pane
+// would read Idle and the daemon would release an in-progress task mid-retry.
+func TestTracker_APIRetryBannerStaysActive(t *testing.T) {
+	tr := New(nil)
+	t0 := time.Now().UTC()
+	t1 := t0.Add(60 * time.Second)
+
+	frame := func(banner string, secs int) string {
+		out := ""
+		for i := 0; i < 30; i++ {
+			out += "scrollback line\n"
+		}
+		out += "  " + banner + " · will retry in " + strconv.Itoa(secs) + "s · check your network\n"
+		return out
+	}
+
+	// "Waiting for API" — the current phrasing.
+	if v := tr.ObserveVerdict("worker1", frame("Waiting for API", 90), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("API retry banner (Waiting) must be VerdictActive, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker1", frame("Waiting for API", 45), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("API retry banner with only countdown change must stay VerdictActive, got %v", v)
+	}
+	// "Retrying" — the defense-in-depth verb this change adds.
+	if v := tr.ObserveVerdict("worker2", frame("Retrying request", 30), time.Minute, t0); v != VerdictActive {
+		t.Fatalf("Retrying banner must be VerdictActive, got %v", v)
+	}
+	if v := tr.ObserveVerdict("worker2", frame("Retrying request", 20), time.Minute, t1); v != VerdictActive {
+		t.Fatalf("Retrying banner with only countdown change must stay VerdictActive, got %v", v)
+	}
+}
+
 // TestTracker_BareTimerWithoutVerbIsIdle pins the symmetric guarantee:
 // when the tail has NO activity verb / spinner glyph and only a numeric
 // timer is ticking, the cross-scan delta still resolves to Idle so a
