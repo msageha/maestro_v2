@@ -465,7 +465,15 @@ var defaultActiveHintRegex = regexp.MustCompile(
 		`Hypothesizing|Brainstorming|Planning|Drafting|Reading|Writing|` +
 		`Searching|Exploring|Investigating|Evaluating|Reflecting|` +
 		`Strategizing|Cooking|Brewing|` +
-		`Determining|Waiting|Fetching|Downloading|` +
+		// Retrying / Reconnecting cover the agent runtime's transient
+		// network / API auto-retry banner (e.g. Claude Code's
+		// "Waiting for API · will retry", "Retrying request…"). The turn is
+		// still in flight and will resume once the retry succeeds, so the
+		// pane is Active — releasing the lease here would discard an
+		// in-progress task mid-retry. "Waiting" already covers the current
+		// phrasing; these are defense-in-depth for runtime UI wording that
+		// drops "Waiting". max_in_progress_min remains the hard back-stop.
+		`Determining|Waiting|Retrying|Reconnecting|Fetching|Downloading|` +
 		`Uploading|Installing|Resolving|Linking|Unpacking|Indexing|` +
 		`Updating|Caching|Verifying|Validating|Testing|Checking)\w*` +
 		// Optional trailing ellipsis / dots. Not required because some
