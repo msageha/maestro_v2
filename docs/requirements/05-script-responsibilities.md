@@ -89,14 +89,18 @@ Usage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]
 **起動シーケンス**:
 
 1. `.maestro/config.yaml` の存在チェック
-2. **スタートアップリカバリ**:
+2. **環境・runtime preflight**（リソース作成前の fail-fast）:
+   - tmux バイナリの PATH 解決と AF_UNIX ソケット疎通プローブ（sandbox 検出）
+   - config の agents.\* から解決される全 runtime（claude-code / codex / gemini）の CLI バイナリを PATH 解決。**バイナリ不在は確実な失敗として `up` を中断**（tmux セッション・デーモン作成前）
+   - 認証状態は best-effort（env 変数・credential ファイルの存在確認のみ）。確認不能は stderr への警告に留め、起動は止めない。詳細診断は [§5.18 maestro doctor](#518-maestro-doctorワンショット)
+3. **スタートアップリカバリ**:
    a. daemon ロックで他の `maestro up` との競合防止
    b. 必要なディレクトリ・YAML ファイルの存在確認。欠損があれば再作成
    c. 全 YAML ファイルの構文検証（破損ファイルは quarantine → バックアップからリストア）
    d. `schema_version` チェック。旧バージョン検出時はマイグレーション（バックアップ優先）
    e. ワンショット reconciliation を実行（R0, R0b, R1-R10 の全パターンの不整合修復。[§5.8 ステップ 3](#58-maestro-daemon) 参照）
-3. `--boost` / `--continuous` フラグを config.yaml に反映
-4. tmux セッション作成（内部で `maestro` の tmux モジュールを使用。per-instance socket で分離。既存セッションがあれば再利用 or 再作成）
+4. `--boost` / `--continuous` フラグを config.yaml に反映
+5. tmux セッション作成（内部で `maestro` の tmux モジュールを使用。per-instance socket で分離。既存セッションがあれば再利用 or 再作成）
    - Window 0 `orchestrator`: 1 ペイン
    - Window 1 `planner`: 1 ペイン
    - Window 2 `workers`: 最大 2 列 × 4 行のグリッド（Worker 数分のペイン）
@@ -105,9 +109,9 @@ Usage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]
      - `@role`: `orchestrator`, `planner`, `worker`
      - `@model`: `opus`, `sonnet` 等（config.yaml の `default_model` + `models` から解決。Worker は `codex` / `codex-5` / `gemini-2.5-pro` 等の非 claude ランタイムも可。[§11](11-future-extensions.md) 参照）
      - `@status`: `idle`（初期値）
-5. 各ペインで `maestro agent launch` を実行
-6. `maestro daemon` をバックグラウンド起動（daemon ロック + PID 記録）
-7. `--detach` でなければ tmux セッションへ attach。`--detach` の場合は起動完了メッセージを表示して終了
+6. 各ペインで `maestro agent launch` を実行
+7. `maestro daemon` をバックグラウンド起動（daemon ロック + PID 記録）
+8. `--detach` でなければ tmux セッションへ attach。`--detach` の場合は起動完了メッセージを表示して終了
 
 > **起動は冪等**: 何度実行しても安全。既に正常稼働中の場合はデーモンの daemon ロックで二重起動を防止。
 > **再接続**: detach 後に再度操作したい場合は `maestro attach` でセッションへ戻る。
@@ -1180,3 +1184,25 @@ Usage: maestro skill <list|candidates|approve|reject> [options]
 | `maestro persona list`                                            | 登録済み persona の一覧表示                                                             |
 
 > skill 候補の蓄積は将来的な自己改善（[REQUIREMENTS.md](REQUIREMENTS.md) C-5）の足場であり、承認は人間 / オペレーターのゲートを経る。Daemon が候補を自動承認することはない。
+
+## 5.18 maestro doctor（ワンショット）
+
+**責務**: runtime preflight の明示診断。フォーメーション起動前に、設定済みの全 agent runtime が起動可能かを検証して早期に問題を可視化する
+
+```
+Usage: maestro doctor [--json] [--probe-timeout-sec <n>]
+```
+
+検証対象は config の agents.\*（orchestrator / planner / worker1..N のモデル名）から `ParseRuntimeFromModel` で解決される runtime 集合（claude-code / codex / gemini。boost 有効時は全 Worker が opus = claude-code に集約される）と、tmux バイナリ。runtime ごとに以下を検証する:
+
+| チェック    | 方式                                                                                                              | 失敗時の扱い                                   |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **binary**  | CLI（`claude` / `codex` / `gemini`）の PATH 解決                                                                  | **fail**（終了コード 1。確実な失敗はこれのみ） |
+| **version** | `<cli> --version` を非対話（stdin=null device）・タイムアウト付き（既定 10 秒）・出力上限付き（既定 8 KiB）で実行 | warn（終了コード 0）                           |
+| **auth**    | credential env 変数と credential ファイルの存在確認のみ（サブプロセスなし・値は出力しない）                       | 確認不能は `unknown` の warn（終了コード 0）   |
+
+- **外部 runtime probe のガードレール**: probe は対話プロンプトで hang しない（stdin が null device のため即 EOF）。タイムアウト超過は probe を kill して warn として報告し、取得出力は上限バイト数で切り捨てる。この上限は診断用であり、Worker のタスク成果・結果本文には適用しない。
+- **既存 late-failure との関係**: doctor / up preflight は早期検知の前段であり置換ではない。launch 時の `exec.LookPath`（`internal/agent/launcher.go`）と pane terminal-error fast-fail（`authentication_error` 等のリアクティブ検知）はそのまま維持される。
+- **汎用 bridge registry 化はしない**: 検証対象は Go 実装の `RuntimeDef` registry（`internal/agent/runtime_launcher.go`）に登録済みの runtime のみ。新 runtime の追加は引き続き Go 実装で行う。
+- 実 LLM への test prompt 疎通確認は行わない（コスト・副作用があるため非実装。binary/version/auth チェックが既定かつ唯一のモード）。
+- `--json` で機械可読なレポート（`tmux` / `runtimes[]` / `ok`）を出力する。

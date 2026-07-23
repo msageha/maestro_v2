@@ -172,6 +172,8 @@ func (a *cliApp) run(args []string) int {
 		err = runDown(args[1:])
 	case "status":
 		err = runStatus(args[1:])
+	case "doctor":
+		err = runDoctor(args[1:])
 	case "queue":
 		err = a.runQueue(args[1:])
 	case "result":
@@ -293,6 +295,7 @@ Formation:
   attach            Attach to the running maestro tmux session
   down              Graceful shutdown
   status [--json]   Show formation status
+  doctor [--json]   Preflight configured agent runtimes (binary/version/auth)
 
 Agent Commands (CLI → Daemon):
   queue write <target> [options]   Write to queue
