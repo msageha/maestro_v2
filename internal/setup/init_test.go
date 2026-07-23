@@ -890,3 +890,77 @@ func TestTemplateConfigFeatureProfilesMatchCodeDefaults(t *testing.T) {
 		}
 	}
 }
+
+// gitInitAt initializes a git repo at dir with one commit and returns nothing;
+// test helper for detectBaseBranch. Fails the test on any git error.
+func gitInitAt(t *testing.T, dir string) {
+	t.Helper()
+	runs := [][]string{
+		{"init", "-q"},
+		{"config", "user.email", "test@example.com"},
+		{"config", "user.name", "test"},
+		{"commit", "--allow-empty", "-q", "-m", "initial"},
+	}
+	for _, args := range runs {
+		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+}
+
+func gitAt(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestDetectBaseBranch_OnBranch(t *testing.T) {
+	dir := t.TempDir()
+	gitInitAt(t, dir)
+	// Normalize the branch name so the assertion is independent of the host's
+	// init.defaultBranch (master vs main).
+	gitAt(t, dir, "branch", "-M", "main")
+
+	if got := detectBaseBranch(dir); got != "main" {
+		t.Fatalf("detectBaseBranch on branch = %q, want %q", got, "main")
+	}
+}
+
+func TestDetectBaseBranch_DetachedHead(t *testing.T) {
+	dir := t.TempDir()
+	gitInitAt(t, dir)
+	sha := gitAt(t, dir, "rev-parse", "HEAD")
+	// Detach HEAD at the current commit (mimics a pinned submodule checkout).
+	gitAt(t, dir, "checkout", "-q", "--detach", sha)
+
+	if got := detectBaseBranch(dir); got != sha {
+		t.Fatalf("detectBaseBranch detached = %q, want commit SHA %q", got, sha)
+	}
+}
+
+func TestDetectBaseBranch_NonGitDirReturnsEmpty(t *testing.T) {
+	dir := t.TempDir()
+	if got := detectBaseBranch(dir); got != "" {
+		t.Fatalf("detectBaseBranch on non-git dir = %q, want empty", got)
+	}
+}
+
+func TestGenerateConfig_DetachedHeadSetsBaseBranchToSHA(t *testing.T) {
+	dir := t.TempDir()
+	gitInitAt(t, dir)
+	sha := gitAt(t, dir, "rev-parse", "HEAD")
+	gitAt(t, dir, "checkout", "-q", "--detach", sha)
+
+	cfg, err := generateConfig(dir, "proj")
+	if err != nil {
+		t.Fatalf("generateConfig: %v", err)
+	}
+	if cfg.Worktree.BaseBranch != sha {
+		t.Fatalf("generateConfig BaseBranch = %q, want detached SHA %q", cfg.Worktree.BaseBranch, sha)
+	}
+}

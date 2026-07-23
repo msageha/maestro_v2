@@ -58,9 +58,34 @@ func TestPrecheckGitRepo_MissingBaseBranch(t *testing.T) {
 	gitRun(t, dir, "checkout", "-q", "-b", "develop")
 	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
 	err := precheckGitRepo(dir, "main")
-	if err == nil || !strings.Contains(err.Error(), `does not exist`) {
-		t.Fatalf("expected missing-branch error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `does not resolve to a commit`) {
+		t.Fatalf("expected missing-ref error, got %v", err)
 	}
+}
+
+func TestPrecheckGitRepo_DetachedHeadSHAAccepted(t *testing.T) {
+	// A detached-HEAD base (commit SHA, as maestro setup writes for a pinned
+	// submodule) must pass precheck even though no branch of that name exists.
+	dir := t.TempDir()
+	gitInit(t, dir)
+	gitRun(t, dir, "checkout", "-q", "-b", "main")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
+	sha := gitOutput(t, dir, "rev-parse", "HEAD")
+	gitRun(t, dir, "checkout", "-q", "--detach", sha)
+	if err := precheckGitRepo(dir, sha); err != nil {
+		t.Fatalf("expected detached-HEAD SHA base to pass precheck, got %v", err)
+	}
+}
+
+func gitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v: %s", args, err, out)
+	}
+	return strings.TrimSpace(string(out))
 }
 
 func TestPrecheckGitRepo_OK(t *testing.T) {

@@ -32,17 +32,23 @@ func precheckGitRepo(projectRoot, baseBranch string) error {
 		return fmt.Errorf("not a git repository: %s\n  hint: run `git init` and create at least one commit on %q before `maestro up`", projectRoot, baseBranch)
 	}
 
-	// 2. Base branch exists and points to a real commit?
-	cmd = exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+baseBranch) //nolint:gosec // baseBranch is validated before use
+	// 2. Base ref resolves to a real commit? Accept either a branch or any
+	//    committish (commit SHA / tag), so a detached-HEAD base — which
+	//    `maestro setup` writes as the commit SHA when the project root is on a
+	//    detached HEAD, e.g. a git submodule pinned to a commit — is valid.
+	//    `<ref>^{commit}` resolves a branch, SHA, or tag to a commit and fails
+	//    only when nothing matches. baseBranch is validated above; the appended
+	//    `^{commit}` peel suffix is a code literal, not passed through a shell.
+	cmd = exec.Command("git", "rev-parse", "--verify", "--quiet", baseBranch+"^{commit}") //nolint:gosec // baseBranch is validated before use
 	cmd.Dir = projectRoot
 	if err := cmd.Run(); err != nil {
-		// Distinguish "no commits yet" (HEAD unborn) from "branch missing".
+		// Distinguish "no commits yet" (HEAD unborn) from "ref missing".
 		head := exec.Command("git", "rev-parse", "--verify", "--quiet", "HEAD")
 		head.Dir = projectRoot
 		if headErr := head.Run(); headErr != nil {
-			return fmt.Errorf("base branch %q has no commits yet (repository is empty)\n  hint: create an initial commit, e.g. `git commit --allow-empty -m init`", baseBranch)
+			return fmt.Errorf("base ref %q has no commits yet (repository is empty)\n  hint: create an initial commit, e.g. `git commit --allow-empty -m init`", baseBranch)
 		}
-		return fmt.Errorf("base branch %q does not exist in %s\n  hint: create it (e.g. `git branch %s`) or set worktree.base_branch in .maestro/config.yaml to an existing branch", baseBranch, projectRoot, baseBranch)
+		return fmt.Errorf("base ref %q does not resolve to a commit in %s\n  hint: set worktree.base_branch in .maestro/config.yaml to an existing branch or commit SHA (maestro setup fills this from the current HEAD automatically)", baseBranch, projectRoot)
 	}
 	return nil
 }

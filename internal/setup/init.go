@@ -345,7 +345,46 @@ func generateConfig(projectDir, projectName string) (*model.Config, error) {
 	cfg.Maestro.ProjectRoot = projectDir
 	cfg.Maestro.Created = time.Now().Format(time.RFC3339)
 
+	// Default the worktree base to whatever projectDir currently has checked
+	// out, so the diagnosis/build runs against the actual HEAD instead of the
+	// template's hardcoded "main". On a branch this is the branch name; on a
+	// detached HEAD (common for a git submodule pinned to a commit) it is the
+	// exact commit SHA. When projectDir is not a git working tree the template
+	// default ("main") is kept.
+	if base := detectBaseBranch(projectDir); base != "" {
+		cfg.Worktree.BaseBranch = base
+	}
+
 	return &cfg, nil
+}
+
+// detectBaseBranch resolves the git ref a freshly set-up project's worktree
+// base should track: the branch currently checked out in projectDir, or — when
+// projectDir is on a detached HEAD — the current HEAD commit SHA. Returns ""
+// when projectDir is not a git working tree or git is unavailable, so the
+// caller keeps the template default.
+func detectBaseBranch(projectDir string) string {
+	// On a branch: `symbolic-ref --short HEAD` prints the short branch name.
+	if out, err := runGitOutput(projectDir, "symbolic-ref", "--quiet", "--short", "HEAD"); err == nil {
+		if branch := strings.TrimSpace(out); branch != "" {
+			return branch
+		}
+	}
+	// Detached HEAD (or no symbolic ref): pin to the exact commit SHA.
+	if out, err := runGitOutput(projectDir, "rev-parse", "HEAD"); err == nil {
+		if sha := strings.TrimSpace(out); sha != "" {
+			return sha
+		}
+	}
+	return ""
+}
+
+// runGitOutput runs `git -C dir <args...>` and returns stdout. stderr is
+// discarded: callers treat any failure as "cannot detect" and fall back.
+func runGitOutput(dir string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...) //nolint:gosec // args are internal literals, dir is the setup target
+	out, err := cmd.Output()
+	return string(out), err
 }
 
 // sanitizeProjectName converts a raw directory basename into a valid project
