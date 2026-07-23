@@ -1031,3 +1031,160 @@ func TestSleepWithBackoff_ContextCancelled(t *testing.T) {
 		t.Fatal("expected error for cancelled context")
 	}
 }
+
+// --- volatile-chrome normalization + geometry-independent confirmation ---
+
+func TestStripVolatileChrome(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   string
+		want string // normalizeStablePane output
+	}{
+		{
+			name: "strips context bar, mode footer, tip, token status; keeps substantive + activity marker",
+			in: "⏺ Bash(git ls-files)\n" +
+				"  found 2444 files\n" +
+				"✻ Coalescing… (48s · ↓ 12.7k tokens)\n" +
+				"────────────────────\n" +
+				"❯ \n" +
+				"[##------------------] 12% used · 88% remaining · Opus 4.8 (1M context) · /…\n" +
+				"⏸ manual mode on · ← for agents\n" +
+				"⎿ Tip: Use /btw to ask a quick side question\n",
+			want: "⏺ Bash(git ls-files)\n" +
+				"  found 2444 files\n" +
+				"────────────────────\n" +
+				"❯\n",
+		},
+		{
+			name: "explore subagent token lines are chrome",
+			in:   "◯ Explore  SS… 2m 26s · ↓ 67.9k tokens\n◯ Explore  Fi… 2m 13s · ↓ 69.5k tokens\nreal output line\n",
+			want: "real output line\n",
+		},
+		{
+			name: "cleared pane is substantively empty",
+			in:   "──────────\n❯ \n[#-------------------] 8% used · 92% remaining\n⏸ manual mode on · ← for agents\n",
+			want: "──────────\n❯\n",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeStablePane(tt.in); got != tt.want {
+				t.Fatalf("normalizeStablePane()=\n%q\nwant\n%q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsVolatileChromeLine(t *testing.T) {
+	t.Parallel()
+	chrome := []string{
+		"[##------------------] 12% used · 88% remaining · Opus 4.8 (1M context) · /…",
+		"⏸ manual mode on · ← for agents",
+		"⏵⏵ accept edits on",
+		"⎿ Tip: Use /btw to ask a quick side question",
+		"✻ Coalescing… (48s · ↓ 1.8k tokens · still thinking)",
+		"◯ Explore  UI… 1m 44s · ↓ 40.9k tokens",
+	}
+	for _, line := range chrome {
+		if !isVolatileChromeLine(line) {
+			t.Errorf("expected chrome: %q", line)
+		}
+	}
+	substantive := []string{
+		"⏺ Bash(git ls-files)",
+		"⏺ main",
+		"found a SQL injection at server/api.ts:42",
+		"❯ /clear",
+		"## 1. Findings",
+	}
+	for _, line := range substantive {
+		if isVolatileChromeLine(line) {
+			t.Errorf("expected substantive (not chrome): %q", line)
+		}
+	}
+}
+
+// A pane whose only per-poll change is volatile chrome (context bar / tip /
+// token counter) must still confirm /clear: the normalized stability check
+// sees an unchanging substantive region. This is the small-pane regression the
+// fix targets.
+func TestClearConfirmationPoller_VolatileChromeStaysStable(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	n := 0
+	mock.CapturePaneJoinedFn = func(_ string, _ int) (string, error) {
+		n++
+		// Substantive region is constant ("❯"); only the token counter and
+		// context bar (both chrome) change between polls.
+		return fmt.Sprintf(
+			"❯ \n[##------------------] %d%% used · remaining\n✻ idle (%ds · ↓ %d.1k tokens)\n⏸ manual mode on · ← for agents\n",
+			10+n, n, n), nil
+	}
+	// preClearHash differs from the cleared substantive region → hashChanged.
+	p := newClearConfirmationPoller(
+		mock, "%0", "pre-clear-hash-different", true, 12,
+		log.New(&bytes.Buffer{}, "", 0), logLevelDebug,
+	)
+	c1, err := p.poll()
+	if err != nil {
+		t.Fatalf("poll 1: %v", err)
+	}
+	if c1 {
+		t.Fatal("poll 1 should not confirm yet (only 1 stable sample)")
+	}
+	c2, err := p.poll()
+	if err != nil {
+		t.Fatalf("poll 2: %v", err)
+	}
+	if !c2 {
+		t.Fatal("poll 2 should confirm: substantive region stable across polls despite changing chrome")
+	}
+}
+
+func TestClearConfirmationPoller_IsConfirmed_SubstantiveEmpty(t *testing.T) {
+	t.Parallel()
+	// Pre-clear capture was itself mostly chrome so the normalized hash does
+	// not change, but the pane is substantively empty and stable → confirmed.
+	p := &clearConfirmationPoller{
+		preClearHashValid: true,
+		hashChanged:       false,
+		substantiveEmpty:  true,
+		stableCount:       2,
+	}
+	if !p.isConfirmed() {
+		t.Fatal("expected confirmed: substantive-empty + 2 stable polls")
+	}
+}
+
+func TestSubmitProbeAttemptsForPane(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		model string
+		err   error
+		want  int
+	}{
+		{"opus 1m", "claude-opus-4-8[1m]", nil, maxSubmitProbeAttemptsLargeCtx},
+		{"sonnet 1m", "claude-sonnet-5[1m]", nil, maxSubmitProbeAttemptsLargeCtx},
+		{"sonnet no 1m", "claude-sonnet-5", nil, maxSubmitProbeAttempts},
+		{"opus plain", "claude-opus-4-8", nil, maxSubmitProbeAttemptsLargeCtx},
+		{"read error", "", fmt.Errorf("no var"), maxSubmitProbeAttempts},
+		{"empty", "", nil, maxSubmitProbeAttempts},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := newMockPaneIO()
+			mock.GetUserVarFn = func(_, name string) (string, error) {
+				if name != "model" {
+					return "", nil
+				}
+				return tt.model, tt.err
+			}
+			d := newTestDeliverer(mock)
+			if got := d.submitProbeAttemptsForPane("%0"); got != tt.want {
+				t.Fatalf("submitProbeAttemptsForPane()=%d, want %d", got, tt.want)
+			}
+		})
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -50,11 +51,22 @@ const (
 	// of pane content after sending Enter, giving Claude Code time to
 	// reflect submission.
 	submitRetryProbeDelay = 750 * time.Millisecond
-	// maxSubmitProbeAttempts caps the probe retry loop to keep delivery
-	// latency bounded even when the pane is genuinely stuck. Tuned to
-	// `8 * submitRetryProbeDelay = 6s` — long enough for slow paste flows
-	// without blocking the dispatcher when the worker is wedged.
+	// maxSubmitProbeAttempts is the BASE cap on the probe retry loop, keeping
+	// delivery latency bounded even when the pane is genuinely stuck. Tuned to
+	// `8 * submitRetryProbeDelay = 6s` — long enough for slow paste flows on a
+	// small-context model without blocking the dispatcher when the worker is
+	// wedged. The probe early-exits the instant a confirm signal appears, so
+	// this cap only bites when nothing is observed at all.
 	maxSubmitProbeAttempts = 8
+	// maxSubmitProbeAttemptsLargeCtx widens the window for large-context /
+	// slow-starting models (1M-context or Opus). First-token latency after a
+	// large task prompt scales with context window and model size, and in
+	// managed / high-latency environments a 1M Opus pane can take longer than
+	// the base 6s window to render its first activity marker. That surfaced as
+	// a false "submit uncertain" exhaustion even though delivery succeeded.
+	// `20 * 750ms = 15s`. Early-exit on any confirm signal means the wider cap
+	// costs nothing on the common fast path. See submitProbeAttemptsForPane.
+	maxSubmitProbeAttemptsLargeCtx = 20
 	// pastedTextPlaceholder is the marker Claude Code shows in lieu of the
 	// actual pasted content while it waits for an explicit submit.
 	pastedTextPlaceholder = "Pasted text #"
@@ -250,7 +262,7 @@ func (d *messageDeliverer) captureSubmitProbeBaseline(paneTarget string, req Exe
 			req.AgentID, req.TaskID, err)
 		return submitProbeBaseline{}
 	}
-	normalized := normalizeProbeSnapshot(content)
+	normalized := normalizeStablePane(content)
 	return submitProbeBaseline{
 		Hash:  contentHash(normalized),
 		Lines: countNonBlankLines(normalized),
@@ -317,7 +329,8 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 	// family) or failed (logged at debug); fall back to the historical
 	// post-paste baseline path so behaviour is unchanged in those cases.
 	haveChangeBaseline := prePaste.Hash != ""
-	for attempt := 1; attempt <= maxSubmitProbeAttempts; attempt++ {
+	maxAttempts := d.submitProbeAttemptsForPane(paneTarget)
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		if err := sleepCtx(ctx, submitRetryProbeDelay); err != nil {
 			return submitProbeResult{Status: submitProbeExhausted, Attempts: attempt - 1}, fmt.Errorf("wait for submit probe: %w", err)
 		}
@@ -341,7 +354,7 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 		// into history cannot false-positive a retry.
 		if pastedTextPlaceholderAtPrompt(content) {
 			d.log(logLevelWarn, "submit_confirm pasted_text_still_at_prompt agent_id=%s task_id=%s attempt=%d/%d",
-				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
+				req.AgentID, req.TaskID, attempt, maxAttempts)
 			if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
 				return submitProbeResult{Status: submitProbeRetried, Attempts: attempt}, fmt.Errorf("send retry enter: %w", err)
 			}
@@ -364,7 +377,7 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 		// miss a banner that has scrolled up by the time this probe samples).
 		if agentAPIErrorVisible(content) {
 			d.log(logLevelWarn, "submit_confirm agent_api_error agent_id=%s task_id=%s attempt=%d/%d",
-				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
+				req.AgentID, req.TaskID, attempt, maxAttempts)
 			return submitProbeResult{Status: submitProbeAgentError, Attempts: attempt}, nil
 		}
 		// No unsubmitted placeholder at the prompt: a visible activity marker
@@ -377,7 +390,7 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 			}
 			return submitProbeResult{Status: status, Attempts: attempt}, nil
 		}
-		normalized := normalizeProbeSnapshot(content)
+		normalized := normalizeStablePane(content)
 		normalizedHash := contentHash(normalized)
 		nonBlankLines := countNonBlankLines(normalized)
 		if !haveChangeBaseline {
@@ -408,8 +421,8 @@ func (d *messageDeliverer) confirmClaudeSubmittedOrRetry(ctx context.Context, pa
 	d.log(logLevelInfo,
 		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d "+
 			"(no marker captured within probe window; non-retryable to avoid double-submit, lease recovery will retry if the worker is genuinely stuck)",
-		req.AgentID, req.TaskID, maxSubmitProbeAttempts)
-	return submitProbeResult{Status: submitProbeExhausted, Attempts: maxSubmitProbeAttempts}, nil
+		req.AgentID, req.TaskID, maxAttempts)
+	return submitProbeResult{Status: submitProbeExhausted, Attempts: maxAttempts}, nil
 }
 
 // normalizeProbeSnapshot collapses transient differences in a tmux capture so
@@ -457,6 +470,96 @@ func countNonBlankLines(s string) int {
 		}
 	}
 	return n
+}
+
+// volatileChromeMatchers match Claude Code TUI status/footer/hint lines that
+// redraw independently of conversation progress: the context-usage bar, the
+// permission-mode footer, rotating "Tip:" hints, and the spinner + elapsed /
+// token-count status line. In the small worker panes (~40x11 when a formation
+// splits one tmux window across four workers) the confirmation capture window
+// (PromptReadyLines) is essentially the whole pane, so these volatile lines
+// dominate the raw hash and defeat both heuristics: the /clear stability check
+// never sees two identical consecutive polls, and the submit content-growth
+// fallback finds the non-blank line count saturated by chrome. Stripping them
+// before hashing makes both checks depend only on substantive content and thus
+// independent of pane geometry and status-bar animation.
+//
+// Deliberately does NOT match tool-output lines (e.g. "⏺ Bash(...)"): those are
+// substantive and are also the submit probe's primary activity signal.
+var volatileChromeMatchers = []*regexp.Regexp{
+	// Context / token usage bar: "[####----] 12% used · 88% remaining · Opus 4.8 (1M context) · /…"
+	regexp.MustCompile(`\d+%\s+used\b`),
+	// Progress-bar-only line: "[####----------------]".
+	regexp.MustCompile(`^\[[#\s.\-]+\]$`),
+	// Permission-mode footer: "⏸ manual mode on · ← for agents", "⏵⏵ accept edits on …".
+	regexp.MustCompile(`(?i)(manual mode on|accept edits on|plan mode on|bypass permissions on|←\s*for agents)`),
+	// Rotating hint: "Tip: …" (optionally prefixed by box-drawing "⎿"/"└"/"│").
+	regexp.MustCompile(`^[⎿└│>\s]*Tip:`),
+	// Spinner + elapsed/token status: "✻ Coalescing… (48s · ↓ 1.8k tokens …)",
+	//   "◯ Explore  SS… 2m 26s · ↓ 67.9k tokens".
+	regexp.MustCompile(`↓\s*[\d.]+k?\s*tokens`),
+	// "(… · esc to interrupt)" progress hint.
+	regexp.MustCompile(`\besc to interrupt\b`),
+}
+
+// isVolatileChromeLine reports whether a (already ANSI-stripped, trimmed) line
+// is Claude Code TUI chrome that redraws independently of real progress.
+func isVolatileChromeLine(line string) bool {
+	t := strings.TrimSpace(line)
+	if t == "" {
+		return false
+	}
+	for _, re := range volatileChromeMatchers {
+		if re.MatchString(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// stripVolatileChrome removes volatile TUI chrome lines from a normalized pane
+// snapshot so a confirmation hash reflects only substantive content.
+func stripVolatileChrome(normalized string) string {
+	if normalized == "" {
+		return ""
+	}
+	// TrimRight avoids a spurious empty trailing element from the final "\n"
+	// that normalizeProbeSnapshot appends, matching its output shape.
+	var b strings.Builder
+	b.Grow(len(normalized))
+	for _, line := range strings.Split(strings.TrimRight(normalized, "\n"), "\n") {
+		if isVolatileChromeLine(line) {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// normalizeStablePane produces a confirmation-stable view of a pane capture:
+// normalizeProbeSnapshot (ANSI strip + right-trim + blank collapse) followed by
+// stripVolatileChrome. Two captures taken while nothing substantive changes
+// hash-equal even in a tiny, animated pane, which is the precondition both the
+// /clear stability check and the submit content-growth fallback rely on.
+func normalizeStablePane(content string) string {
+	return stripVolatileChrome(normalizeProbeSnapshot(content))
+}
+
+// submitProbeAttemptsForPane returns the submit-probe attempt cap for a pane,
+// widening it for large-context / slow-starting models (see
+// maxSubmitProbeAttemptsLargeCtx). The @model pane variable is read best-effort;
+// any read failure falls back to the base cap, preserving historical behaviour.
+func (d *messageDeliverer) submitProbeAttemptsForPane(paneTarget string) int {
+	m, err := d.paneIO.GetUserVar(paneTarget, "model")
+	if err != nil || m == "" {
+		return maxSubmitProbeAttempts
+	}
+	lm := strings.ToLower(m)
+	if strings.Contains(lm, "[1m]") || strings.Contains(lm, "opus") {
+		return maxSubmitProbeAttemptsLargeCtx
+	}
+	return maxSubmitProbeAttempts
 }
 
 // confirmGenericRuntimeProgress is the runtime-agnostic submit confirmation
@@ -647,7 +750,10 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 				hashDisabledWarned = true
 			}
 		}
-		preClearHash := contentHash(preClearContent)
+		// Hash the chrome-stripped view so the pre/post-clear comparison and the
+		// poller's stability check see only substantive content, not the
+		// context bar / mode footer / rotating tip that redraw on their own.
+		preClearHash := contentHash(normalizeStablePane(preClearContent))
 
 		// Send /clear once. SendCommand emits the literal "/clear" string and a
 		// single Enter to submit it. No additional Enter is sent — see the
@@ -761,6 +867,7 @@ type clearConfirmationPoller struct {
 	// internal state
 	stableCount              int
 	hashChanged              bool
+	substantiveEmpty         bool
 	prevPollHash             string
 	consecutiveCaptureErrors int
 }
@@ -817,7 +924,13 @@ func (p *clearConfirmationPoller) poll() (bool, error) {
 	}
 	p.consecutiveCaptureErrors = 0
 
-	currentHash := contentHash(content)
+	// Hash the chrome-stripped view so status-bar / footer / tip redraws in a
+	// tiny pane do not perturb the stability check. clearTextVisible still runs
+	// on the raw capture — the "/clear" text sits on the prompt line, which the
+	// normalizer keeps.
+	normalized := normalizeStablePane(content)
+	currentHash := contentHash(normalized)
+	p.substantiveEmpty = countNonBlankLines(normalized) == 0
 
 	// Check 1 (primary): "/clear" text must NOT be visible near the bottom of the pane.
 	if clearTextVisible(content) {
@@ -844,11 +957,15 @@ func (p *clearConfirmationPoller) poll() (bool, error) {
 }
 
 // isConfirmed evaluates whether the confirmation criteria are met.
-//   - With valid pre-clear hash: require hash change + 2 stable polls (debounce).
-//   - Without valid pre-clear hash: require 3 stable polls (stricter debounce as fallback).
+//   - With valid pre-clear hash: require (hash change OR a substantive-empty
+//     pane) + 2 stable polls (debounce). The substantive-empty branch handles
+//     the case where the pre-clear capture was itself mostly chrome so the
+//     normalized hash does not change, yet /clear plainly emptied the
+//     conversation region — the definition of a successful clear.
+//   - Without valid pre-clear hash: require 3 stable polls (stricter debounce).
 func (p *clearConfirmationPoller) isConfirmed() bool {
 	if p.preClearHashValid {
-		return p.hashChanged && p.stableCount >= 2
+		return (p.hashChanged || p.substantiveEmpty) && p.stableCount >= 2
 	}
 	return p.stableCount >= 3
 }
@@ -858,6 +975,7 @@ func (p *clearConfirmationPoller) reset() {
 	p.stableCount = 0
 	p.prevPollHash = ""
 	p.hashChanged = false
+	p.substantiveEmpty = false
 }
 
 func (p *clearConfirmationPoller) log(level logLevel, format string, args ...any) {
