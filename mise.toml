@@ -3,7 +3,7 @@ go = "1.26.5"
 golangci-lint = "2.12.2"
 prek = "0.4.8"
 actionlint = "1.7.12"
-dprint = "0.55.1"
+dprint = "0.55.2"
 
 [env]
 # `mise.local.toml` (git 管理外) を併置すると、ローカルだけの値で上書きできる。
