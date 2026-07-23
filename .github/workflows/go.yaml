@@ -1,4 +1,4 @@
-name: prek
+name: Go
 
 # ci.yaml から reusable workflow として呼び出される。
 # push / pull_request / workflow_dispatch のトリガーは ci.yaml 側が持つ。
@@ -18,7 +18,7 @@ permissions:
   actions: write
 
 jobs:
-  prek:
+  build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -34,11 +34,46 @@ jobs:
         with:
           cache: true
 
-      - name: Run prek
-        run: mise exec -- prek run --all-files
+      - name: Download dependencies
+        run: mise exec -- go mod download
+
+      - name: Build
+        run: mise exec -- go build ./...
+
+      - name: Vet
+        run: mise exec -- go vet ./...
+
+      - name: Test
+        run: mise exec -- go test ./...
+
+      - name: Test with race detector
+        run: mise exec -- go test -race ./...
 
       # fail-fast: run 全体をキャンセルして並列で走る他のチェックを止める。
       # run と各 job の conclusion は cancelled になるが、失敗した step は failure として記録に残る。
+      - name: Cancel the entire run on failure
+        if: failure() && inputs.fail-fast
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel "$GITHUB_RUN_ID" --repo "$GITHUB_REPOSITORY"
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install mise
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4.2.0
+        with:
+          cache: true
+
+      - name: golangci-lint
+        run: mise exec -- golangci-lint run ./...
+
       - name: Cancel the entire run on failure
         if: failure() && inputs.fail-fast
         env:
