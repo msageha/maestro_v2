@@ -24,5 +24,7 @@ repos:
       - id: dprint-fmt
         name: Format json/yaml/markdown/toml with dprint
         language: system
-        entry: dprint fmt
+        # --allow-no-files: 渡されたファイルがすべて dprint.json の excludes 対象のとき
+        # (例: mise.lock のみの commit) に exit 14 (No files found) で失敗しないようにする
+        entry: mise exec -- dprint fmt --allow-no-files
         types_or: [json, yaml, markdown, toml]

@@ -1,7 +1,9 @@
+# ツールのバージョンは Renovate (mise manager) が bump する。latest 指定にしない。
+# checksum の再解決は mise-lock.yaml (週次) が行う。
 [tools]
 go = "1.26.5"
 golangci-lint = "2.12.2"
-prek = "0.4.8"
+prek = "0.4.9"
 actionlint = "1.7.12"
 dprint = "0.55.2"
 
