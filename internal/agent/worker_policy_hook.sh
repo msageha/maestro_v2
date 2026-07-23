@@ -383,21 +383,17 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # 6. OS-sandbox rewrites. This runs LAST in the Bash branch so every
-  #    maestro deny rule above has already passed. Package-manager mutation
-  #    rewrites remain worker-only and gated on run_on_main=0 so read-only
-  #    verification tasks keep the sandbox as an extra mutation barrier.
-  #    Maestro CLI calls are different: `maestro result write` is how a
-  #    run_on_main Worker reports its result, and the UDS connect must happen
-  #    outside the sandbox on macOS and Linux. A command that already carries
-  #    dangerouslyDisableSandbox falls through to the plain allow — no rewrite
-  #    needed. Bare `yarn` (optionally with flags only, e.g.
-  #    `yarn --frozen-lockfile`) is yarn-classic's install spelling and is
-  #    matched separately. Maestro unsandboxing exists so the UDS connect()
-  #    works on all OSes; a command with shell expansion is either not a plain
-  #    maestro call or is a potential denyRead bypass, so it stays sandboxed.
-  #    On this machine allowAllUnixSockets lets even the sandboxed connect
-  #    succeed; the rare portability cost is accepted to preserve the
-  #    secret-read barrier.
+  #    maestro deny rule above has already passed. Only package-manager
+  #    mutation rewrites remain: they are worker-only and gated on
+  #    run_on_main=0 so read-only verification tasks keep the sandbox as an
+  #    extra mutation barrier. The OS sandbox denies **/.vscode/** writes
+  #    during dependency extraction, so installs must run unsandboxed. Bare
+  #    `yarn` (optionally with flags only, e.g. `yarn --frozen-lockfile`) is
+  #    yarn-classic's install spelling and is matched separately.
+  #    Maestro CLI calls are NO LONGER unsandboxed (see below): Maestro injects
+  #    sandbox.network.allowAllUnixSockets, so the UDS connect() succeeds from
+  #    inside the sandbox on every OS, and staying sandboxed avoids the
+  #    managed-mode unsandboxed-approval wedge (disableBypassPermissionsMode).
   _already_unsandboxed="$(echo "$input" | jq -r '.tool_input.dangerouslyDisableSandbox // false')"
   if [ "$_already_unsandboxed" != "true" ]; then
     # The rewrite disables the OS sandbox for the ENTIRE Bash argv, so it
@@ -419,15 +415,17 @@ if [ "$tool_name" = "Bash" ]; then
         allow_unsandboxed "maestro worker policy: package-manager command runs unsandboxed (the OS sandbox blocks **/.vscode/** writes during dependency extraction; installs are worktree-scoped)"
       fi
     fi
-    _maestro_has_shell_expansion="0"
-    if echo "$cmd" | grep -qE '(\$\(|`|<\(|>\()' || \
-       echo "$cmd" | grep -qE '(^|[;|&(])[[:space:]]*eval([[:space:]]|$)' || \
-       echo "$cmd" | grep -qE '(^|[;|&(])[[:space:]]*(/[A-Za-z0-9_./-]+/)?(sh|bash)[[:space:]]+(-[A-Za-z]*[[:space:]]+)*-c([[:space:]]|$)'; then
-      _maestro_has_shell_expansion="1"
-    fi
-    if [ "$_cmd_is_compound" = "0" ] && [ "$_maestro_has_shell_expansion" = "0" ] && echo "$cmd" | grep -qE "${maestro_cmd_prefix}([[:space:]]|$)"; then
-      allow_unsandboxed "maestro $role policy: maestro CLI command runs unsandboxed so its Unix-domain-socket daemon connection is outside Claude Code's OS sandbox"
-    fi
+    # Maestro CLI calls are intentionally NOT unsandboxed. Maestro injects
+    # sandbox.network.allowAllUnixSockets=true (see PolicyChecker.HookSettings),
+    # so the daemon UDS connect() succeeds from inside the OS sandbox on every
+    # machine. Forcing dangerouslyDisableSandbox here used to wedge
+    # managed/enterprise panes: when remote settings set
+    # permissions.disableBypassPermissionsMode=disable,
+    # --dangerously-skip-permissions downgrades to default mode and the
+    # unsandboxed rewrite surfaces an approval prompt that no hook `allow` can
+    # short-circuit. Falling through to the end-of-script plain `allow` keeps
+    # maestro CLI calls sandboxed and promptless while preserving the filesystem
+    # denyRead secret barrier for the same command.
   fi
 fi
 
