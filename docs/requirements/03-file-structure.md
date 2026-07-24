@@ -61,6 +61,16 @@ maestro/
     └── requirements/                  # 本要件定義書一式（abstract / 01-11 / REQUIREMENTS.md）
 ```
 
+## タスク証跡ディレクトリ（`audit/evidence/` — 対象プロジェクトスコープ）
+
+Worker の self-verify 観測証跡（`evidence-bound-verification` skill）の規約パス。`.maestro/` 配下ではなく、**対象プロジェクト直下の `audit/evidence/<task_id>.md`** に置く。
+
+- **経路**: Worker が自分の worktree 内に書く → daemon が verbatim commit（`git add -A`）→ integration merge → publish、と**タスク成果物と同じ経路で main に耐久化**される。`.maestro/` 配下は Worker から書き込み不可（制御プレーン）かつ gitignore されるため置き場所にならない
+- **gate ではない**: daemon は証跡ファイルの存在を検査しない。daemon が実機実行する唯一の Strong Signal は verify.yaml（[§4](04-yaml-schema.md) / [§5.16](05-script-responsibilities.md)）であり、証跡は `verify.enabled: false`（通常運用モード）の self-verify を監査可能にする prose 規律である。result entry の `--summary`（`証跡: audit/evidence/<task_id>.md`）と `--files-changed` から辿る
+- **例外**: `run_on_main` タスク（Write/Edit 拒否）と `run_on_integration` タスク（integration worktree は merge 前に `reset --hard` + `clean -fd` で auto-clean され生成物が残らない）は証跡ファイルを作らず、観測を result summary に inline 記載する
+- **gitignore との関係**: daemon の auto_commit は gitignore を尊重する。対象プロジェクトが `audit/` を ignore していると証跡は commit されないため、Worker は書き込み前に `git check-ignore` で確認し、ignored なら summary inline に切り替える（本リポジトリはホワイトリスト方式の `.gitignore` で `!/audit/**` により追跡対象）
+- **保持/サイズ**: 1 タスク 1 ファイル、目安 100 行 / 8 KiB 以内（コマンド原文と exit code は省略禁止、出力は判定に効く行のみ抜粋）。保持の正本は git 履歴であり、working tree 上の蓄積は操作員が定期 prune してよい（削除しても履歴から辿れる）
+
 ## プロジェクト初期化後の .maestro/ 構造
 
 ```

@@ -526,6 +526,13 @@ EOF
 - 検証コマンドの内容は Planner がタスク配信時に `content` / `constraints` に含める
 - Worker が config を直接参照する必要はない
 
+### 検証の耐久証跡（`evidence-bound-verification` skill 注入時）
+
+タスクの `skill_refs` に `evidence-bound-verification` が注入されている場合、self-verify の観測（実行したコマンド原文 + exit code + 判定に効く出力行 + before/after）を `working_dir` 相対の `audit/evidence/<task_id>.md` に保存し、`--files-changed` に含め、`--summary` の `[注意事項]` に `証跡: audit/evidence/<task_id>.md` の 1 行で参照する。適用範囲の tier・ファイル形式・サイズ/保持方針・gitignore 確認の手順は skill 本文に従う。
+
+- これは daemon の機械 gate ではない。daemon は証跡ファイルの存在を検査せず、verify.yaml（daemon が実機実行する唯一の Strong Signal）を置き換えるものでもない
+- `run_on_main: true` / `run_on_integration: true` のタスクでは証跡ファイルを作らず、観測を summary に直接記載する（run_on_main は Write/Edit が拒否され、integration worktree の生成物は merge 前の auto-clean で残らないため）
+
 ---
 
 ## Worktree 環境
