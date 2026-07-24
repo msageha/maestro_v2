@@ -57,6 +57,11 @@ type TaskInput struct {
 	// resolution tasks that must operate directly on the integration branch.
 	// Mutually exclusive with RunOnMain.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty"`
+
+	// ResumeHint optionally overrides the resume-eligibility policy for this
+	// task ("allow" / "deny" / empty = default). See model.Task.ResumeHint
+	// for the policy semantics (issue #55).
+	ResumeHint string `yaml:"resume_hint,omitempty"`
 }
 
 // PhaseInput represents a phase definition containing grouped tasks with ordering constraints.

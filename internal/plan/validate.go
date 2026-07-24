@@ -441,6 +441,8 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 
 	validateOperationType(task.OperationType, fieldPrefix+".operation_type", errs)
 
+	validateResumeHint(task.ResumeHint, fieldPrefix+".resume_hint", errs)
+
 	// run_on_main and run_on_integration are mutually exclusive since the
 	// dispatcher selects exactly one target directory per task.
 	if task.RunOnMain && task.RunOnIntegration {
@@ -557,6 +559,16 @@ func validateOperationType(op string, fieldPath string, errs *ValidationErrors) 
 	default:
 		errs.Add(fieldPath, fmt.Sprintf("must be one of %q, %q, got %q",
 			model.OperationTypeVerify, model.OperationTypeRepair, op))
+	}
+}
+
+func validateResumeHint(hint string, fieldPath string, errs *ValidationErrors) {
+	switch hint {
+	case "", model.ResumeHintAllow, model.ResumeHintDeny:
+		return
+	default:
+		errs.Add(fieldPath, fmt.Sprintf("must be one of %q, %q, got %q",
+			model.ResumeHintAllow, model.ResumeHintDeny, hint))
 	}
 }
 

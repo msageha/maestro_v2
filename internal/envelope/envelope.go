@@ -344,6 +344,31 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
 		workerID, taskID, commandID, leaseEpoch)
+	sb.WriteString("失敗時: --status failed には --exit-code <プロセス終了コード。無ければ 1> が必須\n")
+	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
+	return sb.String()
+}
+
+// BuildWorkerResumeEnvelope creates the short continuation nudge delivered to
+// a Worker pane whose previous turn was interrupted mid-stream (issue #55).
+// Unlike BuildWorkerEnvelope it carries no task body — the pane still holds
+// the full task context from the original dispatch — only the instruction to
+// continue plus the result-write protocol line. The lease_epoch here is the
+// NEW epoch acquired for the resume dispatch: the worker's eventual
+// `maestro result write` must carry it to pass fencing (a nudge echoing the
+// interrupted epoch would be rejected with FENCING_REJECT).
+func BuildWorkerResumeEnvelope(task model.Task, workerID string, leaseEpoch, attempt int) string {
+	var sb strings.Builder
+	taskID := headerSafeID(task.ID)
+	commandID := headerSafeID(task.CommandID)
+	fmt.Fprintf(&sb, "[maestro] resume task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
+		taskID, commandID, leaseEpoch, attempt)
+	sb.WriteString("\n")
+	sb.WriteString("前回の turn が途中で中断されました。このセッションに残っている同じタスクの文脈と、途中まで作成した成果物があればそれを活かして、作業の続きを完了してください。\n")
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
+		workerID, taskID, commandID, leaseEpoch)
+	sb.WriteString("失敗時: --status failed には --exit-code <プロセス終了コード。無ければ 1> が必須\n")
 	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
 	return sb.String()
 }

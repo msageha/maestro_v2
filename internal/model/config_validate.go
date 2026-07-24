@@ -158,6 +158,12 @@ func (c Config) validateRetry(errs *[]error) {
 	if c.Retry.TaskExecution.CooldownSec < 0 {
 		*errs = append(*errs, fmt.Errorf("retry.task_execution.cooldown_sec: must be >= 0"))
 	}
+	if c.Retry.TaskProgressInterrupts != nil && *c.Retry.TaskProgressInterrupts < 0 {
+		*errs = append(*errs, fmt.Errorf("retry.task_progress_interrupts: must be >= 0"))
+	}
+	if c.Retry.TaskResume != nil && *c.Retry.TaskResume < 0 {
+		*errs = append(*errs, fmt.Errorf("retry.task_resume: must be >= 0"))
+	}
 }
 
 func (c Config) validateLimits(errs *[]error) {

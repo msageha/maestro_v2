@@ -88,7 +88,7 @@ type QueueDispatcherConfigurer interface {
 // QueueDispatcherOperator defines runtime dispatch and sorting operations.
 type QueueDispatcherOperator interface {
 	DispatchCommand(ctx context.Context, cmd *model.Command) error
-	DispatchTask(ctx context.Context, task *model.Task, workerID string) error
+	DispatchTask(ctx context.Context, task *model.Task, workerID string, resume bool) error
 	DispatchNotification(ntf *model.Notification) error
 	SortPendingCommands(commands []model.Command) []int
 	SortPendingTasks(tasks []model.Task) []int

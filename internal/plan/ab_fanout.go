@@ -224,6 +224,13 @@ func createABCandidate(opts SubmitOptions, sm *StateManager, tr SubmitTaskResult
 	shadow.LeaseExpiresAt = nil
 	shadow.LeaseEpoch = 0
 	shadow.InProgressAt = nil
+	// Progress-interrupt / resume ledgers are per-task-instance runtime
+	// state (see CreateRetryTask); the shadow starts a fresh lease history.
+	shadow.LastProgressEpoch = 0
+	shadow.AttemptsChargedEpoch = 0
+	shadow.ProgressInterrupts = 0
+	shadow.ResumeAttempts = 0
+	shadow.ResumeRequested = false
 	shadow.CreatedAt = now
 	shadow.UpdatedAt = now
 	shadowTQ.Tasks = append(shadowTQ.Tasks, shadow)

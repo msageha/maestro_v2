@@ -245,6 +245,19 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, _ string, e
 	retryTask.LeaseExpiresAt = nil
 	retryTask.LeaseEpoch = 0
 	retryTask.InProgressAt = nil // Reset so new dispatch sets fresh timestamp
+	// Progress-interrupt / resume ledgers are per-task-instance runtime
+	// state and must never carry into a clone: the clone restarts at
+	// LeaseEpoch 0, so an inherited LastProgressEpoch==1 would classify the
+	// clone's FIRST epoch as "had progress" even when it wedges without
+	// output, and inherited budgets/markers would start the clone
+	// pre-exhausted or trigger a bogus resume of the predecessor's pane
+	// conversation. ResumeHint is intentionally kept — it is policy, not
+	// runtime state.
+	retryTask.LastProgressEpoch = 0
+	retryTask.AttemptsChargedEpoch = 0
+	retryTask.ProgressInterrupts = 0
+	retryTask.ResumeAttempts = 0
+	retryTask.ResumeRequested = false
 	retryTask.OperationType = model.OperationTypeRepair
 	// A/B candidacy is per-race and never inherited: a tagged retry would be
 	// routed to an orphan candidate worktree (no group membership → nobody

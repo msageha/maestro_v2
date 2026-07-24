@@ -174,7 +174,7 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 				err = fmt.Errorf("dispatch blocked: command %s cancel-requested", item.Task.CommandID)
 			} else {
 				qh.classifyAndLogTask(item.Task, item.WorkerID)
-				err = qh.dispatcher.DispatchTask(ctx, item.Task, item.WorkerID)
+				err = qh.dispatcher.DispatchTask(ctx, item.Task, item.WorkerID, item.Resume)
 			}
 		case "notification":
 			err = qh.dispatcher.DispatchNotification(item.Notification)

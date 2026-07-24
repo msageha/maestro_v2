@@ -42,6 +42,16 @@ type ExecRequest struct {
 	// hook can deny Write/Edit operations — main branch is read-only for
 	// Workers in this mode (Worker safety).
 	RunOnMain bool
+	// ResumeMessage, when non-empty on a ModeWithClear request, asks the
+	// executor to attempt an in-place continuation: if the target pane still
+	// holds the same agent process and the same task's conversation
+	// (clear_ready set, pane PID unchanged, agent process alive,
+	// @last_task_id == TaskID, cwd match), this short nudge is delivered
+	// WITHOUT /clear so the worker keeps its accumulated context after a
+	// mid-stream turn interruption (issue #55). When any session-identity
+	// check fails, the executor falls back to the normal /clear + Message
+	// full delivery (fail-safe).
+	ResumeMessage string
 }
 
 // ExecResult contains the outcome of an execution attempt.

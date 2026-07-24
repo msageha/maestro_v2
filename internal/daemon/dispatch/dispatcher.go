@@ -307,7 +307,13 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 }
 
 // DispatchTask dispatches a task to a worker agent.
-func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string) error {
+//
+// resume marks a continuation-nudge dispatch (issue #55): the task's previous
+// epoch was hang-released after observed progress, so the executor is asked
+// to deliver a short resume message in place (no /clear) when the pane still
+// holds the same session; the full envelope is always built too and used as
+// the fallback when the session-identity preflight fails.
+func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string, resume bool) error {
 	// run_on_main pre-flight (defense-in-depth; the plan API enforces the
 	// same invariants at submit/inject time): the worker must run
 	// claude-code (only claude-code enforces the read-only main guard via
@@ -342,7 +348,7 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		return fmt.Errorf("build task envelope for %s: %w", task.ID, err)
 	}
 
-	workingDir, err := disp.resolveTaskWorkingDir(task, workerID)
+	workingDir, err := disp.resolveTaskWorkingDir(task, workerID, resume)
 	if err != nil {
 		return err
 	}
@@ -362,6 +368,16 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		Attempt:    task.Attempts,
 		WorkingDir: workingDir,
 		RunOnMain:  task.RunOnMain,
+	}
+	if resume {
+		// The nudge carries the NEW lease epoch so the worker's eventual
+		// `maestro result write` passes fencing. The full envelope above
+		// stays populated as the executor's fail-safe fallback.
+		req.ResumeMessage = envelope.BuildWorkerResumeEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+		disp.dl.Logf(core.LogLevelInfo,
+			"dispatch_task_resume_requested id=%s worker=%s epoch=%d resume_attempts=%d "+
+				"(continuation nudge; executor falls back to /clear full delivery if the pane session changed)",
+			task.ID, workerID, task.LeaseEpoch, task.ResumeAttempts)
 	}
 
 	maxRetries := disp.config.Retry.EffectiveTaskDispatchInlineRetries()
@@ -464,7 +480,13 @@ func (disp *Dispatcher) evaluateTaskQualityGate(task *model.Task, workerID strin
 // resolveTaskWorkingDir resolves the working directory for a task, creating
 // the worktree lazily if needed. Returns empty string when worktree mode is
 // not active. Returns the project root for RunOnMain tasks.
-func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string) (string, error) {
+//
+// resume skips the integration-HEAD refresh: a resume dispatch continues a
+// mid-stream-interrupted task on top of the worker's in-flight worktree
+// state, and the refresh's wave-crossing inline auto-commit would snapshot
+// half-finished work (and a fast-forward would move the tree under the
+// worker's feet) — the same rationale as the repair-task skip below.
+func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string, resume bool) (string, error) {
 	// RunOnMain tasks (e.g. final verification) must run against the merged
 	// state on the main branch, not inside a worker worktree.
 	// Return the project root explicitly — "" means "no change" in ensureWorkingDir
@@ -544,7 +566,7 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 	// state is the correct semantic — refresh would either lose those
 	// edits or abort the dispatch. Skip the refresh here; the repair
 	// inherits the dirty worktree by design.
-	if task.OperationType != model.OperationTypeRepair {
+	if task.OperationType != model.OperationTypeRepair && !resume {
 		// Fast-forward the worker worktree to integration HEAD before dispatching.
 		// A worker re-used across phases retains its branch tip from a prior merge:
 		// without this refresh, sibling-worker commits already on integration are

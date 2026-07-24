@@ -337,6 +337,15 @@ func r1BuildRetryTask(original *model.Task, retryTaskID string, clock core.Clock
 	retryTask.LastError = nil
 	retryTask.DeadLetteredAt = nil
 	retryTask.DeadLetterReason = nil
+	// Progress-interrupt / resume ledgers are per-task-instance runtime
+	// state; carrying them into a rebuilt task would mis-classify its first
+	// epoch as "had progress" (LeaseEpoch restarts at 0 → 1) and inherit
+	// exhausted budgets / stale resume markers. ResumeHint stays — policy.
+	retryTask.LastProgressEpoch = 0
+	retryTask.AttemptsChargedEpoch = 0
+	retryTask.ProgressInterrupts = 0
+	retryTask.ResumeAttempts = 0
+	retryTask.ResumeRequested = false
 	retryTask.ExecutionRetries = original.ExecutionRetries + 1
 	if original.OriginalTaskID != "" {
 		retryTask.OriginalTaskID = original.OriginalTaskID

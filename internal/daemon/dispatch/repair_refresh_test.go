@@ -55,7 +55,7 @@ func TestResolveTaskWorkingDir_SkipsRefreshForRepairTask(t *testing.T) {
 		OperationType: model.OperationTypeRepair,
 	}
 
-	wd, err := disp.resolveTaskWorkingDir(repairTask, "worker1")
+	wd, err := disp.resolveTaskWorkingDir(repairTask, "worker1", false)
 	if err != nil {
 		t.Fatalf("unexpected error for repair task: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestResolveTaskWorkingDir_RefreshesForNormalTask(t *testing.T) {
 		// OperationType intentionally empty (normal task).
 	}
 
-	if _, err := disp.resolveTaskWorkingDir(normalTask, "worker1"); err != nil {
+	if _, err := disp.resolveTaskWorkingDir(normalTask, "worker1", false); err != nil {
 		t.Fatalf("unexpected error for normal task: %v", err)
 	}
 	if resolver.refreshCalled != 1 {
@@ -109,7 +109,7 @@ func TestResolveTaskWorkingDir_RefreshesForVerifyTask(t *testing.T) {
 		OperationType: model.OperationTypeVerify,
 	}
 
-	if _, err := disp.resolveTaskWorkingDir(verifyTask, "worker1"); err != nil {
+	if _, err := disp.resolveTaskWorkingDir(verifyTask, "worker1", false); err != nil {
 		t.Fatalf("unexpected error for verify task: %v", err)
 	}
 	if resolver.refreshCalled != 1 {

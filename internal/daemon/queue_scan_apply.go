@@ -365,6 +365,18 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		// busy-check-driven release (in_progress → pending) afterwards
 		// and stamp a cooldown to break the immediate re-dispatch loop.
 		statusBefore := task.Status
+
+		// A confirmed-busy probe is progress evidence for this epoch, same
+		// as the pane-activity VerdictActive fast path: the worker was
+		// observably processing after dispatch. Record it (fenced on epoch
+		// so a stale Phase B result cannot stamp a newer lease) so a later
+		// mid-stream interruption at this epoch is classified as a
+		// progress-interrupt instead of a wedge (issue #54).
+		if bc.Busy && !bc.Undecided &&
+			statusBefore == model.StatusInProgress && bc.Item.Epoch == task.LeaseEpoch {
+			task.LastProgressEpoch = task.LeaseEpoch
+		}
+
 		qh.applyBusyCheckCore(bc, task.ID, task.Status, task.LeaseEpoch, task.LeaseExpiresAt, busyCheckOps{
 			kind:         "task",
 			ownerLabel:   fmt.Sprintf("worker=%s", bc.Item.AgentID),
@@ -377,20 +389,33 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		// Hang-release cooldown: when busy-check flips a task back to
 		// StatusPending, stamping NotBefore enforces a minimum quiet
 		// period before another scan can re-acquire, breaking the tight
-		// idle→release→re-dispatch→idle loop. Attempts is bumped so the
-		// dead-letter processor terminates the entry after
-		// retry.task_dispatch_attempts cycles.
+		// idle→release→re-dispatch→idle loop.
 		//
-		// hangAttemptCost is intentionally 1 (not >1): an over-eager
-		// amplifier was tested in 7th e2e (2026-05-03) and surfaced a
-		// false-positive risk for long-running LLM thinking tasks where
-		// the pane emits output infrequently — two such "quiet" windows
-		// would push attempts past max_attempts and dead-letter a task
-		// that is genuinely making progress. Keeping cost=1 means the
-		// dead-letter threshold is reached only after `task_dispatch`
-		// (default 5) consecutive hang releases, by which point the
-		// Worker really is wedged. The cooldown still breaks the tight
-		// loop, so the Worker pane gets a clean pause between attempts.
+		// Budget accounting splits on observed progress (issue #54):
+		//
+		//   - Progress-interrupt: the released epoch had observed progress
+		//     (lease_extend_pane_active or a confirmed-busy probe stamped
+		//     LastProgressEpoch). The worker was NOT wedged — the turn was
+		//     cut mid-stream (runtime/API instability) after real work. The
+		//     release costs 0 Attempts and is counted on the separate
+		//     ProgressInterrupts ledger, bounded by
+		//     retry.task_progress_interrupts; beyond that cap the legacy
+		//     accounting resumes so the task still terminates. When the task
+		//     is resume-eligible and resume budget remains, ResumeRequested
+		//     marks the next dispatch as a continuation nudge (issue #55).
+		//
+		//   - Wedge (no progress observed this epoch): Attempts is bumped so
+		//     the dead-letter processor terminates the entry after
+		//     retry.task_dispatch cycles. hangAttemptCost is intentionally 1
+		//     (not >1): an over-eager amplifier was tested in 7th e2e
+		//     (2026-05-03) and surfaced a false-positive risk for
+		//     long-running LLM thinking tasks where the pane emits output
+		//     infrequently — two such "quiet" windows would push attempts
+		//     past max_attempts and dead-letter a task that is genuinely
+		//     making progress. Keeping cost=1 means the dead-letter
+		//     threshold is reached only after `task_dispatch` (default 5)
+		//     consecutive hang releases, by which point the Worker really
+		//     is wedged.
 		if statusBefore == model.StatusInProgress && task.Status == model.StatusPending && !bc.Busy && !bc.Undecided {
 			const (
 				hangReleaseCooldown = 2 * time.Minute
@@ -398,11 +423,47 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			)
 			notBefore := qh.clock.Now().Add(hangReleaseCooldown).UTC().Format(time.RFC3339)
 			task.NotBefore = &notBefore
-			task.Attempts += hangAttemptCost
-			qh.log(LogLevelInfo,
-				"task_hang_release_cooldown task=%s worker=%s attempts=%d cost=%d not_before=%s "+
-					"(pane idle while in_progress; cooldown applied, dead-letter at attempts>=max_attempts)",
-				task.ID, bc.Item.AgentID, task.Attempts, hangAttemptCost, notBefore)
+
+			hadProgress := task.LastProgressEpoch == task.LeaseEpoch && task.LeaseEpoch > 0
+			maxProgressInterrupts := qh.config.Retry.EffectiveTaskProgressInterrupts()
+			if hadProgress && task.ProgressInterrupts < maxProgressInterrupts {
+				task.ProgressInterrupts++
+				// Refund the acquire-side Attempts charge for this epoch so a
+				// progress-interrupted epoch is fully budget-free. Without
+				// the refund, the acquire increment alone walks Attempts to
+				// max and the dead-letter processor — which runs BEFORE
+				// dispatch in Phase A and consults neither NotBefore nor
+				// ResumeRequested — archives the task before the resume (or
+				// the post-resume-failure /clear fallback) can run. Fenced on
+				// AttemptsChargedEpoch so an epoch acquired via the resume
+				// path (which charged ResumeAttempts, not Attempts) is never
+				// double-credited. Bounded: at the ProgressInterrupts cap the
+				// refund stops together with the exemption, so the legacy
+				// accounting still terminates the task.
+				if task.AttemptsChargedEpoch == task.LeaseEpoch && task.Attempts > 0 {
+					task.Attempts--
+					task.AttemptsChargedEpoch = 0
+				}
+				maxResume := qh.config.Retry.EffectiveTaskResume()
+				if task.ResumeEligible() && task.ResumeAttempts < maxResume {
+					task.ResumeRequested = true
+				}
+				qh.log(LogLevelInfo,
+					"task_hang_release_progress_interrupt task=%s worker=%s epoch=%d "+
+						"progress_interrupts=%d/%d resume_requested=%t resume_attempts=%d/%d attempts=%d not_before=%s "+
+						"(pane idled after observed progress — mid-stream interruption, not a wedge; task_dispatch budget preserved)",
+					task.ID, bc.Item.AgentID, task.LeaseEpoch,
+					task.ProgressInterrupts, maxProgressInterrupts,
+					task.ResumeRequested, task.ResumeAttempts, maxResume,
+					task.Attempts, notBefore)
+			} else {
+				task.Attempts += hangAttemptCost
+				qh.log(LogLevelInfo,
+					"task_hang_release_cooldown task=%s worker=%s attempts=%d cost=%d had_progress=%t progress_interrupts=%d/%d not_before=%s "+
+						"(pane idle while in_progress; cooldown applied, dead-letter at attempts>=max_attempts)",
+					task.ID, bc.Item.AgentID, task.Attempts, hangAttemptCost,
+					hadProgress, task.ProgressInterrupts, maxProgressInterrupts, notBefore)
+			}
 		}
 		return
 	}

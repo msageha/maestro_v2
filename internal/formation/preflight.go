@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -107,8 +108,17 @@ func preflightRuntimes(cfg model.Config, rp *agent.RuntimePreflight, warn io.Wri
 	return nil
 }
 
+// preflightProbeSeq disambiguates concurrent probes within one process. The
+// daemon socket's parent directory is the per-UID shared /tmp/maestro-uds-<uid>/
+// and the probe name previously used the PID alone, so two concurrent
+// preflightEnvironment calls in the same process (parallel `Up` invocations,
+// parallel tests) raced on the same path — ProbeUnixSocket removes the path
+// before binding, so the loser observed "bind: address already in use" (or
+// had its live probe socket removed underneath it).
+var preflightProbeSeq atomic.Uint64
+
 func preflightProbeSocketPath(realSocketPath string) (string, error) {
-	name := fmt.Sprintf(".preflight-probe-%d.sock", os.Getpid())
+	name := fmt.Sprintf(".preflight-probe-%d-%d.sock", os.Getpid(), preflightProbeSeq.Add(1))
 	probePath := filepath.Join(filepath.Dir(realSocketPath), name)
 	if len(probePath) <= uds.MaxUnixSocketPathLen() {
 		return probePath, nil

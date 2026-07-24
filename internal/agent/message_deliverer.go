@@ -787,6 +787,15 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		}
 		if confirmed {
 			d.log(logLevelInfo, "clear_send_done pane=%s attempts_used=%d", paneTarget, attempt)
+			// Invalidate the resume session marker: the conversation this
+			// pane held is gone, so a continuation nudge must never match
+			// it again. Best-effort — the next successful delivery
+			// re-stamps @last_task_id, and resume additionally requires
+			// the clear_ready/PID identity, so a failed reset only leaves
+			// a marker that cannot complete the resume preflight alone.
+			if err := d.paneIO.SetUserVar(paneTarget, "last_task_id", ""); err != nil {
+				d.log(logLevelWarn, "clear_confirm last_task_id_invalidate_failed pane=%s error=%v", paneTarget, err)
+			}
 			return nil
 		}
 

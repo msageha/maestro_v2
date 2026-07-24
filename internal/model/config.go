@@ -302,6 +302,29 @@ type RetryConfig struct {
 	TaskDispatchInlineRetries          *int            `yaml:"task_dispatch_inline_retries"`
 	TaskDispatchInlineRetryDelaySec    *int            `yaml:"task_dispatch_inline_retry_delay_sec"`
 	TaskExecution                      TaskRetryConfig `yaml:"task_execution"`
+
+	// TaskProgressInterrupts bounds the per-task progress-interrupt ledger
+	// (issue #54): a hang-release that follows observed pane progress in the
+	// same lease epoch does not consume the task_dispatch budget until this
+	// many have accrued; beyond the cap the legacy Attempts accounting
+	// resumes so a pathological progress-then-idle loop still dead-letters.
+	// 0 disables the exemption entirely (every hang-release costs Attempts).
+	TaskProgressInterrupts *int `yaml:"task_progress_interrupts"`
+	// TaskResume bounds continuation-nudge (resume without /clear)
+	// dispatches per task (issue #55). Beyond the cap, re-dispatch reverts
+	// to the /clear full envelope. 0 disables the resume path entirely.
+	TaskResume *int `yaml:"task_resume"`
+}
+
+// EffectiveTaskProgressInterrupts returns TaskProgressInterrupts, or
+// DefaultTaskProgressInterrupts when unset.
+func (r RetryConfig) EffectiveTaskProgressInterrupts() int {
+	return effectiveValue(r.TaskProgressInterrupts, DefaultTaskProgressInterrupts)
+}
+
+// EffectiveTaskResume returns TaskResume, or DefaultTaskResume when unset.
+func (r RetryConfig) EffectiveTaskResume() int {
+	return effectiveValue(r.TaskResume, DefaultTaskResume)
 }
 
 // EffectiveSignalInlineRetries returns SignalInlineRetries, or DefaultSignalInlineRetries when unset.
@@ -368,6 +391,8 @@ func NormalizeRetryConfig(cfg *Config) {
 	resolvePtr(&cfg.Retry.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
+	resolvePtr(&cfg.Retry.TaskProgressInterrupts, DefaultTaskProgressInterrupts)
+	resolvePtr(&cfg.Retry.TaskResume, DefaultTaskResume)
 }
 
 // VerifyDaemonConfig holds daemon-side controls for the §S1-1 verification

@@ -36,7 +36,7 @@ func (m *mockDispatcher) DispatchCommand(_ context.Context, cmd *model.Command) 
 	return nil
 }
 
-func (m *mockDispatcher) DispatchTask(_ context.Context, task *model.Task, workerID string) error {
+func (m *mockDispatcher) DispatchTask(_ context.Context, task *model.Task, workerID string, _ bool) error {
 	idx := m.taskCalls
 	m.taskCalls++
 	if err, ok := m.taskErrors[idx]; ok {

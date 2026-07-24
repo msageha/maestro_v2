@@ -262,7 +262,36 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			qh.log(LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
 			continue
 		}
-		task.Attempts++
+		// Resume dispatch (issue #55): a hang-release that followed observed
+		// progress marked the task ResumeRequested. Consume the marker here:
+		// the dispatch becomes a continuation nudge (Phase B delivers without
+		// /clear) and draws on the resume budget instead of the task_dispatch
+		// budget — progress-interrupted work must not burn dispatch attempts
+		// (issue #54). A resume dispatch that fails at delivery releases the
+		// lease with the marker already consumed, so the next acquisition is
+		// a normal /clear full dispatch (fail-safe).
+		resumeDispatch := false
+		if task.ResumeRequested {
+			task.ResumeRequested = false
+			maxResume := qh.config.Retry.EffectiveTaskResume()
+			if task.ResumeAttempts < maxResume {
+				resumeDispatch = true
+				task.ResumeAttempts++
+				qh.log(LogLevelInfo,
+					"task_dispatch_resume task=%s worker=%s epoch=%d resume_attempts=%d/%d "+
+						"(continuation nudge without /clear; task_dispatch attempts budget preserved)",
+					task.ID, workerID, task.LeaseEpoch, task.ResumeAttempts, maxResume)
+			}
+		}
+		if !resumeDispatch {
+			task.Attempts++
+			// Record which epoch this charge belongs to so a later
+			// progress-interrupt hang-release of the SAME epoch can refund
+			// it (see applyTaskBusyCheckResult). Resume acquisitions charge
+			// ResumeAttempts instead and intentionally leave the stamp on
+			// the older epoch, making them refund-inert.
+			task.AttemptsChargedEpoch = task.LeaseEpoch
+		}
 		detachTaskSlices(task)
 
 		// Sync command-state with the queue lease at acquisition time.
@@ -288,6 +317,7 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			WorkerID:  workerID,
 			Epoch:     task.LeaseEpoch,
 			ExpiresAt: safeStr(task.LeaseExpiresAt),
+			Resume:    resumeDispatch,
 		})
 		globalInFlight[workerID] = true
 		dirty = true
@@ -611,6 +641,13 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 							"(busy-check skipped; pane shows cross-scan activity)",
 						task.ID, agentID, task.LeaseEpoch, elapsedSinceDispatch, maxMin)
 					qh.scanExecutor.scanCounters.LeaseExtensions++
+					// Record observed progress for this epoch. A later
+					// hang-release at the same epoch is then classified as a
+					// progress-interrupt (worker made real progress, then the
+					// turn was cut mid-stream) and does not consume the
+					// task_dispatch dead-letter budget — see issue #54 and
+					// the accounting in applyTaskBusyCheckResult.
+					task.LastProgressEpoch = task.LeaseEpoch
 					// Pane-active is an authoritative liveness signal — refresh
 					// circuit_breaker.last_progress_at so the progress-timeout
 					// path does not trip a command whose worker is visibly

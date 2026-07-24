@@ -199,6 +199,15 @@ const (
 	// RetryConfig — task dispatch inline retry
 	DefaultTaskDispatchInlineRetries       = 5
 	DefaultTaskDispatchInlineRetryDelaySec = 1
+
+	// RetryConfig — progress-interrupt / resume budgets (issues #54 / #55).
+	// DefaultTaskProgressInterrupts: each budget-exempt cycle costs at least
+	// one epoch of observed progress, and max_in_progress_min (default 30m)
+	// bounds a single epoch, so 6 caps the worst-case exemption window at a
+	// few hours per task while comfortably absorbing an unstable-API night.
+	// DefaultTaskResume mirrors issue #55's proposed retry.task_resume=3.
+	DefaultTaskProgressInterrupts = 6
+	DefaultTaskResume             = 3
 )
 
 // ValidAgentModels is the whitelist of recognized agent model name identifiers.

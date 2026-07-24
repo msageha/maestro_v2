@@ -187,10 +187,15 @@ type RetryOptions struct {
 	SkillRefs          []string
 	ExpectedPaths      []string
 	DefinitionOfAbort  *model.DefinitionOfAbort
-	MaestroDir         string
-	Config             model.Config
-	LockMap            *lock.MutexMap
-	ModelSelector      ModelSelector // optional: adaptive model selection
+	// ResumeHint is the resume-eligibility policy for the replacement task.
+	// Not exposed as a CLI flag today: when empty it is inherited from the
+	// original task (inheritRetryFieldsFromOriginal) so an explicit
+	// `resume_hint: deny` survives retry replacement.
+	ResumeHint    string
+	MaestroDir    string
+	Config        model.Config
+	LockMap       *lock.MutexMap
+	ModelSelector ModelSelector // optional: adaptive model selection
 }
 
 // RetryResult contains the outcome of a task retry including any cascade-recovered tasks.
@@ -326,6 +331,9 @@ func inheritRetryFieldsFromOriginal(opts RetryOptions, origTaskCache map[string]
 	if opts.SkillRefs == nil {
 		opts.SkillRefs = orig.SkillRefs
 	}
+	if opts.ResumeHint == "" {
+		opts.ResumeHint = orig.ResumeHint
+	}
 	return opts
 }
 
@@ -348,6 +356,7 @@ func buildPrimaryRetryTask(opts RetryOptions, taskID string, blockedBy []string,
 		definitionOfAbort:  opts.DefinitionOfAbort,
 		workerID:           workerID,
 		operationType:      model.OperationTypeRepair,
+		resumeHint:         opts.ResumeHint,
 	}
 }
 
@@ -796,6 +805,7 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 	// submitted, so they are guaranteed to be well-formed.
 	expectedPaths := opts.ExpectedPaths
 	definitionOfAbort := opts.DefinitionOfAbort
+	resumeHint := ""
 
 	if orig, ok := origTaskCache[cr.Replaced]; ok {
 		purpose = orig.Purpose
@@ -807,6 +817,7 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		toolsHint = orig.ToolsHint
 		personaHint = orig.PersonaHint
 		skillRefs = orig.SkillRefs
+		resumeHint = orig.ResumeHint
 		if orig.ExpectedPaths != nil {
 			expectedPaths = orig.ExpectedPaths
 		}
@@ -832,5 +843,6 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		definitionOfAbort:  definitionOfAbort,
 		workerID:           cr.Worker,
 		operationType:      model.OperationTypeRepair,
+		resumeHint:         resumeHint,
 	}
 }
