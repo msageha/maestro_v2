@@ -99,6 +99,18 @@ agents:
     # boost: Worker のブーストモード有効化
     # type: bool | default: false | range: true/false
     boost: false
+    # capabilities: Worker ごとの capability タグ (worker_id -> tags)。
+    # type: map[string][]string | default: runtime 既定
+    # タスクの required_capabilities / preferred_capabilities とのマッチングに使用 (完全一致)。
+    # 省略した worker は runtime 既定の capability を宣言する:
+    #   claude-code: code_quality, design_review, instruction_following, run_on_main
+    #   codex:       bulk_implementation, long_horizon_autonomy, refactor
+    #   gemini:      multimodal, long_context_ingest, research, cost_efficient
+    # 明示すると既定を上書きする (空リスト [] は「capability 無し」の宣言)。
+    # capabilities:
+    #   worker1: ["code_quality", "design_review", "instruction_following", "run_on_main"]
+    #   worker2: ["bulk_implementation", "long_horizon_autonomy", "refactor"]
+    #   worker3: ["multimodal", "long_context_ingest", "research", "cost_efficient"]
 
 # --- Continuous ---
 # 連続モードの設定。
@@ -400,6 +412,17 @@ skills:
   # missing_ref_policy: 参照先スキルが見つからない場合の動作
   # type: string | default: "warn" (DefaultMissingRefPolicy) | range: "warn" or "error"
   missing_ref_policy: "warn"
+  # extra_dirs: 追加の skill 探索ディレクトリ (project root からの相対パス or 絶対パス)
+  # 各ディレクトリは .maestro/skills と同じ <role>/<name>/SKILL.md 構造を持つ。
+  # .maestro/skills が gitignore され setup/repair で上書きされるのに対し、
+  # extra_dirs は repo にコミットしてチームで共有・レビューできる (例: .maestro-skills/)。
+  # precedence: extra_dirs はリスト順で先勝ちし、いずれも bundled (.maestro/skills) より優先。
+  # 同名 skill の衝突は WARN ログで検出される (silent 上書きなし)。
+  # 存在しないディレクトリは WARN + skip (daemon は停止しない)。
+  # type: []string | default: [] (追加探索なし)
+  # extra_dirs:
+  #   - ".maestro-skills"
+  extra_dirs: []
   auto_collect:
     # enabled: 学習知見からの自動スキル収集 (opt-in)
     # type: bool | default: false | range: true/false
@@ -627,12 +650,12 @@ search:
   thompson_beta: 1.0
 
 # --- Self-Improvement ---
-# プロンプト・ペルソナの自己改善機能。
-# 注意 (現状書き込み専用): enabled にすると失敗結果からエラー Fingerprint DB
-# (state/fingerprint_db.json) への記録・永続化が行われるが、記録を参照して
-# リトライ戦略やプロンプトを変える経路 (Query / SuggestStrategy) に production
-# 呼び出しが無く、学習ループは閉じていない。targets / exclude_targets も
-# 現状は起動ログに出力されるのみ。
+# プロンプト・ペルソナの自己改善機能 (C-5)。
+# enabled にすると失敗結果からエラー Fingerprint DB (state/fingerprint_db.json)
+# への記録・永続化が行われ、retry タスクには過去に成功した修復戦略が DATA
+# セクションとして注入される (repair-strategy loop)。targets / exclude_targets
+# は friction loop の提示セクションと除外フィルタに反映される。
+# daemon がテンプレート・設定を自動で書き換えることはない (記録と提示が終点)。
 self_improvement:
   # enabled: 自己改善機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -640,12 +663,37 @@ self_improvement:
   # targets: 改善対象リスト
   # type: []string | default: ["planner_prompt", "persona", "worker_prompt"] | range: 制限なし
   targets: ["planner_prompt", "persona", "worker_prompt"]
-  # exclude_targets: 改善対象から除外するリスト
+  # exclude_targets: 改善対象から除外するリスト (安全パラメータ・制御プレーン)
   # type: []string | default: ["fitness", "daemon_logic", "circuit_breaker"] | range: 制限なし
   exclude_targets: ["fitness", "daemon_logic", "circuit_breaker"]
   # archive_max_size: アーカイブの最大サイズ
   # type: *int | default: 100 (DefaultArchiveMaxSize) | range: 制限なし
   archive_max_size: 100
+  # friction: friction 駆動の改善ループ (issue #26)。再発する運用摩擦
+  # (blocked prompt / runtime terminal error / dead letter / timeout /
+  # タスク失敗の再発) を improvement idea として state/improvements.yaml に
+  # 蓄積し、修復戦略の適用後は効果計測ゲート (post-apply の連続成功数) を
+  # 通過するまで verified に昇格させない。verified 後に同種 friction が
+  # 再発したら自動で reopened に戻す。actionable な提案は Planner への
+  # command 配信時に DATA セクションとして提示される。
+  # self_improvement.enabled と friction.enabled の両方が true のときのみ有効。
+  friction:
+    # enabled: friction loop の有効化フラグ (opt-in)
+    # type: *bool | default: false | range: true/false
+    enabled: false
+    # min_occurrences: proposed に昇格させる同一 fingerprint の最小観測回数
+    # type: *int | default: 2 (DefaultFrictionMinOccurrences) | range: > 0
+    min_occurrences: 2
+    # verify_min_successes: verified に昇格させる適用後の連続成功回数
+    # (途中で同種 friction が再発するとカウントはリセット)
+    # type: *int | default: 2 (DefaultFrictionVerifyMinSuccesses) | range: > 0
+    verify_min_successes: 2
+    # max_entries: state/improvements.yaml のエントリ上限 (最古 LastSeen を evict)
+    # type: *int | default: 200 (DefaultFrictionMaxEntries) | range: > 0
+    max_entries: 200
+    # inject_count: Planner command へ注入する提案数の上限 (0 = 注入無効、記録は継続)
+    # type: *int | default: 5 (DefaultFrictionInjectCount) | range: >= 0
+    inject_count: 5
 
 # --- Complexity ---
 # 適応的計算深度制御。
@@ -720,3 +768,39 @@ feature_profiles:
     adaptive_model_selection: true
     self_improvement: true
     adaptive_depth: true
+
+# --- Cost Tracking ---
+# per-command / per-worker のトークン・コスト追跡 (opt-in)。
+# 有効化すると daemon が scan 毎に claude-code のセッション記録
+# (~/.claude/projects 配下の JSONL) を読み、maestro の配信 envelope を
+# アンカーに worker / command 単位へ attribution して
+# .maestro/state/metrics.yaml の `usage:` セクションへ記録する
+# (dashboard.md / `maestro status` に最小表示)。
+#
+# 制約:
+#   - 収集はローカルファイルの読み取りのみ (pane スクレイピング・課金 API
+#     呼び出しは行わない)。
+#   - 取得経路が無い runtime (codex / gemini) の worker は「unknown」として
+#     明示され、合計は部分集計 (partial) になる。0 とは扱わない。
+#   - トークン数が一次記録で、コストは binary 内の価格表からの派生値。
+#     価格表更新後は再計算される (推定値であり請求額ではない)。
+#   - attribution は envelope 単位の近似 (タスク間の厳密な API 会計ではない)。
+cost_tracking:
+  # enabled: コスト追跡の有効化フラグ (opt-in)。false なら収集は一切走らず
+  # daemon の scan/dispatch/verify 動作に影響しない。
+  # type: *bool | default: false | range: true/false
+  enabled: false
+  # collect_interval_sec: セッションファイル走査の最小間隔 (秒)。scan tick ごとの
+  # 全 transcript stat を抑える throttle (可視化が最大この秒数だけ遅延する)。
+  # 0 以下で毎 scan 収集。
+  # type: *int | default: 60 | range: 0〜86400 (0 以下 = 毎 scan、86400 超は 1 日に clamp)
+  collect_interval_sec: 60
+  budget:
+    # total_usd: 全 agent 合算の推定コストがこの値 (USD) を超えたら WARN ログ
+    # + dashboard 表示。0 = アラート無効。
+    # type: *float64 | default: 0 (無効) | range: >= 0
+    total_usd: 0
+    # per_command_usd: 単一 command の推定コストがこの値 (USD) を超えたら
+    # WARN ログ + dashboard 表示。0 = アラート無効。
+    # type: *float64 | default: 0 (無効) | range: >= 0
+    per_command_usd: 0

@@ -28,6 +28,22 @@ type PhaseCManager struct {
 	FeatureEvaluator *featuregate.Evaluator
 	fingerprintPath  string
 
+	// ImprovementStore tracks the C-5 friction-driven improvement lifecycle
+	// (issue #26): friction events → proposals → effect measurement gate →
+	// auto-reopen on regression. nil unless both self_improvement.enabled
+	// and self_improvement.friction.enabled are set. Shares fingerprints
+	// with FingerprintDB — not a parallel learning loop.
+	ImprovementStore *learnings.ImprovementStore
+	improvementsPath string
+	// improvementInjectCount caps proposals injected into Planner command
+	// envelopes; improvementExcludeTargets echoes the config exclusions
+	// into the injected section (and filters entries, defense in depth).
+	improvementInjectCount    int
+	improvementExcludeTargets []string
+	// maestroDir supports best-effort state file reads (metrics baseline
+	// snapshots for improvement measurement).
+	maestroDir string
+
 	// searchMu protects the per-command search-tree bookkeeping below.
 	// Required because classifyAndLog* runs on the dispatch goroutine while
 	// observeTaskOutcome runs on the result-notification goroutine.
@@ -104,6 +120,7 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 		taskBloom:       make(map[string]taskBloomEntry),
 		commandNovelty:  make(map[string]map[string]struct{}),
 		commandFailures: make(map[string]int),
+		maestroDir:      maestroDir,
 	}
 
 	// C-1 Evolution Engine
@@ -212,6 +229,29 @@ func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []str
 			m.FingerprintDB.Size(),
 			cfg.SelfImprovement.EffectiveTargets(),
 			cfg.SelfImprovement.EffectiveExcludeTargets())
+
+		// C-5 friction-driven improvement loop (issue #26) — nested opt-in
+		// under self_improvement so it extends the fingerprint machinery
+		// above instead of running beside it.
+		if cfg.SelfImprovement.Friction.EffectiveEnabled() {
+			opts := learnings.ImprovementStoreOptions{
+				MaxEntries:         cfg.SelfImprovement.Friction.EffectiveMaxEntries(),
+				MinOccurrences:     cfg.SelfImprovement.Friction.EffectiveMinOccurrences(),
+				VerifyMinSuccesses: cfg.SelfImprovement.Friction.EffectiveVerifyMinSuccesses(),
+				ExcludeTargets:     cfg.SelfImprovement.EffectiveExcludeTargets(),
+			}
+			m.improvementsPath = filepath.Join(maestroDir, "state", "improvements.yaml")
+			store, err := learnings.LoadImprovementStore(m.improvementsPath, opts)
+			if err != nil {
+				log(LogLevelWarn, "improvement store load failed path=%s error=%v; starting empty", m.improvementsPath, err)
+				store = learnings.NewImprovementStore(opts)
+			}
+			m.ImprovementStore = store
+			m.improvementInjectCount = cfg.SelfImprovement.Friction.EffectiveInjectCount()
+			m.improvementExcludeTargets = cfg.SelfImprovement.EffectiveExcludeTargets()
+			log(LogLevelInfo, "improvement store initialized entries=%d min_occurrences=%d verify_min_successes=%d inject_count=%d",
+				store.Size(), opts.MinOccurrences, opts.VerifyMinSuccesses, m.improvementInjectCount)
+		}
 	}
 
 	// C-6 Complexity Scorer
@@ -271,6 +311,13 @@ func (m *PhaseCManager) SaveState(log logFunc) {
 			log(LogLevelInfo, "fingerprint DB saved path=%s patterns=%d", m.fingerprintPath, m.FingerprintDB.Size())
 		}
 	}
+	if m.ImprovementStore != nil && m.improvementsPath != "" {
+		if err := m.ImprovementStore.SaveYAML(m.improvementsPath); err != nil {
+			log(LogLevelWarn, "improvement store save failed path=%s error=%v", m.improvementsPath, err)
+		} else {
+			log(LogLevelInfo, "improvement store saved path=%s entries=%d", m.improvementsPath, m.ImprovementStore.Size())
+		}
+	}
 }
 
 // LogShutdownStats logs summary statistics for stateful Phase C components.
@@ -284,5 +331,14 @@ func (m *PhaseCManager) LogShutdownStats(log logFunc) {
 	}
 	if m.FingerprintDB != nil {
 		log(LogLevelInfo, "fingerprint DB stats patterns=%d", m.FingerprintDB.Size())
+	}
+	if m.ImprovementStore != nil {
+		counts := m.ImprovementStore.CountsByStatus()
+		log(LogLevelInfo, "improvement store stats entries=%d proposed=%d applied=%d verified=%d reopened=%d",
+			m.ImprovementStore.Size(),
+			counts[model.ImprovementStatusProposed],
+			counts[model.ImprovementStatusApplied],
+			counts[model.ImprovementStatusVerified],
+			counts[model.ImprovementStatusReopened])
 	}
 }

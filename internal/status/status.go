@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -18,8 +19,24 @@ import (
 type formationStatus struct {
 	Daemon  daemonStatus   `json:"daemon"`
 	Agents  []agentStatus  `json:"agents,omitempty"`
-	Queues  []queueStatus  `json:"queues,omitempty"`
+	Queues  []QueueCount   `json:"queues,omitempty"`
 	Signals *signalsStatus `json:"signals,omitempty"`
+	Usage   *usageStatus   `json:"usage,omitempty"`
+}
+
+// usageStatus summarizes the opt-in cost/token tracking section of
+// state/metrics.yaml (cost_tracking.enabled). Token counts cover only agents
+// with a collectable local usage record (claude-code); UnknownAgents lists
+// agents whose runtime has no such path and whose spend is unknown — not
+// zero.
+type usageStatus struct {
+	CollectedAt      string   `json:"collected_at,omitempty"`
+	Partial          bool     `json:"partial,omitempty"`
+	InputTokens      int64    `json:"input_tokens"`
+	OutputTokens     int64    `json:"output_tokens"`
+	EstimatedCostUSD *float64 `json:"estimated_cost_usd,omitempty"`
+	UnknownAgents    []string `json:"unknown_agents,omitempty"`
+	BudgetAlerts     []string `json:"budget_alerts,omitempty"`
 }
 
 // signalsStatus surfaces planner_signals.yaml health for operators. The
@@ -76,7 +93,11 @@ type agentStatus struct {
 	Status string `json:"status"`
 }
 
-type queueStatus struct {
+// QueueCount is the pending/in_progress depth of a single queue file.
+// Exported so read-only observation consumers (`maestro status`,
+// `maestro hud`) share one queue-depth derivation instead of re-parsing
+// queue YAML with divergent rules.
+type QueueCount struct {
 	Name       string `json:"name"`
 	Pending    int    `json:"pending"`
 	InProgress int    `json:"in_progress"`
@@ -97,7 +118,7 @@ func Run(maestroDir string, jsonOutput bool) error {
 	status.Agents = getAgentStatuses()
 
 	// Get queue depth
-	status.Queues = getQueueDepths(maestroDir)
+	status.Queues = CollectQueueCounts(maestroDir)
 
 	// Cross-reference @status (tmux pane variable) against the queue
 	// depths so a stale busy is observable to operators even when the
@@ -107,6 +128,10 @@ func Run(maestroDir string, jsonOutput bool) error {
 
 	// Get planner signal queue health (R-3 observability).
 	status.Signals = getSignalsStatus(maestroDir)
+
+	// Cost/token usage summary (nil unless cost_tracking is enabled and the
+	// daemon has collected at least once).
+	status.Usage = getUsageStatus(maestroDir)
 
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
@@ -227,8 +252,8 @@ func parseAgentStatusLines(lines []string, isShell func(string) bool) []agentSta
 // claim is *contradicted* by a parsed queue file. This prevents the
 // annotation from firing for legitimate setups where the queue file
 // happens to live under a different name.
-func annotateStaleBusyAgents(agents []agentStatus, queues []queueStatus) []agentStatus {
-	queueByName := make(map[string]queueStatus, len(queues))
+func annotateStaleBusyAgents(agents []agentStatus, queues []QueueCount) []agentStatus {
+	queueByName := make(map[string]QueueCount, len(queues))
 	for _, q := range queues {
 		queueByName[q.Name] = q
 	}
@@ -276,14 +301,17 @@ type queueEntry struct {
 	Status string `yaml:"status"`
 }
 
-func getQueueDepths(maestroDir string) []queueStatus {
+// CollectQueueCounts reads every queue YAML under <maestroDir>/queue and
+// returns per-queue pending/in_progress counts. Read-only; returns nil when
+// the queue directory is missing or unreadable.
+func CollectQueueCounts(maestroDir string) []QueueCount {
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		return nil
 	}
 
-	queues := make([]queueStatus, 0, len(entries))
+	queues := make([]QueueCount, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -337,7 +365,7 @@ func getQueueDepths(maestroDir string) []queueStatus {
 		}
 
 		name := strings.TrimSuffix(entry.Name(), ".yaml")
-		queues = append(queues, queueStatus{
+		queues = append(queues, QueueCount{
 			Name:       name,
 			Pending:    pending,
 			InProgress: inProgress,
@@ -399,6 +427,98 @@ func getSignalsStatus(maestroDir string) *signalsStatus {
 	return out
 }
 
+// getUsageStatus reads the usage section of state/metrics.yaml and folds it
+// into a display summary. Returns nil when cost tracking is disabled, has
+// never run, or the file cannot be parsed (best-effort observability).
+func getUsageStatus(maestroDir string) *usageStatus {
+	path := filepath.Join(maestroDir, "state", "metrics.yaml")
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
+		return nil
+	}
+	data, err := os.ReadFile(path) //nolint:gosec // controlled application state path
+	if err != nil {
+		return nil
+	}
+	var m model.Metrics
+	if err := maestroyaml.SafeUnmarshal(data, &m); err != nil {
+		slog.Warn("status: failed to parse metrics.yaml", "error", err)
+		return nil
+	}
+	return summarizeUsage(m.Usage)
+}
+
+// summarizeUsage converts the persisted usage section into the status
+// summary. Extracted for unit testing.
+func summarizeUsage(u *model.UsageMetrics) *usageStatus {
+	if u == nil {
+		return nil
+	}
+	out := &usageStatus{
+		CollectedAt:  u.CollectedAt,
+		Partial:      u.Partial,
+		BudgetAlerts: u.BudgetAlerts,
+	}
+	var cost float64
+	costKnown := false
+	for _, id := range sortedAgentIDs(u.Agents) {
+		au := u.Agents[id]
+		if !au.TokensKnown {
+			out.UnknownAgents = append(out.UnknownAgents, id)
+			continue
+		}
+		out.InputTokens += au.Totals.InputTokens
+		out.OutputTokens += au.Totals.OutputTokens
+		if au.EstimatedCostUSD != nil {
+			cost += *au.EstimatedCostUSD
+			costKnown = true
+		}
+	}
+	if costKnown {
+		out.EstimatedCostUSD = &cost
+	}
+	return out
+}
+
+func sortedAgentIDs(agents map[string]*model.AgentUsage) []string {
+	ids := make([]string, 0, len(agents))
+	for id := range agents {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+// formatUsageLines renders the human-readable Usage block. Extracted for
+// unit testing.
+func formatUsageLines(u *usageStatus) []string {
+	if u == nil {
+		return nil
+	}
+	lines := []string{"\nUsage (cost tracking):"}
+	costStr := "unknown (no price data)"
+	if u.EstimatedCostUSD != nil {
+		costStr = fmt.Sprintf("$%.4f", *u.EstimatedCostUSD)
+	}
+	scope := ""
+	if u.Partial {
+		scope = "  [partial]"
+	}
+	lines = append(lines, fmt.Sprintf("  tokens: in=%d out=%d  est_cost=%s%s",
+		u.InputTokens, u.OutputTokens, costStr, scope))
+	if len(u.UnknownAgents) > 0 {
+		lines = append(lines, fmt.Sprintf("  unknown (no usage record for runtime): %s",
+			strings.Join(u.UnknownAgents, ", ")))
+	}
+	for _, a := range u.BudgetAlerts {
+		lines = append(lines, "  BUDGET ALERT: "+a)
+	}
+	if u.CollectedAt != "" {
+		lines = append(lines, "  collected_at: "+u.CollectedAt)
+	}
+	return lines
+}
+
 func printStatus(s formationStatus) {
 	// Daemon
 	if s.Daemon.Running {
@@ -425,6 +545,11 @@ func printStatus(s formationStatus) {
 		for _, q := range s.Queues {
 			fmt.Printf("  %-14s  %7d  %11d\n", q.Name, q.Pending, q.InProgress)
 		}
+	}
+
+	// Usage — only printed when cost tracking is enabled and has collected.
+	for _, line := range formatUsageLines(s.Usage) {
+		fmt.Println(line)
 	}
 
 	// Signals — surfaces the daemon's tmux delivery health from the

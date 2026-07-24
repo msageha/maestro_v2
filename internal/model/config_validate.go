@@ -67,6 +67,17 @@ func (c Config) validateAgents(errs *[]error) {
 			*errs = append(*errs, fmt.Errorf("agents.workers.models.%s: invalid model name %q", workerID, m))
 		}
 	}
+	// Capability tags are free-form (custom tags beyond the documented
+	// vocabulary are allowed — matching is exact-string), but empty /
+	// whitespace-only entries can never match anything and always indicate a
+	// config mistake, so reject them at load time.
+	for workerID, caps := range c.Agents.Workers.Capabilities {
+		for i, capTag := range caps {
+			if strings.TrimSpace(capTag) == "" {
+				*errs = append(*errs, fmt.Errorf("agents.workers.capabilities.%s[%d]: capability tag must not be empty", workerID, i))
+			}
+		}
+	}
 
 	// Agent role constraints are enforced via Claude Code's
 	// --allowedTools / --disallowedTools CLI flags. codex and gemini have no
@@ -206,6 +217,14 @@ func (c Config) validateSkills(errs *[]error) {
 	}
 	if p := c.Skills.MissingRefPolicy; p != "" && p != "warn" && p != "error" {
 		*errs = append(*errs, fmt.Errorf("skills.missing_ref_policy: must be \"warn\" or \"error\""))
+	}
+	// Missing directories are deliberately NOT a validation error (they are
+	// skipped with a WARN at use time), but an empty entry is always a config
+	// mistake: it would resolve to the project root itself.
+	for i, dir := range c.Skills.ExtraDirs {
+		if strings.TrimSpace(dir) == "" {
+			*errs = append(*errs, fmt.Errorf("skills.extra_dirs[%d]: must not be empty", i))
+		}
 	}
 }
 
@@ -351,6 +370,18 @@ func (c Config) validateExperimental(errs *[]error) {
 	// C-5 Self-Improvement
 	if c.SelfImprovement.ArchiveMaxSize != nil && *c.SelfImprovement.ArchiveMaxSize < 0 {
 		*errs = append(*errs, fmt.Errorf("self_improvement.archive_max_size: must be >= 0"))
+	}
+	if c.SelfImprovement.Friction.MinOccurrences != nil && *c.SelfImprovement.Friction.MinOccurrences <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.min_occurrences: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.VerifyMinSuccesses != nil && *c.SelfImprovement.Friction.VerifyMinSuccesses <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.verify_min_successes: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.MaxEntries != nil && *c.SelfImprovement.Friction.MaxEntries <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.max_entries: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.InjectCount != nil && *c.SelfImprovement.Friction.InjectCount < 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.inject_count: must be >= 0"))
 	}
 
 	// C-6 Complexity Thresholds

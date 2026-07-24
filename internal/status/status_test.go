@@ -19,7 +19,7 @@ func TestGetQueueDepths_EmptyQueues(t *testing.T) {
 	os.WriteFile(filepath.Join(queueDir, "worker1.yaml"),
 		[]byte("schema_version: 1\nfile_type: \"queue_task\"\ntasks: []\n"), 0644)
 
-	queues := getQueueDepths(dir)
+	queues := CollectQueueCounts(dir)
 	if len(queues) != 2 {
 		t.Fatalf("expected 2 queues, got %d", len(queues))
 	}
@@ -50,7 +50,7 @@ tasks:
 `
 	os.WriteFile(filepath.Join(queueDir, "worker1.yaml"), []byte(content), 0644)
 
-	queues := getQueueDepths(dir)
+	queues := CollectQueueCounts(dir)
 	if len(queues) != 1 {
 		t.Fatalf("expected 1 queue, got %d", len(queues))
 	}
@@ -69,7 +69,7 @@ tasks:
 
 func TestGetQueueDepths_NoQueueDir(t *testing.T) {
 	dir := t.TempDir()
-	queues := getQueueDepths(dir)
+	queues := CollectQueueCounts(dir)
 	if queues != nil {
 		t.Errorf("expected nil for missing queue dir, got %v", queues)
 	}
@@ -92,7 +92,7 @@ func TestGetQueueDepths_SkipsInvalidSchema(t *testing.T) {
 	os.WriteFile(filepath.Join(queueDir, "corrupt.yaml"),
 		[]byte(":::invalid yaml:::"), 0644)
 
-	queues := getQueueDepths(dir)
+	queues := CollectQueueCounts(dir)
 	// Only the valid file should be processed
 	if len(queues) != 1 {
 		t.Fatalf("expected 1 queue (valid only), got %d", len(queues))
@@ -127,7 +127,7 @@ func TestGetQueueDepths_SkipsAliasBomb(t *testing.T) {
 	os.WriteFile(filepath.Join(queueDir, "bomb.yaml"),
 		[]byte(aliasBombYAML("schema_version: 1\nfile_type: \"queue_task\"\ntasks: []\n")), 0644)
 
-	queues := getQueueDepths(dir)
+	queues := CollectQueueCounts(dir)
 	if len(queues) != 1 {
 		t.Fatalf("expected 1 queue (bomb skipped), got %d", len(queues))
 	}
@@ -294,7 +294,7 @@ func TestAnnotateStaleBusyAgents_FlagsBusyWithoutQueueWork(t *testing.T) {
 		{ID: "worker4", Role: "worker", Status: "busy"},
 		{ID: "planner", Role: "planner", Status: "idle"},
 	}
-	queues := []queueStatus{
+	queues := []QueueCount{
 		{Name: "worker1", InProgress: 1, Pending: 0},
 		{Name: "worker4", InProgress: 0, Pending: 0},
 	}
@@ -337,7 +337,7 @@ func TestAnnotateStaleBusyAgents_PlannerAndOrchestratorMapByRole(t *testing.T) {
 		{ID: "planner", Role: "planner", Status: "busy"},
 		{ID: "orchestrator", Role: "orchestrator", Status: "busy"},
 	}
-	queues := []queueStatus{
+	queues := []QueueCount{
 		{Name: "planner", InProgress: 0},
 		{Name: "orchestrator", InProgress: 1},
 	}
@@ -365,7 +365,7 @@ func TestPrintStatus_DoesNotPanic(t *testing.T) {
 	s.Agents = []agentStatus{
 		{ID: "orchestrator", Role: "orchestrator", Model: "opus", Status: "idle"},
 	}
-	s.Queues = []queueStatus{
+	s.Queues = []QueueCount{
 		{Name: "planner", Pending: 3, InProgress: 1},
 	}
 	printStatus(s)

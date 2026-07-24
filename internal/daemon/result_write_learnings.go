@@ -310,18 +310,42 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 		return model.GenerateID(model.IDTypeSkillCandidate)
 	}
 
+	// Registration-time dedup hint: annotate each new candidate with the
+	// existing library skills (bundled catalog + skills.extra_dirs) that
+	// already cover a similar pattern, so the operator can reject
+	// re-proposals of what the 31+ shipped skills already handle.
+	library := skill.ListAllSkills(h.skillSearchDirs(), nil)
+
 	added := 0
 	for _, content := range params.SkillCandidates {
 		if content == "" {
 			continue
 		}
 		before := len(candidates)
-		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
+		similar := skill.FindSimilarSkills(content, library, skill.LibraryDedupThreshold)
+		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc, similar)
 		if err != nil {
 			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", sanitizeContentForLog(content), err)
 			continue
 		}
 		if len(candidates) > before {
+			// Retention cap: prune terminal (approved/rejected) entries oldest
+			// first so the state file stays structurally below the read-size
+			// guard; pending entries are protected. When pending entries alone
+			// fill the cap, the new registration (the appended tail) is
+			// skipped with a WARN — never a silent drop.
+			var pruned int
+			candidates, pruned = skill.EnforceCandidateCap(candidates, skill.MaxCandidates)
+			if pruned > 0 {
+				h.logFn(LogLevelInfo, "skill_candidates_pruned command=%s pruned=%d max=%d", params.CommandID, pruned, skill.MaxCandidates)
+			}
+			if len(candidates) > skill.MaxCandidates {
+				candidates = candidates[:len(candidates)-1]
+				h.logFn(LogLevelWarn,
+					"skill_candidate_skipped_capacity command=%s max=%d: pending candidates fill the retention cap; approve or reject existing candidates to admit new ones, skipped content=%q",
+					params.CommandID, skill.MaxCandidates, sanitizeContentForLog(content))
+				continue
+			}
 			added++
 		}
 	}
@@ -332,4 +356,13 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 
 	h.logFn(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
 	return nil
+}
+
+// skillSearchDirs returns the precedence-ordered skill source directories
+// (configured skills.extra_dirs, then the bundled <maestroDir>/skills
+// catalog), mirroring the dispatch-time resolution in dispatch/envelope.go.
+func (h *ResultWriteAPI) skillSearchDirs() []string {
+	bundledDir := filepath.Join(h.maestroDir, "skills")
+	projectRoot := filepath.Dir(h.maestroDir)
+	return skill.ResolveSearchDirs(h.config.Skills.ExtraDirs, projectRoot, bundledDir, nil)
 }

@@ -89,14 +89,18 @@ Usage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]
 **起動シーケンス**:
 
 1. `.maestro/config.yaml` の存在チェック
-2. **スタートアップリカバリ**:
+2. **環境・runtime preflight**（リソース作成前の fail-fast）:
+   - tmux バイナリの PATH 解決と AF_UNIX ソケット疎通プローブ（sandbox 検出）
+   - config の agents.\* から解決される全 runtime（claude-code / codex / gemini）の CLI バイナリを PATH 解決。**バイナリ不在は確実な失敗として `up` を中断**（tmux セッション・デーモン作成前）
+   - 認証状態は best-effort（env 変数・credential ファイルの存在確認のみ）。確認不能は stderr への警告に留め、起動は止めない。詳細診断は [§5.18 maestro doctor](#518-maestro-doctorワンショット)
+3. **スタートアップリカバリ**:
    a. daemon ロックで他の `maestro up` との競合防止
    b. 必要なディレクトリ・YAML ファイルの存在確認。欠損があれば再作成
    c. 全 YAML ファイルの構文検証（破損ファイルは quarantine → バックアップからリストア）
    d. `schema_version` チェック。旧バージョン検出時はマイグレーション（バックアップ優先）
    e. ワンショット reconciliation を実行（R0, R0b, R1-R10 の全パターンの不整合修復。[§5.8 ステップ 3](#58-maestro-daemon) 参照）
-3. `--boost` / `--continuous` フラグを config.yaml に反映
-4. tmux セッション作成（内部で `maestro` の tmux モジュールを使用。per-instance socket で分離。既存セッションがあれば再利用 or 再作成）
+4. `--boost` / `--continuous` フラグを config.yaml に反映
+5. tmux セッション作成（内部で `maestro` の tmux モジュールを使用。per-instance socket で分離。既存セッションがあれば再利用 or 再作成）
    - Window 0 `orchestrator`: 1 ペイン
    - Window 1 `planner`: 1 ペイン
    - Window 2 `workers`: 最大 2 列 × 4 行のグリッド（Worker 数分のペイン）
@@ -105,9 +109,9 @@ Usage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]
      - `@role`: `orchestrator`, `planner`, `worker`
      - `@model`: `opus`, `sonnet` 等（config.yaml の `default_model` + `models` から解決。Worker は `codex` / `codex-5` / `gemini-2.5-pro` 等の非 claude ランタイムも可。[§11](11-future-extensions.md) 参照）
      - `@status`: `idle`（初期値）
-5. 各ペインで `maestro agent launch` を実行
-6. `maestro daemon` をバックグラウンド起動（daemon ロック + PID 記録）
-7. `--detach` でなければ tmux セッションへ attach。`--detach` の場合は起動完了メッセージを表示して終了
+6. 各ペインで `maestro agent launch` を実行
+7. `maestro daemon` をバックグラウンド起動（daemon ロック + PID 記録）
+8. `--detach` でなければ tmux セッションへ attach。`--detach` の場合は起動完了メッセージを表示して終了
 
 > **起動は冪等**: 何度実行しても安全。既に正常稼働中の場合はデーモンの daemon ロックで二重起動を防止。
 > **再接続**: detach 後に再度操作したい場合は `maestro attach` でセッションへ戻る。
@@ -1172,11 +1176,60 @@ Usage: maestro skill <list|candidates|approve|reject> [options]
        maestro persona list
 ```
 
-| コマンド                                                          | 責務                                                                                    |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `maestro skill list --role <role>`                                | 指定 role に登録済みの skill 一覧を表示                                                 |
-| `maestro skill candidates [--status pending\|approved\|rejected]` | Worker のタスク結果から蓄積された skill 候補（`state/skill_candidates.yaml`）を一覧表示 |
-| `maestro skill approve` / `reject`                                | skill 候補を承認 / 却下（承認されたものが正式な skill として参照可能になる）            |
-| `maestro persona list`                                            | 登録済み persona の一覧表示                                                             |
+| コマンド                                                                            | 責務                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maestro skill list --role <role>`                                                  | 指定 role に登録済みの skill 一覧を表示（`skills.extra_dirs` + bundled `.maestro/skills` を dispatch 時と同じ precedence で探索）                                         |
+| `maestro skill candidates [--status pending\|approved\|rejected]`                   | Worker のタスク結果から蓄積された skill 候補（`state/skill_candidates.yaml`、§4.11）を一覧表示。既存 skill との類似（`similar_skills`）と staging パスも表示する          |
+| `maestro skill approve <id> [--name <skill-name>] [--description <text>] [--force]` | skill 候補を承認し、`state/skill_staging/<name>/SKILL.md` に完全な frontmatter 付き草稿を生成して skill-anatomy validator（#11）を通す。**live library には書き込まない** |
+| `maestro skill reject <id>`                                                         | skill 候補を却下                                                                                                                                                          |
+| `maestro persona list`                                                              | 登録済み persona の一覧表示                                                                                                                                               |
 
-> skill 候補の蓄積は将来的な自己改善（[REQUIREMENTS.md](REQUIREMENTS.md) C-5）の足場であり、承認は人間 / オペレーターのゲートを経る。Daemon が候補を自動承認することはない。
+**skill-factory の承認フロー（propose-not-auto-save）**: Worker 報告（`--skill-candidates`）→ デーモンが候補として蓄積・occurrences 集計・既存 skill との類似検出 → 操作員が `maestro skill candidates` でレビュー → `approve` で staging に草稿生成（anatomy validator の hard rule を通過しなければ承認は失敗する）→ **人間が草稿をレビューし、`skills.extra_dirs` 配下（または `templates/skills/`）へ git でコピー・commit して昇格**。承認の直列ゲートは (1) occurrences >= 2 の値ゲート、(2) 既存 skill との dedup（類似検出時は既存 skill への参照を提示して reject を促す。`--force` で上書き可、名前衝突は `--force` 不可）、(3) anatomy validator、(4) 人間の昇格判断。
+
+> skill 候補の蓄積は自己改善（[REQUIREMENTS.md](REQUIREMENTS.md) C-5）の足場であり、承認は人間 / オペレーターのゲートを経る。Daemon が候補を自動承認することはなく、staging より先（live library / git）へ自動で書き込むこともない。
+
+## 5.18 maestro doctor（ワンショット）
+
+**責務**: runtime preflight の明示診断。フォーメーション起動前に、設定済みの全 agent runtime が起動可能かを検証して早期に問題を可視化する
+
+```
+Usage: maestro doctor [--json] [--probe-timeout-sec <n>]
+```
+
+検証対象は config の agents.\*（orchestrator / planner / worker1..N のモデル名）から `ParseRuntimeFromModel` で解決される runtime 集合（claude-code / codex / gemini。boost 有効時は全 Worker が opus = claude-code に集約される）と、tmux バイナリ。runtime ごとに以下を検証する:
+
+| チェック    | 方式                                                                                                              | 失敗時の扱い                                   |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| **binary**  | CLI（`claude` / `codex` / `gemini`）の PATH 解決                                                                  | **fail**（終了コード 1。確実な失敗はこれのみ） |
+| **version** | `<cli> --version` を非対話（stdin=null device）・タイムアウト付き（既定 10 秒）・出力上限付き（既定 8 KiB）で実行 | warn（終了コード 0）                           |
+| **auth**    | credential env 変数と credential ファイルの存在確認のみ（サブプロセスなし・値は出力しない）                       | 確認不能は `unknown` の warn（終了コード 0）   |
+
+- **外部 runtime probe のガードレール**: probe は対話プロンプトで hang しない（stdin が null device のため即 EOF）。タイムアウト超過は probe を kill して warn として報告し、取得出力は上限バイト数で切り捨てる。この上限は診断用であり、Worker のタスク成果・結果本文には適用しない。
+- **既存 late-failure との関係**: doctor / up preflight は早期検知の前段であり置換ではない。launch 時の `exec.LookPath`（`internal/agent/launcher.go`）と pane terminal-error fast-fail（`authentication_error` 等のリアクティブ検知）はそのまま維持される。
+- **汎用 bridge registry 化はしない**: 検証対象は Go 実装の `RuntimeDef` registry（`internal/agent/runtime_launcher.go`）に登録済みの runtime のみ。新 runtime の追加は引き続き Go 実装で行う。
+- 実 LLM への test prompt 疎通確認は行わない（コスト・副作用があるため非実装。binary/version/auth チェックが既定かつ唯一のモード）。
+- `--json` で機械可読なレポート（`tmux` / `runtimes[]` / `ok`）を出力する。
+
+## 5.19 maestro hud（読み取り専用 TUI 観測 HUD）
+
+**責務**: `.maestro/` の可観測状態（state/ ・ queue/ ・ results/ ・ dead_letters/ ・ quarantine/）を tmux ネイティブな TUI で継続表示する。#20 Web ダッシュボードの低リスク代替（読み取り専用・HTTP/認証/pty 書込なしで #23 の脅威表面を構造的に回避）
+
+```
+Usage: maestro hud [--interval <sec>] [--width <cols>] [--once] [--no-color] [--no-history]
+```
+
+1. `.maestro/` を 1〜10 秒周期（既定 2 秒）でポーリングし、以下のセクションを 1 画面に描画する:
+   - **DAEMON**: `state/metrics.yaml` の `daemon_heartbeat` 経過時間から running / stale / stopped を導出（UDS ping はしない = デーモン非依存）
+   - **QUEUES**: 全 queue の pending / in_progress 深度（`internal/status.CollectQueueCounts` を `maestro status` と共有。導出ロジックの二重実装なし）
+   - **COMMANDS**: `state/commands/*.yaml` × `state/worktrees/*.yaml` から plan_status / フェーズ進捗 / task_states バケット / integration 状態のボード
+   - **ATTENTION**: `queue/planner_signals.yaml` の未処理シグナル、dead_letters / quarantine のファイル数、usage の budget alert
+   - **PROGRESS（snapshot diff）**: counters / queue 深度 / トークン / コストの「前回サンプル差分」と「約 24h 前 baseline 差分」
+   - **USAGE**: `state/metrics.yaml` の `usage` セクション（per-agent / per-command のトークン・コスト。`tokens_known: false` の agent は unknown と明示）
+   - **SELF-IMPROVEMENT**: `state/learnings.yaml` / `state/skill_candidates.yaml` の表示（C-5 / skill-factory が生むシグナルの表示に徹し、検出は再実装しない）
+   - **RECENT RESULTS**: `results/*.yaml` の直近エントリ
+2. **読み取り専用の厳守**: HUD が書くのは自身の snapshot 差分トレイル `state/hud_history.jsonl`（JSONL 追記・変化時のみ・7 日で prune）のみで、デーモンはこのファイルを読み書きしない。control-plane 操作（queue write / UDS 変異）は一切持たず、operator アクションは通常の `maestro` CLI に委ねる
+3. **graceful degradation**: 各セクションは独立に収集され、読めないファイルは当該セクションのみ `unavailable` 表示（デーモン不在でも起動して待てる）。YAML 読み取りは `internal/yaml.SafeUnmarshal`（billion-laughs 防御）とサイズ上限を通す
+4. **端末制御は stdlib のみ**: alternate screen（終了時に復元）+ ANSI エスケープ + 定期再描画。SIGINT / SIGTERM / `q`+Enter で復元して終了。`NO_COLOR` / `--no-color` で SGR を全て抑止。幅は `--width` > `$COLUMNS` > 100 の保守的解決（ioctl・外部 TUI ライブラリ不使用）
+5. `--once` は 1 フレームを stdout に出力して終了する完全読み取り専用モード（履歴も書かない。スクリプト・非 TTY 用）。`--no-history` は常駐時も履歴を永続化しない（差分はメモリ内のみ）
+
+> **tmux socket 分離との関係**: HUD は tmux を参照せずファイルのみを読む。対象インスタンスの同定は `MAESTRO_DIR` / カレントディレクトリ祖先探索による `.maestro/` 解決（per-instance socket 分離と同じキー）で行うため、複数 checkout が並走していても他インスタンスの状態を混読しない。

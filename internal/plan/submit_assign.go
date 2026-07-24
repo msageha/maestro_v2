@@ -62,9 +62,11 @@ func processConcretePhases(opts SubmitOptions, phases []PhaseInput) (*concretePh
 		var assignReqs []TaskAssignmentRequest
 		for _, t := range phase.Tasks {
 			assignReqs = append(assignReqs, TaskAssignmentRequest{
-				Name:           t.Name,
-				BloomLevel:     t.BloomLevel,
-				PinnedWorkerID: t.WorkerID,
+				Name:                  t.Name,
+				BloomLevel:            t.BloomLevel,
+				PinnedWorkerID:        t.WorkerID,
+				RequiredCapabilities:  t.RequiredCapabilities,
+				PreferredCapabilities: t.PreferredCapabilities,
 			})
 		}
 

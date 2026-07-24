@@ -49,6 +49,11 @@ type WorkerState struct {
 	WorkerID     string
 	Model        string
 	PendingCount int
+	// Capabilities lists the capability tags this worker advertises —
+	// the explicit agents.workers.capabilities entry, or the runtime
+	// defaults (model.DefaultCapabilitiesForRuntime) when unset. Consumed
+	// by AssignWorkers to satisfy task required/preferred capabilities.
+	Capabilities []string
 }
 
 // TaskAssignmentRequest describes a task that needs worker assignment.
@@ -66,6 +71,18 @@ type TaskAssignmentRequest struct {
 	// read-only guard on the main working directory is enforced by the
 	// claude-code PreToolUse policy hook, which codex / gemini workers lack.
 	RequireClaudeRuntime bool
+	// RequiredCapabilities is a hard filter: only workers advertising every
+	// listed tag are candidates. When no configured worker satisfies the set,
+	// AssignWorkers fails with ErrNoAvailableWorker (never a silent drop) so
+	// the Planner can relax the requirement or the operator can extend
+	// agents.workers.capabilities. Empty = no capability constraint, in which
+	// case behavior is byte-identical to the pre-capability logic.
+	RequiredCapabilities []string
+	// PreferredCapabilities is a soft scoring bias: among eligible workers,
+	// the one matching the most preferred tags wins; ties fall through to the
+	// existing least-loaded and lexicographic worker-ID tie-breaks. A task is
+	// still assignable when no worker matches any preferred tag.
+	PreferredCapabilities []string
 }
 
 // GetModelForBloomLevel returns the model family name appropriate for the
@@ -162,6 +179,18 @@ func AssignWorkers(
 				return nil, fmt.Errorf("%w for task %q: pinned worker %q runs model %q (non-claude runtime); run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
 					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, ws.Model)
 			}
+			// An explicit worker_id pin takes precedence over capability
+			// matching (same contract as bloom-based auto-assignment being
+			// bypassed), but a mismatch is surfaced as a WARN so operators
+			// can spot conflicting Planner declarations — never silently.
+			if len(task.RequiredCapabilities) > 0 && !workerHasCapabilities(ws, task.RequiredCapabilities) {
+				slogc().Warn("pinned_worker_capability_mismatch",
+					"task", task.Name,
+					"worker", ws.WorkerID,
+					"required_capabilities", task.RequiredCapabilities,
+					"worker_capabilities", ws.Capabilities,
+					"action", "honoring explicit worker_id pin over required_capabilities")
+			}
 			if ws.PendingCount >= maxPending {
 				return nil, fmt.Errorf("%w for task %q: pinned worker %q at capacity (max_pending_tasks_per_worker=%d)",
 					ErrNoAvailableWorker, task.Name, task.PinnedWorkerID, maxPending)
@@ -175,18 +204,49 @@ func AssignWorkers(
 			continue
 		}
 
+		// Capability hard filter (issue #34): when the task declares
+		// required_capabilities, restrict every subsequent step — selector
+		// feasibility, family fallback, and the eligibility loop — to the
+		// workers advertising all required tags. The candidate map shares the
+		// *WorkerState pointers with stateMap, so PendingCount increments
+		// remain visible to later tasks in the batch. With no required
+		// capabilities the candidate set is the full fleet and behavior is
+		// identical to the pre-capability logic.
+		candidates := stateMap
+		if len(task.RequiredCapabilities) > 0 {
+			candidates = make(map[string]*WorkerState, len(stateMap))
+			for id, ws := range stateMap {
+				if workerHasCapabilities(ws, task.RequiredCapabilities) {
+					candidates[id] = ws
+				}
+			}
+			if len(candidates) == 0 {
+				// Fail loudly instead of silently widening to the full fleet:
+				// the Planner receives this error from `plan submit` and can
+				// relax the requirement or re-plan; nothing lands in a queue,
+				// so no wedge is possible.
+				return nil, fmt.Errorf("%w for task %q: no configured worker advertises required_capabilities %v; declare them under agents.workers.capabilities (or rely on runtime defaults) or relax the task's required_capabilities",
+					ErrNoAvailableWorker, task.Name, task.RequiredCapabilities)
+			}
+			slogc().Info("worker_candidates_filtered_by_capability",
+				"task", task.Name,
+				"required_capabilities", task.RequiredCapabilities,
+				"candidates", len(candidates),
+				"workers", len(stateMap))
+		}
+
 		requiredModel := GetModelForBloomLevel(task.BloomLevel, config.Boost)
 		// Honor a bandit / adaptive selector when it picks a model that at
-		// least one worker is configured for; otherwise keep the static
-		// bloom-derived model to preserve feasibility. Bandit arms are built
-		// from worker-configured models and may include codex/gemini; a
+		// least one candidate worker is configured for; otherwise keep the
+		// static bloom-derived model to preserve feasibility. Bandit arms are
+		// built from worker-configured models and may include codex/gemini; a
 		// RequireClaudeRuntime task must ignore such picks — honoring one
 		// would make the eligibility loop below skip every worker (claude
 		// workers fail the family match, non-claude workers fail the runtime
 		// check) and fail the assignment even with idle claude workers.
 		if ac.selector != nil {
 			if pick := ac.selector.SelectModel(task.BloomLevel, task.Name); pick != "" && pick != requiredModel {
-				if workerExistsForModel(stateMap, pick) &&
+				if workerExistsForModel(candidates, pick) &&
 					(!task.RequireClaudeRuntime || isClaudeRuntimeModel(pick)) {
 					requiredModel = pick
 				}
@@ -201,25 +261,30 @@ func AssignWorkers(
 		// sonnet-level task) are benign; underqualified assignments (sonnet
 		// handling an opus-level task) trigger an observability warning so
 		// operators can notice capability mismatches.
-		if !workerExistsForModel(stateMap, requiredModel) {
-			if fallback := chooseFallbackFamily(stateMap, requiredModel, task.RequireClaudeRuntime); fallback != "" {
+		if !workerExistsForModel(candidates, requiredModel) {
+			if fallback := chooseFallbackFamily(candidates, requiredModel, task.RequireClaudeRuntime); fallback != "" {
 				slogc().Warn("worker_model_fallback",
 					"task", task.Name,
 					"bloom_level", task.BloomLevel,
 					"required", requiredModel,
 					"fallback", fallback,
-					"reason", "no worker configured for required family")
+					"required_capabilities", task.RequiredCapabilities,
+					"reason", "no candidate worker configured for required family")
 				requiredModel = fallback
 			}
 		}
 
-		// Find eligible workers with matching model family and minimum pending.
-		// Workers configured with a full Claude model ID (e.g.
-		// "claude-opus-4-7") satisfy a required family alias ("opus") via
-		// modelFamily normalization.
+		// Find eligible workers with matching model family, ranked by
+		// preferred-capability match count, then minimum pending, then
+		// lexicographic worker ID. With no PreferredCapabilities every worker
+		// scores 0 and the ranking degenerates to the original
+		// least-loaded + lexicographic selection. Workers configured with a
+		// full Claude model ID (e.g. "claude-opus-4-7") satisfy a required
+		// family alias ("opus") via modelFamily normalization.
 		requiredFamily := modelFamily(requiredModel)
 		var bestWorker *WorkerState
-		for _, ws := range stateMap {
+		bestPreferred := -1
+		for _, ws := range candidates {
 			if modelFamily(ws.Model) != requiredFamily {
 				continue
 			}
@@ -229,41 +294,52 @@ func AssignWorkers(
 			if ws.PendingCount >= maxPending {
 				continue
 			}
+			preferred := countPreferredCapabilities(ws, task.PreferredCapabilities)
 			if bestWorker == nil ||
-				ws.PendingCount < bestWorker.PendingCount ||
-				(ws.PendingCount == bestWorker.PendingCount && ws.WorkerID < bestWorker.WorkerID) {
+				preferred > bestPreferred ||
+				(preferred == bestPreferred &&
+					(ws.PendingCount < bestWorker.PendingCount ||
+						(ws.PendingCount == bestWorker.PendingCount && ws.WorkerID < bestWorker.WorkerID))) {
 				bestWorker = ws
+				bestPreferred = preferred
 			}
 		}
 
 		if bestWorker == nil {
+			// Diagnostics below scan the capability-filtered candidate set so
+			// the error names the true bottleneck; capNote reminds operators
+			// when the pool was narrowed by required_capabilities.
+			capNote := ""
+			if len(task.RequiredCapabilities) > 0 {
+				capNote = fmt.Sprintf(" (candidates restricted by required_capabilities=%v)", task.RequiredCapabilities)
+			}
 			if task.RequireClaudeRuntime {
 				hasClaudeWorker := false
-				for _, ws := range stateMap {
+				for _, ws := range candidates {
 					if isClaudeRuntimeModel(ws.Model) {
 						hasClaudeWorker = true
 						break
 					}
 				}
 				if !hasClaudeWorker {
-					return nil, fmt.Errorf("%w for task %q: no claude-code workers configured; run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
-						ErrNoAvailableWorker, task.Name)
+					return nil, fmt.Errorf("%w for task %q: no claude-code workers configured%s; run_on_main tasks require a claude-code worker because only claude-code enforces the read-only main guard",
+						ErrNoAvailableWorker, task.Name, capNote)
 				}
 			}
 			// Distinguish "no workers with matching family" from "matching workers at capacity"
 			hasMatchingModel := false
-			for _, ws := range stateMap {
+			for _, ws := range candidates {
 				if modelFamily(ws.Model) == requiredFamily {
 					hasMatchingModel = true
 					break
 				}
 			}
 			if !hasMatchingModel {
-				return nil, fmt.Errorf("%w for task %q (model=%s): no workers configured for model %q (bloom_level=%d requires %s; use bloom_level 1-3 for sonnet or enable boost mode for opus)",
-					ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, task.BloomLevel, requiredModel)
+				return nil, fmt.Errorf("%w for task %q (model=%s): no workers configured for model %q%s (bloom_level=%d requires %s; use bloom_level 1-3 for sonnet or enable boost mode for opus)",
+					ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, capNote, task.BloomLevel, requiredModel)
 			}
-			return nil, fmt.Errorf("%w for task %q (model=%s): all %s workers at capacity (max_pending_tasks_per_worker=%d)",
-				ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, maxPending)
+			return nil, fmt.Errorf("%w for task %q (model=%s): all %s workers at capacity%s (max_pending_tasks_per_worker=%d)",
+				ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, capNote, maxPending)
 		}
 
 		assignments = append(assignments, WorkerAssignment{
@@ -322,6 +398,7 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 			WorkerID:     workerID,
 			Model:        workerModel,
 			PendingCount: pendingCount,
+			Capabilities: config.CapabilitiesFor(workerID),
 		})
 	}
 
@@ -359,6 +436,42 @@ func workerQueuePath(maestroDir, workerID string) string {
 // plannerQueueFilePath returns the path to the planner command queue file.
 func plannerQueueFilePath(maestroDir string) string {
 	return filepath.Join(maestroDir, "queue", "planner.yaml")
+}
+
+// workerHasCapabilities reports whether the worker advertises every tag in
+// required (exact string match). An empty required list is trivially
+// satisfied.
+func workerHasCapabilities(ws *WorkerState, required []string) bool {
+	for _, req := range required {
+		found := false
+		for _, c := range ws.Capabilities {
+			if c == req {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// countPreferredCapabilities returns how many of the preferred tags the
+// worker advertises. Duplicate preferred tags are counted once per listed
+// occurrence but a worker tag matches each at most once, so the score stays
+// comparable across workers for the same task.
+func countPreferredCapabilities(ws *WorkerState, preferred []string) int {
+	n := 0
+	for _, p := range preferred {
+		for _, c := range ws.Capabilities {
+			if c == p {
+				n++
+				break
+			}
+		}
+	}
+	return n
 }
 
 // workerExistsForModel reports whether at least one worker in stateMap is

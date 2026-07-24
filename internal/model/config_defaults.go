@@ -168,6 +168,12 @@ const (
 	// SelfImprovementConfig
 	DefaultArchiveMaxSize = 100
 
+	// FrictionConfig (C-5 friction-driven improvement loop, issue #26)
+	DefaultFrictionMinOccurrences     = 2
+	DefaultFrictionVerifyMinSuccesses = 2
+	DefaultFrictionMaxEntries         = 200
+	DefaultFrictionInjectCount        = 5
+
 	// ComplexityThresholds
 	DefaultSimpleMaxFiles   = 3
 	DefaultStandardMaxFiles = 10

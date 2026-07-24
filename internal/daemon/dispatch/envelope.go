@@ -78,14 +78,37 @@ func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (envelope.Saniti
 		safe = safe.Append(skillContent)
 	}
 
+	// Inject friction-driven improvement proposals (C-5 friction loop,
+	// issue #26; append after skills). Presentation to the Planner is the
+	// loop's endpoint — the daemon never applies template/config changes.
+	// The provider returns "" when the loop is disabled or nothing is
+	// actionable.
+	if prov := disp.getImprovementSection(); prov != nil {
+		if section := prov(); section != "" {
+			safe = safe.Append(section)
+			disp.dl.Logf(core.LogLevelInfo, "improvement_proposals_injected command=%s", cmd.ID)
+		}
+	}
+
 	return safe, nil
+}
+
+// skillSearchDirs returns the precedence-ordered skill source directories:
+// configured skills.extra_dirs (resolved against the project root) first,
+// then the bundled <maestro_dir>/skills catalog. Missing extra dirs are
+// skipped with a WARN inside ResolveSearchDirs.
+func (disp *Dispatcher) skillSearchDirs() []string {
+	bundledDir := filepath.Join(disp.maestroDir, "skills")
+	projectRoot := filepath.Dir(disp.maestroDir)
+	return skill.ResolveSearchDirs(disp.config.Skills.ExtraDirs, projectRoot, bundledDir, nil)
 }
 
 // buildSkillsSection loads and formats the skills section for a task or command.
 // It loads role-specific skills from skillRefs AND shared skills automatically.
-// Role-specific skills take priority over shared skills with the same name.
+// Role-specific skills take priority over shared skills with the same name,
+// and skills.extra_dirs take priority over the bundled catalog within a scope.
 func (disp *Dispatcher) buildSkillsSection(skillRefs []string, entityID, role string) (string, error) {
-	skillsDir := filepath.Join(disp.maestroDir, "skills")
+	skillsDirs := disp.skillSearchDirs()
 
 	// 1. Load skills from skill_refs.
 	refs := skillRefs
@@ -99,7 +122,7 @@ func (disp *Dispatcher) buildSkillsSection(skillRefs []string, entityID, role st
 	loaded := make([]skill.Content, 0, len(refs))
 	seen := make(map[string]struct{})
 	for _, ref := range refs {
-		sc, err := skill.ReadSkillWithRole(skillsDir, ref, role)
+		sc, err := skill.ReadSkillWithRoleDirs(skillsDirs, ref, role, nil)
 		if err != nil {
 			if policy == "error" {
 				return "", errors.Join(err)
@@ -116,7 +139,7 @@ func (disp *Dispatcher) buildSkillsSection(skillRefs []string, entityID, role st
 	}
 
 	// 2. Auto-inject shared skills (passing empty role scans only skills/share/).
-	sharedSkills, err := skill.ReadAllSkillsForRole(skillsDir, "", nil)
+	sharedSkills, err := skill.ReadAllSkillsForRoleDirs(skillsDirs, "", nil)
 	if err != nil {
 		disp.dl.Logf(core.LogLevelWarn, "shared_skills_read_failed %s=%s error=%v", role, entityID, err)
 	} else {

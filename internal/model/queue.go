@@ -114,6 +114,17 @@ type Task struct {
 	// resolution tasks that must operate directly on the integration branch to
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
+	// RequiredCapabilities lists capability tags the assigned worker must all
+	// advertise (agents.workers.capabilities, or the runtime defaults from
+	// DefaultCapabilitiesForRuntime). Enforced as a hard candidate filter at
+	// plan-submit assignment time (plan.AssignWorkers); recorded on the queue
+	// entry for observability and downstream tooling. Empty = unconstrained.
+	RequiredCapabilities []string `yaml:"required_capabilities,omitempty" json:"required_capabilities,omitempty"`
+	// PreferredCapabilities lists capability tags that bias worker selection:
+	// among eligible workers, those matching more preferred tags win before
+	// the least-loaded / lexicographic tie-breaks. Soft only — a task is still
+	// assignable when no worker matches any preferred tag.
+	PreferredCapabilities []string `yaml:"preferred_capabilities,omitempty" json:"preferred_capabilities,omitempty"`
 	// OperationType classifies the task for admission control. Permitted
 	// values are OperationTypeVerify / Repair, or empty for normal
 	// (unconstrained) tasks. Classification is deterministic and explicit:

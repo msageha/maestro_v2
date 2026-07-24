@@ -53,6 +53,11 @@ type Dispatcher struct {
 	// a proven repair strategy for a retry task's failure pattern (C-5
 	// loop). Returns "" for non-retry tasks or unknown patterns.
 	repairHint func(*model.Task) string
+	// improvementSection, when non-nil, returns an injectable DATA section
+	// carrying the actionable friction-driven improvement proposals for the
+	// Planner (C-5 friction loop, issue #26). Returns "" when nothing is
+	// actionable or the loop is disabled.
+	improvementSection func() string
 }
 
 // New creates a new Dispatcher.
@@ -105,6 +110,22 @@ func (disp *Dispatcher) getRepairHint() func(*model.Task) string {
 	disp.mu.RLock()
 	defer disp.mu.RUnlock()
 	return disp.repairHint
+}
+
+// SetImprovementSectionProvider wires the C-5 friction-improvement proposal
+// source injected into Planner command envelopes. Late-bound from daemon
+// startup because the PhaseCManager that backs it is created after the
+// dispatcher.
+func (disp *Dispatcher) SetImprovementSectionProvider(f func() string) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.improvementSection = f
+}
+
+func (disp *Dispatcher) getImprovementSection() func() string {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.improvementSection
 }
 
 // SetTaskAliveChecker wires the queue-state probe the inline retry loop

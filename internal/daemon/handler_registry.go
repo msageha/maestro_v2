@@ -131,6 +131,10 @@ func (qh *QueueHandler) SetPhaseCManager(m *PhaseCManager) {
 	// C-5 repair loop: retry tasks get their predecessor's proven repair
 	// strategy injected at dispatch. Nil-safe on the manager side.
 	qh.dispatcher.SetRepairHintProvider(m.RepairHintForRetry)
+	// C-5 friction loop (issue #26): Planner commands get the actionable
+	// improvement proposals injected as a DATA section. Nil-safe on the
+	// manager side; returns "" when the friction loop is disabled.
+	qh.dispatcher.SetImprovementSectionProvider(m.ImprovementProposalSection)
 }
 
 // SetModelSelector wires the adaptive model selector into the result handler

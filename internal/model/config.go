@@ -26,6 +26,7 @@ type Config struct {
 	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
 	Review             ReviewConfig         `yaml:"review"`
 	ABTest             ABTestConfig         `yaml:"ab_test,omitempty"`
+	CostTracking       CostTrackingConfig   `yaml:"cost_tracking,omitempty"`
 
 	// C-1 Evolution
 	Evolution EvolutionConfig `yaml:"evolution,omitempty"`
@@ -48,11 +49,23 @@ type Config struct {
 
 // SkillsConfig controls the skill reference feature for tasks.
 type SkillsConfig struct {
-	Enabled          bool              `yaml:"enabled"`
-	MaxRefsPerTask   *int              `yaml:"max_refs_per_task"`
-	MaxBodyChars     *int              `yaml:"max_body_chars"`
-	MissingRefPolicy string            `yaml:"missing_ref_policy"`
-	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
+	Enabled          bool   `yaml:"enabled"`
+	MaxRefsPerTask   *int   `yaml:"max_refs_per_task"`
+	MaxBodyChars     *int   `yaml:"max_body_chars"`
+	MissingRefPolicy string `yaml:"missing_ref_policy"`
+	// ExtraDirs lists additional skill source directories searched before
+	// the bundled <maestro_dir>/skills catalog. Each entry is an absolute
+	// path or a path relative to the project root and uses the same
+	// <role>/<name>/SKILL.md layout as the bundled catalog. Unlike
+	// .maestro/skills (gitignored, overwritten by setup/repair), extra dirs
+	// are ordinary repo files, so they are the supported home for
+	// version-controlled, team-supplied skills. Earlier entries take
+	// precedence, and every entry shadows the bundled catalog on same-name
+	// conflicts; conflicts are reported with a WARN, never silently.
+	// Missing directories are skipped with a WARN at use time so a stale
+	// config never stops the daemon.
+	ExtraDirs   []string          `yaml:"extra_dirs"`
+	AutoCollect autoCollectConfig `yaml:"auto_collect"`
 }
 
 // EffectiveMaxRefsPerTask returns MaxRefsPerTask, or DefaultMaxRefsPerTask when unset.
@@ -144,6 +157,14 @@ type WorkerConfig struct {
 	Models         map[string]string `yaml:"models,omitempty"`
 	Boost          bool              `yaml:"boost"`
 	BasePromptMode string            `yaml:"base_prompt_mode"`
+	// Capabilities optionally overrides the capability tags each worker
+	// advertises (worker_id → tags). Workers without an entry advertise the
+	// default capability set of their runtime — see
+	// DefaultCapabilitiesForRuntime. An explicit empty list declares "no
+	// capabilities", excluding the worker from every task that sets
+	// required_capabilities. Tags are matched by exact string comparison
+	// against task required/preferred capabilities.
+	Capabilities map[string][]string `yaml:"capabilities,omitempty"`
 }
 
 // EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
@@ -166,6 +187,19 @@ func (w WorkerConfig) ModelFor(workerID string) string {
 		return w.DefaultModel
 	}
 	return "sonnet"
+}
+
+// CapabilitiesFor returns the capability tags advertised by the given worker:
+// the explicit agents.workers.capabilities entry when one exists (including
+// an explicit empty list, which means "no capabilities"), otherwise the
+// default capability set of the runtime inferred from the worker's
+// configured model (ParseRuntimeFromModel over ModelFor).
+func (w WorkerConfig) CapabilitiesFor(workerID string) []string {
+	if caps, ok := w.Capabilities[workerID]; ok {
+		return caps
+	}
+	runtime, _ := ParseRuntimeFromModel(w.ModelFor(workerID))
+	return DefaultCapabilitiesForRuntime(runtime)
 }
 
 // --- ContinuousConfig ---

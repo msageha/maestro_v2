@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/clock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -41,6 +39,17 @@ type Handler struct {
 	maestroDir  string
 	clock       Clock
 	resultCache map[string]*resultFileEntry
+	// usageCollector feeds the opt-in cost/token usage section. Lazily
+	// initialized to the claude-code session-file collector on the first
+	// scan with cost_tracking.enabled, unless explicitly set (or cleared)
+	// via SetUsageCollector.
+	usageCollector    UsageCollector
+	usageCollectorSet bool
+	// usageLastCollectedAt is when the last usage collection pass ran.
+	// Collection re-stats every retained session transcript, so it is
+	// throttled to cost_tracking.collect_interval_sec instead of running
+	// on every scan tick; the zero value forces the first scan to collect.
+	usageLastCollectedAt time.Time
 }
 
 // NewHandler creates a new Handler.
@@ -76,7 +85,9 @@ func (h *Handler) UpdateMetrics(
 		metrics.SchemaVersion = 1
 		metrics.FileType = "state_metrics"
 	} else {
-		if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		// SafeUnmarshal enforces anchor/alias limits (billion-laughs
+		// defence) on the state file before the full decode.
+		if err := yamlutil.SafeUnmarshal(data, &metrics); err != nil {
 			return fmt.Errorf("parse metrics: %w", err)
 		}
 	}
@@ -144,6 +155,10 @@ func (h *Handler) UpdateMetrics(
 	metrics.WorktreeCommandsStalled = gauges.WorktreeCommandsStalled
 	metrics.BakFilesCount = gauges.BakFilesCount
 
+	// Opt-in cost/token usage (issue #32): recomputed from runtime session
+	// files each scan; best-effort, never fails the metrics write.
+	h.updateUsage(&metrics)
+
 	// Update heartbeat and timestamp
 	heartbeat := scanStart.UTC().Format(time.RFC3339)
 	metrics.DaemonHeartbeat = &heartbeat
@@ -197,7 +212,7 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 		}
 
 		var rf model.TaskResultFile
-		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &rf); err != nil {
 			h.logger.Warnf("parse result file %s: %v", name, err)
 			continue
 		}
