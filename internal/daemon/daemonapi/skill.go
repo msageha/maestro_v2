@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -169,6 +170,13 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 	candidate.StagedPath = stagedRel
 	candidate.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
+		// Roll back the staging directory created above: the candidate is
+		// still pending on disk, and a leftover draft would make every retry
+		// fail with ErrStagedSkillExists (a permanent wedge). Removing it
+		// keeps approve retryable after a transient I/O failure.
+		if rmErr := os.RemoveAll(filepath.Dir(staged.Path)); rmErr != nil && h.logWarnf != nil {
+			h.logWarnf("skill_approve rollback failed: staged draft %s left behind; remove it manually before retrying: %v", staged.Path, rmErr)
+		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
 

@@ -288,7 +288,8 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 
 // ReadSkillWithRoleDirs reads a skill file from an ordered list of skill
 // source directories using role-based fallback:
-//  1. <dir>/<role>/<skillName>/SKILL.md for each dir in order (directory name match)
+//  1. <dir>/<role>/<skillName>/SKILL.md for each dir in order (directory name
+//     match; an empty role probes the root-level <dir>/<skillName>/SKILL.md)
 //  2. <dir>/share/<skillName>/SKILL.md for each dir in order (shared directory name match)
 //  3. Scan the same directories for a skill whose frontmatter "name" field
 //     matches skillName (name-based fallback).
@@ -310,8 +311,17 @@ func ReadSkillWithRoleDirs(skillsDirs []string, skillName, role string, logger *
 
 	// Fast path: try exact directory name match, role scope across all
 	// source directories before the shared scope.
+	scopes := roleScopes(role)
+	if role == "" {
+		// Backward compatibility: the pre-multi-dir ReadSkillWithRole built
+		// its fast-path candidate as filepath.Join(skillsDir, role, name,
+		// "SKILL.md"), which for an empty role collapses to the root-level
+		// <dir>/<skillName>/SKILL.md. Keep probing that location first so
+		// callers relying on root-level layouts still resolve.
+		scopes = append([]string{""}, scopes...)
+	}
 	var candidates []skillPathCandidate
-	for _, scope := range roleScopes(role) {
+	for _, scope := range scopes {
 		for _, dir := range skillsDirs {
 			candidates = append(candidates, skillPathCandidate{
 				path:  filepath.Join(dir, scope, skillName, "SKILL.md"),

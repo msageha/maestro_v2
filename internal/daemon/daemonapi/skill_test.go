@@ -206,6 +206,65 @@ func TestHandleApprove_StagedDuplicate(t *testing.T) {
 	}
 }
 
+func TestHandleApprove_RetryAfterCandidateWriteFailure(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: cannot make directories read-only")
+	}
+	cand := pendingCandidate("skc_1", "pattern one with concrete steps and details", 2)
+	h, maestroDir := newTestSkillHandler(t, []model.SkillCandidate{cand}, nil)
+
+	stateDir := filepath.Join(maestroDir, "state")
+	stagingRoot := filepath.Join(stateDir, "skill_staging")
+	if err := os.MkdirAll(stagingRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make state/ read-only so WriteCandidates (atomic temp-file write inside
+	// state/) fails while staging (inside the pre-created, still writable
+	// skill_staging/) succeeds.
+	if err := os.Chmod(stateDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(stateDir, 0o755); err != nil {
+			t.Errorf("restore state dir permissions: %v", err)
+		}
+	})
+
+	resp := h.HandleApprove(approveRequest(t, SkillApproveParams{CandidateID: "skc_1", SkillName: "retry-skill"}))
+	if resp.Success {
+		t.Fatal("expected approve to fail when the candidate state cannot be written")
+	}
+	if resp.Error.Code != uds.ErrCodeInternal {
+		t.Errorf("expected INTERNAL error code, got %+v", resp.Error)
+	}
+	// The staged draft must be rolled back; a leftover draft would wedge every
+	// retry with a DUPLICATE error while the candidate is still pending.
+	if _, err := os.Stat(filepath.Join(stagingRoot, "retry-skill")); !os.IsNotExist(err) {
+		t.Fatalf("staged draft not rolled back after candidate write failure (stat err: %v)", err)
+	}
+
+	// Once the transient failure clears, the same approve must succeed.
+	if err := os.Chmod(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	resp = h.HandleApprove(approveRequest(t, SkillApproveParams{CandidateID: "skc_1", SkillName: "retry-skill"}))
+	if !resp.Success {
+		t.Fatalf("retry after transient write failure should succeed, got %+v", resp.Error)
+	}
+	result := decodeApproveResult(t, resp)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(maestroDir), result.StagedPath)); err != nil {
+		t.Errorf("staged draft missing after successful retry: %v", err)
+	}
+	candidates, err := skill.ReadCandidates(filepath.Join(stateDir, "skill_candidates.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates[0].Status != "approved" {
+		t.Errorf("candidate status = %q, want approved", candidates[0].Status)
+	}
+}
+
 func TestHandleApprove_NonPendingAndMissing(t *testing.T) {
 	t.Parallel()
 	cand := pendingCandidate("skc_1", "some pattern content here", 2)
