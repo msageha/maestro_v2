@@ -1209,3 +1209,27 @@ Usage: maestro doctor [--json] [--probe-timeout-sec <n>]
 - **汎用 bridge registry 化はしない**: 検証対象は Go 実装の `RuntimeDef` registry（`internal/agent/runtime_launcher.go`）に登録済みの runtime のみ。新 runtime の追加は引き続き Go 実装で行う。
 - 実 LLM への test prompt 疎通確認は行わない（コスト・副作用があるため非実装。binary/version/auth チェックが既定かつ唯一のモード）。
 - `--json` で機械可読なレポート（`tmux` / `runtimes[]` / `ok`）を出力する。
+
+## 5.19 maestro hud（読み取り専用 TUI 観測 HUD）
+
+**責務**: `.maestro/` の可観測状態（state/ ・ queue/ ・ results/ ・ dead_letters/ ・ quarantine/）を tmux ネイティブな TUI で継続表示する。#20 Web ダッシュボードの低リスク代替（読み取り専用・HTTP/認証/pty 書込なしで #23 の脅威表面を構造的に回避）
+
+```
+Usage: maestro hud [--interval <sec>] [--width <cols>] [--once] [--no-color] [--no-history]
+```
+
+1. `.maestro/` を 1〜10 秒周期（既定 2 秒）でポーリングし、以下のセクションを 1 画面に描画する:
+   - **DAEMON**: `state/metrics.yaml` の `daemon_heartbeat` 経過時間から running / stale / stopped を導出（UDS ping はしない = デーモン非依存）
+   - **QUEUES**: 全 queue の pending / in_progress 深度（`internal/status.CollectQueueCounts` を `maestro status` と共有。導出ロジックの二重実装なし）
+   - **COMMANDS**: `state/commands/*.yaml` × `state/worktrees/*.yaml` から plan_status / フェーズ進捗 / task_states バケット / integration 状態のボード
+   - **ATTENTION**: `queue/planner_signals.yaml` の未処理シグナル、dead_letters / quarantine のファイル数、usage の budget alert
+   - **PROGRESS（snapshot diff）**: counters / queue 深度 / トークン / コストの「前回サンプル差分」と「約 24h 前 baseline 差分」
+   - **USAGE**: `state/metrics.yaml` の `usage` セクション（per-agent / per-command のトークン・コスト。`tokens_known: false` の agent は unknown と明示）
+   - **SELF-IMPROVEMENT**: `state/learnings.yaml` / `state/skill_candidates.yaml` の表示（C-5 / skill-factory が生むシグナルの表示に徹し、検出は再実装しない）
+   - **RECENT RESULTS**: `results/*.yaml` の直近エントリ
+2. **読み取り専用の厳守**: HUD が書くのは自身の snapshot 差分トレイル `state/hud_history.jsonl`（JSONL 追記・変化時のみ・7 日で prune）のみで、デーモンはこのファイルを読み書きしない。control-plane 操作（queue write / UDS 変異）は一切持たず、operator アクションは通常の `maestro` CLI に委ねる
+3. **graceful degradation**: 各セクションは独立に収集され、読めないファイルは当該セクションのみ `unavailable` 表示（デーモン不在でも起動して待てる）。YAML 読み取りは `internal/yaml.SafeUnmarshal`（billion-laughs 防御）とサイズ上限を通す
+4. **端末制御は stdlib のみ**: alternate screen（終了時に復元）+ ANSI エスケープ + 定期再描画。SIGINT / SIGTERM / `q`+Enter で復元して終了。`NO_COLOR` / `--no-color` で SGR を全て抑止。幅は `--width` > `$COLUMNS` > 100 の保守的解決（ioctl・外部 TUI ライブラリ不使用）
+5. `--once` は 1 フレームを stdout に出力して終了する完全読み取り専用モード（履歴も書かない。スクリプト・非 TTY 用）。`--no-history` は常駐時も履歴を永続化しない（差分はメモリ内のみ）
+
+> **tmux socket 分離との関係**: HUD は tmux を参照せずファイルのみを読む。対象インスタンスの同定は `MAESTRO_DIR` / カレントディレクトリ祖先探索による `.maestro/` 解決（per-instance socket 分離と同じキー）で行うため、複数 checkout が並走していても他インスタンスの状態を混読しない。

@@ -10,7 +10,7 @@ maestro/
 ├── cmd/
 │   └── maestro/
 │       ├── main.go                    # エントリポイント（サブコマンドルーティング）
-│       └── cmd_*.go                   # 各サブコマンド（setup/up/down/status/queue/result/plan/agent/worker/skill/persona/verify/task/dashboard）
+│       └── cmd_*.go                   # 各サブコマンド（setup/up/down/status/hud/queue/result/plan/agent/worker/skill/persona/verify/task/dashboard）
 ├── internal/
 │   ├── daemon/                        # 常駐プロセス本体（最大の複雑度を持つ）
 │   │   ├── daemon.go                  # デーモンプロセス（UDS + メインループ + PhaseCManager 配線）
@@ -42,6 +42,7 @@ maestro/
 │   ├── worker/                        # Worker 側ヘルパ・契約
 │   ├── bridge/, contract/, envelope/  # メッセージエンベロープ・契約境界
 │   ├── events/, metrics/, status/     # Trace JSONL（S3-2）/ メトリクス / 状態表示
+│   ├── hud/                           # 読み取り専用 TUI 観測 HUD（`maestro hud`。collector + snapshot diff + 純関数レンダラ）
 │   ├── uds/                           # Unix ドメインソケットプロトコル（length-prefix + JSON）
 │   ├── yaml/                          # アトミック書き込み + schema_version 検証 + quarantine
 │   ├── lock/                          # sync.Mutex ベースの排他制御（MutexMap）
