@@ -1176,14 +1176,17 @@ Usage: maestro skill <list|candidates|approve|reject> [options]
        maestro persona list
 ```
 
-| コマンド                                                          | 責務                                                                                    |
-| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
-| `maestro skill list --role <role>`                                | 指定 role に登録済みの skill 一覧を表示                                                 |
-| `maestro skill candidates [--status pending\|approved\|rejected]` | Worker のタスク結果から蓄積された skill 候補（`state/skill_candidates.yaml`）を一覧表示 |
-| `maestro skill approve` / `reject`                                | skill 候補を承認 / 却下（承認されたものが正式な skill として参照可能になる）            |
-| `maestro persona list`                                            | 登録済み persona の一覧表示                                                             |
+| コマンド                                                                            | 責務                                                                                                                                                                      |
+| ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `maestro skill list --role <role>`                                                  | 指定 role に登録済みの skill 一覧を表示（`skills.extra_dirs` + bundled `.maestro/skills` を dispatch 時と同じ precedence で探索）                                         |
+| `maestro skill candidates [--status pending\|approved\|rejected]`                   | Worker のタスク結果から蓄積された skill 候補（`state/skill_candidates.yaml`、§4.11）を一覧表示。既存 skill との類似（`similar_skills`）と staging パスも表示する          |
+| `maestro skill approve <id> [--name <skill-name>] [--description <text>] [--force]` | skill 候補を承認し、`state/skill_staging/<name>/SKILL.md` に完全な frontmatter 付き草稿を生成して skill-anatomy validator（#11）を通す。**live library には書き込まない** |
+| `maestro skill reject <id>`                                                         | skill 候補を却下                                                                                                                                                          |
+| `maestro persona list`                                                              | 登録済み persona の一覧表示                                                                                                                                               |
 
-> skill 候補の蓄積は将来的な自己改善（[REQUIREMENTS.md](REQUIREMENTS.md) C-5）の足場であり、承認は人間 / オペレーターのゲートを経る。Daemon が候補を自動承認することはない。
+**skill-factory の承認フロー（propose-not-auto-save）**: Worker 報告（`--skill-candidates`）→ デーモンが候補として蓄積・occurrences 集計・既存 skill との類似検出 → 操作員が `maestro skill candidates` でレビュー → `approve` で staging に草稿生成（anatomy validator の hard rule を通過しなければ承認は失敗する）→ **人間が草稿をレビューし、`skills.extra_dirs` 配下（または `templates/skills/`）へ git でコピー・commit して昇格**。承認の直列ゲートは (1) occurrences >= 2 の値ゲート、(2) 既存 skill との dedup（類似検出時は既存 skill への参照を提示して reject を促す。`--force` で上書き可、名前衝突は `--force` 不可）、(3) anatomy validator、(4) 人間の昇格判断。
+
+> skill 候補の蓄積は自己改善（[REQUIREMENTS.md](REQUIREMENTS.md) C-5）の足場であり、承認は人間 / オペレーターのゲートを経る。Daemon が候補を自動承認することはなく、staging より先（live library / git）へ自動で書き込むこともない。
 
 ## 5.18 maestro doctor（ワンショット）
 

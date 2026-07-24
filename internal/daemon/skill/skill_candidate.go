@@ -48,29 +48,35 @@ func WriteCandidates(path string, candidates []model.SkillCandidate) error {
 }
 
 // AddOrUpdateCandidate merges a new skill candidate content into the existing list.
-// If the same content already exists, Occurrences is incremented and commandID is
-// appended (if not already present). If the candidate is not pending, it is skipped.
-// Otherwise a new candidate is created with status "pending".
-func AddOrUpdateCandidate(candidates []model.SkillCandidate, content, commandID, now string, idFunc func() (string, error)) ([]model.SkillCandidate, error) {
-	normalized := strings.TrimSpace(content)
-	if normalized == "" {
+// A report matches an existing candidate when the whitespace-normalized content
+// is identical, or when the token similarity reaches CandidateMergeThreshold
+// (near-identical rewordings of the same pattern must accumulate into one
+// Occurrences counter, because the 2x+ repetition threshold is the value gate
+// for approval). On a match against a pending candidate, Occurrences is
+// incremented and commandID appended (once per command); non-pending matches
+// (approved/rejected candidates are frozen) are skipped. Otherwise a new
+// pending candidate is created, annotated with similarSkills — the
+// "<role>/<name>" references of existing library skills that already cover a
+// similar pattern (dedup hint for the operator).
+func AddOrUpdateCandidate(candidates []model.SkillCandidate, content, commandID, now string, idFunc func() (string, error), similarSkills []string) ([]model.SkillCandidate, error) {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
 		return candidates, nil
 	}
 
-	for i, c := range candidates {
-		if c.Content == normalized {
-			// Skip if not pending (approved/rejected candidates are frozen)
-			if c.Status != "pending" {
-				return candidates, nil
-			}
-			// Only increment if this commandID hasn't been recorded yet
-			if !slices.Contains(c.CommandIDs, commandID) {
-				candidates[i].Occurrences++
-				candidates[i].CommandIDs = append(candidates[i].CommandIDs, commandID)
-				candidates[i].UpdatedAt = now
-			}
+	if idx, matched := findMatchingCandidate(candidates, trimmed); matched {
+		c := &candidates[idx]
+		// Skip if not pending (approved/rejected candidates are frozen)
+		if c.Status != "pending" {
 			return candidates, nil
 		}
+		// Only increment if this commandID hasn't been recorded yet
+		if !slices.Contains(c.CommandIDs, commandID) {
+			c.Occurrences++
+			c.CommandIDs = append(c.CommandIDs, commandID)
+			c.UpdatedAt = now
+		}
+		return candidates, nil
 	}
 
 	// New candidate
@@ -80,14 +86,41 @@ func AddOrUpdateCandidate(candidates []model.SkillCandidate, content, commandID,
 	}
 
 	candidates = append(candidates, model.SkillCandidate{
-		ID:          id,
-		Content:     normalized,
-		Occurrences: 1,
-		CommandIDs:  []string{commandID},
-		CreatedAt:   now,
-		UpdatedAt:   now,
-		Status:      "pending",
+		ID:            id,
+		Content:       trimmed,
+		Occurrences:   1,
+		CommandIDs:    []string{commandID},
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		Status:        "pending",
+		SimilarSkills: slices.Clone(similarSkills),
 	})
 
 	return candidates, nil
+}
+
+// findMatchingCandidate locates the existing candidate the new content should
+// merge into: first by exact whitespace-normalized equality, then by token
+// similarity at CandidateMergeThreshold. Exact matches win over fuzzy ones so
+// a verbatim re-report always lands on its original entry.
+func findMatchingCandidate(candidates []model.SkillCandidate, content string) (int, bool) {
+	normalized := normalizeCandidateContent(content)
+	for i, c := range candidates {
+		if normalizeCandidateContent(c.Content) == normalized {
+			return i, true
+		}
+	}
+	for i, c := range candidates {
+		if TokenJaccard(c.Content, content) >= CandidateMergeThreshold {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
+// normalizeCandidateContent collapses all whitespace runs to a single space
+// so formatting-only differences (line wrapping, indentation) do not split
+// the occurrence count across duplicate candidates.
+func normalizeCandidateContent(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }

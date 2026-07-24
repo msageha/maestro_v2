@@ -828,3 +828,36 @@ quarantined →（terminal。operator の手動介入が必要）
 | notification (`queue/orchestrator.yaml`) | `completed` \| `dead_letter`                            |
 
 > 上記の一般化された遷移図はスーパーセットである。notification は配信成功 (`completed`) または配信上限超過 (`dead_letter`) のみ遷移し、`failed` / `cancelled` には遷移しない。
+
+## 4.11 state/skill_candidates.yaml（skill-factory: 候補蓄積と staging）
+
+Worker が `maestro result write --skill-candidates` で報告した反復成功パターンの蓄積ファイル。デーモンが `result write` 処理時に集約する（`internal/daemon/result_write_learnings.go` の `writeSkillCandidates`）。
+
+```yaml
+schema_version: 1
+file_type: "state_skill_candidates"
+candidates:
+  - id: "skc_1771722600_a1b2c3d4" # type prefix は skc（§4.0）
+    content: | # Worker 報告の原文（1 行目がタイトル。承認時の skill 名 slug の元）
+      flaky test の切り分け手順
+      1. ...
+    occurrences: 2 # 観測回数。同一 command からの重複報告は加算しない
+    command_ids: [
+      "cmd_...",
+      "cmd_...",
+    ] # 観測元 command（grounding。生成草稿に転記される）
+    created_at: "2026-02-22T10:05:00Z"
+    updated_at: "2026-02-22T11:00:00Z"
+    status: "pending" # pending | approved | rejected
+    skill_name: "flaky-test-triage" # 承認時に確定した kebab-case 名（approved のみ）
+    staged_path: ".maestro/state/skill_staging/flaky-test-triage/SKILL.md" # 生成草稿のパス（approved のみ）
+    similar_skills: [
+      "worker/tdd-red-green-refactor",
+    ] # 登録時に検出した既存 skill との類似（dedup ヒント。任意）
+```
+
+- **集約時の dedup**: 同一内容（空白正規化後の一致、またはトークン類似度 >= 0.8 の近似一致）の報告は既存 pending 候補の `occurrences` に加算され、新規エントリを作らない。近似一致でも `content` は初回報告の原文を保持する
+- **既存 skill との類似検出**: 登録時に skill ライブラリ全体（bundled `.maestro/skills` + `skills.extra_dirs`）と内容類似を照合し、類似 skill を `similar_skills` に記録する（操作員への reject 推奨ヒント。自動 reject はしない）
+- **承認（`maestro skill approve`）の効果**: live library への書き込みでは**ない**。`state/skill_staging/<skill_name>/SKILL.md` に完全な frontmatter（name/description/version/tags/priority）付きの草稿を生成し、skill-anatomy validator（hard rule）を通過した場合のみ `status: approved` + `skill_name` / `staged_path` を記録する。validator 違反時は staging を掃除して承認自体が失敗する
+- **昇格は人間の git 操作**: staging の草稿を `skills.extra_dirs` 配下（または `templates/skills/`）へコピーして commit するのは人間の責務。デーモンは staging より先へ書き込まず、自動 commit もしない
+- **値ゲート**: `occurrences < 2` の候補、または `similar_skills` 相当の類似が承認時に検出された候補は、`--force` 無しでは承認できない。既存 skill との名前衝突は `--force` でも承認できない

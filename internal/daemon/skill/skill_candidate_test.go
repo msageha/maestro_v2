@@ -79,7 +79,7 @@ func TestAddOrUpdateCandidate_NewCandidate(t *testing.T) {
 		return fmt.Sprintf("id-%d", seq), nil
 	}
 
-	got, err := AddOrUpdateCandidate(candidates, "new skill content", "cmd1", "2025-01-01T00:00:00Z", idFunc)
+	got, err := AddOrUpdateCandidate(candidates, "new skill content", "cmd1", "2025-01-01T00:00:00Z", idFunc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -104,7 +104,7 @@ func TestAddOrUpdateCandidate_ExistingIncrement(t *testing.T) {
 	}
 	idFunc := func() (string, error) { return "unused", nil }
 
-	got, err := AddOrUpdateCandidate(candidates, "reuse this", "cmd2", "2025-01-02T00:00:00Z", idFunc)
+	got, err := AddOrUpdateCandidate(candidates, "reuse this", "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestAddOrUpdateCandidate_DuplicateCommandID(t *testing.T) {
 	}
 	idFunc := func() (string, error) { return "unused", nil }
 
-	got, err := AddOrUpdateCandidate(candidates, "same content", "cmd1", "2025-01-03T00:00:00Z", idFunc)
+	got, err := AddOrUpdateCandidate(candidates, "same content", "cmd1", "2025-01-03T00:00:00Z", idFunc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestAddOrUpdateCandidate_EmptyContent(t *testing.T) {
 	var candidates []model.SkillCandidate
 	idFunc := func() (string, error) { return "unused", nil }
 
-	got, err := AddOrUpdateCandidate(candidates, "  ", "cmd1", "2025-01-01T00:00:00Z", idFunc)
+	got, err := AddOrUpdateCandidate(candidates, "  ", "cmd1", "2025-01-01T00:00:00Z", idFunc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestAddOrUpdateCandidate_NonPendingSkipped(t *testing.T) {
 	}
 	idFunc := func() (string, error) { return "unused", nil }
 
-	got, err := AddOrUpdateCandidate(candidates, "approved skill", "cmd2", "2025-01-02T00:00:00Z", idFunc)
+	got, err := AddOrUpdateCandidate(candidates, "approved skill", "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,5 +171,82 @@ func TestAddOrUpdateCandidate_NonPendingSkipped(t *testing.T) {
 	}
 	if len(got[0].CommandIDs) != 1 {
 		t.Errorf("expected CommandIDs unchanged for non-pending, got %v", got[0].CommandIDs)
+	}
+}
+
+func TestAddOrUpdateCandidate_WhitespaceNormalizedMerge(t *testing.T) {
+	t.Parallel()
+	candidates := []model.SkillCandidate{
+		{ID: "sc1", Content: "run go test\nwith -count=1", Occurrences: 1, CommandIDs: []string{"cmd1"}, Status: "pending"},
+	}
+	idFunc := func() (string, error) { return "unused", nil }
+
+	// Same content with different line wrapping must merge, not duplicate.
+	got, err := AddOrUpdateCandidate(candidates, "run  go test with -count=1", "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected merge into 1 candidate, got %d", len(got))
+	}
+	if got[0].Occurrences != 2 {
+		t.Errorf("expected Occurrences=2 after normalized merge, got %d", got[0].Occurrences)
+	}
+}
+
+func TestAddOrUpdateCandidate_FuzzyMerge(t *testing.T) {
+	t.Parallel()
+	candidates := []model.SkillCandidate{
+		{ID: "sc1", Content: "always run go test with the -count=1 flag to invalidate the test cache before reporting", Occurrences: 1, CommandIDs: []string{"cmd1"}, Status: "pending"},
+	}
+	idFunc := func() (string, error) { return "unused", nil }
+
+	// Near-identical rewording (>= CandidateMergeThreshold) merges into the
+	// existing pending candidate so Occurrences accumulates.
+	reworded := "always run go test with the -count=1 flag to invalidate the test cache before reporting results"
+	got, err := AddOrUpdateCandidate(candidates, reworded, "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected fuzzy merge into 1 candidate, got %d", len(got))
+	}
+	if got[0].Occurrences != 2 {
+		t.Errorf("expected Occurrences=2 after fuzzy merge, got %d", got[0].Occurrences)
+	}
+	if got[0].Content != candidates[0].Content {
+		t.Errorf("merge must keep the first-seen content, got %q", got[0].Content)
+	}
+}
+
+func TestAddOrUpdateCandidate_DistinctContentNotMerged(t *testing.T) {
+	t.Parallel()
+	candidates := []model.SkillCandidate{
+		{ID: "sc1", Content: "always run go test with -count=1 to invalidate cache", Occurrences: 1, CommandIDs: []string{"cmd1"}, Status: "pending"},
+	}
+	idFunc := func() (string, error) { return "id-new", nil }
+
+	got, err := AddOrUpdateCandidate(candidates, "use terraform state locking via dynamodb before apply", "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected distinct pattern to create a new candidate, got %d", len(got))
+	}
+}
+
+func TestAddOrUpdateCandidate_SimilarSkillsStored(t *testing.T) {
+	t.Parallel()
+	idFunc := func() (string, error) { return "id-1", nil }
+
+	got, err := AddOrUpdateCandidate(nil, "some new pattern", "cmd1", "2025-01-01T00:00:00Z", idFunc, []string{"worker/existing-skill"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 candidate, got %d", len(got))
+	}
+	if len(got[0].SimilarSkills) != 1 || got[0].SimilarSkills[0] != "worker/existing-skill" {
+		t.Errorf("expected similar skills annotation, got %v", got[0].SimilarSkills)
 	}
 }

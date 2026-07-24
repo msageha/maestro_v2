@@ -310,13 +310,20 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 		return model.GenerateID(model.IDTypeSkillCandidate)
 	}
 
+	// Registration-time dedup hint: annotate each new candidate with the
+	// existing library skills (bundled catalog + skills.extra_dirs) that
+	// already cover a similar pattern, so the operator can reject
+	// re-proposals of what the 31+ shipped skills already handle.
+	library := skill.ListAllSkills(h.skillSearchDirs(), nil)
+
 	added := 0
 	for _, content := range params.SkillCandidates {
 		if content == "" {
 			continue
 		}
 		before := len(candidates)
-		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
+		similar := skill.FindSimilarSkills(content, library, skill.LibraryDedupThreshold)
+		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc, similar)
 		if err != nil {
 			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", sanitizeContentForLog(content), err)
 			continue
@@ -332,4 +339,13 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 
 	h.logFn(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
 	return nil
+}
+
+// skillSearchDirs returns the precedence-ordered skill source directories
+// (configured skills.extra_dirs, then the bundled <maestroDir>/skills
+// catalog), mirroring the dispatch-time resolution in dispatch/envelope.go.
+func (h *ResultWriteAPI) skillSearchDirs() []string {
+	bundledDir := filepath.Join(h.maestroDir, "skills")
+	projectRoot := filepath.Dir(h.maestroDir)
+	return skill.ResolveSearchDirs(h.config.Skills.ExtraDirs, projectRoot, bundledDir, nil)
 }
