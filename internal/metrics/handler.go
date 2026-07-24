@@ -41,6 +41,12 @@ type Handler struct {
 	maestroDir  string
 	clock       Clock
 	resultCache map[string]*resultFileEntry
+	// usageCollector feeds the opt-in cost/token usage section. Lazily
+	// initialized to the claude-code session-file collector on the first
+	// scan with cost_tracking.enabled, unless explicitly set (or cleared)
+	// via SetUsageCollector.
+	usageCollector    UsageCollector
+	usageCollectorSet bool
 }
 
 // NewHandler creates a new Handler.
@@ -143,6 +149,10 @@ func (h *Handler) UpdateMetrics(
 	// Snapshot gauges (overwrite each scan).
 	metrics.WorktreeCommandsStalled = gauges.WorktreeCommandsStalled
 	metrics.BakFilesCount = gauges.BakFilesCount
+
+	// Opt-in cost/token usage (issue #32): recomputed from runtime session
+	// files each scan; best-effort, never fails the metrics write.
+	h.updateUsage(&metrics)
 
 	// Update heartbeat and timestamp
 	heartbeat := scanStart.UTC().Format(time.RFC3339)

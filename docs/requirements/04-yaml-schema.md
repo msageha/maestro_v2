@@ -690,6 +690,68 @@ updated_at: null
 > メトリクス更新はベストエフォート。コアの dispatch/result パスをブロックしてはならない。
 > デーモンの定期スキャン時に更新。dashboard_gen モジュールがダッシュボードに反映。
 
+### usage セクション（opt-in、cost_tracking.enabled 時のみ）
+
+`cost_tracking.enabled: true`（config.yaml、デフォルト false）のとき、デーモンは scan 毎に
+claude-code のセッション記録（`~/.claude/projects/<escaped-cwd>/*.jsonl`）を読み、
+maestro の配信 envelope（`[maestro] task_id:... command_id:...` 等）をアンカーに
+agent / command 単位へ attribution したトークン使用量を `usage:` セクションとして記録する。
+
+原則:
+
+- **トークンが一次記録**。`estimated_cost_usd` はバイナリ内の価格表からの派生値で、
+  `by_model` のトークン数から常に再計算できる（価格不明のモデルは cost 無し = unknown 表示）。
+- **取得経路の無い runtime（codex / gemini）は `tokens_known: false`**（unknown 扱い）。
+  0 と表現しない。1 つでも unknown があれば `partial: true`。
+- attribution は envelope 単位の近似（envelope 以後の usage を直前の envelope に帰属）。
+  envelope を含まないセッション（オペレータの手動セッション等）は集計対象外。
+  subagent transcript は親セッションの envelope タイムラインへタイムスタンプで帰属する。
+- セクション全体が gauge 的にソースから再計算されるため、runtime 側の
+  セッション保持期間（retention）を超えた分は集計から消える。
+- 収集はローカルファイルの読み取りのみ。pane スクレイピング・外部課金 API は使わない。
+  収集失敗はデーモンを止めず WARN + skip。
+
+```yaml
+usage:
+  source: "claude-code session files (~/.claude/projects)"
+  partial: true # unknown runtime の agent または収集失敗があると true（部分集計）
+  collected_at: "2026-07-23T10:00:00Z"
+  agents:
+    worker1:
+      runtime: claude-code
+      tokens_known: true
+      totals:
+        input_tokens: 1000
+        output_tokens: 200
+        cache_read_input_tokens: 50
+        cache_creation_input_tokens: 30
+      by_model: # モデル別内訳（価格表更新時のコスト再計算に使用）
+        claude-sonnet-5:
+          input_tokens: 1000
+          output_tokens: 200
+          cache_read_input_tokens: 50
+          cache_creation_input_tokens: 30
+      estimated_cost_usd: 0.1234 # 派生値。価格不明モデルのみの場合は省略
+    worker2:
+      runtime: codex # 取得経路なし → unknown（0 ではない）
+      tokens_known: false
+  commands:
+    cmd-1:
+      totals: {
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_input_tokens: 50,
+        cache_creation_input_tokens: 30,
+      }
+      by_model: {}
+      estimated_cost_usd: 0.1234
+  budget_alerts: # budget しきい値超過時のみ（WARN ログ + dashboard 表示と同内容）
+    - "command cmd-1 estimated cost $0.12 exceeds per-command budget $0.10"
+```
+
+表示先: `.maestro/dashboard.md` の「Cost / Token Usage」セクションと `maestro status` の
+Usage ブロック（最小表示）。リッチな可視化は TUI HUD (#29) / Web dashboard (#20) に委譲。
+
 ## 4.9 state/continuous.yaml（継続モード状態）
 
 `continuous.enabled: true` 時にデーモンが管理する。デーモン再起動後もイテレーション数を復元可能。

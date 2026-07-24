@@ -26,6 +26,7 @@ type Config struct {
 	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
 	Review             ReviewConfig         `yaml:"review"`
 	ABTest             ABTestConfig         `yaml:"ab_test,omitempty"`
+	CostTracking       CostTrackingConfig   `yaml:"cost_tracking,omitempty"`
 
 	// C-1 Evolution
 	Evolution EvolutionConfig `yaml:"evolution,omitempty"`
