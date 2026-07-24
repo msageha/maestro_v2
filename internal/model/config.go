@@ -48,11 +48,23 @@ type Config struct {
 
 // SkillsConfig controls the skill reference feature for tasks.
 type SkillsConfig struct {
-	Enabled          bool              `yaml:"enabled"`
-	MaxRefsPerTask   *int              `yaml:"max_refs_per_task"`
-	MaxBodyChars     *int              `yaml:"max_body_chars"`
-	MissingRefPolicy string            `yaml:"missing_ref_policy"`
-	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
+	Enabled          bool   `yaml:"enabled"`
+	MaxRefsPerTask   *int   `yaml:"max_refs_per_task"`
+	MaxBodyChars     *int   `yaml:"max_body_chars"`
+	MissingRefPolicy string `yaml:"missing_ref_policy"`
+	// ExtraDirs lists additional skill source directories searched before
+	// the bundled <maestro_dir>/skills catalog. Each entry is an absolute
+	// path or a path relative to the project root and uses the same
+	// <role>/<name>/SKILL.md layout as the bundled catalog. Unlike
+	// .maestro/skills (gitignored, overwritten by setup/repair), extra dirs
+	// are ordinary repo files, so they are the supported home for
+	// version-controlled, team-supplied skills. Earlier entries take
+	// precedence, and every entry shadows the bundled catalog on same-name
+	// conflicts; conflicts are reported with a WARN, never silently.
+	// Missing directories are skipped with a WARN at use time so a stale
+	// config never stops the daemon.
+	ExtraDirs   []string          `yaml:"extra_dirs"`
+	AutoCollect autoCollectConfig `yaml:"auto_collect"`
 }
 
 // EffectiveMaxRefsPerTask returns MaxRefsPerTask, or DefaultMaxRefsPerTask when unset.

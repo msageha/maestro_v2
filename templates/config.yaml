@@ -400,6 +400,17 @@ skills:
   # missing_ref_policy: 参照先スキルが見つからない場合の動作
   # type: string | default: "warn" (DefaultMissingRefPolicy) | range: "warn" or "error"
   missing_ref_policy: "warn"
+  # extra_dirs: 追加の skill 探索ディレクトリ (project root からの相対パス or 絶対パス)
+  # 各ディレクトリは .maestro/skills と同じ <role>/<name>/SKILL.md 構造を持つ。
+  # .maestro/skills が gitignore され setup/repair で上書きされるのに対し、
+  # extra_dirs は repo にコミットしてチームで共有・レビューできる (例: .maestro-skills/)。
+  # precedence: extra_dirs はリスト順で先勝ちし、いずれも bundled (.maestro/skills) より優先。
+  # 同名 skill の衝突は WARN ログで検出される (silent 上書きなし)。
+  # 存在しないディレクトリは WARN + skip (daemon は停止しない)。
+  # type: []string | default: [] (追加探索なし)
+  # extra_dirs:
+  #   - ".maestro-skills"
+  extra_dirs: []
   auto_collect:
     # enabled: 学習知見からの自動スキル収集 (opt-in)
     # type: bool | default: false | range: true/false

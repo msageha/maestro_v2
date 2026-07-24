@@ -109,7 +109,7 @@ learnings:            # S2-1/C-5: Failure Fingerprint DB・学習知見
 worktree:             # git worktree 隔離・integration マージ・publish の設定
 verify:               # verify パイプライン（enabled: false は正常運用モード。S1-1）
 review:               # A-1: 非同期 Read-only レビュアー（Advisory）
-skills:               # skill レジストリ参照設定
+skills:               # skill レジストリ参照設定（extra_dirs で repo-tracked な skill source を追加可能）
 feature_profiles:     # C-8: 複雑度レベル別の機能プロファイル（simple/standard/complex/critical）
 # --- Phase C 個別機能（feature_profiles でゲート。既定は概ね無効） ---
 bandit:               # C-2 適応的モデル選択（UCB1）
@@ -119,6 +119,8 @@ search:               # C-4 探索的実装最適化
 self_improvement:     # C-5 自己改善
 complexity:           # C-6 適応的計算深度
 ```
+
+> **`skills.extra_dirs`**: 追加の skill 探索ディレクトリのリスト（project root からの相対パス or 絶対パス。各ディレクトリは `.maestro/skills` と同じ `<role>/<name>/SKILL.md` 構造）。`.maestro/skills` が gitignore され setup/repair で上書きされるのに対し、extra_dirs は repo にコミットしてチームで共有・レビューできる version-controlled skill source（例: `.maestro-skills/`）。precedence は同一スコープ内でリスト順に先勝ちし、いずれも bundled `.maestro/skills` より優先する（role スコープが share スコープより常に優先するのは従来どおり）。同名 skill の衝突は WARN ログで検出され、silent 上書きは起きない。存在しないディレクトリは WARN + skip でデーモンは停止しない（空文字エントリのみ validate エラー）。
 
 > **`agents.workers.models` の値**: `worker3: opus` のような Claude モデル名のほか、`worker4: codex` / `gemini` で各ランタイムの既定モデル、`codex-5` / `gemini-2.5-pro` のように `codex-` / `gemini-` プレフィックス付きで明示モデルを指定して Worker のランタイムを切り替えられる（モデル名そのものへの exact / prefix マッチ。`codex/o4-mini` のようなスラッシュ区切りは claude-code 扱いになり起動失敗する。[§11](11-future-extensions.md) 参照）（[REQUIREMENTS.md](REQUIREMENTS.md) §5 C-7）。Orchestrator / Planner は claude-code 限定。
 

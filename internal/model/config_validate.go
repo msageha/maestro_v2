@@ -207,6 +207,14 @@ func (c Config) validateSkills(errs *[]error) {
 	if p := c.Skills.MissingRefPolicy; p != "" && p != "warn" && p != "error" {
 		*errs = append(*errs, fmt.Errorf("skills.missing_ref_policy: must be \"warn\" or \"error\""))
 	}
+	// Missing directories are deliberately NOT a validation error (they are
+	// skipped with a WARN at use time), but an empty entry is always a config
+	// mistake: it would resolve to the project root itself.
+	for i, dir := range c.Skills.ExtraDirs {
+		if strings.TrimSpace(dir) == "" {
+			*errs = append(*errs, fmt.Errorf("skills.extra_dirs[%d]: must not be empty", i))
+		}
+	}
 }
 
 func (c Config) validateAdmissionControl(errs *[]error) {
