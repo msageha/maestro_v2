@@ -79,6 +79,8 @@ retry:
   task_dispatch: 5 # queue/worker{N}.yaml: タスク配信の最大試行回数
   orchestrator_notification_dispatch: 10 # queue/orchestrator.yaml: Orchestrator 通知配信の最大試行回数
   result_notification_send: 10 # results/*.yaml: Result ハンドラによる通知送信の最大試行回数
+  task_progress_interrupts: 6 # 進捗観測後の hang-release をタスクごとに何回まで attempts 消費なしで許容するか（0 で免除無効。[§7.3](07-error-handling.md)）
+  task_resume: 3 # 中断タスクの継続 nudge (resume) 回復のタスクごとの上限（0 で resume 経路無効。[§7.3](07-error-handling.md)）
 
 queue:
   priority_aging_sec: 300 # 優先度エイジング間隔（秒）。待機時間に応じて effective_priority を引き下げ
@@ -222,7 +224,7 @@ tasks:
 
 **実装拡張フィールド（デーモン管理。Agent は指定しない。いずれも `omitempty`）**:
 
-`queue/worker{N}.yaml` のタスク型はデーモンが配信制御・リトライ追跡・ランタイム解決のために用いる内部管理フィールド群（`dispatch_id` / `execution_retries` / `original_task_id` / `not_before` / `in_progress_at` / `runtime` / `model_override` / `last_progress_epoch` / `progress_interrupts` / `resume_attempts` / `resume_requested` 等）を持つ。これらは Agent が指定するものではなく、各フィールドの型・意味・不変条件は **source of truth である `internal/model/queue.go` の定義（godoc コメント）を正本**とする。本書はこれら実装詳細を逐一ミラーせず、Agent が関与しない旨の明示に留める（要件文書が実装を後追いミラーする構造を避けるため）。
+`queue/worker{N}.yaml` のタスク型はデーモンが配信制御・リトライ追跡・ランタイム解決のために用いる内部管理フィールド群（`dispatch_id` / `execution_retries` / `original_task_id` / `not_before` / `in_progress_at` / `runtime` / `model_override` / `last_progress_epoch` / `attempts_charged_epoch` / `progress_interrupts` / `resume_attempts` / `resume_requested` 等）を持つ。これらは Agent が指定するものではなく、各フィールドの型・意味・不変条件は **source of truth である `internal/model/queue.go` の定義（godoc コメント）を正本**とする。本書はこれら実装詳細を逐一ミラーせず、Agent が関与しない旨の明示に留める（要件文書が実装を後追いミラーする構造を避けるため）。
 
 ## 4.4 results/worker{N}.yaml（Worker → Planner: タスク実行結果）
 

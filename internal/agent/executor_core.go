@@ -658,6 +658,14 @@ func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, s
 	if restarted {
 		return false, "pane_process_restarted"
 	}
+	// DetectProcessRestart treats a missing/empty stored @clear_ready_pid as
+	// "no restart" (fail-open) because the normal dispatch path only uses it
+	// as a best-effort reset trigger. For resume the PID identity IS the
+	// fencing, so an absent baseline (e.g. SetClearReady's PID write failed
+	// after clear_ready landed) must fail closed to the /clear full path.
+	if storedPID, pidErr := e.paneIO.GetUserVar(paneTarget, "clear_ready_pid"); pidErr != nil || storedPID == "" {
+		return false, "clear_ready_pid_unavailable"
+	}
 	if !e.paneState.IsClearReady(paneTarget) {
 		return false, "no_prior_dispatch_on_pane"
 	}
@@ -685,17 +693,40 @@ func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, s
 }
 
 // execResumeNudge delivers the continuation nudge into the still-live
-// session. No /clear, no busy detection: the daemon only marks a task for
-// resume after the pane was observed idle across scans and the hang-release
-// cooldown elapsed, and waitReady re-confirms a painted prompt. The nudge
-// message carries the new lease epoch (see BuildWorkerResumeEnvelope).
+// session — without /clear, so the worker keeps its accumulated context.
+// The nudge message carries the new lease epoch (see
+// BuildWorkerResumeEnvelope).
+//
+// Two guards run before the paste even though the daemon only marks a task
+// for resume after the pane was observed idle across scans:
+//   - stampRunOnMainVar re-asserts the @run_on_main guard with the same
+//     fail-closed write+read-back the full path uses. For RunOnMain tasks
+//     this variable is the ONLY mechanical mutation guard, and the resume
+//     path otherwise returns before the normal stamp site.
+//   - DetectBusyWithRetry must confirm idle. waitReady soft-proceeds when no
+//     prompt is detected on the explicit assumption that "the subsequent
+//     detectBusyWithRetry will catch if the agent is actually busy" — the
+//     resume path must uphold that contract, and the pane can have gone
+//     busy again during the hang-release cooldown (e.g. the runtime's own
+//     API retry restarted the interrupted turn).
 func (e *Executor) execResumeNudge(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(logLevelInfo,
 		"resume_dispatch agent_id=%s task_id=%s lease_epoch=%d (continuation nudge without /clear; session context preserved)",
 		req.AgentID, req.TaskID, req.LeaseEpoch)
+	if err := e.stampRunOnMainVar(paneTarget, req.RunOnMain); err != nil {
+		e.log(logLevelError, "resume_set_run_on_main_var_failed agent_id=%s run_on_main=%t error=%v",
+			req.AgentID, req.RunOnMain, err)
+		return ExecResult{Error: fmt.Errorf("resume stamp @run_on_main: %w", err), Retryable: true}
+	}
 	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "resume_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("resume wait ready: %w", err), Retryable: true}
+	}
+	if verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID); verdict != VerdictIdle {
+		e.log(logLevelWarn,
+			"resume_pane_busy agent_id=%s task_id=%s verdict=%s (nudge deferred; lease will release and the next dispatch falls back to /clear full delivery)",
+			req.AgentID, req.TaskID, verdict)
+		return e.handleBusyVerdict(req, verdict)
 	}
 	nudgeReq := req
 	nudgeReq.Message = req.ResumeMessage

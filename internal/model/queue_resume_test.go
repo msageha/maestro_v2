@@ -14,6 +14,10 @@ func TestTaskResumeEligible(t *testing.T) {
 		{name: "run_on_integration_denied", task: Task{RunOnIntegration: true}, want: false},
 		{name: "hint_deny_overrides_default", task: Task{ResumeHint: ResumeHintDeny}, want: false},
 		{name: "hint_allow_overrides_run_on_integration", task: Task{RunOnIntegration: true, ResumeHint: ResumeHintAllow}, want: true},
+		// PR #56 review finding #21: unknown non-empty hints fail closed —
+		// a hand-edited or future-version YAML value we cannot interpret
+		// must not opt the task into in-place resume.
+		{name: "unknown_hint_fails_closed", task: Task{ResumeHint: "maybe"}, want: false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

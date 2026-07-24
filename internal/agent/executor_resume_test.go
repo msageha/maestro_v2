@@ -1,9 +1,13 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
+
+var errTestInjected = errors.New("injected test error")
 
 // newResumeReadyMock returns a mock pane whose state satisfies every
 // canResumeInPlace check for taskID: agent process alive (non-shell), pane
@@ -80,6 +84,130 @@ func TestExecute_ModeWithClear_ResumeFallsBackAfterRespawn(t *testing.T) {
 	}
 }
 
+// PR #56 review finding #3: waitReady soft-proceeds on the explicit
+// assumption that a subsequent busy check guards the paste. The resume path
+// must therefore run busy detection before the nudge — a pane that went busy
+// again during the hang-release cooldown gets a retryable failure, not a
+// paste into its in-flight turn.
+func TestExecute_ModeWithClear_ResumeAbortsWhenPaneBusy(t *testing.T) {
+	t.Parallel()
+	mock := newResumeReadyMock("task_resume_busy")
+	// No prompt glyph → the claude idle fast-path does not apply, and the
+	// activity probe sees changing joined content across captures → busy.
+	mock.captureContent = "streaming output without prompt\n"
+	mock.joinedContent = []string{
+		"frame-A tool output\n",
+		"frame-B tool output\n",
+		"frame-C tool output\n",
+	}
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID:       "worker1",
+		Message:       "FULL ENVELOPE",
+		ResumeMessage: "RESUME NUDGE",
+		Mode:          ModeWithClear,
+		TaskID:        "task_resume_busy",
+	})
+	if result.Error == nil {
+		t.Fatal("expected a retryable busy error, got success")
+	}
+	if !result.Retryable {
+		t.Errorf("expected Retryable=true, got %+v", result)
+	}
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("no text must be pasted into a busy pane; sentTexts = %v", mock.sentTexts)
+	}
+}
+
+// PR #56 review finding #7: resume must re-assert the @run_on_main guard
+// with the same fail-closed write+read-back the full dispatch path uses,
+// because the resume path returns before the normal stamp site and for
+// RunOnMain tasks the variable is the only mechanical mutation guard.
+func TestExecute_ModeWithClear_ResumeRestampsRunOnMainGuard(t *testing.T) {
+	t.Parallel()
+	mock := newResumeReadyMock("task_resume_rom")
+	mock.currentPath = "/project"
+	// Simulate the guard variable having been lost since the original
+	// dispatch — resume must restore it before delivering the nudge.
+	delete(mock.userVars, "run_on_main")
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID:       "worker1",
+		Message:       "FULL ENVELOPE",
+		ResumeMessage: "RESUME NUDGE",
+		Mode:          ModeWithClear,
+		TaskID:        "task_resume_rom",
+		WorkingDir:    "/project",
+		RunOnMain:     true,
+	})
+	if result.Error != nil || !result.Success {
+		t.Fatalf("resume failed: success=%t err=%v", result.Success, result.Error)
+	}
+	if got := mock.userVars["run_on_main"]; got != "1" {
+		t.Errorf("@run_on_main = %q, want \"1\" (guard re-stamped before nudge)", got)
+	}
+	if len(mock.sentTexts) != 1 || mock.sentTexts[0] != "RESUME NUDGE" {
+		t.Errorf("sentTexts = %v, want the resume nudge", mock.sentTexts)
+	}
+}
+
+// A run_on_main stamp failure aborts the resume as retryable — never
+// deliver into a RunOnMain session whose only mutation guard is unverified.
+func TestExecute_ModeWithClear_ResumeStampFailureAborts(t *testing.T) {
+	t.Parallel()
+	mock := newResumeReadyMock("task_resume_rom_fail")
+	mock.currentPath = "/project"
+	mock.SetUserVarFn = func(paneTarget, name, value string) error {
+		if name == "run_on_main" {
+			return errTestInjected
+		}
+		mock.userVars[name] = value
+		return nil
+	}
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID:       "worker1",
+		Message:       "FULL ENVELOPE",
+		ResumeMessage: "RESUME NUDGE",
+		Mode:          ModeWithClear,
+		TaskID:        "task_resume_rom_fail",
+		WorkingDir:    "/project",
+		RunOnMain:     true,
+	})
+	if result.Error == nil {
+		t.Fatal("expected stamp failure to abort the resume")
+	}
+	if !result.Retryable {
+		t.Errorf("expected Retryable=true, got %+v", result)
+	}
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("nothing must be delivered after a guard-stamp failure; sentTexts = %v", mock.sentTexts)
+	}
+}
+
+// PR #56 review finding #9: a confirmed /clear destroys the conversation, so
+// the resume session marker must be invalidated — a later preflight must not
+// match a task marker stamped before the clear.
+func TestClearAndConfirm_InvalidatesLastTaskID(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+	// Different pre/post-clear content so the confirmation poller observes
+	// the hash change and reports confirmed.
+	mock.joinedContent = []string{"before-clear conversation\n", "fresh screen\n", "fresh screen\n"}
+	mock.userVars["last_task_id"] = "task_stale"
+	exec, _ := newTestExecutorWithLog(mock)
+
+	if err := exec.deliverer.clearAndConfirm(context.Background(), "%0"); err != nil {
+		t.Fatalf("clearAndConfirm: %v", err)
+	}
+	if got := mock.userVars["last_task_id"]; got != "" {
+		t.Errorf("@last_task_id = %q, want empty after confirmed /clear", got)
+	}
+}
+
 // canResumeInPlace unit coverage for each session-identity mismatch.
 func TestCanResumeInPlace_MismatchReasons(t *testing.T) {
 	t.Parallel()
@@ -105,6 +233,13 @@ func TestCanResumeInPlace_MismatchReasons(t *testing.T) {
 			name:       "no_prior_dispatch",
 			mutate:     func(m *mockPaneIO) { delete(m.userVars, "clear_ready") },
 			wantReason: "no_prior_dispatch_on_pane",
+		},
+		{
+			// PR #56 review finding #4: without a stored PID baseline the
+			// restart fencing is blind — resume must fail closed.
+			name:       "clear_ready_pid_missing_fails_closed",
+			mutate:     func(m *mockPaneIO) { delete(m.userVars, "clear_ready_pid") },
+			wantReason: "clear_ready_pid_unavailable",
 		},
 		{
 			name: "agent_crashed_to_shell",

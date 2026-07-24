@@ -37,6 +37,11 @@ type retryQueueTask struct {
 	// control counts them against the repair concurrency bucket regardless of
 	// the original task's free-form Purpose string.
 	operationType string
+	// resumeHint carries the original task's resume-eligibility policy
+	// (model.Task.ResumeHint) into the replacement. Dropping it silently
+	// reverted an explicit `resume_hint: deny` on a non-idempotent task to
+	// the default-allow policy (review finding #5 on PR #56).
+	resumeHint string
 }
 
 func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lockMap *lock.MutexMap) error {
@@ -66,6 +71,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 			RunOnMain:          task.runOnMain,
 			RunOnIntegration:   task.runOnIntegration,
 			OperationType:      task.operationType,
+			ResumeHint:         task.resumeHint,
 			Priority:           100,
 			Status:             model.StatusPending,
 			CreatedAt:          now,

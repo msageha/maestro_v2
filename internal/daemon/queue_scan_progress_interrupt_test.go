@@ -227,6 +227,117 @@ func TestHangRelease_ResumeBudgetExhausted_NoResumeRequest(t *testing.T) {
 	}
 }
 
+// PR #56 review finding #1: with Attempts already at the task_dispatch max
+// (charged at this epoch's acquisition), a progress-interrupt must refund the
+// acquire-side charge — otherwise the dead-letter processor (which runs
+// before dispatch in Phase A and consults neither NotBefore nor
+// ResumeRequested) archives the task before the resume can happen.
+func TestHangRelease_AttemptsAtMax_RefundPreventsDeadLetter(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)
+	cfg := model.RetryConfig{TaskDispatch: 5}
+	qh := newProgressInterruptQH(t, now, cfg)
+
+	bc, taskQueues := hangReleaseFixture(now, model.Task{
+		ID:                   "task_pi_boundary",
+		CommandID:            "cmd_pi",
+		LeaseEpoch:           5,
+		Attempts:             5, // acquire walked it to the max this epoch
+		AttemptsChargedEpoch: 5,
+		LastProgressEpoch:    5,
+	})
+	qh.applyTaskBusyCheckResult(bc, taskQueues, map[string]bool{})
+
+	tq := taskQueues["queue/worker1.yaml"]
+	got := &tq.Queue.Tasks[0]
+	if got.Attempts != 4 {
+		t.Fatalf("Attempts = %d, want 4 (acquire charge refunded for the progress-interrupted epoch)", got.Attempts)
+	}
+	if got.AttemptsChargedEpoch != 0 {
+		t.Errorf("AttemptsChargedEpoch = %d, want 0 (refund consumed)", got.AttemptsChargedEpoch)
+	}
+	if !got.ResumeRequested {
+		t.Error("ResumeRequested = false, want true")
+	}
+
+	// The dead-letter processor must now retain the task: attempts dropped
+	// below max, so the resume (and, on resume failure, the /clear full
+	// fallback) can actually run.
+	dlp := NewDeadLetterProcessor(testutil.SetupDirFixPerms(t), model.Config{Retry: cfg}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	dirty := false
+	results := dlp.ProcessTaskDeadLetters(tq, &dirty)
+	if len(results) != 0 {
+		t.Fatalf("ProcessTaskDeadLetters removed the task: %+v", results)
+	}
+	if len(tq.Queue.Tasks) != 1 {
+		t.Fatalf("task queue length = %d, want 1 (task retained for resume)", len(tq.Queue.Tasks))
+	}
+}
+
+// An epoch acquired via the resume path charged ResumeAttempts, not Attempts
+// (AttemptsChargedEpoch still points at an older epoch) — a progress-interrupt
+// of that epoch must not refund anything.
+func TestHangRelease_ResumeAcquiredEpoch_NoRefund(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)
+	qh := newProgressInterruptQH(t, now, model.RetryConfig{TaskDispatch: 5})
+
+	bc, taskQueues := hangReleaseFixture(now, model.Task{
+		ID:                   "task_pi_resume_epoch",
+		CommandID:            "cmd_pi",
+		LeaseEpoch:           4,
+		Attempts:             2,
+		AttemptsChargedEpoch: 3, // last Attempts charge was the PREVIOUS epoch
+		LastProgressEpoch:    4,
+		ResumeAttempts:       1,
+	})
+	qh.applyTaskBusyCheckResult(bc, taskQueues, map[string]bool{})
+
+	got := &taskQueues["queue/worker1.yaml"].Queue.Tasks[0]
+	if got.Attempts != 2 {
+		t.Errorf("Attempts = %d, want 2 (resume-acquired epoch must not be double-credited)", got.Attempts)
+	}
+	if got.ProgressInterrupts != 1 {
+		t.Errorf("ProgressInterrupts = %d, want 1", got.ProgressInterrupts)
+	}
+}
+
+// PR #56 review finding #2: retry clones must not inherit the per-instance
+// progress/resume ledgers — an inherited LastProgressEpoch==1 would classify
+// the clone's first epoch (LeaseEpoch restarts at 0 → 1) as "had progress"
+// even when the clone wedges without output.
+func TestCreateRetryTask_ResetsProgressAndResumeLedger(t *testing.T) {
+	t.Parallel()
+	original := &model.Task{
+		ID:                   "task_orig",
+		CommandID:            "cmd_orig",
+		Purpose:              "test",
+		Content:              "test content",
+		Status:               model.StatusFailed,
+		Attempts:             5,
+		LeaseEpoch:           1,
+		LastProgressEpoch:    1,
+		AttemptsChargedEpoch: 1,
+		ProgressInterrupts:   6,
+		ResumeAttempts:       3,
+		ResumeRequested:      true,
+		ResumeHint:           model.ResumeHintDeny,
+	}
+	handler := NewTaskRetryHandler(testutil.SetupDirFixPerms(t), model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	clone, err := handler.CreateRetryTask(original, "worker1", 1)
+	if err != nil {
+		t.Fatalf("CreateRetryTask: %v", err)
+	}
+	if clone.LastProgressEpoch != 0 || clone.AttemptsChargedEpoch != 0 ||
+		clone.ProgressInterrupts != 0 || clone.ResumeAttempts != 0 || clone.ResumeRequested {
+		t.Errorf("ledger fields not reset: last_progress_epoch=%d attempts_charged_epoch=%d progress_interrupts=%d resume_attempts=%d resume_requested=%t",
+			clone.LastProgressEpoch, clone.AttemptsChargedEpoch, clone.ProgressInterrupts, clone.ResumeAttempts, clone.ResumeRequested)
+	}
+	if clone.ResumeHint != model.ResumeHintDeny {
+		t.Errorf("ResumeHint = %q, want %q (policy must be inherited)", clone.ResumeHint, model.ResumeHintDeny)
+	}
+}
+
 // A confirmed-busy probe result stamps LastProgressEpoch for the current
 // epoch (progress evidence equivalent to lease_extend_pane_active), fenced
 // on the epoch so a stale Phase B result cannot stamp a newer lease.
@@ -303,6 +414,9 @@ func TestCollectPendingTaskDispatches_ResumeConsumesResumeBudget(t *testing.T) {
 	if got.LeaseEpoch != 4 {
 		t.Errorf("LeaseEpoch = %d, want 4 (resume acquires a fresh epoch for result-write fencing)", got.LeaseEpoch)
 	}
+	if got.AttemptsChargedEpoch != 0 {
+		t.Errorf("AttemptsChargedEpoch = %d, want 0 (resume acquisition must not stamp an Attempts charge)", got.AttemptsChargedEpoch)
+	}
 }
 
 // Issue #55 acceptance (b): when the resume budget is already exhausted at
@@ -345,6 +459,9 @@ func TestCollectPendingTaskDispatches_ResumeBudgetExhaustedFallsBack(t *testing.
 	}
 	if got.ResumeRequested {
 		t.Error("ResumeRequested = true, want false (marker consumed)")
+	}
+	if got.AttemptsChargedEpoch != got.LeaseEpoch {
+		t.Errorf("AttemptsChargedEpoch = %d, want %d (full acquisition stamps the charged epoch)", got.AttemptsChargedEpoch, got.LeaseEpoch)
 	}
 }
 

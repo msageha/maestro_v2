@@ -285,6 +285,12 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		}
 		if !resumeDispatch {
 			task.Attempts++
+			// Record which epoch this charge belongs to so a later
+			// progress-interrupt hang-release of the SAME epoch can refund
+			// it (see applyTaskBusyCheckResult). Resume acquisitions charge
+			// ResumeAttempts instead and intentionally leave the stamp on
+			// the older epoch, making them refund-inert.
+			task.AttemptsChargedEpoch = task.LeaseEpoch
 		}
 		detachTaskSlices(task)
 

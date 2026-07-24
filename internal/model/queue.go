@@ -82,6 +82,16 @@ type Task struct {
 	ExecutionRetries   int                `yaml:"execution_retries,omitempty"` // Number of actual retry executions (not dispatch attempts)
 	OriginalTaskID     string             `yaml:"original_task_id,omitempty"`  // For tracking retry lineage
 	NotBefore          *string            `yaml:"not_before,omitempty"`        // RFC3339 timestamp for cooldown
+	// AttemptsChargedEpoch records the lease epoch whose acquisition last
+	// consumed Attempts (resume acquisitions consume ResumeAttempts instead
+	// and do not stamp this). The hang-release progress-interrupt path uses
+	// it to refund the acquire-side charge for the interrupted epoch —
+	// without the refund, a progressing task still burns one Attempt per
+	// epoch at acquisition and the dead-letter processor (which runs before
+	// dispatch in Phase A and ignores ResumeRequested) archives the task at
+	// attempts >= max before the resume can happen. Issue #54, review
+	// finding #1 on PR #56.
+	AttemptsChargedEpoch int `yaml:"attempts_charged_epoch,omitempty"`
 	// LastProgressEpoch records the lease epoch during which the daemon last
 	// observed forward progress for this task (pane-activity VerdictActive
 	// lease extension, or a confirmed-busy probe). The hang-release path
@@ -179,18 +189,23 @@ const (
 
 // ResumeEligible reports whether this task may be recovered via an in-place
 // continuation nudge (resume) instead of a /clear full re-dispatch after a
-// progress-interrupt hang-release. The explicit ResumeHint wins; otherwise
-// RunOnIntegration tasks are denied because they mutate the shared
-// integration worktree where double-executed tool calls are not contained
-// (see the ResumeHint field comment for the full policy rationale).
+// progress-interrupt hang-release. The explicit ResumeHint wins; the empty
+// hint applies the default policy: RunOnIntegration tasks are denied because
+// they mutate the shared integration worktree where double-executed tool
+// calls are not contained (see the ResumeHint field comment for the full
+// policy rationale). Any other (unknown) hint value fails closed to deny:
+// plan-submit validation rejects unknown values, so a non-empty unknown hint
+// here means a hand-edited or future-version YAML whose intent we cannot
+// trust — /clear full re-dispatch is the safe recovery for those.
 func (t *Task) ResumeEligible() bool {
 	switch t.ResumeHint {
 	case ResumeHintAllow:
 		return true
-	case ResumeHintDeny:
+	case "":
+		return !t.RunOnIntegration
+	default: // ResumeHintDeny and any unknown value
 		return false
 	}
-	return !t.RunOnIntegration
 }
 
 // GetDoneConditions は完了条件を返す。

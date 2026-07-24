@@ -428,6 +428,22 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			maxProgressInterrupts := qh.config.Retry.EffectiveTaskProgressInterrupts()
 			if hadProgress && task.ProgressInterrupts < maxProgressInterrupts {
 				task.ProgressInterrupts++
+				// Refund the acquire-side Attempts charge for this epoch so a
+				// progress-interrupted epoch is fully budget-free. Without
+				// the refund, the acquire increment alone walks Attempts to
+				// max and the dead-letter processor — which runs BEFORE
+				// dispatch in Phase A and consults neither NotBefore nor
+				// ResumeRequested — archives the task before the resume (or
+				// the post-resume-failure /clear fallback) can run. Fenced on
+				// AttemptsChargedEpoch so an epoch acquired via the resume
+				// path (which charged ResumeAttempts, not Attempts) is never
+				// double-credited. Bounded: at the ProgressInterrupts cap the
+				// refund stops together with the exemption, so the legacy
+				// accounting still terminates the task.
+				if task.AttemptsChargedEpoch == task.LeaseEpoch && task.Attempts > 0 {
+					task.Attempts--
+					task.AttemptsChargedEpoch = 0
+				}
 				maxResume := qh.config.Retry.EffectiveTaskResume()
 				if task.ResumeEligible() && task.ResumeAttempts < maxResume {
 					task.ResumeRequested = true
