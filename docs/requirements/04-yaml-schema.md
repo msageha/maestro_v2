@@ -51,6 +51,11 @@ agents:
       # worker1, worker2 → default_model (sonnet)
     boost: false # true → 全 Worker を opus に昇格
     base_prompt_mode: "append" # 全 Worker 共通。append | replace。既定 append
+# capabilities: Worker ごとの capability タグ（worker_id -> tags。省略可）
+# 省略した worker は runtime 既定の capability を宣言する（下記注参照）。空リスト [] は「capability 無し」の明示宣言
+# capabilities:
+#   worker1: ["code_quality", "design_review", "instruction_following", "run_on_main"]
+#   worker4: ["multimodal", "long_context_ingest", "research", "cost_efficient"]
 
 continuous:
   enabled: false # --continuous フラグで有効化
@@ -111,18 +116,22 @@ learnings:            # S2-1/C-5: Failure Fingerprint DB・学習知見
 worktree:             # git worktree 隔離・integration マージ・publish の設定
 verify:               # verify パイプライン（enabled: false は正常運用モード。S1-1）
 review:               # A-1: 非同期 Read-only レビュアー（Advisory）
-skills:               # skill レジストリ参照設定
+skills:               # skill レジストリ参照設定（extra_dirs で repo-tracked な skill source を追加可能）
 feature_profiles:     # C-8: 複雑度レベル別の機能プロファイル（simple/standard/complex/critical）
 # --- Phase C 個別機能（feature_profiles でゲート。既定は概ね無効） ---
 bandit:               # C-2 適応的モデル選択（UCB1）
 evolution:            # C-1 進化的コード品質
 extended_verification:# C-3 多観点アンサンブル検証
 search:               # C-4 探索的実装最適化
-self_improvement:     # C-5 自己改善
+self_improvement:     # C-5 自己改善（friction: friction 駆動改善ループ。§4.12 参照）
 complexity:           # C-6 適応的計算深度
 ```
 
+> **`skills.extra_dirs`**: 追加の skill 探索ディレクトリのリスト（project root からの相対パス or 絶対パス。各ディレクトリは `.maestro/skills` と同じ `<role>/<name>/SKILL.md` 構造）。`.maestro/skills` が gitignore され setup/repair で上書きされるのに対し、extra_dirs は repo にコミットしてチームで共有・レビューできる version-controlled skill source（例: `.maestro-skills/`）。precedence は同一スコープ内でリスト順に先勝ちし、いずれも bundled `.maestro/skills` より優先する（role スコープが share スコープより常に優先するのは従来どおり）。同名 skill の衝突は WARN ログで検出され、silent 上書きは起きない。存在しないディレクトリは WARN + skip でデーモンは停止しない（空文字エントリのみ validate エラー）。
+
 > **`agents.workers.models` の値**: `worker3: opus` のような Claude モデル名のほか、`worker4: codex` / `gemini` で各ランタイムの既定モデル、`codex-5` / `gemini-2.5-pro` のように `codex-` / `gemini-` プレフィックス付きで明示モデルを指定して Worker のランタイムを切り替えられる（モデル名そのものへの exact / prefix マッチ。`codex/o4-mini` のようなスラッシュ区切りは claude-code 扱いになり起動失敗する。[§11](11-future-extensions.md) 参照）（[REQUIREMENTS.md](REQUIREMENTS.md) §5 C-7）。Orchestrator / Planner は claude-code 限定。
+
+> **`agents.workers.capabilities`**: Worker ごとの capability タグ（`map[string][]string`。省略可）。タスクの `required_capabilities` / `preferred_capabilities`（§4.3 参照）との完全一致マッチングに使われ、`plan submit` 時の worker 自動割当（`internal/plan/worker_assign.go` の `AssignWorkers`）が候補集合を絞る根拠となる。エントリの無い worker は、設定モデルから推定した runtime の既定 capability を宣言する — claude-code: `code_quality` / `design_review` / `instruction_following` / `run_on_main`、codex: `bulk_implementation` / `long_horizon_autonomy` / `refactor`、gemini: `multimodal` / `long_context_ingest` / `research` / `cost_efficient`（正本は `internal/model/capability.go` の `DefaultCapabilitiesForRuntime`）。明示エントリは既定を上書きし、空リスト `[]` は「capability 無し」の宣言。タグは自由文字列（カスタムタグ可）だが空文字・空白のみのタグは config validate で拒否される。capability 未使用時（タスク側未指定）は従来の Bloom Level + 最小負荷ロジックと完全に同一の挙動。
 
 ## 4.2 queue/planner.yaml（Orchestrator → Planner: コマンド）
 
@@ -182,6 +191,8 @@ tasks:
     persona_hint: "" # Worker に適用する persona（省略可）
     skill_refs: [] # 参照する skill 名のリスト（省略可）
     operation_type: "" # 操作種別ヒント（省略可）
+    required_capabilities: [] # 割当先 worker が全て宣言すべき capability タグ（省略可。hard フィルタ）
+    preferred_capabilities: [] # 割当先選択で加点される capability タグ（省略可。soft スコアリング）
     run_on_main: false # 実 main checkout 上で実行するか（true は非 claude worker に割り当てない。C-7）
     run_on_integration: false # integration worktree 上で実行するか
     resume_hint: "" # "allow" | "deny" | ""。中断タスクの継続 nudge (resume) 回復可否の上書き（省略可。既定: run_on_integration のみ deny）
@@ -201,26 +212,28 @@ tasks:
 
 **タスクフィールド補足**:
 
-| フィールド            | 必須 | 説明                                                                                                                                                                                                                                               |
-| --------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `purpose`             | 必須 | タスクが全体の中で果たす役割。Worker が成果物を親コマンドの意図と照合するために使用                                                                                                                                                                |
-| `content`             | 必須 | 実行すべき具体的な作業内容                                                                                                                                                                                                                         |
-| `acceptance_criteria` | 必須 | 完了の検証条件（検証可能な形式で記述）                                                                                                                                                                                                             |
-| `constraints`         | 任意 | 実行時に守るべき制約条件のリスト                                                                                                                                                                                                                   |
-| `blocked_by`          | 必須 | 先行タスク ID のリスト。空配列 `[]` なら即時実行可能。依存先が全て `completed` で配信可能。依存先に `failed` / `cancelled` / `dead_letter` が出た場合、当該タスクは自動的に `cancelled` へ遷移する（[§5.8.1](05-script-responsibilities.md) 参照） |
-| `bloom_level`         | 必須 | Bloom's Taxonomy レベル (1-6)。Planner がモデル割当の根拠として設定。L1-L3 → Sonnet, L4-L6 → Opus                                                                                                                                                  |
-| `tools_hint`          | 任意 | Worker に推奨する MCP ツール名の文字列配列。省略時は空配列。Planner が `plan submit` で設定し、デーモンがそのまま queue に転記する。Worker は推奨に従いツールの活用を検討するが、強制ではない                                                      |
-| `definition_of_done`  | 任意 | 完了条件のリスト。省略時は `acceptance_criteria` を使用（`GetDoneConditions()`）                                                                                                                                                                   |
-| `definition_of_abort` | 必須 | 撤退条件（S3-1, S2-2）。`max_repair_count` / `max_wall_clock_sec` / `explicit_failure_conditions`。Circuit Breaker の閾値正本                                                                                                                      |
-| `expected_paths`      | 必須 | 想定変更パスのプレフィックスリスト（S3-1）。Path-overlap Heuristic（A-4）のコンフリクト予測に使用                                                                                                                                                  |
-| `persona_hint`        | 任意 | Worker に適用する persona 名                                                                                                                                                                                                                       |
-| `skill_refs`          | 任意 | Worker が参照する skill 名のリスト                                                                                                                                                                                                                 |
-| `operation_type`      | 任意 | 操作種別ヒント                                                                                                                                                                                                                                     |
-| `run_on_main`         | 任意 | 実 main checkout 上で実行するか（既定 false）。`true` は非 claude worker に割り当てない（C-7）                                                                                                                                                     |
-| `run_on_integration`  | 任意 | integration worktree 上で実行するか（既定 false）                                                                                                                                                                                                  |
-| `resume_hint`         | 任意 | `allow` / `deny` / 空。mid-stream 中断後の継続 nudge（resume）回復の可否を上書き（[§7.3](07-error-handling.md)）。既定ポリシーは `run_on_integration` のみ deny                                                                                    |
-| `complexity_level`    | 任意 | `simple` / `standard` / `complex` / `critical`（C-8）。未指定時 Planner 自動判定、Orchestrator オーバーライド可                                                                                                                                    |
-| `priority`            | 任意 | 優先度（小さいほど高優先。デフォルト 100）。デーモンが自動設定。Agent は指定しない                                                                                                                                                                 |
+| フィールド               | 必須 | 説明                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `purpose`                | 必須 | タスクが全体の中で果たす役割。Worker が成果物を親コマンドの意図と照合するために使用                                                                                                                                                                                                                                                                       |
+| `content`                | 必須 | 実行すべき具体的な作業内容                                                                                                                                                                                                                                                                                                                                |
+| `acceptance_criteria`    | 必須 | 完了の検証条件（検証可能な形式で記述）                                                                                                                                                                                                                                                                                                                    |
+| `constraints`            | 任意 | 実行時に守るべき制約条件のリスト                                                                                                                                                                                                                                                                                                                          |
+| `blocked_by`             | 必須 | 先行タスク ID のリスト。空配列 `[]` なら即時実行可能。依存先が全て `completed` で配信可能。依存先に `failed` / `cancelled` / `dead_letter` が出た場合、当該タスクは自動的に `cancelled` へ遷移する（[§5.8.1](05-script-responsibilities.md) 参照）                                                                                                        |
+| `bloom_level`            | 必須 | Bloom's Taxonomy レベル (1-6)。Planner がモデル割当の根拠として設定。L1-L3 → Sonnet, L4-L6 → Opus                                                                                                                                                                                                                                                         |
+| `tools_hint`             | 任意 | Worker に推奨する MCP ツール名の文字列配列。省略時は空配列。Planner が `plan submit` で設定し、デーモンがそのまま queue に転記する。Worker は推奨に従いツールの活用を検討するが、強制ではない                                                                                                                                                             |
+| `definition_of_done`     | 任意 | 完了条件のリスト。省略時は `acceptance_criteria` を使用（`GetDoneConditions()`）                                                                                                                                                                                                                                                                          |
+| `definition_of_abort`    | 必須 | 撤退条件（S3-1, S2-2）。`max_repair_count` / `max_wall_clock_sec` / `explicit_failure_conditions`。Circuit Breaker の閾値正本                                                                                                                                                                                                                             |
+| `expected_paths`         | 必須 | 想定変更パスのプレフィックスリスト（S3-1）。Path-overlap Heuristic（A-4）のコンフリクト予測に使用                                                                                                                                                                                                                                                         |
+| `persona_hint`           | 任意 | Worker に適用する persona 名                                                                                                                                                                                                                                                                                                                              |
+| `skill_refs`             | 任意 | Worker が参照する skill 名のリスト                                                                                                                                                                                                                                                                                                                        |
+| `operation_type`         | 任意 | 操作種別ヒント                                                                                                                                                                                                                                                                                                                                            |
+| `required_capabilities`  | 任意 | 割当先 worker が全て宣言すべき capability タグのリスト（hard フィルタ）。`plan submit` の自動割当が候補を「全タグを宣言する worker」に絞る。満たす worker が構成に無い場合は submit がエラーで拒否される（silent drop しない）。`worker_id` pin と併用時は pin が優先（不一致は WARN ログ）。worker 側の宣言は `agents.workers.capabilities`（§4.1 参照） |
+| `preferred_capabilities` | 任意 | 割当先選択を加点する capability タグのリスト（soft スコアリング）。一致タグ数の多い worker が最小負荷 / 辞書順の tie-break より優先される。満たす worker が無くても割り当ては成立する                                                                                                                                                                     |
+| `run_on_main`            | 任意 | 実 main checkout 上で実行するか（既定 false）。`true` は非 claude worker に割り当てない（C-7）                                                                                                                                                                                                                                                            |
+| `run_on_integration`     | 任意 | integration worktree 上で実行するか（既定 false）                                                                                                                                                                                                                                                                                                         |
+| `resume_hint`            | 任意 | `allow` / `deny` / 空。mid-stream 中断後の継続 nudge（resume）回復の可否を上書き（[§7.3](07-error-handling.md)）。既定ポリシーは `run_on_integration` のみ deny                                                                                                                                                                                           |
+| `complexity_level`       | 任意 | `simple` / `standard` / `complex` / `critical`（C-8）。未指定時 Planner 自動判定、Orchestrator オーバーライド可                                                                                                                                                                                                                                           |
+| `priority`               | 任意 | 優先度（小さいほど高優先。デフォルト 100）。デーモンが自動設定。Agent は指定しない                                                                                                                                                                                                                                                                        |
 
 **実装拡張フィールド（デーモン管理。Agent は指定しない。いずれも `omitempty`）**:
 
@@ -681,6 +694,68 @@ updated_at: null
 > メトリクス更新はベストエフォート。コアの dispatch/result パスをブロックしてはならない。
 > デーモンの定期スキャン時に更新。dashboard_gen モジュールがダッシュボードに反映。
 
+### usage セクション（opt-in、cost_tracking.enabled 時のみ）
+
+`cost_tracking.enabled: true`（config.yaml、デフォルト false）のとき、デーモンは scan 毎に
+claude-code のセッション記録（`~/.claude/projects/<escaped-cwd>/*.jsonl`）を読み、
+maestro の配信 envelope（`[maestro] task_id:... command_id:...` 等）をアンカーに
+agent / command 単位へ attribution したトークン使用量を `usage:` セクションとして記録する。
+
+原則:
+
+- **トークンが一次記録**。`estimated_cost_usd` はバイナリ内の価格表からの派生値で、
+  `by_model` のトークン数から常に再計算できる（価格不明のモデルは cost 無し = unknown 表示）。
+- **取得経路の無い runtime（codex / gemini）は `tokens_known: false`**（unknown 扱い）。
+  0 と表現しない。1 つでも unknown があれば `partial: true`。
+- attribution は envelope 単位の近似（envelope 以後の usage を直前の envelope に帰属）。
+  envelope を含まないセッション（オペレータの手動セッション等）は集計対象外。
+  subagent transcript は親セッションの envelope タイムラインへタイムスタンプで帰属する。
+- セクション全体が gauge 的にソースから再計算されるため、runtime 側の
+  セッション保持期間（retention）を超えた分は集計から消える。
+- 収集はローカルファイルの読み取りのみ。pane スクレイピング・外部課金 API は使わない。
+  収集失敗はデーモンを止めず WARN + skip。
+
+```yaml
+usage:
+  source: "claude-code session files (~/.claude/projects)"
+  partial: true # unknown runtime の agent または収集失敗があると true（部分集計）
+  collected_at: "2026-07-23T10:00:00Z"
+  agents:
+    worker1:
+      runtime: claude-code
+      tokens_known: true
+      totals:
+        input_tokens: 1000
+        output_tokens: 200
+        cache_read_input_tokens: 50
+        cache_creation_input_tokens: 30
+      by_model: # モデル別内訳（価格表更新時のコスト再計算に使用）
+        claude-sonnet-5:
+          input_tokens: 1000
+          output_tokens: 200
+          cache_read_input_tokens: 50
+          cache_creation_input_tokens: 30
+      estimated_cost_usd: 0.1234 # 派生値。価格不明モデルのみの場合は省略
+    worker2:
+      runtime: codex # 取得経路なし → unknown（0 ではない）
+      tokens_known: false
+  commands:
+    cmd-1:
+      totals: {
+        input_tokens: 1000,
+        output_tokens: 200,
+        cache_read_input_tokens: 50,
+        cache_creation_input_tokens: 30,
+      }
+      by_model: {}
+      estimated_cost_usd: 0.1234
+  budget_alerts: # budget しきい値超過時のみ（WARN ログ + dashboard 表示と同内容）
+    - "command cmd-1 estimated cost $0.12 exceeds per-command budget $0.10"
+```
+
+表示先: `.maestro/dashboard.md` の「Cost / Token Usage」セクションと `maestro status` の
+Usage ブロック（最小表示）。リッチな可視化は TUI HUD (#29) / Web dashboard (#20) に委譲。
+
 ## 4.9 state/continuous.yaml（継続モード状態）
 
 `continuous.enabled: true` 時にデーモンが管理する。デーモン再起動後もイテレーション数を復元可能。
@@ -819,3 +894,73 @@ quarantined →（terminal。operator の手動介入が必要）
 | notification (`queue/orchestrator.yaml`) | `completed` \| `dead_letter`                            |
 
 > 上記の一般化された遷移図はスーパーセットである。notification は配信成功 (`completed`) または配信上限超過 (`dead_letter`) のみ遷移し、`failed` / `cancelled` には遷移しない。
+
+## 4.11 state/skill_candidates.yaml（skill-factory: 候補蓄積と staging）
+
+Worker が `maestro result write --skill-candidates` で報告した反復成功パターンの蓄積ファイル。デーモンが `result write` 処理時に集約する（`internal/daemon/result_write_learnings.go` の `writeSkillCandidates`）。
+
+```yaml
+schema_version: 1
+file_type: "state_skill_candidates"
+candidates:
+  - id: "skc_1771722600_a1b2c3d4" # type prefix は skc（§4.0）
+    content: | # Worker 報告の原文（1 行目がタイトル。承認時の skill 名 slug の元）
+      flaky test の切り分け手順
+      1. ...
+    occurrences: 2 # 観測回数。同一 command からの重複報告は加算しない
+    command_ids: [
+      "cmd_...",
+      "cmd_...",
+    ] # 観測元 command（grounding。生成草稿に転記される）
+    created_at: "2026-02-22T10:05:00Z"
+    updated_at: "2026-02-22T11:00:00Z"
+    status: "pending" # pending | approved | rejected
+    skill_name: "flaky-test-triage" # 承認時に確定した kebab-case 名（approved のみ）
+    staged_path: ".maestro/state/skill_staging/flaky-test-triage/SKILL.md" # 生成草稿のパス（approved のみ）
+    similar_skills: [
+      "worker/tdd-red-green-refactor",
+    ] # 登録時に検出した既存 skill との類似（dedup ヒント。任意）
+```
+
+- **集約時の dedup**: 同一内容（空白正規化後の一致、またはトークン類似度 >= 0.8 の近似一致）の報告は既存 pending 候補の `occurrences` に加算され、新規エントリを作らない。近似一致でも `content` は初回報告の原文を保持する
+- **既存 skill との類似検出**: 登録時に skill ライブラリ全体（bundled `.maestro/skills` + `skills.extra_dirs`）と内容類似を照合し、類似 skill を `similar_skills` に記録する（操作員への reject 推奨ヒント。自動 reject はしない）
+- **承認（`maestro skill approve`）の効果**: live library への書き込みでは**ない**。`state/skill_staging/<skill_name>/SKILL.md` に完全な frontmatter（name/description/version/tags/priority）付きの草稿を生成し、skill-anatomy validator（hard rule）を通過した場合のみ `status: approved` + `skill_name` / `staged_path` を記録する。validator 違反時は staging を掃除して承認自体が失敗する
+- **staged dir の candidate manifest と crash 復旧**: staged dir には SKILL.md と並んで `.candidate_id`（生成元候補 ID を記録するマニフェスト。frontmatter には入れず、anatomy validator・昇格コピーに影響しない）が置かれる。staging は temp dir + rename で原子的に作られるため、マニフェスト無しの中途半端な dir は残らない。approve が staging 成功後・candidate 状態確定前に crash した場合（candidate は pending のまま staged dir だけが残る）、同一候補の approve 再実行はマニフェスト一致を検出して承認を完了する（resume。既存草稿が anatomy validator の hard rule を通る場合は人間の編集を保持したまま再利用し、欠損・不正な草稿のみ再生成する）。マニフェストが別候補を指す（またはマニフェストが無い）dir は従来どおり DUPLICATE で拒否される
+- **昇格は人間の git 操作**: staging の草稿を `skills.extra_dirs` 配下（または `templates/skills/`）へコピーして commit するのは人間の責務。デーモンは staging より先へ書き込まず、自動 commit もしない
+- **値ゲート**: `occurrences < 2` の候補、または `similar_skills` 相当の類似が承認時に検出された候補は、`--force` 無しでは承認できない。既存 skill との名前衝突は `--force` でも承認できない
+- **サイズ上限（read 側 5MB ガードの構造的保護）**: 通常運用で state ファイルが read 側サイズガード（5MB）に到達しないよう多層で制限する。(1) 登録時: `content` は 4096 runes で truncate（末尾に truncation 注記を付加）、`command_ids` は 50 件まで（超過後も `occurrences` は加算を継続する）。(2) 保持数: candidates 総数は 100 件まで。超過時は terminal（approved / rejected）エントリを `updated_at` 最古から prune し、pending は保護する。全件 pending で上限に達した場合、新規登録は WARN ログ付きで skip される（silent drop しない）。(3) 書き込み前検査: serialize 後サイズが 4MB を超える場合は書き込まず失敗させる（on-disk 状態は不変）。read 側で 5MB 超を検出した場合のエラーメッセージには復旧手段（ファイルの退避、または terminal エントリの手動 prune）が明記される
+
+## 4.12 state/improvements.yaml（C-5 friction 駆動改善ループの idea 台帳）
+
+再発する運用摩擦（friction）から立てた improvement idea のライフサイクル台帳。`self_improvement.enabled` と `self_improvement.friction.enabled` の両方が true のときのみデーモンが管理する（shutdown 時に永続化、起動時に再読込。[REQUIREMENTS.md](REQUIREMENTS.md) C-5-4 参照）。
+
+```yaml
+schema_version: 1
+file_type: "state_improvements"
+improvements:
+  - id: "a1b2c3d4e5f60718" # エラー fingerprint（C-5-1 の Fingerprint DB と共有キー）
+    kind: "blocked_prompt" # friction 種別: blocked_prompt | runtime_terminal_error | dispatch_blocked | dead_letter | timeout | task_failure
+    category: "permission" # fingerprint 計算時の粗分類
+    target: "workflow_advice" # 改善対象。exclude_targets に該当するものは適用・提示ともフィルタ
+    advice: "protected path を expected_paths から外す" # 提示する助言（成功 retry の summary 由来）
+    status: "applied" # observed | proposed | applied | verified | reopened
+    occurrence_count: 4 # friction の累積観測回数
+    reopen_count: 1 # verified → reopened の回数（回帰履歴）
+    proposed_at: "2026-07-24T10:00:00Z"
+    applied_at: "2026-07-24T11:00:00Z"
+    verified_at: "" # 効果計測ゲート通過時刻（verified のみ）
+    reopened_at: ""
+    last_seen_at: "2026-07-24T11:30:00Z"
+    measure: # 効果計測（metrics.yaml カウンタと friction 再発数に接地）
+      baseline_occurrences: 3 # 適用時点の friction 観測回数
+      baseline_tasks_failed: 7 # 適用時点の counters.tasks_failed スナップショット
+      baseline_dead_letters: 1
+      post_apply_successes: 1 # 適用後の連続成功数（再発でリセット）
+      post_apply_recurrences: 0 # 適用後の同種 friction 再発数（計測履歴）
+      verified_tasks_failed: 0 # verified 昇格時点のスナップショット
+      verified_dead_letters: 0
+```
+
+- **ライフサイクル**: observed →（`min_occurrences` 回再発）→ proposed →（修復戦略の retry 注入 = 適用）→ applied →（連続 `verify_min_successes` 回の計測成功）→ verified。verified 後に同種 friction が再発すると自動で reopened に戻る（auto-reopen）。reopened は proposed と同様に再適用・再計測の対象
+- **提示が終点**: proposed / reopened のエントリは Planner への command 配信時に DATA セクション（`IMPROVEMENT PROPOSALS`）として注入される（`friction.inject_count` 件まで、0 で注入無効）。デーモンがテンプレート・設定を自動で書き換えることはない
+- **上限**: `friction.max_entries`（既定 200）。超過時は `last_seen_at` 最古のエントリを evict

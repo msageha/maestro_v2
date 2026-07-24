@@ -196,28 +196,142 @@ func parseFrontmatter(content string) (Metadata, string, error) {
 	return meta, body, nil
 }
 
-// ReadSkillWithRole reads a skill file using role-based fallback:
-//  1. skills/<role>/<skillName>/SKILL.md (directory name match)
-//  2. skills/share/<skillName>/SKILL.md (shared directory name match)
-//  3. Scan skills/<role>/ and skills/share/ for a skill whose frontmatter
-//     "name" field matches skillName (name-based fallback).
+// roleScopes returns the scope subdirectories searched for a role, in
+// precedence order: the role-specific scope first, then the shared scope.
+// An empty role searches only the shared scope, and "share" is not doubled.
+func roleScopes(role string) []string {
+	if role == "" || role == "share" {
+		return []string{"share"}
+	}
+	return []string{role, "share"}
+}
+
+// ResolveSearchDirs builds the precedence-ordered skill search directory list
+// from the configured skills.extra_dirs and the bundled skills directory.
+// Relative extra_dirs entries are resolved against projectRoot. Entries that
+// are empty, missing, or not directories are skipped with a WARN rather than
+// an error so a stale config never stops the daemon. Earlier entries take
+// precedence; the bundled directory is always last (lowest precedence).
+func ResolveSearchDirs(extraDirs []string, projectRoot, bundledDir string, logger *slog.Logger) []string {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	dirs := make([]string, 0, len(extraDirs)+1)
+	seen := make(map[string]struct{}, len(extraDirs)+1)
+	for _, entry := range extraDirs {
+		trimmed := strings.TrimSpace(entry)
+		if trimmed == "" {
+			logger.Warn("skills.extra_dirs: skipping empty entry")
+			continue
+		}
+		path := trimmed
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(projectRoot, path)
+		}
+		path = filepath.Clean(path)
+		if _, dup := seen[path]; dup {
+			logger.Warn("skills.extra_dirs: skipping duplicate entry", "path", path)
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			logger.Warn("skills.extra_dirs: skipping missing directory", "path", path, "error", err)
+			continue
+		}
+		if !info.IsDir() {
+			logger.Warn("skills.extra_dirs: skipping non-directory entry", "path", path)
+			continue
+		}
+		seen[path] = struct{}{}
+		dirs = append(dirs, path)
+	}
+	bundled := filepath.Clean(bundledDir)
+	if _, dup := seen[bundled]; !dup {
+		dirs = append(dirs, bundled)
+	}
+	return dirs
+}
+
+// skillPathCandidate is a concrete SKILL.md location considered during
+// resolution, tagged with the scope ("<role>" or "share") it was found under.
+type skillPathCandidate struct {
+	path  string
+	scope string
+}
+
+// warnShadowedCandidates emits a WARN for each same-scope candidate that also
+// exists on disk but lost the precedence race to winnerPath. Cross-scope
+// duplicates (a role-specific skill shadowing a shared one) are the documented
+// fallback design, not a conflict, and are not reported.
+func warnShadowedCandidates(logger *slog.Logger, skillName, scope, winnerPath string, rest []skillPathCandidate) {
+	var shadowed []string
+	for _, c := range rest {
+		if c.scope != scope {
+			continue
+		}
+		if _, err := os.Stat(c.path); err == nil {
+			shadowed = append(shadowed, c.path)
+		}
+	}
+	if len(shadowed) > 0 {
+		logger.Warn("skill name conflict across skill source directories: highest-precedence copy wins",
+			"skill", skillName, "scope", scope, "winner", winnerPath, "shadowed", shadowed)
+	}
+}
+
+// ReadSkillWithRole reads a skill file from a single skills directory.
+// It is a convenience wrapper around ReadSkillWithRoleDirs; see that function
+// for the resolution rules.
+func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
+	return ReadSkillWithRoleDirs([]string{skillsDir}, skillName, role, nil)
+}
+
+// ReadSkillWithRoleDirs reads a skill file from an ordered list of skill
+// source directories using role-based fallback:
+//  1. <dir>/<role>/<skillName>/SKILL.md for each dir in order (directory name
+//     match; an empty role probes the root-level <dir>/<skillName>/SKILL.md)
+//  2. <dir>/share/<skillName>/SKILL.md for each dir in order (shared directory name match)
+//  3. Scan the same directories for a skill whose frontmatter "name" field
+//     matches skillName (name-based fallback).
 //
 // The name-based fallback (step 3) allows callers to reference skills by
 // their frontmatter name, which is what "maestro skill list" displays.
+// Earlier directories take precedence within each scope, so project-supplied
+// extra_dirs shadow the bundled catalog. When the same skill exists in more
+// than one source directory at the same scope, the highest-precedence copy
+// wins and the shadowed copies are reported with a WARN (never silently).
 // Returns the first match found, or an error if none exist.
-func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
+func ReadSkillWithRoleDirs(skillsDirs []string, skillName, role string, logger *slog.Logger) (Content, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if !validate.IsValidIdentifier(skillName) {
 		return Content{}, fmt.Errorf("invalid skill name: %q", skillName)
 	}
 
-	// Fast path: try exact directory name match.
-	candidates := []string{
-		filepath.Join(skillsDir, role, skillName, "SKILL.md"),
-		filepath.Join(skillsDir, "share", skillName, "SKILL.md"),
+	// Fast path: try exact directory name match, role scope across all
+	// source directories before the shared scope.
+	scopes := roleScopes(role)
+	if role == "" {
+		// Backward compatibility: the pre-multi-dir ReadSkillWithRole built
+		// its fast-path candidate as filepath.Join(skillsDir, role, name,
+		// "SKILL.md"), which for an empty role collapses to the root-level
+		// <dir>/<skillName>/SKILL.md. Keep probing that location first so
+		// callers relying on root-level layouts still resolve.
+		scopes = append([]string{""}, scopes...)
+	}
+	var candidates []skillPathCandidate
+	for _, scope := range scopes {
+		for _, dir := range skillsDirs {
+			candidates = append(candidates, skillPathCandidate{
+				path:  filepath.Join(dir, scope, skillName, "SKILL.md"),
+				scope: scope,
+			})
+		}
 	}
 
-	for _, path := range candidates {
-		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
+	for i, c := range candidates {
+		data, err := os.ReadFile(c.path) //nolint:gosec // path is constructed from controlled skills directories
 		if err != nil {
 			continue
 		}
@@ -226,6 +340,8 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 		if err != nil {
 			return Content{}, fmt.Errorf("parse skill %q frontmatter: %w", skillName, err)
 		}
+
+		warnShadowedCandidates(logger, skillName, c.scope, c.path, candidates[i+1:])
 
 		meta.ID = skillName
 		if meta.Name == "" {
@@ -239,21 +355,28 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 	}
 
 	// Slow path: scan directories and match by frontmatter name.
-	if sc, err := readSkillByFrontmatterName(skillsDir, skillName, role); err == nil {
+	if sc, err := readSkillByFrontmatterName(skillsDirs, skillName, role, logger); err == nil {
 		return sc, nil
 	}
 
 	return Content{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
 }
 
-// readSkillByFrontmatterName scans role-specific and shared directories for a
-// skill whose frontmatter "name" field matches the given skillName.
-func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, error) {
-	var dirs []string
-	if role != "" {
-		dirs = append(dirs, filepath.Join(skillsDir, role))
+// readSkillByFrontmatterName scans role-specific and shared directories across
+// all source directories for a skill whose frontmatter "name" field matches
+// the given skillName. Directories are scanned in precedence order (role scope
+// across all sources first, then shared), so the first match is deterministic.
+func readSkillByFrontmatterName(skillsDirs []string, skillName, role string, logger *slog.Logger) (Content, error) {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	dirs = append(dirs, filepath.Join(skillsDir, "share"))
+	scopes := roleScopes(role)
+	dirs := make([]string, 0, len(scopes)*len(skillsDirs))
+	for _, scope := range scopes {
+		for _, base := range skillsDirs {
+			dirs = append(dirs, filepath.Join(base, scope))
+		}
+	}
 
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -271,7 +394,7 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, err
 			}
 			meta, body, err := parseFrontmatter(string(data))
 			if err != nil {
-				slog.Warn("readSkillByFrontmatterName: failed to parse frontmatter",
+				logger.Warn("readSkillByFrontmatterName: failed to parse frontmatter",
 					"path", path, "skill", e.Name(), "error", err)
 				continue
 			}
@@ -288,26 +411,39 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, err
 	return Content{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
 }
 
-// ListSkillsWithRole lists skill metadata for a given role directory only.
-// Shared skills (skills/share/) are NOT included unless role is "share".
-// This is because shared skills are auto-injected at dispatch time and
-// listing them alongside role-specific skills would be misleading.
-// Parse errors are logged as warnings and the skill is skipped.
+// ListSkillsWithRole lists skill metadata from a single skills directory.
+// It is a convenience wrapper around ListSkillsWithRoleDirs; see that function
+// for the listing rules.
 func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]Metadata, error) {
+	return ListSkillsWithRoleDirs([]string{skillsDir}, role, logger)
+}
+
+// ListSkillsWithRoleDirs lists skill metadata for a given role scope across an
+// ordered list of skill source directories. Shared skills (skills/share/) are
+// NOT included unless role is "share". This is because shared skills are
+// auto-injected at dispatch time and listing them alongside role-specific
+// skills would be misleading.
+//
+// Earlier directories take precedence: when the same skill name exists in
+// more than one source directory, the highest-precedence copy is listed and
+// the shadowed copies are reported with a WARN (never silently). Parse errors
+// are logged as warnings and the skill is skipped; a broken higher-precedence
+// copy still blocks lower-precedence copies so that the listing matches what
+// ReadSkillWithRoleDirs would resolve.
+func ListSkillsWithRoleDirs(skillsDirs []string, role string, logger *slog.Logger) ([]Metadata, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	seen := make(map[string]struct{})
+	if role == "" {
+		return nil, nil
+	}
+	seen := make(map[string]string) // skill ID -> winning SKILL.md path
 	var skills []Metadata
 
-	// Scan only the role-specific directory.
-	// When role is "share", this naturally scans skills/share/.
-	var dirs []string
-	if role != "" {
-		dirs = append(dirs, filepath.Join(skillsDir, role))
-	}
-
-	for _, dir := range dirs {
+	// Scan only the role-specific scope in each source directory.
+	// When role is "share", this naturally scans <dir>/share/.
+	for _, base := range skillsDirs {
+		dir := filepath.Join(base, role)
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -320,27 +456,35 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]Metadata
 				continue
 			}
 			name := e.Name()
-			if _, ok := seen[name]; ok {
+			path := filepath.Join(dir, name, "SKILL.md")
+			if winner, ok := seen[name]; ok {
+				if _, statErr := os.Stat(path); statErr == nil {
+					logger.Warn("skill name conflict across skill source directories: highest-precedence copy wins",
+						"skill", name, "scope", role, "winner", winner, "shadowed", path)
+				}
 				continue
 			}
 			// Read SKILL.md directly from the current directory instead of
-			// calling ReadSkillWithRole which redundantly searches all fallback paths.
-			path := filepath.Join(dir, name, "SKILL.md")
+			// calling ReadSkillWithRoleDirs which redundantly searches all fallback paths.
 			data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
 			if err != nil {
-				logger.Warn("ListSkillsWithRole: failed to read SKILL.md", "path", path, "error", err)
+				logger.Warn("ListSkillsWithRoleDirs: failed to read SKILL.md", "path", path, "error", err)
 				continue
 			}
 			meta, _, err := parseFrontmatter(string(data))
 			if err != nil {
-				logger.Warn("ListSkillsWithRole: failed to parse frontmatter", "path", path, "skill", name, "error", err)
+				logger.Warn("ListSkillsWithRoleDirs: failed to parse frontmatter", "path", path, "skill", name, "error", err)
+				// Mark as seen so a lower-precedence copy cannot silently win:
+				// resolution via ReadSkillWithRoleDirs fails on the broken
+				// higher-precedence copy, and the listing must match.
+				seen[name] = path
 				continue
 			}
 			meta.ID = name
 			if meta.Name == "" {
 				meta.Name = name
 			}
-			seen[name] = struct{}{}
+			seen[name] = path
 			skills = append(skills, meta)
 		}
 	}
@@ -348,61 +492,79 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]Metadata
 	return skills, nil
 }
 
-// ReadAllSkillsForRole reads all skill contents for a given role.
-// It scans skills/<role>/ and skills/share/ directories, returning the full
-// Content (metadata + body) for each skill found. When duplicates exist,
-// the role-specific version takes priority over shared. Parse errors are logged
-// as warnings and the skill is skipped.
+// ReadAllSkillsForRole reads all skill contents from a single skills
+// directory. It is a convenience wrapper around ReadAllSkillsForRoleDirs; see
+// that function for the merge rules.
 func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]Content, error) {
+	return ReadAllSkillsForRoleDirs([]string{skillsDir}, role, logger)
+}
+
+// ReadAllSkillsForRoleDirs reads all skill contents for a given role across an
+// ordered list of skill source directories. It scans <dir>/<role>/ across all
+// sources first, then <dir>/share/, returning the full Content (metadata +
+// body) for each skill found. When duplicates exist, the role-specific version
+// takes priority over shared, and within a scope earlier source directories
+// take priority. Same-scope duplicates across source directories are
+// precedence conflicts and are reported with a WARN (never silently);
+// role-over-share shadowing is the documented fallback design and is not
+// reported. Parse errors are logged as warnings and the skill is skipped.
+func ReadAllSkillsForRoleDirs(skillsDirs []string, role string, logger *slog.Logger) ([]Content, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	seen := make(map[string]struct{})
+	type claim struct {
+		path  string
+		scope string
+	}
+	seen := make(map[string]claim)
 	var skills []Content
 
-	var dirs []string
-	if role != "" {
-		dirs = append(dirs, filepath.Join(skillsDir, role))
-	}
-	dirs = append(dirs, filepath.Join(skillsDir, "share"))
-
-	for _, dir := range dirs {
-		entries, err := os.ReadDir(dir)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
-		}
-		for _, e := range entries {
-			if !e.IsDir() {
-				continue
-			}
-			name := e.Name()
-			if _, ok := seen[name]; ok {
-				continue
-			}
-			path := filepath.Join(dir, name, "SKILL.md")
-			data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
+	for _, scope := range roleScopes(role) {
+		for _, base := range skillsDirs {
+			dir := filepath.Join(base, scope)
+			entries, err := os.ReadDir(dir)
 			if err != nil {
-				logger.Warn("ReadAllSkillsForRole: failed to read SKILL.md", "path", path, "error", err)
-				continue
+				if os.IsNotExist(err) {
+					continue
+				}
+				return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
 			}
-			meta, body, err := parseFrontmatter(string(data))
-			if err != nil {
-				logger.Warn("ReadAllSkillsForRole: failed to parse frontmatter", "path", path, "skill", name, "error", err)
-				// Mark as seen even on parse failure to prevent shared fallback
-				// for this skill name. This matches ReadSkillWithRole behavior
-				// where a broken role-specific file does not fall through to share.
-				seen[name] = struct{}{}
-				continue
+			for _, e := range entries {
+				if !e.IsDir() {
+					continue
+				}
+				name := e.Name()
+				path := filepath.Join(dir, name, "SKILL.md")
+				if prev, ok := seen[name]; ok {
+					if prev.scope == scope {
+						if _, statErr := os.Stat(path); statErr == nil {
+							logger.Warn("skill name conflict across skill source directories: highest-precedence copy wins",
+								"skill", name, "scope", scope, "winner", prev.path, "shadowed", path)
+						}
+					}
+					continue
+				}
+				data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
+				if err != nil {
+					logger.Warn("ReadAllSkillsForRoleDirs: failed to read SKILL.md", "path", path, "error", err)
+					continue
+				}
+				meta, body, err := parseFrontmatter(string(data))
+				if err != nil {
+					logger.Warn("ReadAllSkillsForRoleDirs: failed to parse frontmatter", "path", path, "skill", name, "error", err)
+					// Mark as seen even on parse failure to prevent shared fallback
+					// for this skill name. This matches ReadSkillWithRoleDirs behavior
+					// where a broken role-specific file does not fall through to share.
+					seen[name] = claim{path: path, scope: scope}
+					continue
+				}
+				meta.ID = name
+				if meta.Name == "" {
+					meta.Name = name
+				}
+				seen[name] = claim{path: path, scope: scope}
+				skills = append(skills, Content{Metadata: meta, Body: body})
 			}
-			meta.ID = name
-			if meta.Name == "" {
-				meta.Name = name
-			}
-			seen[name] = struct{}{}
-			skills = append(skills, Content{Metadata: meta, Body: body})
 		}
 	}
 

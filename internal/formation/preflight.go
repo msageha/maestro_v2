@@ -3,11 +3,15 @@ package formation
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 
+	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -64,6 +68,44 @@ func preflightEnvironment(maestroDir string) error {
 	}
 
 	return classifyPreflightProbeErr(uds.ProbeUnixSocket(probePath))
+}
+
+// preflightRuntimes verifies every runtime referenced by the agents config
+// (claude-code / codex / gemini, resolved via agent.ConfiguredRuntimes)
+// BEFORE any tmux/daemon resource is created:
+//
+//   - binary resolution on PATH is a hard check: a missing CLI can never
+//     launch, so failing fast here beats the late failure at pane launch
+//     (launcher.go exec.LookPath) that otherwise surfaces only after the
+//     first dispatch.
+//   - credential presence is best-effort and warning-only: auth stores are
+//     not reliably inspectable (keychain-backed logins in particular), so
+//     an unknown auth state must not block startup.
+//
+// No subprocess is spawned — version probes are `maestro doctor` territory
+// (they add per-runtime latency and belong in the explicit diagnostic
+// command, not on every `maestro up`). The launch-time LookPath and the
+// pane terminal-error fast-fail remain the authoritative backstops.
+func preflightRuntimes(cfg model.Config, rp *agent.RuntimePreflight, warn io.Writer) error {
+	var missing []string
+	for _, rt := range agent.ConfiguredRuntimes(cfg) {
+		cmdName, _, err := rp.CheckBinary(rt.Name)
+		if err != nil {
+			missing = append(missing, fmt.Sprintf("%s (command %q, agents: %s)",
+				rt.Name, cmdName, strings.Join(rt.Agents, ", ")))
+			continue
+		}
+		if status, detail := rp.CheckAuth(rt.Name); status != agent.RuntimeAuthOK {
+			_, _ = fmt.Fprintf(warn, "Warning: runtime %s (agents: %s) auth status unknown: %s\n",
+				rt.Name, strings.Join(rt.Agents, ", "), detail)
+		}
+	}
+	if len(missing) > 0 {
+		return markPreflightError(fmt.Errorf(
+			"agent runtime binaries not found on PATH: %s; install the missing CLI or fix the agents.* model settings in .maestro/config.yaml, then run `maestro doctor` to re-check",
+			strings.Join(missing, "; ")))
+	}
+	return nil
 }
 
 // preflightProbeSeq disambiguates concurrent probes within one process. The

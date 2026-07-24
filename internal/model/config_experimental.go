@@ -228,6 +228,55 @@ type SelfImprovementConfig struct {
 	Targets        []string `yaml:"targets,omitempty"`
 	ExcludeTargets []string `yaml:"exclude_targets,omitempty"`
 	ArchiveMaxSize *int     `yaml:"archive_max_size,omitempty"`
+	// Friction configures the friction-driven improvement loop (issue #26):
+	// recurring operational friction → improvement proposal → effect
+	// measurement gate → auto-reopen on regression. Nested under
+	// self_improvement (no parallel feature gate); active only when BOTH
+	// self_improvement.enabled and friction.enabled are true.
+	Friction FrictionConfig `yaml:"friction,omitempty"`
+}
+
+// FrictionConfig controls the C-5 friction-driven improvement loop. All
+// fields are opt-in with safe defaults; the loop records and surfaces
+// proposals only — the daemon never rewrites templates or config itself.
+type FrictionConfig struct {
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// MinOccurrences is how many times the same friction fingerprint must
+	// recur before it is promoted from observed to proposed.
+	MinOccurrences *int `yaml:"min_occurrences,omitempty"`
+	// VerifyMinSuccesses is the measurement gate: the number of CONSECUTIVE
+	// successful repairs (with the strategy applied, no recurrence in
+	// between) required to promote an applied improvement to verified.
+	VerifyMinSuccesses *int `yaml:"verify_min_successes,omitempty"`
+	// MaxEntries bounds state/improvements.yaml (oldest-seen eviction).
+	MaxEntries *int `yaml:"max_entries,omitempty"`
+	// InjectCount caps how many actionable (proposed/reopened) improvements
+	// are injected into Planner command envelopes. 0 disables injection
+	// while keeping recording active.
+	InjectCount *int `yaml:"inject_count,omitempty"`
+}
+
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
+func (f FrictionConfig) EffectiveEnabled() bool { return effectiveValue(f.Enabled, false) }
+
+// EffectiveMinOccurrences returns MinOccurrences, or DefaultFrictionMinOccurrences when unset.
+func (f FrictionConfig) EffectiveMinOccurrences() int {
+	return effectiveValue(f.MinOccurrences, DefaultFrictionMinOccurrences)
+}
+
+// EffectiveVerifyMinSuccesses returns VerifyMinSuccesses, or DefaultFrictionVerifyMinSuccesses when unset.
+func (f FrictionConfig) EffectiveVerifyMinSuccesses() int {
+	return effectiveValue(f.VerifyMinSuccesses, DefaultFrictionVerifyMinSuccesses)
+}
+
+// EffectiveMaxEntries returns MaxEntries, or DefaultFrictionMaxEntries when unset.
+func (f FrictionConfig) EffectiveMaxEntries() int {
+	return effectiveValue(f.MaxEntries, DefaultFrictionMaxEntries)
+}
+
+// EffectiveInjectCount returns InjectCount, or DefaultFrictionInjectCount when unset.
+func (f FrictionConfig) EffectiveInjectCount() int {
+	return effectiveValue(f.InjectCount, DefaultFrictionInjectCount)
 }
 
 // EffectiveEnabled returns Enabled, defaulting to false when unset.
@@ -395,6 +444,11 @@ func normalizeSelfImprovement(si *SelfImprovementConfig) {
 	if len(si.ExcludeTargets) == 0 {
 		si.ExcludeTargets = []string{"fitness", "daemon_logic", "circuit_breaker"}
 	}
+	resolvePtr(&si.Friction.Enabled, false)
+	resolvePtr(&si.Friction.MinOccurrences, DefaultFrictionMinOccurrences)
+	resolvePtr(&si.Friction.VerifyMinSuccesses, DefaultFrictionVerifyMinSuccesses)
+	resolvePtr(&si.Friction.MaxEntries, DefaultFrictionMaxEntries)
+	resolvePtr(&si.Friction.InjectCount, DefaultFrictionInjectCount)
 }
 
 func normalizeComplexity(cc *ComplexityConfig) {

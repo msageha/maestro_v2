@@ -10,7 +10,7 @@ maestro/
 ├── cmd/
 │   └── maestro/
 │       ├── main.go                    # エントリポイント（サブコマンドルーティング）
-│       └── cmd_*.go                   # 各サブコマンド（setup/up/down/status/queue/result/plan/agent/worker/skill/persona/verify/task/dashboard）
+│       └── cmd_*.go                   # 各サブコマンド（setup/up/down/status/hud/queue/result/plan/agent/worker/skill/persona/verify/task/dashboard）
 ├── internal/
 │   ├── daemon/                        # 常駐プロセス本体（最大の複雑度を持つ）
 │   │   ├── daemon.go                  # デーモンプロセス（UDS + メインループ + PhaseCManager 配線）
@@ -42,6 +42,7 @@ maestro/
 │   ├── worker/                        # Worker 側ヘルパ・契約
 │   ├── bridge/, contract/, envelope/  # メッセージエンベロープ・契約境界
 │   ├── events/, metrics/, status/     # Trace JSONL（S3-2）/ メトリクス / 状態表示
+│   ├── hud/                           # 読み取り専用 TUI 観測 HUD（`maestro hud`。collector + snapshot diff + 純関数レンダラ）
 │   ├── uds/                           # Unix ドメインソケットプロトコル（length-prefix + JSON）
 │   ├── yaml/                          # アトミック書き込み + schema_version 検証 + quarantine
 │   ├── lock/                          # sync.Mutex ベースの排他制御（MutexMap）
@@ -60,6 +61,16 @@ maestro/
 └── docs/
     └── requirements/                  # 本要件定義書一式（abstract / 01-11 / REQUIREMENTS.md）
 ```
+
+## タスク証跡ディレクトリ（`audit/evidence/` — 対象プロジェクトスコープ）
+
+Worker の self-verify 観測証跡（`evidence-bound-verification` skill）の規約パス。`.maestro/` 配下ではなく、**対象プロジェクト直下の `audit/evidence/<task_id>.md`** に置く。
+
+- **経路**: Worker が自分の worktree 内に書く → daemon が verbatim commit（`git add -A`）→ integration merge → publish、と**タスク成果物と同じ経路で main に耐久化**される。`.maestro/` 配下は Worker から書き込み不可（制御プレーン）かつ gitignore されるため置き場所にならない
+- **gate ではない**: daemon は証跡ファイルの存在を検査しない。daemon が実機実行する唯一の Strong Signal は verify.yaml（[§4](04-yaml-schema.md) / [§5.16](05-script-responsibilities.md)）であり、証跡は `verify.enabled: false`（通常運用モード）の self-verify を監査可能にする prose 規律である。result entry の `--summary`（`証跡: audit/evidence/<task_id>.md`）と `--files-changed` から辿る
+- **例外**: `run_on_main` タスク（Write/Edit 拒否）と `run_on_integration` タスク（integration worktree は merge 前に `reset --hard` + `clean -fd` で auto-clean され生成物が残らない）は証跡ファイルを作らず、観測を result summary に inline 記載する
+- **gitignore との関係**: daemon の auto_commit は gitignore を尊重する。対象プロジェクトが `audit/` を ignore していると証跡は commit されないため、Worker は書き込み前に `git check-ignore` で確認し、ignored なら summary inline に切り替える（本リポジトリはホワイトリスト方式の `.gitignore` で `!/audit/**` により追跡対象）
+- **保持/サイズ**: 1 タスク 1 ファイル、目安 100 行 / 8 KiB 以内（コマンド原文と exit code は省略禁止、出力は判定に効く行のみ抜粋）。保持の正本は git 履歴であり、working tree 上の蓄積は操作員が定期 prune してよい（削除しても履歴から辿れる）
 
 ## プロジェクト初期化後の .maestro/ 構造
 
@@ -100,7 +111,10 @@ maestro/
 │   ├── verify/                        # command-scoped verify config snapshot（S1-1）。デーモンが実行時に管理し `verify write` が登録する（setup は事前作成しない）
 │   │   └── {command_id}.yaml
 │   ├── continuous.yaml                # 継続モード状態（イテレーションカウンタ等。デーモンが管理）
-│   └── metrics.yaml                   # 可観測性メトリクス（デーモンが更新）
+│   ├── metrics.yaml                   # 可観測性メトリクス（デーモンが更新）
+│   ├── fingerprint_db.json            # C-5 Failure Fingerprint DB（self_improvement.enabled 時のみ。デーモンが管理）
+│   ├── improvements.yaml              # C-5 friction 駆動改善ループの improvement idea 台帳（self_improvement.friction.enabled 時のみ。デーモンが管理、[§4.12](04-yaml-schema.md) 参照）
+│   └── hud_history.jsonl              # `maestro hud` の snapshot 差分トレイル（JSONL・HUD プロセスのみが書き、デーモンは読み書きしない。[§5.19](05-script-responsibilities.md) 参照）
 ├── locks/                             # ロックファイル
 │   └── daemon.lock                    # デーモン単一インスタンス保証（syscall.Flock）
 │                                      # per-agent / per-command の排他制御はデーモンプロセス内の

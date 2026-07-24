@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"time"
+
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -143,19 +145,32 @@ func (m *PhaseCManager) RepairHintForRetry(task *model.Task) string {
 	if !ok {
 		return ""
 	}
+	// Friction loop (issue #26): injecting the strategy is the "apply" step
+	// of the improvement lifecycle — it opens the measurement window for
+	// this fingerprint. Idempotent while already applied; baseline counters
+	// come from state/metrics.yaml (best-effort).
+	if m.ImprovementStore != nil {
+		m.ImprovementStore.RecordApplication(fp, strategy, m.metricsCountersSnapshot(), time.Now())
+	}
 	return learnings.FormatRepairStrategySection(pattern.ErrorCategory, strategy, pattern.SuccessRate, pattern.OccurrenceCount)
 }
 
 // recordRepairOutcome closes the C-5 loop at result time: a completed retry
 // credits its predecessor's failure pattern (RecordRepairSuccess adopts the
 // retry's summary as the pattern's strategy when none is recorded yet); any
-// terminal outcome releases the attribution entry.
+// terminal outcome releases the attribution entry. The outcome also feeds
+// the friction-improvement measurement window (issue #26) — success extends
+// the verification streak, failure counts a recurrence.
 func (rh *ResultHandler) recordRepairOutcome(r *model.TaskResult, m *PhaseCManager) {
 	if m == nil || m.FingerprintDB == nil || !model.IsTerminal(r.Status) {
 		return
 	}
 	fp := m.ConsumeRetryFingerprint(r.TaskID)
-	if fp == "" || r.Status != model.StatusCompleted {
+	if fp == "" {
+		return
+	}
+	rh.recordImprovementMeasure(r, m, fp)
+	if r.Status != model.StatusCompleted {
 		return
 	}
 	strategy := envelope.NewRawContent(r.Summary).Sanitize().String()

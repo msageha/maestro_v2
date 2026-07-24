@@ -72,6 +72,7 @@ func newAPI(d *Daemon) *API {
 		),
 		skill: daemonapi.NewSkill(
 			d.maestroDir,
+			func() []string { return d.config.Skills.ExtraDirs },
 			d.lockMap,
 			func(format string, args ...any) { d.log(LogLevelInfo, format, args...) },
 			func(format string, args ...any) { d.log(LogLevelWarn, format, args...) },

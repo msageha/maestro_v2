@@ -374,6 +374,9 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, workerPending[wID], workerInProg[wID])
 	}
 
+	// Cost / token usage (opt-in via cost_tracking.enabled; best-effort)
+	f.writeUsageSection(&sb)
+
 	// Continuous Mode state (best-effort; absent file means disabled/never started)
 	if cs, err := f.loadContinuousForDashboard(); err != nil {
 		slog.Warn("loadContinuousForDashboard failed, skipping continuous section", "error", err)
@@ -489,6 +492,90 @@ func (f *DashboardFormatter) loadWorktreeStatesForDashboard() map[string]*model.
 		out[id] = &st
 	}
 	return out
+}
+
+// writeUsageSection appends the cost/token usage section rendered from the
+// usage block of state/metrics.yaml. Silent no-op when cost tracking is
+// disabled (no usage section) or metrics.yaml is unreadable — the dashboard
+// must render even when the collector never ran.
+func (f *DashboardFormatter) writeUsageSection(sb *strings.Builder) {
+	usage := f.loadUsageForDashboard()
+	if usage == nil {
+		return
+	}
+	sb.WriteString("\n## Cost / Token Usage\n\n")
+	fmt.Fprintf(sb, "Source: %s (collected %s)\n", usage.Source, usage.CollectedAt)
+	if usage.Partial {
+		sb.WriteString("\n> ⚠ Partial data: agents on runtimes without a local usage record (codex/gemini) are shown as `unknown`, not zero. Totals are a lower bound.\n")
+	}
+	for _, alert := range usage.BudgetAlerts {
+		fmt.Fprintf(sb, "\n> ⚠ BUDGET: %s\n", alert)
+	}
+
+	if len(usage.Agents) > 0 {
+		sb.WriteString("\n| Agent | Runtime | Input | Output | Cache Read | Cache Write | Est. Cost (USD) |\n")
+		sb.WriteString("|-------|---------|------:|-------:|-----------:|------------:|----------------:|\n")
+		for _, id := range sortedKeys(usage.Agents) {
+			au := usage.Agents[id]
+			if !au.TokensKnown {
+				fmt.Fprintf(sb, "| %s | %s | unknown | unknown | unknown | unknown | unknown |\n", id, au.Runtime)
+				continue
+			}
+			fmt.Fprintf(sb, "| %s | %s | %d | %d | %d | %d | %s |\n",
+				id, au.Runtime,
+				au.Totals.InputTokens, au.Totals.OutputTokens,
+				au.Totals.CacheReadInputTokens, au.Totals.CacheCreationInputTokens,
+				formatUSD(au.EstimatedCostUSD))
+		}
+	}
+
+	if len(usage.Commands) > 0 {
+		sb.WriteString("\n| Command | Input | Output | Cache Read | Cache Write | Est. Cost (USD) |\n")
+		sb.WriteString("|---------|------:|-------:|-----------:|------------:|----------------:|\n")
+		for _, id := range sortedKeys(usage.Commands) {
+			cu := usage.Commands[id]
+			fmt.Fprintf(sb, "| `%s` | %d | %d | %d | %d | %s |\n",
+				id,
+				cu.Totals.InputTokens, cu.Totals.OutputTokens,
+				cu.Totals.CacheReadInputTokens, cu.Totals.CacheCreationInputTokens,
+				formatUSD(cu.EstimatedCostUSD))
+		}
+	}
+}
+
+// sortedKeys returns map keys in sorted order for stable dashboard output.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// formatUSD renders a derived cost estimate; nil means the model's price is
+// unknown and only tokens are reported.
+func formatUSD(v *float64) string {
+	if v == nil {
+		return "unknown (no price data)"
+	}
+	return fmt.Sprintf("$%.4f", *v)
+}
+
+// loadUsageForDashboard reads the usage section from state/metrics.yaml.
+// Returns nil when the file or section is absent or malformed.
+func (f *DashboardFormatter) loadUsageForDashboard() *model.UsageMetrics {
+	path := filepath.Join(f.maestroDir, "state", "metrics.yaml")
+	data, err := os.ReadFile(path) //nolint:gosec // controlled state dir
+	if err != nil {
+		return nil
+	}
+	var m model.Metrics
+	if err := yamlv3.Unmarshal(data, &m); err != nil {
+		slog.Warn("loadUsageForDashboard: unmarshal failed", "path", path, "error", err)
+		return nil
+	}
+	return m.Usage
 }
 
 // loadContinuousForDashboard reads .maestro/state/continuous.yaml for dashboard rendering.

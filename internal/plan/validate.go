@@ -410,6 +410,16 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 		}
 	}
 
+	// Validate capability tags: free-form vocabulary (custom tags allowed;
+	// existence against the worker fleet is checked downstream by
+	// AssignWorkers), but empty or unsafe strings are always mistakes.
+	for i, capTag := range task.RequiredCapabilities {
+		validateCapabilityTag(capTag, fmt.Sprintf("%s.required_capabilities[%d]", fieldPrefix, i), errs)
+	}
+	for i, capTag := range task.PreferredCapabilities {
+		validateCapabilityTag(capTag, fmt.Sprintf("%s.preferred_capabilities[%d]", fieldPrefix, i), errs)
+	}
+
 	// Validate expected_paths (required after auto-completion).
 	if task.ExpectedPaths == nil {
 		errs.Add(fieldPrefix+".expected_paths", "required field is missing")
@@ -449,6 +459,22 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 			errs.Add(fieldPrefix+".worker_id",
 				fmt.Sprintf("invalid worker_id %q: must match workerN where N is a positive integer", task.WorkerID))
 		}
+	}
+}
+
+// validateCapabilityTag rejects empty / whitespace-only and path-unsafe
+// capability tags on required_capabilities / preferred_capabilities entries.
+// Vocabulary is intentionally not enforced here: custom worker capability
+// tags configured under agents.workers.capabilities are legitimate, and a
+// required tag no worker advertises surfaces as an actionable
+// ErrNoAvailableWorker from AssignWorkers.
+func validateCapabilityTag(tag, fieldPath string, errs *ValidationErrors) {
+	if strings.TrimSpace(tag) == "" {
+		errs.Add(fieldPath, "must not be empty")
+		return
+	}
+	if !validate.IsValidIdentifier(tag) {
+		errs.Add(fieldPath, fmt.Sprintf("invalid capability %q: must not contain '/', '\\', or null bytes", tag))
 	}
 }
 

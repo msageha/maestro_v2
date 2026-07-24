@@ -228,6 +228,57 @@ func TestReadSkillWithRole_ShareFallback(t *testing.T) {
 	}
 }
 
+func TestReadSkillWithRole_EmptyRoleRootLevelFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Root-level layout: <skillsDir>/<name>/SKILL.md with no scope directory.
+	// The pre-multi-dir implementation resolved this for an empty role via
+	// filepath.Join(skillsDir, "", name, "SKILL.md"); keep it working.
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: root-level\n---\nRoot body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "root-level" {
+		t.Errorf("expected root-level, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_EmptyRoleRootLevelBeatsShare(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: root-level\n---\nRoot body")
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+
+	// The empty-role fast path probes the root-level location before share,
+	// matching the pre-multi-dir candidate order.
+	sc, err := ReadSkillWithRole(dir, "my-skill", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "root-level" {
+		t.Errorf("expected root-level, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_EmptyRoleShareFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "shared" {
+		t.Errorf("expected shared, got %q", sc.Description)
+	}
+}
+
 func TestReadSkillWithRole_NonexistentSkill(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

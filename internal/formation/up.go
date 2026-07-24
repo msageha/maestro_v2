@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -62,6 +63,21 @@ func RunUp(opts UpOptions) (err error) {
 	}
 
 	if err := preflightEnvironment(opts.MaestroDir); err != nil {
+		return err
+	}
+
+	// Runtime preflight: fail fast when a configured agent runtime's CLI
+	// is missing from PATH, before any tmux/daemon resource exists. The
+	// runtime set is derived from the effective boost state — an explicit
+	// --boost[=bool] flag overrides config (reflectFlags applies the same
+	// override later), and boost forces every worker onto opus
+	// (claude-code), so a missing codex/gemini binary must not block a
+	// boosted launch that will never spawn it.
+	runtimeCfg := opts.Config
+	if opts.BoostSet {
+		runtimeCfg.Agents.Workers.Boost = opts.Boost
+	}
+	if err := preflightRuntimes(runtimeCfg, agent.NewRuntimePreflight(), os.Stderr); err != nil {
 		return err
 	}
 

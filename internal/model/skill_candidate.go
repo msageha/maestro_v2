@@ -9,6 +9,18 @@ type SkillCandidate struct {
 	CreatedAt   string   `yaml:"created_at"`
 	UpdatedAt   string   `yaml:"updated_at"`
 	Status      string   `yaml:"status"` // pending, approved, rejected
+	// SkillName is the kebab-case name assigned when the candidate was
+	// approved (staged). Empty until approval.
+	SkillName string `yaml:"skill_name,omitempty"`
+	// StagedPath is the project-root-relative path of the staged SKILL.md
+	// generated at approval (e.g. ".maestro/state/skill_staging/<name>/SKILL.md").
+	// Promotion into a live skill library is a human git operation; the
+	// daemon never copies or commits the staged file anywhere.
+	StagedPath string `yaml:"staged_path,omitempty"`
+	// SimilarSkills lists existing library skills ("<role>/<name>") whose
+	// content resembles this candidate, computed at registration time as a
+	// dedup hint for the operator (a strong match should lead to reject).
+	SimilarSkills []string `yaml:"similar_skills,omitempty"`
 }
 
 // SkillCandidatesFile is the on-disk format for .maestro/state/skill_candidates.yaml.

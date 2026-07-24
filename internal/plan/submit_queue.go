@@ -111,10 +111,15 @@ func buildQueueTasksByWorker(assignments []WorkerAssignment, tasks []TaskInput, 
 			RunOnIntegration: t.RunOnIntegration,
 			ResumeHint:       t.ResumeHint,
 			OperationType:    opType,
-			Priority:         100,
-			Status:           model.StatusPending,
-			CreatedAt:        now,
-			UpdatedAt:        now,
+			// Capability declarations are recorded on the queue entry for
+			// observability; the routing itself already happened during
+			// AssignWorkers at submit time.
+			RequiredCapabilities:  t.RequiredCapabilities,
+			PreferredCapabilities: t.PreferredCapabilities,
+			Priority:              100,
+			Status:                model.StatusPending,
+			CreatedAt:             now,
+			UpdatedAt:             now,
 		}
 
 		workerTasks[a.WorkerID] = append(workerTasks[a.WorkerID], queueTask)

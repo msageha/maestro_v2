@@ -62,6 +62,7 @@ func (m *mockDispatcher) SetQualityGate(qg dispatch.GateChecker)                
 func (m *mockDispatcher) SetWorktreeManager(wm dispatch.WorktreeResolver)          {}
 func (m *mockDispatcher) SetTaskAliveChecker(c dispatch.TaskAliveChecker)          {}
 func (m *mockDispatcher) SetRepairHintProvider(f func(*model.Task) string)         {}
+func (m *mockDispatcher) SetImprovementSectionProvider(f func() string)            {}
 
 // newPhaseBTestQueueHandler creates a minimal QueueHandler with a captured log buffer.
 func newPhaseBTestQueueHandler(t *testing.T, logBuf *bytes.Buffer) *QueueHandler {

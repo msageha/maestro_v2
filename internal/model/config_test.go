@@ -639,6 +639,106 @@ func TestSelfImprovementConfig_Configured(t *testing.T) {
 	}
 }
 
+func TestFrictionConfig_Defaults(t *testing.T) {
+	var f FrictionConfig
+	if f.EffectiveEnabled() {
+		t.Error("default Enabled should be false (opt-in)")
+	}
+	if v := f.EffectiveMinOccurrences(); v != DefaultFrictionMinOccurrences {
+		t.Errorf("EffectiveMinOccurrences() = %d, want %d", v, DefaultFrictionMinOccurrences)
+	}
+	if v := f.EffectiveVerifyMinSuccesses(); v != DefaultFrictionVerifyMinSuccesses {
+		t.Errorf("EffectiveVerifyMinSuccesses() = %d, want %d", v, DefaultFrictionVerifyMinSuccesses)
+	}
+	if v := f.EffectiveMaxEntries(); v != DefaultFrictionMaxEntries {
+		t.Errorf("EffectiveMaxEntries() = %d, want %d", v, DefaultFrictionMaxEntries)
+	}
+	if v := f.EffectiveInjectCount(); v != DefaultFrictionInjectCount {
+		t.Errorf("EffectiveInjectCount() = %d, want %d", v, DefaultFrictionInjectCount)
+	}
+}
+
+func TestFrictionConfig_Configured(t *testing.T) {
+	f := FrictionConfig{
+		Enabled:            ptr.Bool(true),
+		MinOccurrences:     ptr.Int(3),
+		VerifyMinSuccesses: ptr.Int(4),
+		MaxEntries:         ptr.Int(50),
+		InjectCount:        ptr.Int(0),
+	}
+	if !f.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if v := f.EffectiveMinOccurrences(); v != 3 {
+		t.Errorf("EffectiveMinOccurrences() = %d, want 3", v)
+	}
+	if v := f.EffectiveVerifyMinSuccesses(); v != 4 {
+		t.Errorf("EffectiveVerifyMinSuccesses() = %d, want 4", v)
+	}
+	if v := f.EffectiveMaxEntries(); v != 50 {
+		t.Errorf("EffectiveMaxEntries() = %d, want 50", v)
+	}
+	if v := f.EffectiveInjectCount(); v != 0 {
+		t.Errorf("EffectiveInjectCount() = %d, want 0 (explicit injection opt-out)", v)
+	}
+}
+
+func TestNormalizeExperimentalConfig_Friction(t *testing.T) {
+	cfg := Config{}
+	NormalizeExperimentalConfig(&cfg)
+	f := cfg.SelfImprovement.Friction
+	if f.Enabled == nil || *f.Enabled {
+		t.Error("normalized Friction.Enabled should be non-nil false")
+	}
+	if f.MinOccurrences == nil || *f.MinOccurrences != DefaultFrictionMinOccurrences {
+		t.Errorf("normalized MinOccurrences = %v, want %d", f.MinOccurrences, DefaultFrictionMinOccurrences)
+	}
+	if f.VerifyMinSuccesses == nil || *f.VerifyMinSuccesses != DefaultFrictionVerifyMinSuccesses {
+		t.Errorf("normalized VerifyMinSuccesses = %v, want %d", f.VerifyMinSuccesses, DefaultFrictionVerifyMinSuccesses)
+	}
+	if f.MaxEntries == nil || *f.MaxEntries != DefaultFrictionMaxEntries {
+		t.Errorf("normalized MaxEntries = %v, want %d", f.MaxEntries, DefaultFrictionMaxEntries)
+	}
+	if f.InjectCount == nil || *f.InjectCount != DefaultFrictionInjectCount {
+		t.Errorf("normalized InjectCount = %v, want %d", f.InjectCount, DefaultFrictionInjectCount)
+	}
+}
+
+func TestValidate_FrictionConfig(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"min_occurrences zero", func(c *Config) { c.SelfImprovement.Friction.MinOccurrences = ptr.Int(0) }, "self_improvement.friction.min_occurrences"},
+		{"verify_min_successes zero", func(c *Config) { c.SelfImprovement.Friction.VerifyMinSuccesses = ptr.Int(0) }, "self_improvement.friction.verify_min_successes"},
+		{"max_entries zero", func(c *Config) { c.SelfImprovement.Friction.MaxEntries = ptr.Int(0) }, "self_improvement.friction.max_entries"},
+		{"inject_count negative", func(c *Config) { c.SelfImprovement.Friction.InjectCount = ptr.Int(-1) }, "self_improvement.friction.inject_count"},
+		{"inject_count zero ok", func(c *Config) { c.SelfImprovement.Friction.InjectCount = ptr.Int(0) }, ""},
+		{"all valid", func(c *Config) {
+			c.SelfImprovement.Friction.MinOccurrences = ptr.Int(1)
+			c.SelfImprovement.Friction.VerifyMinSuccesses = ptr.Int(1)
+			c.SelfImprovement.Friction.MaxEntries = ptr.Int(1)
+		}, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("Validate() = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() = %v, want error containing %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
 // --- Cross-field validation tests ---
 
 func TestValidate_ContinuousEnabled_NegativeMaxIterations(t *testing.T) {

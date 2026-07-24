@@ -51,6 +51,7 @@ func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID 
 	// recordTaskResultLearning a high-level orchestrator that is easy to
 	// extend (e.g. adding C-6 / C-7) without re-flowing this function.
 	rh.recordFingerprintCapture(r, workerID, m)
+	rh.recordFrictionSignal(r, m)
 	rh.recordRepairOutcome(r, m)
 	rh.recordBanditReward(r, workerID)
 	rh.recordSearchTreeOutcome(r, m)
