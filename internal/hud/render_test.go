@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func fixtureRenderOptions(color bool) RenderOptions {
@@ -80,6 +82,93 @@ func TestRender_NoColorHasNoEscapes(t *testing.T) {
 	colored := Render(s, Diffs{}, fixtureRenderOptions(true))
 	if !strings.Contains(colored, "\x1b[") {
 		t.Error("Color=true frame should contain ANSI SGR sequences")
+	}
+}
+
+// TestRender_StripsExternalControlSequences pins the sanitize boundary:
+// worker-controlled strings (summaries, learnings, skill candidates, signal
+// errors, IDs) must not smuggle terminal control bytes — OSC 52 clipboard
+// writes, CSI, C1 introducers, CR, BEL — into the operator's terminal.
+func TestRender_StripsExternalControlSequences(t *testing.T) {
+	osc52 := "\x1b]52;c;bWFsaWNpb3Vz\x07" // OSC 52: clipboard write
+	s := &Snapshot{
+		CollectedAt: fixtureTime,
+		Signals: SignalsSection{Total: 1, Rows: []SignalRow{{
+			Kind:      "merge_conflict",
+			CommandID: "cmd_\x1b[2J\x1b[31mred",
+			PhaseID:   "ph_1",
+			Attempts:  2,
+			LastError: "boom" + osc52 + "\rovertype",
+		}}},
+		Learnings: LearningsSection{Total: 1, Latest: []model.Learning{{
+			Content:      "learned\x9b31mthing", // C1 CSI (U+009B)
+			CreatedAt:    "2026-07-24T11:30:00Z",
+			SourceWorker: "worker\x071",
+		}}},
+		SkillCandidates: SkillCandidatesSection{Pending: 1, PendingRows: []model.SkillCandidate{{
+			ID:          "cand_1",
+			Content:     "grep" + osc52 + " before edit",
+			Occurrences: 3,
+		}}},
+		Results: ResultsSection{Rows: []ResultRow{{
+			Reporter:  "worker1",
+			TaskID:    "task_1",
+			Status:    "completed",
+			Summary:   "done\x1b[9999;9999H\x08\x7fclean",
+			CreatedAt: "2026-07-24T11:40:00Z",
+		}}},
+	}
+
+	plain := Render(s, Diffs{}, fixtureRenderOptions(false))
+	for _, bad := range []string{"\x1b", "\x9b", "\x07", "\r", "\x08", "\x7f"} {
+		if strings.Contains(plain, bad) {
+			t.Errorf("Color=false frame leaks control byte %q:\n%q", bad, plain)
+		}
+	}
+	// Printable payload text must survive sanitization.
+	for _, want := range []string{"boom", "overtype", "learned", "before edit", "clean"} {
+		if !strings.Contains(plain, want) {
+			t.Errorf("frame lost printable content %q", want)
+		}
+	}
+
+	// With color on, the only escapes are the renderer's own SGR sequences;
+	// injected OSC/CSI must still be gone.
+	colored := Render(s, Diffs{}, fixtureRenderOptions(true))
+	for _, bad := range []string{"\x1b]52", "\x1b[2J", "\x9b", "\x07", "\r"} {
+		if strings.Contains(colored, bad) {
+			t.Errorf("Color=true frame leaks injected sequence %q", bad)
+		}
+	}
+	if !strings.Contains(colored, "\x1b[") {
+		t.Error("Color=true frame should still contain the renderer's own SGR sequences")
+	}
+}
+
+// TestRender_StripsControlSequencesEndToEnd covers the full path: a result
+// summary written by a (possibly compromised) worker into results/*.yaml
+// must reach the terminal with its escape bytes removed.
+func TestRender_StripsControlSequencesEndToEnd(t *testing.T) {
+	dir := newFixtureMaestroDir(t)
+	writeFixtureFile(t, dir, "results/worker2.yaml", `schema_version: 1
+file_type: result_task
+results:
+  - id: res_evil
+    task_id: task_evil
+    command_id: cmd_1
+    status: completed
+    summary: "pwn\x1b]52;c;bWFsaWNpb3Vz\x07\x1b[31mred\rovertype"
+    created_at: "2026-07-24T11:55:00Z"
+`)
+	s := Collect(dir, fixtureTime)
+	out := Render(s, Diffs{}, fixtureRenderOptions(false))
+	for _, bad := range []string{"\x1b", "\x9b", "\x07", "\r"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("frame leaks control byte %q from worker-written summary", bad)
+		}
+	}
+	if !strings.Contains(out, "pwn") {
+		t.Error("sanitized summary text should still render")
 	}
 }
 

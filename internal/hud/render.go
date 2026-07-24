@@ -53,12 +53,20 @@ type frame struct {
 	color bool
 }
 
-func (f *frame) add(s string) { f.lines = append(f.lines, truncateRunes(s, f.width)) }
+// add sanitizes then truncates: every line passes through sanitizeControls
+// so externally sourced text (worker summaries, learnings, signal errors,
+// IDs from on-disk YAML) cannot smuggle terminal control sequences into the
+// operator's terminal. The renderer's own ANSI colors are applied after
+// sanitization (in addc), never stripped by it.
+func (f *frame) add(s string) {
+	f.lines = append(f.lines, truncateRunes(sanitizeControls(s), f.width))
+}
 
 // addc adds a line wrapped in the given SGR sequence when color is on.
-// Truncation happens on the plain text so escape bytes never get cut.
+// Sanitization and truncation happen on the plain text so escape bytes
+// never get cut and injected sequences never survive.
 func (f *frame) addc(sgr, s string) {
-	s = truncateRunes(s, f.width)
+	s = truncateRunes(sanitizeControls(s), f.width)
 	if f.color && sgr != "" {
 		s = sgr + s + ansiReset
 	}
@@ -482,6 +490,37 @@ func oneLine(s string) string {
 	s = strings.ReplaceAll(s, "\n", " ")
 	s = strings.ReplaceAll(s, "\t", " ")
 	return strings.TrimSpace(s)
+}
+
+// isTerminalControl reports whether r can alter terminal state or line
+// layout: C0 controls (including ESC, BEL, CR, LF, TAB, BS), DEL, and C1
+// controls (0x80–0x9F — single-byte CSI/OSC introducers on many terminals).
+func isTerminalControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
+}
+
+// sanitizeControls strips terminal control characters from a rendered line.
+// Whitespace controls (LF/CR/TAB) become a single space to preserve word
+// boundaries; every other control rune — most importantly ESC and the C1
+// range — is dropped, so an injected sequence like OSC 52 loses its
+// introducer and renders as inert printable text.
+func sanitizeControls(s string) string {
+	if strings.IndexFunc(s, isTerminalControl) < 0 {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\n' || r == '\r' || r == '\t':
+			b.WriteRune(' ')
+		case isTerminalControl(r):
+			// dropped: never forward control bytes to the terminal
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 func sortedKeys[V any](m map[string]V) []string {

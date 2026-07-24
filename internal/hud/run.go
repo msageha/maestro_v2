@@ -86,7 +86,7 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.Once {
 		// Once mode is fully read-only: the trail is consulted for diffs
 		// (LoadHistory never writes) but no sample is appended.
-		frame, _ := buildFrame(opts, loadHistoryBestEffort(opts.HistoryPath, opts.Now()), "")
+		frame, _ := buildFrame(opts, NewCollector(), loadHistoryBestEffort(opts.HistoryPath, opts.Now()), "")
 		_, err := io.WriteString(opts.Out, frame+"\n")
 		return err
 	}
@@ -107,8 +107,11 @@ func Run(ctx context.Context, opts Options) error {
 	ticker := time.NewTicker(opts.Interval)
 	defer ticker.Stop()
 
+	// One collector for the whole loop: its per-file cache keeps steady-state
+	// polls at stat-only cost for unchanged command state files.
+	collector := NewCollector()
 	for {
-		frame, note := buildFrame(opts, hist, histNote)
+		frame, note := buildFrame(opts, collector, hist, histNote)
 		if err := writeFrame(opts.Out, frame); err != nil {
 			return err
 		}
@@ -138,9 +141,9 @@ func loadHistoryBestEffort(path string, now time.Time) *History {
 // buildFrame collects one snapshot, advances the history trail, and renders
 // a frame. It returns the frame plus an updated history note ("" = keep the
 // current one).
-func buildFrame(opts Options, hist *History, histNote string) (string, string) {
+func buildFrame(opts Options, collector *Collector, hist *History, histNote string) (string, string) {
 	now := opts.Now()
-	snap := Collect(opts.MaestroDir, now)
+	snap := collector.Collect(opts.MaestroDir, now)
 
 	note := ""
 	// In Once mode the trail is never persisted or mutated (read-only run);

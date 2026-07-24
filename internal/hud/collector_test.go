@@ -3,6 +3,8 @@ package hud
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 )
@@ -331,6 +333,158 @@ func TestCollect_CorruptFilesAreIsolated(t *testing.T) {
 	if s.Queues.Err != "" {
 		t.Errorf("queues must survive metrics corruption: %s", s.Queues.Err)
 	}
+}
+
+// TestIntegrationStatus_RejectsTraversalCommandID pins the path-containment
+// guard: a corrupted or malicious command state whose command_id contains
+// traversal must not read YAML outside state/worktrees/.
+func TestIntegrationStatus_RejectsTraversalCommandID(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), ".maestro")
+	writeFixtureFile(t, dir, "state/commands/evil.yaml", `schema_version: 1
+file_type: state_command
+command_id: "../../evil"
+plan_status: sealed
+required_task_ids: [task_1]
+task_states:
+  task_1: completed
+created_at: "2026-07-24T11:00:00Z"
+updated_at: "2026-07-24T11:59:59Z"
+`)
+	// filepath.Join(dir, "state", "worktrees", "../../evil.yaml") resolves
+	// here — a worktree-shaped file outside the worktrees dir that must
+	// never be consulted.
+	writeFixtureFile(t, dir, "evil.yaml", `schema_version: 1
+file_type: state_worktree
+command_id: evil
+integration:
+  command_id: evil
+  branch: maestro/integration/evil
+  status: merged
+workers: []
+`)
+
+	s := Collect(dir, fixtureTime)
+	if len(s.Commands.Rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(s.Commands.Rows))
+	}
+	if got := s.Commands.Rows[0].Integration; got != "" {
+		t.Errorf("integration = %q, want empty: traversal command_id must not resolve a file outside state/worktrees/", got)
+	}
+}
+
+// TestReadYAML_RefusesSymlink pins the Lstat guard: state files that are
+// symlinks must be treated as unreadable instead of followed to arbitrary
+// filesystem targets.
+func TestReadYAML_RefusesSymlink(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on windows")
+	}
+	dir := newFixtureMaestroDir(t)
+	outside := filepath.Join(t.TempDir(), "outside.yaml")
+	if err := os.WriteFile(outside, []byte("schema_version: 1\ndaemon_heartbeat: \"2026-07-24T12:00:02Z\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metrics := filepath.Join(dir, "state", "metrics.yaml")
+	if err := os.Remove(metrics); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, metrics); err != nil {
+		t.Fatal(err)
+	}
+
+	s := Collect(dir, fixtureTime)
+	if s.Metrics.Err == "" {
+		t.Errorf("metrics read through a symlink must be rejected, got heartbeat %q", s.Metrics.DaemonHeartbeat)
+	}
+}
+
+// TestCollector_CachesUnchangedCommandFiles pins the mtime+size cache: an
+// unchanged command state file is not re-parsed between polls, while any
+// mtime change invalidates the entry, and joined worktree state is always
+// refreshed from its own file's stamp.
+func TestCollector_CachesUnchangedCommandFiles(t *testing.T) {
+	dir := newFixtureMaestroDir(t)
+	c := NewCollector()
+
+	s1 := c.Collect(dir, fixtureTime)
+	if len(s1.Commands.Rows) != 1 || s1.Commands.Rows[0].PlanStatus != "sealed" {
+		t.Fatalf("first poll rows = %+v", s1.Commands.Rows)
+	}
+
+	// Rewrite the command file with same-length content ("sealed" ->
+	// "failed") and restore the original mtime: a stamp-identical file must
+	// serve from cache, proving the poll did not re-parse it.
+	cmdPath := filepath.Join(dir, "state", "commands", "cmd_1.yaml")
+	info, err := os.Stat(cmdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(cmdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := []byte(string(content))
+	swapped = []byte(replaceOnce(t, string(swapped), "plan_status: sealed", "plan_status: failed"))
+	if len(swapped) != len(content) {
+		t.Fatalf("swap changed length: %d -> %d", len(content), len(swapped))
+	}
+	if err := os.WriteFile(cmdPath, swapped, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(cmdPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+	s2 := c.Collect(dir, fixtureTime)
+	if got := s2.Commands.Rows[0].PlanStatus; got != "sealed" {
+		t.Errorf("stamp-identical file re-parsed: plan_status = %q, want cached %q", got, "sealed")
+	}
+
+	// Bump the mtime: the stamp changes and the new content must be seen.
+	if err := os.Chtimes(cmdPath, info.ModTime().Add(2*time.Second), info.ModTime().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	s3 := c.Collect(dir, fixtureTime)
+	if got := s3.Commands.Rows[0].PlanStatus; got != "failed" {
+		t.Errorf("stamp change not detected: plan_status = %q, want %q", got, "failed")
+	}
+
+	// Worktree join follows its own file even when the command is cached:
+	// change integration status and its mtime, keep the command file as is.
+	wtPath := filepath.Join(dir, "state", "worktrees", "cmd_1.yaml")
+	wt, err := os.ReadFile(wtPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(wtPath, []byte(replaceOnce(t, string(wt), "status: merged", "status: conflict")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	future := time.Now().Add(5 * time.Second)
+	if err := os.Chtimes(wtPath, future, future); err != nil {
+		t.Fatal(err)
+	}
+	s4 := c.Collect(dir, fixtureTime)
+	if got := s4.Commands.Rows[0].Integration; got != "conflict" {
+		t.Errorf("worktree change not picked up under command cache: integration = %q, want %q", got, "conflict")
+	}
+
+	// Deleted files are evicted, not served stale.
+	if err := os.Remove(cmdPath); err != nil {
+		t.Fatal(err)
+	}
+	s5 := c.Collect(dir, fixtureTime)
+	if s5.Commands.TotalCommands != 0 || len(s5.Commands.Rows) != 0 {
+		t.Errorf("deleted command file still served: %+v", s5.Commands)
+	}
+}
+
+// replaceOnce replaces old with new exactly once, failing the test when the
+// needle is missing so fixture drift is loud.
+func replaceOnce(t *testing.T, s, old, new string) string {
+	t.Helper()
+	if !strings.Contains(s, old) {
+		t.Fatalf("fixture missing %q", old)
+	}
+	return strings.Replace(s, old, new, 1)
 }
 
 func TestBucketTasks_RetryHistoryNotDoubleCounted(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/status"
+	"github.com/msageha/maestro_v2/internal/validate"
 	maestroyaml "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -23,20 +24,65 @@ const (
 	maxResultRows         = 8
 )
 
+// Collector produces Snapshots and keeps an mtime+size parse cache for the
+// per-command state files between polls, so a poll over N accumulated
+// commands costs N stats but only re-parses the files that actually
+// changed. The zero value is ready to use. Not safe for concurrent use;
+// the HUD poll loop is single-goroutine.
+type Collector struct {
+	commands  map[string]commandCacheEntry
+	worktrees map[string]worktreeCacheEntry
+}
+
+// NewCollector returns a Collector with an empty cache.
+func NewCollector() *Collector { return &Collector{} }
+
+// fileStamp is the cache key for one on-disk file's content identity.
+type fileStamp struct {
+	modTime time.Time
+	size    int64
+}
+
+func stampOf(info os.FileInfo) fileStamp {
+	return fileStamp{modTime: info.ModTime(), size: info.Size()}
+}
+
+// commandCacheEntry caches the parse result of one state/commands/*.yaml.
+// Integration is intentionally left empty in the cached row: the worktree
+// join is refreshed every poll from the worktree file's own stamp.
+type commandCacheEntry struct {
+	stamp fileStamp
+	ok    bool // false: unreadable/unparseable at this stamp
+	row   CommandRow
+}
+
+// worktreeCacheEntry caches the integration status parsed from one
+// state/worktrees/*.yaml.
+type worktreeCacheEntry struct {
+	stamp  fileStamp
+	status string
+}
+
 // Collect reads every observable section of maestroDir. It never returns an
 // error: per-section failures are recorded in the section's Err field so a
 // partially readable (or entirely absent) .maestro/ still renders.
-func Collect(maestroDir string, now time.Time) *Snapshot {
+func (c *Collector) Collect(maestroDir string, now time.Time) *Snapshot {
 	s := &Snapshot{CollectedAt: now}
 	s.Metrics = collectMetrics(maestroDir)
 	s.Queues = collectQueues(maestroDir)
-	s.Commands = collectCommands(maestroDir)
+	s.Commands = c.collectCommands(maestroDir)
 	s.Signals = collectSignals(maestroDir)
 	s.Attention = collectAttention(maestroDir)
 	s.Learnings = collectLearnings(maestroDir)
 	s.SkillCandidates = collectSkillCandidates(maestroDir)
 	s.Results = collectResults(maestroDir)
 	return s
+}
+
+// Collect is the one-shot form of Collector.Collect for callers without a
+// poll loop (tests, --once mode).
+func Collect(maestroDir string, now time.Time) *Snapshot {
+	return NewCollector().Collect(maestroDir, now)
 }
 
 // unavailable renders a read failure as a short operator-facing reason.
@@ -48,14 +94,24 @@ func unavailable(err error) string {
 }
 
 // readYAML loads a YAML file with the same size guard and billion-laughs
-// protection as the other read-only observers (see internal/status).
+// protection as the other read-only observers (see internal/status). It
+// refuses symlinks (Lstat, not Stat) so a planted link inside .maestro/
+// cannot make the HUD read arbitrary files; the Lstat→ReadFile window is an
+// accepted residual for this local read-only tool because O_NOFOLLOW is not
+// portable to Windows.
 func readYAML(path string, out any) error {
-	info, err := os.Stat(path)
+	info, err := os.Lstat(path)
 	if err != nil {
 		return err
 	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%s is a symlink (refusing to follow)", filepath.Base(path))
+	}
 	if info.IsDir() {
 		return fmt.Errorf("%s is a directory", filepath.Base(path))
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file", filepath.Base(path))
 	}
 	if info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
 		return fmt.Errorf("file too large (%d bytes)", info.Size())
@@ -90,7 +146,7 @@ func collectQueues(maestroDir string) QueuesSection {
 	return QueuesSection{Rows: rows}
 }
 
-func collectCommands(maestroDir string) CommandsSection {
+func (c *Collector) collectCommands(maestroDir string) CommandsSection {
 	dir := filepath.Join(maestroDir, "state", "commands")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -98,22 +154,42 @@ func collectCommands(maestroDir string) CommandsSection {
 	}
 
 	var out CommandsSection
+	// Both caches are rebuilt from the files seen this poll, so deleted
+	// commands are evicted instead of accumulating.
+	nextCommands := make(map[string]commandCacheEntry, len(entries))
+	nextWorktrees := make(map[string]worktreeCacheEntry, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
 		}
-		var cs model.CommandState
-		if err := readYAML(filepath.Join(dir, e.Name()), &cs); err != nil {
+		path := filepath.Join(dir, e.Name())
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		entry, hit := c.commands[path]
+		if stamp := stampOf(info); !hit || entry.stamp != stamp {
+			entry = commandCacheEntry{stamp: stamp}
+			var cs model.CommandState
+			if err := readYAML(path, &cs); err == nil {
+				entry.ok = true
+				entry.row = commandRow(&cs)
+			}
+		}
+		nextCommands[path] = entry
+		if !entry.ok {
 			continue
 		}
 		out.TotalCommands++
-		row := commandRow(&cs)
-		row.Integration = integrationStatus(maestroDir, cs.CommandID)
+		row := entry.row
+		row.Integration = c.integrationStatus(maestroDir, row.CommandID, nextWorktrees)
 		if !row.terminal {
 			out.ActiveCount++
 		}
 		out.Rows = append(out.Rows, row)
 	}
+	c.commands = nextCommands
+	c.worktrees = nextWorktrees
 
 	// Active commands first, then most recently updated.
 	sort.Slice(out.Rows, func(i, j int) bool {
@@ -192,16 +268,39 @@ func bucketTasks(cs *model.CommandState) TaskCounts {
 	return c
 }
 
-func integrationStatus(maestroDir, commandID string) string {
-	if commandID == "" {
+// integrationStatus joins the command's worktree state file. commandID
+// comes from an on-disk YAML written by other (potentially compromised)
+// processes, so it is validated before use as a path component: a corrupted
+// or malicious state file must not make the HUD read YAML outside
+// state/worktrees/. Results are cached per file into next (mtime+size).
+func (c *Collector) integrationStatus(maestroDir, commandID string, next map[string]worktreeCacheEntry) string {
+	if commandID == "" || validate.ID(commandID) != nil {
 		return ""
 	}
+	dir := filepath.Join(maestroDir, "state", "worktrees")
+	path := filepath.Join(dir, commandID+".yaml")
+	if filepath.Dir(path) != dir { // defense in depth after validate.ID
+		return ""
+	}
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	stamp := stampOf(info)
+	if entry, ok := next[path]; ok && entry.stamp == stamp {
+		return entry.status
+	}
+	if entry, ok := c.worktrees[path]; ok && entry.stamp == stamp {
+		next[path] = entry
+		return entry.status
+	}
+	entry := worktreeCacheEntry{stamp: stamp}
 	var ws model.WorktreeCommandState
-	path := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
-	if err := readYAML(path, &ws); err != nil {
-		return ""
+	if err := readYAML(path, &ws); err == nil {
+		entry.status = string(ws.Integration.Status)
 	}
-	return string(ws.Integration.Status)
+	next[path] = entry
+	return entry.status
 }
 
 func collectSignals(maestroDir string) SignalsSection {
