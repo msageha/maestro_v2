@@ -33,3 +33,22 @@ func TestBuildWorkerResumeEnvelope_CarriesNewEpoch(t *testing.T) {
 		t.Errorf("resume nudge must not re-deliver the task body (the pane already holds it):\n%s", env)
 	}
 }
+
+// PR #56 review finding #10: the CLI requires --exit-code when
+// --status=failed (cmd_result.go), so both worker envelopes must tell the
+// worker about it — otherwise a failure report bounces on validation.
+func TestWorkerEnvelopes_MentionExitCodeForFailedStatus(t *testing.T) {
+	t.Parallel()
+	task := model.Task{
+		ID:        "task_1784809943_08dc4796d114d336",
+		CommandID: "cmd_1784809943_aaaaaaaaaaaaaaaa",
+	}
+	full := BuildWorkerEnvelope(task, NewRawContent("body").Sanitize(), "worker1", 2, 1)
+	if !strings.Contains(full, "--exit-code") {
+		t.Errorf("full envelope must mention --exit-code for failed status:\n%s", full)
+	}
+	nudge := BuildWorkerResumeEnvelope(task, "worker1", 3, 1)
+	if !strings.Contains(nudge, "--exit-code") {
+		t.Errorf("resume envelope must mention --exit-code for failed status:\n%s", nudge)
+	}
+}

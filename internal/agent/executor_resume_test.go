@@ -208,6 +208,108 @@ func TestClearAndConfirm_InvalidatesLastTaskID(t *testing.T) {
 	}
 }
 
+// PR #56 review finding #6: the session-identity preflight and the paste are
+// separated by waitReady (up to ~30s of polling) and the busy probe. A second
+// canResumeInPlace runs immediately before the paste; if the pane's
+// conversation changed inside that window, the nudge is aborted as retryable
+// and nothing is pasted into the new session.
+func TestExecute_ModeWithClear_ResumeRecheckAbortsBeforePaste(t *testing.T) {
+	t.Parallel()
+	mock := newResumeReadyMock("task_resume_recheck")
+	// First last_task_id read (preflight) matches; every later read (the
+	// pre-paste recheck) reports a different conversation.
+	lastTaskReads := 0
+	mock.GetUserVarFn = func(_, name string) (string, error) {
+		if name == "last_task_id" {
+			lastTaskReads++
+			if lastTaskReads >= 2 {
+				return "task_other", nil
+			}
+			return "task_resume_recheck", nil
+		}
+		return mock.userVars[name], nil
+	}
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID:       "worker1",
+		Message:       "FULL ENVELOPE",
+		ResumeMessage: "RESUME NUDGE",
+		Mode:          ModeWithClear,
+		TaskID:        "task_resume_recheck",
+	})
+	if result.Error == nil {
+		t.Fatal("expected the pre-paste recheck to abort the nudge")
+	}
+	if !result.Retryable {
+		t.Errorf("expected Retryable=true, got %+v", result)
+	}
+	if lastTaskReads < 2 {
+		t.Fatalf("last_task_id read %d time(s); the pre-paste recheck did not run", lastTaskReads)
+	}
+	if len(mock.sentTexts) != 0 {
+		t.Errorf("nothing must be pasted after a failed recheck; sentTexts = %v", mock.sentTexts)
+	}
+}
+
+// PR #56 review finding #15: RunOnMain runs at the project root, which
+// contains the worker worktrees — the cwd identity check must use exact
+// equality for RunOnMain so a pane parked inside a worktree can never pass.
+// Ordinary worker-worktree tasks keep descendant containment.
+func TestCanResumeInPlace_RunOnMainRequiresExactCwd(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		runOnMain   bool
+		workingDir  string
+		currentPath string
+		wantOK      bool
+	}{
+		{
+			name:        "run_on_main_exact_match_ok",
+			runOnMain:   true,
+			workingDir:  "/project",
+			currentPath: "/project",
+			wantOK:      true,
+		},
+		{
+			name:        "run_on_main_worktree_descendant_rejected",
+			runOnMain:   true,
+			workingDir:  "/project",
+			currentPath: "/project/.maestro/worktrees/cmd_x/worker1",
+			wantOK:      false,
+		},
+		{
+			name:        "worker_task_descendant_ok",
+			runOnMain:   false,
+			workingDir:  "/project/worktree1",
+			currentPath: "/project/worktree1/subdir",
+			wantOK:      true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mock := newResumeReadyMock("task_rom_cwd")
+			mock.currentPath = tt.currentPath
+			exec, _ := newTestExecutorWithLog(mock)
+
+			ok, reason := exec.canResumeInPlace("%0", ExecRequest{
+				AgentID:    "worker1",
+				TaskID:     "task_rom_cwd",
+				WorkingDir: tt.workingDir,
+				RunOnMain:  tt.runOnMain,
+			})
+			if ok != tt.wantOK {
+				t.Errorf("ok = %t (reason=%q), want %t", ok, reason, tt.wantOK)
+			}
+			if !tt.wantOK && reason != "working_dir_mismatch" {
+				t.Errorf("reason = %q, want working_dir_mismatch", reason)
+			}
+		})
+	}
+}
+
 // canResumeInPlace unit coverage for each session-identity mismatch.
 func TestCanResumeInPlace_MismatchReasons(t *testing.T) {
 	t.Parallel()

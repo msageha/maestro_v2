@@ -685,7 +685,20 @@ func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, s
 	}
 	if req.WorkingDir != "" {
 		cwd, cwdErr := e.paneIO.GetPaneCurrentPath(paneTarget)
-		if cwdErr != nil || !isPathUnder(cwd, req.WorkingDir) {
+		if cwdErr != nil {
+			return false, "working_dir_mismatch"
+		}
+		if req.RunOnMain {
+			// RunOnMain runs at the project root, which CONTAINS the
+			// .maestro/worktrees/... directories — descendant containment
+			// would accept a pane still parked inside a worker worktree
+			// and resume a main-branch verification against stale worktree
+			// code. Require exact (canonicalized) equality; a false
+			// negative only falls back to the /clear full dispatch.
+			if canonicalizePath(cwd) != canonicalizePath(req.WorkingDir) {
+				return false, "working_dir_mismatch"
+			}
+		} else if !isPathUnder(cwd, req.WorkingDir) {
 			return false, "working_dir_mismatch"
 		}
 	}
@@ -697,8 +710,8 @@ func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, s
 // The nudge message carries the new lease epoch (see
 // BuildWorkerResumeEnvelope).
 //
-// Two guards run before the paste even though the daemon only marks a task
-// for resume after the pane was observed idle across scans:
+// Three guards run before the paste even though the daemon only marks a
+// task for resume after the pane was observed idle across scans:
 //   - stampRunOnMainVar re-asserts the @run_on_main guard with the same
 //     fail-closed write+read-back the full path uses. For RunOnMain tasks
 //     this variable is the ONLY mechanical mutation guard, and the resume
@@ -709,6 +722,9 @@ func (e *Executor) canResumeInPlace(paneTarget string, req ExecRequest) (bool, s
 //     resume path must uphold that contract, and the pane can have gone
 //     busy again during the hang-release cooldown (e.g. the runtime's own
 //     API retry restarted the interrupted turn).
+//   - canResumeInPlace runs a second time right before the paste, closing
+//     the window the waitReady/busy polling opens between the preflight
+//     and the send.
 func (e *Executor) execResumeNudge(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(logLevelInfo,
 		"resume_dispatch agent_id=%s task_id=%s lease_epoch=%d (continuation nudge without /clear; session context preserved)",
@@ -727,6 +743,19 @@ func (e *Executor) execResumeNudge(ctx context.Context, req ExecRequest, paneTar
 			"resume_pane_busy agent_id=%s task_id=%s verdict=%s (nudge deferred; lease will release and the next dispatch falls back to /clear full delivery)",
 			req.AgentID, req.TaskID, verdict)
 		return e.handleBusyVerdict(req, verdict)
+	}
+	// Re-verify session identity immediately before the paste. The preflight
+	// in execWithClear ran before waitReady (up to ~30s of polling) and the
+	// busy probe, and the agent process can crash back to shell — or the
+	// pane's conversation change — inside that window. All probes are
+	// read-only; on mismatch the lease releases (retryable failure) and the
+	// next dispatch, with the resume marker already consumed, is the /clear
+	// full delivery.
+	if ok, reason := e.canResumeInPlace(paneTarget, req); !ok {
+		e.log(logLevelWarn,
+			"resume_recheck_failed agent_id=%s task_id=%s reason=%s (session changed between preflight and paste; aborting nudge)",
+			req.AgentID, req.TaskID, reason)
+		return ExecResult{Error: fmt.Errorf("resume recheck: session identity lost (%s)", reason), Retryable: true}
 	}
 	nudgeReq := req
 	nudgeReq.Message = req.ResumeMessage

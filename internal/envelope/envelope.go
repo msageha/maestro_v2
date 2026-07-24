@@ -344,6 +344,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
 		workerID, taskID, commandID, leaseEpoch)
+	sb.WriteString("失敗時: --status failed には --exit-code <プロセス終了コード。無ければ 1> が必須\n")
 	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
 	return sb.String()
 }
@@ -367,6 +368,7 @@ func BuildWorkerResumeEnvelope(task model.Task, workerID string, leaseEpoch, att
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
 		workerID, taskID, commandID, leaseEpoch)
+	sb.WriteString("失敗時: --status failed には --exit-code <プロセス終了コード。無ければ 1> が必須\n")
 	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
 	return sb.String()
 }
