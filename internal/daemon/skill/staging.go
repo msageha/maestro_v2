@@ -157,6 +157,58 @@ func BuildStagedSkillMarkdown(name, description string, cand model.SkillCandidat
 	return sb.String(), nil
 }
 
+// writeFileSync writes data and fsyncs the file so the staged draft is
+// durable before the candidate state that references it gets committed.
+func writeFileSync(path string, data []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // staging-internal path
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// syncDir fsyncs a directory entry (rename durability).
+func syncDir(dir string) error {
+	d, err := os.Open(dir) //nolint:gosec // staging-internal path
+	if err != nil {
+		return err
+	}
+	defer d.Close() //nolint:errcheck // read-only handle
+	return d.Sync()
+}
+
+// validateStagedDraft runs the anatomy validator over stagingRoot and splits
+// this draft's findings into hard errors and advisory warnings.
+func validateStagedDraft(stagingRoot, name string) ([]ValidationIssue, error) {
+	issues, err := ValidateSkillTree(os.DirFS(stagingRoot), ".")
+	if err != nil {
+		return nil, fmt.Errorf("validate staged skill: %w", err)
+	}
+	var errorsFound, warnings []ValidationIssue
+	for _, issue := range issues {
+		if issue.SkillDir != name {
+			continue // findings for other, previously staged drafts
+		}
+		if issue.Severity == SeverityError {
+			errorsFound = append(errorsFound, issue)
+		} else {
+			warnings = append(warnings, issue)
+		}
+	}
+	if len(errorsFound) > 0 {
+		return nil, &StagingValidationError{Issues: errorsFound}
+	}
+	return warnings, nil
+}
+
 // StageCandidate writes the generated SKILL.md (plus the candidate manifest,
 // see CandidateManifestName) into <stagingRoot>/<name>/ and runs the
 // skill-anatomy validator on it. Hard-rule failures remove the staged
@@ -165,9 +217,11 @@ func BuildStagedSkillMarkdown(name, description string, cand model.SkillCandidat
 //
 // An existing staged directory for the same name is handled by manifest:
 // when it records this same candidate's ID the previous approve crashed
-// before the candidate state was persisted, so the draft is regenerated in
-// place (resume); any other directory returns ErrStagedSkillExists untouched.
-// The caller is responsible for only staging pending candidates.
+// before the candidate state was persisted, so the approve resumes — a
+// still-valid draft (possibly human-edited since) is reused as-is, and only
+// a missing or hard-rule-invalid draft is regenerated. Any other directory
+// returns ErrStagedSkillExists untouched. The caller is responsible for
+// only staging pending candidates.
 func StageCandidate(stagingRoot, name, description string, cand model.SkillCandidate) (StagedSkill, error) {
 	markdown, err := BuildStagedSkillMarkdown(name, description, cand)
 	if err != nil {
@@ -178,6 +232,29 @@ func StageCandidate(stagingRoot, name, description string, cand model.SkillCandi
 		return StagedSkill{}, fmt.Errorf("create staging root: %w", err)
 	}
 	skillDir := filepath.Join(stagingRoot, name)
+
+	switch _, statErr := os.Lstat(skillDir); {
+	case statErr == nil:
+		stagedID, manifestErr := StagedCandidateID(skillDir)
+		if manifestErr != nil || stagedID != cand.ID {
+			return StagedSkill{}, fmt.Errorf("%w: %s", ErrStagedSkillExists, skillDir)
+		}
+		// Orphan draft from this same candidate (a previous approve crashed
+		// before the candidate state was persisted). A human may already have
+		// edited the draft, so reuse it as-is when it still passes the hard
+		// rules; regenerate only a missing or invalid draft.
+		existingPath := filepath.Join(skillDir, "SKILL.md")
+		if _, mdErr := os.Lstat(existingPath); mdErr == nil {
+			if warnings, valErr := validateStagedDraft(stagingRoot, name); valErr == nil {
+				return StagedSkill{Name: name, Path: existingPath, Warnings: warnings}, nil
+			}
+		}
+		if err := os.RemoveAll(skillDir); err != nil {
+			return StagedSkill{}, fmt.Errorf("replace orphan staged draft: %w", err)
+		}
+	case !os.IsNotExist(statErr):
+		return StagedSkill{}, fmt.Errorf("stat staged skill directory: %w", statErr)
+	}
 
 	// Build the draft in a temp dir and move it into place with a single
 	// rename so skillDir either fully exists (manifest + SKILL.md) or not at
@@ -194,56 +271,30 @@ func StageCandidate(stagingRoot, name, description string, cand model.SkillCandi
 		return StagedSkill{}, fmt.Errorf("create staging temp dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }() // no-op once the rename succeeds
-	if err := os.WriteFile(filepath.Join(tmpDir, CandidateManifestName), []byte(cand.ID+"\n"), 0o600); err != nil {
+	if err := writeFileSync(filepath.Join(tmpDir, CandidateManifestName), []byte(cand.ID+"\n")); err != nil {
 		return StagedSkill{}, fmt.Errorf("write staged candidate manifest: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(markdown), 0o600); err != nil {
+	if err := writeFileSync(filepath.Join(tmpDir, "SKILL.md"), []byte(markdown)); err != nil {
 		return StagedSkill{}, fmt.Errorf("write staged SKILL.md: %w", err)
 	}
-
-	switch _, statErr := os.Lstat(skillDir); {
-	case statErr == nil:
-		stagedID, manifestErr := StagedCandidateID(skillDir)
-		if manifestErr != nil || stagedID != cand.ID {
-			return StagedSkill{}, fmt.Errorf("%w: %s", ErrStagedSkillExists, skillDir)
-		}
-		// Orphan draft from this same candidate: replace it (resume).
-		if err := os.RemoveAll(skillDir); err != nil {
-			return StagedSkill{}, fmt.Errorf("replace orphan staged draft: %w", err)
-		}
-	case !os.IsNotExist(statErr):
-		return StagedSkill{}, fmt.Errorf("stat staged skill directory: %w", statErr)
+	if err := syncDir(tmpDir); err != nil {
+		return StagedSkill{}, fmt.Errorf("sync staging temp dir: %w", err)
 	}
+
 	if err := os.Rename(tmpDir, skillDir); err != nil {
 		return StagedSkill{}, fmt.Errorf("move staged skill into place: %w", err)
 	}
-
-	cleanup := func() {
-		_ = os.RemoveAll(skillDir)
+	// Make the rename durable before the caller commits the candidate state
+	// that references this draft.
+	if err := syncDir(stagingRoot); err != nil {
+		return StagedSkill{}, fmt.Errorf("sync staging root: %w", err)
 	}
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-
-	issues, err := ValidateSkillTree(os.DirFS(stagingRoot), ".")
+	warnings, err := validateStagedDraft(stagingRoot, name)
 	if err != nil {
-		cleanup()
-		return StagedSkill{}, fmt.Errorf("validate staged skill: %w", err)
-	}
-
-	var errorsFound, warnings []ValidationIssue
-	for _, issue := range issues {
-		if issue.SkillDir != name {
-			continue // findings for other, previously staged drafts
-		}
-		if issue.Severity == SeverityError {
-			errorsFound = append(errorsFound, issue)
-		} else {
-			warnings = append(warnings, issue)
-		}
-	}
-	if len(errorsFound) > 0 {
-		cleanup()
-		return StagedSkill{}, &StagingValidationError{Issues: errorsFound}
+		_ = os.RemoveAll(skillDir)
+		return StagedSkill{}, err
 	}
 
 	return StagedSkill{Name: name, Path: skillPath, Warnings: warnings}, nil

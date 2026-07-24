@@ -170,14 +170,24 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 	candidate.StagedPath = stagedRel
 	candidate.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
-		// Roll back the staging directory created above: the candidate is
-		// still pending on disk, and a leftover draft would make every retry
-		// fail with ErrStagedSkillExists (a permanent wedge). Removing it
-		// keeps approve retryable after a transient I/O failure.
-		if rmErr := os.RemoveAll(filepath.Dir(staged.Path)); rmErr != nil && h.logWarnf != nil {
-			h.logWarnf("skill_approve rollback failed: staged draft %s left behind; remove it manually before retrying: %v", staged.Path, rmErr)
+		// The atomic write can report an error after its rename already made
+		// the new state visible (e.g. a directory-sync failure). Re-read
+		// before rolling back: deleting the draft while the persisted state
+		// says approved would strand the candidate without its staged file.
+		if candidateApprovedOnDisk(candidatesPath, candidate.ID) {
+			if h.logWarnf != nil {
+				h.logWarnf("skill_approve candidate write reported %v but the approved state is persisted; keeping staged draft %s", err, staged.Path)
+			}
+		} else {
+			// Roll back the staging directory created above: the candidate is
+			// still pending on disk, and a leftover draft would make every
+			// retry regenerate from the manifest anyway. Removing it keeps
+			// the state and staging consistent after a transient I/O failure.
+			if rmErr := os.RemoveAll(filepath.Dir(staged.Path)); rmErr != nil && h.logWarnf != nil {
+				h.logWarnf("skill_approve rollback failed: staged draft %s left behind; remove it manually before retrying: %v", staged.Path, rmErr)
+			}
+			return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 		}
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
 
 	warnings := make([]string, 0, len(staged.Warnings))
@@ -280,4 +290,20 @@ func skillSlugify(content string) string {
 		s = strings.TrimRight(s[:64], "-")
 	}
 	return s
+}
+
+// candidateApprovedOnDisk re-reads the candidates state and reports whether
+// the given candidate is persisted as approved. Used to disambiguate a
+// write error that fired after the atomic rename made the state visible.
+func candidateApprovedOnDisk(candidatesPath, candidateID string) bool {
+	persisted, err := skill.ReadCandidates(candidatesPath)
+	if err != nil {
+		return false
+	}
+	for i := range persisted {
+		if persisted[i].ID == candidateID {
+			return persisted[i].Status == "approved"
+		}
+	}
+	return false
 }

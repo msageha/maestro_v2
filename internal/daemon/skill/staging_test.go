@@ -255,3 +255,61 @@ func TestStageCandidate_IgnoresOtherStagedDrafts(t *testing.T) {
 		t.Fatalf("StageCandidate with unrelated broken draft present: %v", err)
 	}
 }
+
+func TestStageCandidate_ResumePreservesValidHumanEdits(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	cand := testCandidate()
+	first, err := StageCandidate(root, "edited-name", "", cand)
+	if err != nil {
+		t.Fatalf("first StageCandidate: %v", err)
+	}
+	// A human edits the orphan draft (still anatomy-valid) before the
+	// approve is retried: resume must reuse it, not regenerate over it.
+	edited, err := os.ReadFile(first.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := append(edited, []byte("\n## 追記（人間のレビューコメント）\n\n- 手順 2 は go test -run を明示する\n")...)
+	if err := os.WriteFile(first.Path, marked, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	staged, err := StageCandidate(root, "edited-name", "", cand)
+	if err != nil {
+		t.Fatalf("resume StageCandidate: %v", err)
+	}
+	got, err := os.ReadFile(staged.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "人間のレビューコメント") {
+		t.Error("resume regenerated the draft and lost valid human edits")
+	}
+}
+
+func TestStageCandidate_ResumeRegeneratesInvalidDraft(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	cand := testCandidate()
+	first, err := StageCandidate(root, "broken-name", "", cand)
+	if err != nil {
+		t.Fatalf("first StageCandidate: %v", err)
+	}
+	// Corrupt the draft past the hard rules (empty file has no frontmatter):
+	// resume must regenerate instead of finalizing a broken draft.
+	if err := os.WriteFile(first.Path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	staged, err := StageCandidate(root, "broken-name", "", cand)
+	if err != nil {
+		t.Fatalf("resume StageCandidate: %v", err)
+	}
+	got, err := os.ReadFile(staged.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "name: broken-name") {
+		t.Error("invalid orphan draft was not regenerated")
+	}
+}
