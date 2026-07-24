@@ -650,12 +650,12 @@ search:
   thompson_beta: 1.0
 
 # --- Self-Improvement ---
-# プロンプト・ペルソナの自己改善機能。
-# 注意 (現状書き込み専用): enabled にすると失敗結果からエラー Fingerprint DB
-# (state/fingerprint_db.json) への記録・永続化が行われるが、記録を参照して
-# リトライ戦略やプロンプトを変える経路 (Query / SuggestStrategy) に production
-# 呼び出しが無く、学習ループは閉じていない。targets / exclude_targets も
-# 現状は起動ログに出力されるのみ。
+# プロンプト・ペルソナの自己改善機能 (C-5)。
+# enabled にすると失敗結果からエラー Fingerprint DB (state/fingerprint_db.json)
+# への記録・永続化が行われ、retry タスクには過去に成功した修復戦略が DATA
+# セクションとして注入される (repair-strategy loop)。targets / exclude_targets
+# は friction loop の提示セクションと除外フィルタに反映される。
+# daemon がテンプレート・設定を自動で書き換えることはない (記録と提示が終点)。
 self_improvement:
   # enabled: 自己改善機能の有効化フラグ (opt-in)
   # type: *bool | default: false | range: true/false
@@ -663,12 +663,37 @@ self_improvement:
   # targets: 改善対象リスト
   # type: []string | default: ["planner_prompt", "persona", "worker_prompt"] | range: 制限なし
   targets: ["planner_prompt", "persona", "worker_prompt"]
-  # exclude_targets: 改善対象から除外するリスト
+  # exclude_targets: 改善対象から除外するリスト (安全パラメータ・制御プレーン)
   # type: []string | default: ["fitness", "daemon_logic", "circuit_breaker"] | range: 制限なし
   exclude_targets: ["fitness", "daemon_logic", "circuit_breaker"]
   # archive_max_size: アーカイブの最大サイズ
   # type: *int | default: 100 (DefaultArchiveMaxSize) | range: 制限なし
   archive_max_size: 100
+  # friction: friction 駆動の改善ループ (issue #26)。再発する運用摩擦
+  # (blocked prompt / runtime terminal error / dead letter / timeout /
+  # タスク失敗の再発) を improvement idea として state/improvements.yaml に
+  # 蓄積し、修復戦略の適用後は効果計測ゲート (post-apply の連続成功数) を
+  # 通過するまで verified に昇格させない。verified 後に同種 friction が
+  # 再発したら自動で reopened に戻す。actionable な提案は Planner への
+  # command 配信時に DATA セクションとして提示される。
+  # self_improvement.enabled と friction.enabled の両方が true のときのみ有効。
+  friction:
+    # enabled: friction loop の有効化フラグ (opt-in)
+    # type: *bool | default: false | range: true/false
+    enabled: false
+    # min_occurrences: proposed に昇格させる同一 fingerprint の最小観測回数
+    # type: *int | default: 2 (DefaultFrictionMinOccurrences) | range: > 0
+    min_occurrences: 2
+    # verify_min_successes: verified に昇格させる適用後の連続成功回数
+    # (途中で同種 friction が再発するとカウントはリセット)
+    # type: *int | default: 2 (DefaultFrictionVerifyMinSuccesses) | range: > 0
+    verify_min_successes: 2
+    # max_entries: state/improvements.yaml のエントリ上限 (最古 LastSeen を evict)
+    # type: *int | default: 200 (DefaultFrictionMaxEntries) | range: > 0
+    max_entries: 200
+    # inject_count: Planner command へ注入する提案数の上限 (0 = 注入無効、記録は継続)
+    # type: *int | default: 5 (DefaultFrictionInjectCount) | range: >= 0
+    inject_count: 5
 
 # --- Complexity ---
 # 適応的計算深度制御。

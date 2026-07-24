@@ -121,7 +121,7 @@ bandit:               # C-2 適応的モデル選択（UCB1）
 evolution:            # C-1 進化的コード品質
 extended_verification:# C-3 多観点アンサンブル検証
 search:               # C-4 探索的実装最適化
-self_improvement:     # C-5 自己改善
+self_improvement:     # C-5 自己改善（friction: friction 駆動改善ループ。§4.12 参照）
 complexity:           # C-6 適応的計算深度
 ```
 
@@ -923,3 +923,38 @@ candidates:
 - **承認（`maestro skill approve`）の効果**: live library への書き込みでは**ない**。`state/skill_staging/<skill_name>/SKILL.md` に完全な frontmatter（name/description/version/tags/priority）付きの草稿を生成し、skill-anatomy validator（hard rule）を通過した場合のみ `status: approved` + `skill_name` / `staged_path` を記録する。validator 違反時は staging を掃除して承認自体が失敗する
 - **昇格は人間の git 操作**: staging の草稿を `skills.extra_dirs` 配下（または `templates/skills/`）へコピーして commit するのは人間の責務。デーモンは staging より先へ書き込まず、自動 commit もしない
 - **値ゲート**: `occurrences < 2` の候補、または `similar_skills` 相当の類似が承認時に検出された候補は、`--force` 無しでは承認できない。既存 skill との名前衝突は `--force` でも承認できない
+
+## 4.12 state/improvements.yaml（C-5 friction 駆動改善ループの idea 台帳）
+
+再発する運用摩擦（friction）から立てた improvement idea のライフサイクル台帳。`self_improvement.enabled` と `self_improvement.friction.enabled` の両方が true のときのみデーモンが管理する（shutdown 時に永続化、起動時に再読込。[REQUIREMENTS.md](REQUIREMENTS.md) C-5-4 参照）。
+
+```yaml
+schema_version: 1
+file_type: "state_improvements"
+improvements:
+  - id: "a1b2c3d4e5f60718" # エラー fingerprint（C-5-1 の Fingerprint DB と共有キー）
+    kind: "blocked_prompt" # friction 種別: blocked_prompt | runtime_terminal_error | dispatch_blocked | dead_letter | timeout | task_failure
+    category: "permission" # fingerprint 計算時の粗分類
+    target: "workflow_advice" # 改善対象。exclude_targets に該当するものは適用・提示ともフィルタ
+    advice: "protected path を expected_paths から外す" # 提示する助言（成功 retry の summary 由来）
+    status: "applied" # observed | proposed | applied | verified | reopened
+    occurrence_count: 4 # friction の累積観測回数
+    reopen_count: 1 # verified → reopened の回数（回帰履歴）
+    proposed_at: "2026-07-24T10:00:00Z"
+    applied_at: "2026-07-24T11:00:00Z"
+    verified_at: "" # 効果計測ゲート通過時刻（verified のみ）
+    reopened_at: ""
+    last_seen_at: "2026-07-24T11:30:00Z"
+    measure: # 効果計測（metrics.yaml カウンタと friction 再発数に接地）
+      baseline_occurrences: 3 # 適用時点の friction 観測回数
+      baseline_tasks_failed: 7 # 適用時点の counters.tasks_failed スナップショット
+      baseline_dead_letters: 1
+      post_apply_successes: 1 # 適用後の連続成功数（再発でリセット）
+      post_apply_recurrences: 0 # 適用後の同種 friction 再発数（計測履歴）
+      verified_tasks_failed: 0 # verified 昇格時点のスナップショット
+      verified_dead_letters: 0
+```
+
+- **ライフサイクル**: observed →（`min_occurrences` 回再発）→ proposed →（修復戦略の retry 注入 = 適用）→ applied →（連続 `verify_min_successes` 回の計測成功）→ verified。verified 後に同種 friction が再発すると自動で reopened に戻る（auto-reopen）。reopened は proposed と同様に再適用・再計測の対象
+- **提示が終点**: proposed / reopened のエントリは Planner への command 配信時に DATA セクション（`IMPROVEMENT PROPOSALS`）として注入される（`friction.inject_count` 件まで、0 で注入無効）。デーモンがテンプレート・設定を自動で書き換えることはない
+- **上限**: `friction.max_entries`（既定 200）。超過時は `last_seen_at` 最古のエントリを evict

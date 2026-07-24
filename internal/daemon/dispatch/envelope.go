@@ -78,6 +78,18 @@ func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (envelope.Saniti
 		safe = safe.Append(skillContent)
 	}
 
+	// Inject friction-driven improvement proposals (C-5 friction loop,
+	// issue #26; append after skills). Presentation to the Planner is the
+	// loop's endpoint — the daemon never applies template/config changes.
+	// The provider returns "" when the loop is disabled or nothing is
+	// actionable.
+	if prov := disp.getImprovementSection(); prov != nil {
+		if section := prov(); section != "" {
+			safe = safe.Append(section)
+			disp.dl.Logf(core.LogLevelInfo, "improvement_proposals_injected command=%s", cmd.ID)
+		}
+	}
+
 	return safe, nil
 }
 

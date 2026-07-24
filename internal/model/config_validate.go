@@ -371,6 +371,18 @@ func (c Config) validateExperimental(errs *[]error) {
 	if c.SelfImprovement.ArchiveMaxSize != nil && *c.SelfImprovement.ArchiveMaxSize < 0 {
 		*errs = append(*errs, fmt.Errorf("self_improvement.archive_max_size: must be >= 0"))
 	}
+	if c.SelfImprovement.Friction.MinOccurrences != nil && *c.SelfImprovement.Friction.MinOccurrences <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.min_occurrences: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.VerifyMinSuccesses != nil && *c.SelfImprovement.Friction.VerifyMinSuccesses <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.verify_min_successes: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.MaxEntries != nil && *c.SelfImprovement.Friction.MaxEntries <= 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.max_entries: must be > 0"))
+	}
+	if c.SelfImprovement.Friction.InjectCount != nil && *c.SelfImprovement.Friction.InjectCount < 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.friction.inject_count: must be >= 0"))
+	}
 
 	// C-6 Complexity Thresholds
 	if c.Complexity.Thresholds.SimpleMaxFiles != nil && *c.Complexity.Thresholds.SimpleMaxFiles <= 0 {

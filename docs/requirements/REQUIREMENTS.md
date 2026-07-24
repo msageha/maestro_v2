@@ -294,11 +294,13 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 - [C-5-1] 構造化失敗パターン学習: Failure Fingerprint（S2-1）を活用し、失敗パターンを分類・構造化する [SHOULD]。類似パターンの再発時に過去の修復戦略を自動提案する。
 - [C-5-2] Planner プロンプト/ペルソナの進化的最適化: EVOLVE-BLOCK 的な進化対象指定により、Planner のプロンプトおよびペルソナ定義の特定領域を進化的に最適化する [MAY]。最適化の評価は Fitness 関数（S1-2）の結果に基づく。
 - [C-5-3] アーカイブベース戦略: 過去の成功パターン（高 Fitness スコアのタスク実行結果）を stepping stone として保持し、類似タスクの初期戦略として参照する [MAY]。
+- [C-5-4] Friction 駆動改善ループ（効果計測ゲート + 回帰時 auto-reopen）: タスク失敗に加えて Daemon が観測する運用摩擦（blocked prompt / runtime terminal error / dead letter / timeout）を friction イベントとして `state/improvements.yaml` に蓄積する [SHOULD]。同一 fingerprint の friction が `min_occurrences` 回再発すると improvement idea として proposed に昇格し、Planner への command 配信時に DATA セクションで提示される。修復戦略の retry への注入（C-5-1 の repair-strategy loop）が「適用」であり、適用後は post-apply の連続成功数が `verify_min_successes` に達するまで verified に昇格させない（途中で同種 friction が再発するとカウントはリセット）。verified 後に同種 friction が再発した場合は自動で reopened に戻し、再学習対象とする。effect の定量化は friction 再発カウントと `state/metrics.yaml` カウンタ（tasks_failed / dead_letters）の apply/verify 時スナップショットに接地する。fingerprint は C-5-1 の Fingerprint DB と共有し、並行する別ループを構成しない。`self_improvement.friction.enabled`（既定 false、`self_improvement.enabled` との AND）で opt-in。
 
 **安全装置**:
 
 - Reward hacking 防止（DGM の教訓）: 自己改善が評価指標自体を操作するリスクに対し、Fitness 関数の機械的評価原則（§6-1）を安全弁として維持する [MUST]。Fitness 関数の定義・重み・閾値は自己改善の対象外とする [MUST]。
 - 改善対象の限定: 自己改善対象は Planner/Worker のプロンプト・設定・ペルソナ定義のみとする。Daemon 制御ロジック、状態遷移定義、Fitness 関数定義は改変禁止とする [MUST]。
+- 適用の human-in-the-loop: friction 駆動改善ループ（C-5-4）の終点は記録と提示であり、Daemon がテンプレート・設定・プロンプトを自動で書き換えることはない [MUST]。改善提案の適用は propose → review → apply（Planner / 人間の判断）を基本とし、`exclude_targets`（fitness / daemon_logic / circuit_breaker）は適用・提示の両段でフィルタされる。
 
 **Anti-Requirements 整合**:
 

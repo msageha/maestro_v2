@@ -100,7 +100,10 @@ maestro/
 │   ├── verify/                        # command-scoped verify config snapshot（S1-1）。デーモンが実行時に管理し `verify write` が登録する（setup は事前作成しない）
 │   │   └── {command_id}.yaml
 │   ├── continuous.yaml                # 継続モード状態（イテレーションカウンタ等。デーモンが管理）
-│   └── metrics.yaml                   # 可観測性メトリクス（デーモンが更新）
+│   ├── metrics.yaml                   # 可観測性メトリクス（デーモンが更新）
+│   ├── fingerprint_db.json            # C-5 Failure Fingerprint DB（self_improvement.enabled 時のみ。デーモンが管理）
+│   ├── improvements.yaml              # C-5 friction 駆動改善ループの improvement idea 台帳（self_improvement.friction.enabled 時のみ。デーモンが管理、[§4.12](04-yaml-schema.md) 参照）
+│   └── hud_history.jsonl              # `maestro hud` の snapshot 差分トレイル（JSONL・HUD プロセスのみが書き、デーモンは読み書きしない。[§5.19](05-script-responsibilities.md) 参照）
 ├── locks/                             # ロックファイル
 │   └── daemon.lock                    # デーモン単一インスタンス保証（syscall.Flock）
 │                                      # per-agent / per-command の排他制御はデーモンプロセス内の
