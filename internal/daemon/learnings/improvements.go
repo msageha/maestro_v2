@@ -9,8 +9,6 @@ import (
 	"sync"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -115,8 +113,14 @@ func LoadImprovementStore(path string, opts ImprovementStoreOptions) (*Improveme
 	if len(data) == 0 {
 		return s, nil
 	}
+	if len(data) > model.DefaultMaxYAMLFileBytes {
+		return nil, fmt.Errorf("improvements file exceeds maximum size of %d bytes (got %d)",
+			model.DefaultMaxYAMLFileBytes, len(data))
+	}
 	var f model.ImprovementsFile
-	if err := yamlv3.Unmarshal(data, &f); err != nil {
+	// SafeUnmarshal enforces anchor/alias limits (billion-laughs defence)
+	// on the state file before the full decode.
+	if err := yamlutil.SafeUnmarshal(data, &f); err != nil {
 		return nil, fmt.Errorf("parse improvements file: %w", err)
 	}
 	s.mu.Lock()

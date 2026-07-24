@@ -8,8 +8,6 @@ import (
 	"strings"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/clock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -47,6 +45,11 @@ type Handler struct {
 	// via SetUsageCollector.
 	usageCollector    UsageCollector
 	usageCollectorSet bool
+	// usageLastCollectedAt is when the last usage collection pass ran.
+	// Collection re-stats every retained session transcript, so it is
+	// throttled to cost_tracking.collect_interval_sec instead of running
+	// on every scan tick; the zero value forces the first scan to collect.
+	usageLastCollectedAt time.Time
 }
 
 // NewHandler creates a new Handler.
@@ -82,7 +85,9 @@ func (h *Handler) UpdateMetrics(
 		metrics.SchemaVersion = 1
 		metrics.FileType = "state_metrics"
 	} else {
-		if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		// SafeUnmarshal enforces anchor/alias limits (billion-laughs
+		// defence) on the state file before the full decode.
+		if err := yamlutil.SafeUnmarshal(data, &metrics); err != nil {
 			return fmt.Errorf("parse metrics: %w", err)
 		}
 	}
@@ -207,7 +212,7 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 		}
 
 		var rf model.TaskResultFile
-		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		if err := yamlutil.SafeUnmarshal(data, &rf); err != nil {
 			h.logger.Warnf("parse result file %s: %v", name, err)
 			continue
 		}

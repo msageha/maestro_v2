@@ -790,6 +790,11 @@ cost_tracking:
   # daemon の scan/dispatch/verify 動作に影響しない。
   # type: *bool | default: false | range: true/false
   enabled: false
+  # collect_interval_sec: セッションファイル走査の最小間隔 (秒)。scan tick ごとの
+  # 全 transcript stat を抑える throttle (可視化が最大この秒数だけ遅延する)。
+  # 0 以下で毎 scan 収集。
+  # type: *int | default: 60 | range: 制限なし (0 以下 = 毎 scan)
+  collect_interval_sec: 60
   budget:
     # total_usd: 全 agent 合算の推定コストがこの値 (USD) を超えたら WARN ログ
     # + dashboard 表示。0 = アラート無効。

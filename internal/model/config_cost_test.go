@@ -65,6 +65,35 @@ cost_tracking:
 	}
 }
 
+func TestCostTrackingConfig_CollectInterval(t *testing.T) {
+	t.Parallel()
+	var cfg Config
+	if got := cfg.CostTracking.EffectiveCollectIntervalSec(); got != DefaultCostCollectIntervalSec {
+		t.Errorf("unset collect_interval_sec = %d, want default %d", got, DefaultCostCollectIntervalSec)
+	}
+
+	cases := []struct {
+		name string
+		yaml string
+		want int
+	}{
+		{"explicit", "cost_tracking:\n  collect_interval_sec: 30\n", 30},
+		{"zero collects every scan", "cost_tracking:\n  collect_interval_sec: 0\n", 0},
+		{"negative clamps to zero", "cost_tracking:\n  collect_interval_sec: -5\n", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var cfg Config
+			if err := yamlv3.Unmarshal([]byte(tc.yaml), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.CostTracking.EffectiveCollectIntervalSec(); got != tc.want {
+				t.Errorf("EffectiveCollectIntervalSec() = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestCostTrackingConfig_UnknownFieldsTolerated(t *testing.T) {
 	t.Parallel()
 	// config.yaml decode stays non-strict: future/typo keys must not fail.

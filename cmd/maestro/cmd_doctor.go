@@ -25,6 +25,13 @@ import (
 // credential store is reported as a warning because auth state is not
 // reliably inspectable (keychain-backed logins in particular) and must not
 // make doctor cry wolf on a working install.
+// maxProbeTimeoutSec bounds --probe-timeout-sec. Version probes finish in
+// seconds on a healthy install; one hour is already absurdly generous, and
+// the cap keeps time.Duration(n)*time.Second far away from int64 overflow
+// (a huge n would wrap to a negative timeout that kills every probe
+// instantly).
+const maxProbeTimeoutSec = 3600
+
 func runDoctor(args []string) error {
 	cmd := NewCommand("maestro doctor", "maestro doctor [--json] [--probe-timeout-sec <n>]")
 	var jsonOutput bool
@@ -36,8 +43,8 @@ func runDoctor(args []string) error {
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}
-	if probeTimeoutSec < 0 {
-		return cmd.UsageErrorf("--probe-timeout-sec must be >= 0")
+	if probeTimeoutSec < 0 || probeTimeoutSec > maxProbeTimeoutSec {
+		return cmd.UsageErrorf("--probe-timeout-sec must be between 0 and %d", maxProbeTimeoutSec)
 	}
 
 	maestroDir, err := requireMaestroDir("doctor")

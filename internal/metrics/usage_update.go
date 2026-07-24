@@ -29,6 +29,21 @@ func (h *Handler) updateUsage(m *model.Metrics) {
 	}
 	if !cfg.CostTracking.EffectiveEnabled() {
 		m.Usage = nil
+		// Re-enabling later must collect immediately, not wait out a
+		// stale throttle window.
+		h.usageLastCollectedAt = time.Time{}
+		return
+	}
+
+	// Throttle: a collection pass re-stats every retained session
+	// transcript, so it runs at most once per configured interval instead
+	// of on every scan tick. Skipping keeps the previous usage section
+	// (loaded from metrics.yaml above) untouched; the next pass is a full
+	// recompute over all retained sessions, so throttling only delays
+	// visibility — it never loses usage.
+	now := h.clock.Now()
+	interval := time.Duration(cfg.CostTracking.EffectiveCollectIntervalSec()) * time.Second
+	if interval > 0 && !h.usageLastCollectedAt.IsZero() && now.Sub(h.usageLastCollectedAt) < interval {
 		return
 	}
 
@@ -44,6 +59,7 @@ func (h *Handler) updateUsage(m *model.Metrics) {
 	if collector == nil {
 		return
 	}
+	h.usageLastCollectedAt = now
 
 	agg, err := collector.Collect()
 	collectFailed := err != nil
@@ -54,7 +70,7 @@ func (h *Handler) updateUsage(m *model.Metrics) {
 		agg = newUsageAggregate()
 	}
 
-	usage := assembleUsageMetrics(cfg, agg, collector.Source(), h.clock.Now())
+	usage := assembleUsageMetrics(cfg, agg, collector.Source(), now)
 	if collectFailed {
 		usage.Partial = true
 	}

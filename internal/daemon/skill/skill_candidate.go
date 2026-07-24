@@ -8,8 +8,6 @@ import (
 	"slices"
 	"strings"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -24,8 +22,11 @@ func ReadCandidates(path string) ([]model.SkillCandidate, error) {
 		return nil, fmt.Errorf("read skill candidates file: %w", err)
 	}
 
+	if len(data) > model.DefaultMaxYAMLFileBytes {
+		return nil, fmt.Errorf("skill candidates file exceeds size limit (%d > %d bytes)", len(data), model.DefaultMaxYAMLFileBytes)
+	}
 	var sf model.SkillCandidatesFile
-	if err := yamlv3.Unmarshal(data, &sf); err != nil {
+	if err := yamlutil.SafeUnmarshal(data, &sf); err != nil {
 		return nil, fmt.Errorf("parse skill candidates file: %w", err)
 	}
 

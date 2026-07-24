@@ -185,6 +185,21 @@ func TestRunDoctor_RejectsNegativeTimeout(t *testing.T) {
 	}
 }
 
+// TestRunDoctor_RejectsExcessiveTimeout pins the overflow guard: values
+// above maxProbeTimeoutSec are usage errors, never a wrapped-negative
+// time.Duration that would kill every probe instantly.
+func TestRunDoctor_RejectsExcessiveTimeout(t *testing.T) {
+	for _, v := range []string{"3601", "99999999999999"} {
+		err := runDoctor([]string{"--probe-timeout-sec", v})
+		if err == nil {
+			t.Fatalf("expected usage error for --probe-timeout-sec %s", v)
+		}
+		if !strings.Contains(err.Error(), "--probe-timeout-sec") {
+			t.Errorf("error should mention the flag, got: %v", err)
+		}
+	}
+}
+
 func TestRunDoctor_UnknownFlagRejected(t *testing.T) {
 	if err := runDoctor([]string{"--bogus"}); err == nil {
 		t.Fatal("expected parse error for unknown flag")

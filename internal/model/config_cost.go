@@ -12,10 +12,23 @@ package model
 type CostTrackingConfig struct {
 	// Enabled turns collection on. Default false.
 	Enabled *bool `yaml:"enabled,omitempty"`
+	// CollectIntervalSec is the minimum number of seconds between two
+	// session-file collection passes. Collection re-stats every retained
+	// session transcript, so running it on every scan tick makes daemon
+	// scan I/O grow linearly with transcript retention; the interval
+	// bounds that cost while keeping usage at most this many seconds
+	// stale (each pass is a full recompute, so nothing is ever lost).
+	// Unset defaults to DefaultCostCollectIntervalSec; 0 or negative
+	// collects on every scan.
+	CollectIntervalSec *int `yaml:"collect_interval_sec,omitempty"`
 	// Budget holds opt-in alert thresholds. A threshold of 0 (or negative)
 	// disables that alert.
 	Budget CostBudgetConfig `yaml:"budget,omitempty"`
 }
+
+// DefaultCostCollectIntervalSec is the default minimum interval between
+// usage collection passes (seconds).
+const DefaultCostCollectIntervalSec = 60
 
 // CostBudgetConfig holds budget alert thresholds in USD. Thresholds compare
 // against the *known* (claude-code) estimated cost only; exceeding one emits
@@ -31,6 +44,17 @@ type CostBudgetConfig struct {
 
 // EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (c CostTrackingConfig) EffectiveEnabled() bool { return effectiveValue(c.Enabled, false) }
+
+// EffectiveCollectIntervalSec returns the minimum collection interval in
+// seconds. Unset defaults to DefaultCostCollectIntervalSec; explicit values
+// <= 0 return 0 (collect on every scan).
+func (c CostTrackingConfig) EffectiveCollectIntervalSec() int {
+	v := effectiveValue(c.CollectIntervalSec, DefaultCostCollectIntervalSec)
+	if v < 0 {
+		return 0
+	}
+	return v
+}
 
 // EffectiveTotalUSD returns the total budget threshold; values <= 0 (and
 // unset) mean the alert is disabled and 0 is returned.

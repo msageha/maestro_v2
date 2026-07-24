@@ -1,6 +1,8 @@
 package learnings
 
 import (
+	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -290,6 +292,36 @@ func TestLoadImprovementStore_MissingAndCorrupt(t *testing.T) {
 	}
 	if _, err := LoadImprovementStore(corrupt, testOpts()); err == nil {
 		t.Fatal("corrupt file must return an error (caller logs and starts empty)")
+	}
+}
+
+func TestLoadImprovementStore_RejectsOversizedFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "oversized.yaml")
+	if err := os.WriteFile(path, bytes.Repeat([]byte{'#'}, model.DefaultMaxYAMLFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadImprovementStore(path, testOpts())
+	if err == nil || !strings.Contains(err.Error(), "maximum size") {
+		t.Fatalf("oversized file must be rejected with a size error, got %v", err)
+	}
+}
+
+func TestLoadImprovementStore_RejectsAliasBomb(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bomb.yaml")
+	// More anchors than internal/yaml.MaxAnchors: SafeUnmarshal must reject
+	// the document before the full decode (billion-laughs defence).
+	var sb strings.Builder
+	for i := 0; i < 101; i++ {
+		fmt.Fprintf(&sb, "k%d: &a%d v\n", i, i)
+	}
+	if err := os.WriteFile(path, []byte(sb.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := LoadImprovementStore(path, testOpts())
+	if err == nil || !strings.Contains(err.Error(), "anchor count") {
+		t.Fatalf("anchor bomb must be rejected, got %v", err)
 	}
 }
 
