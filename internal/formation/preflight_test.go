@@ -154,3 +154,56 @@ func TestClassifyPreflightProbeErr_PathTooLongIsNotSandbox(t *testing.T) {
 		t.Fatalf("expected socket path length message, got %v", err)
 	}
 }
+
+// Regression test for the CI flake on PR #56: the probe socket lives in the
+// per-UID shared /tmp/maestro-uds-<uid>/ directory and its name used the PID
+// alone, so concurrent preflightEnvironment calls within one process (parallel
+// Up invocations, parallel tests in this package) collided on the same path —
+// ProbeUnixSocket removes the path before binding, so the loser saw
+// "bind: address already in use". The per-invocation sequence suffix must keep
+// concurrent probes on distinct paths.
+func TestPreflightEnvironment_ConcurrentProbesDoNotCollide(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skipf("tmux not on PATH: %v", err)
+	}
+
+	const probes = 8
+	errCh := make(chan error, probes)
+	for i := 0; i < probes; i++ {
+		go func() {
+			maestroDir, err := os.MkdirTemp("", "m-preflight-conc-*")
+			if err != nil {
+				errCh <- fmt.Errorf("create temp dir: %w", err)
+				return
+			}
+			defer os.RemoveAll(maestroDir)
+			errCh <- preflightEnvironment(maestroDir)
+		}()
+	}
+	for i := 0; i < probes; i++ {
+		if err := <-errCh; err != nil {
+			if errors.Is(err, uds.ErrUnixSocketUnavailable) {
+				t.Skipf("unix domain sockets unavailable in this environment: %v", err)
+			}
+			t.Errorf("concurrent preflightEnvironment failed: %v", err)
+		}
+	}
+}
+
+// Two probe-path resolutions in the same process must never share a path —
+// PID alone cannot provide that (see TestPreflightEnvironment_ConcurrentProbesDoNotCollide).
+func TestPreflightProbeSocketPath_UniquePerInvocation(t *testing.T) {
+	t.Parallel()
+	first, err := preflightProbeSocketPath("/tmp/maestro-uds-test/daemon.sock")
+	if err != nil {
+		t.Fatalf("first resolution: %v", err)
+	}
+	second, err := preflightProbeSocketPath("/tmp/maestro-uds-test/daemon.sock")
+	if err != nil {
+		t.Fatalf("second resolution: %v", err)
+	}
+	if first == second {
+		t.Errorf("probe paths must be unique per invocation, both were %q", first)
+	}
+}
