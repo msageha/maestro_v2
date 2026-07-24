@@ -80,6 +80,7 @@ func TestCostTrackingConfig_CollectInterval(t *testing.T) {
 		{"explicit", "cost_tracking:\n  collect_interval_sec: 30\n", 30},
 		{"zero collects every scan", "cost_tracking:\n  collect_interval_sec: 0\n", 0},
 		{"negative clamps to zero", "cost_tracking:\n  collect_interval_sec: -5\n", 0},
+		{"huge value clamps to max (duration overflow guard)", "cost_tracking:\n  collect_interval_sec: 9223372037\n", MaxCostCollectIntervalSec},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

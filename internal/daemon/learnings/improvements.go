@@ -2,6 +2,7 @@ package learnings
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -103,19 +104,26 @@ func NewImprovementStore(opts ImprovementStoreOptions) *ImprovementStore {
 func LoadImprovementStore(path string, opts ImprovementStoreOptions) (*ImprovementStore, error) {
 	s := NewImprovementStore(opts)
 	// path is supplied by daemon startup from a fixed maestroDir layout.
-	data, err := os.ReadFile(path) //nolint:gosec // controlled maestroDir-based path
+	// Bound the read itself (LimitReader) so an oversized corrupt file is
+	// rejected without first allocating its full content in memory.
+	f0, err := os.Open(path) //nolint:gosec // controlled maestroDir-based path
 	if err != nil {
 		if os.IsNotExist(err) {
 			return s, nil
 		}
 		return nil, err
 	}
+	defer f0.Close() //nolint:errcheck // read-only handle
+	data, err := io.ReadAll(io.LimitReader(f0, int64(model.DefaultMaxYAMLFileBytes)+1))
+	if err != nil {
+		return nil, err
+	}
 	if len(data) == 0 {
 		return s, nil
 	}
 	if len(data) > model.DefaultMaxYAMLFileBytes {
-		return nil, fmt.Errorf("improvements file exceeds maximum size of %d bytes (got %d)",
-			model.DefaultMaxYAMLFileBytes, len(data))
+		return nil, fmt.Errorf("improvements file exceeds maximum size of %d bytes",
+			model.DefaultMaxYAMLFileBytes)
 	}
 	var f model.ImprovementsFile
 	// SafeUnmarshal enforces anchor/alias limits (billion-laughs defence)

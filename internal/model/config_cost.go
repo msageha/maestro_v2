@@ -45,13 +45,22 @@ type CostBudgetConfig struct {
 // EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (c CostTrackingConfig) EffectiveEnabled() bool { return effectiveValue(c.Enabled, false) }
 
+// MaxCostCollectIntervalSec caps collect_interval_sec at one day. The cap
+// keeps time.Duration(v)*time.Second from overflowing into a negative
+// duration (which would silently disable the throttle) on absurd values.
+const MaxCostCollectIntervalSec = 24 * 60 * 60
+
 // EffectiveCollectIntervalSec returns the minimum collection interval in
 // seconds. Unset defaults to DefaultCostCollectIntervalSec; explicit values
-// <= 0 return 0 (collect on every scan).
+// <= 0 return 0 (collect on every scan); values above
+// MaxCostCollectIntervalSec are clamped to it.
 func (c CostTrackingConfig) EffectiveCollectIntervalSec() int {
 	v := effectiveValue(c.CollectIntervalSec, DefaultCostCollectIntervalSec)
 	if v < 0 {
 		return 0
+	}
+	if v > MaxCostCollectIntervalSec {
+		return MaxCostCollectIntervalSec
 	}
 	return v
 }

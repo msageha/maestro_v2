@@ -515,3 +515,44 @@ updated_at: "2026-07-24T11:59:59Z"
 		t.Errorf("completed plan must not count as active")
 	}
 }
+
+func TestCollector_CacheTTLRecoversFromStampCollision(t *testing.T) {
+	dir := newFixtureMaestroDir(t)
+	c := NewCollector()
+
+	if s := c.Collect(dir, fixtureTime); len(s.Commands.Rows) != 1 {
+		t.Fatalf("first poll rows = %+v", s.Commands.Rows)
+	}
+
+	// Same-length rewrite with restored mtime: the stamp cannot see the
+	// change (coarse-timestamp scenario), so within the TTL the cached row
+	// is served, but after the TTL the file must be re-parsed.
+	cmdPath := filepath.Join(dir, "state", "commands", "cmd_1.yaml")
+	info, err := os.Stat(cmdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(cmdPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	swapped := replaceOnce(t, string(content), "plan_status: sealed", "plan_status: failed")
+	if len(swapped) != len(content) {
+		t.Fatalf("swap changed length: %d -> %d", len(content), len(swapped))
+	}
+	if err := os.WriteFile(cmdPath, []byte(swapped), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(cmdPath, info.ModTime(), info.ModTime()); err != nil {
+		t.Fatal(err)
+	}
+
+	within := c.Collect(dir, fixtureTime.Add(collectorCacheTTL/2))
+	if got := within.Commands.Rows[0].PlanStatus; got != "sealed" {
+		t.Errorf("within TTL: plan_status = %q, want cached %q", got, "sealed")
+	}
+	after := c.Collect(dir, fixtureTime.Add(collectorCacheTTL+time.Second))
+	if got := after.Commands.Rows[0].PlanStatus; got != "failed" {
+		t.Errorf("after TTL: plan_status = %q, want re-parsed %q", got, "failed")
+	}
+}

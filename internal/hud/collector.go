@@ -43,6 +43,12 @@ type fileStamp struct {
 	size    int64
 }
 
+// collectorCacheTTL bounds how long a cache entry may serve without a
+// re-parse. mtime+size alone can miss a same-size rewrite on filesystems
+// with coarse timestamp granularity; the TTL turns that stale window from
+// unbounded into at most one minute.
+const collectorCacheTTL = time.Minute
+
 func stampOf(info os.FileInfo) fileStamp {
 	return fileStamp{modTime: info.ModTime(), size: info.Size()}
 }
@@ -51,16 +57,18 @@ func stampOf(info os.FileInfo) fileStamp {
 // Integration is intentionally left empty in the cached row: the worktree
 // join is refreshed every poll from the worktree file's own stamp.
 type commandCacheEntry struct {
-	stamp fileStamp
-	ok    bool // false: unreadable/unparseable at this stamp
-	row   CommandRow
+	stamp    fileStamp
+	parsedAt time.Time
+	ok       bool // false: unreadable/unparseable at this stamp
+	row      CommandRow
 }
 
 // worktreeCacheEntry caches the integration status parsed from one
 // state/worktrees/*.yaml.
 type worktreeCacheEntry struct {
-	stamp  fileStamp
-	status string
+	stamp    fileStamp
+	parsedAt time.Time
+	status   string
 }
 
 // Collect reads every observable section of maestroDir. It never returns an
@@ -70,7 +78,7 @@ func (c *Collector) Collect(maestroDir string, now time.Time) *Snapshot {
 	s := &Snapshot{CollectedAt: now}
 	s.Metrics = collectMetrics(maestroDir)
 	s.Queues = collectQueues(maestroDir)
-	s.Commands = c.collectCommands(maestroDir)
+	s.Commands = c.collectCommands(maestroDir, now)
 	s.Signals = collectSignals(maestroDir)
 	s.Attention = collectAttention(maestroDir)
 	s.Learnings = collectLearnings(maestroDir)
@@ -146,7 +154,7 @@ func collectQueues(maestroDir string) QueuesSection {
 	return QueuesSection{Rows: rows}
 }
 
-func (c *Collector) collectCommands(maestroDir string) CommandsSection {
+func (c *Collector) collectCommands(maestroDir string, now time.Time) CommandsSection {
 	dir := filepath.Join(maestroDir, "state", "commands")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -168,8 +176,8 @@ func (c *Collector) collectCommands(maestroDir string) CommandsSection {
 			continue
 		}
 		entry, hit := c.commands[path]
-		if stamp := stampOf(info); !hit || entry.stamp != stamp {
-			entry = commandCacheEntry{stamp: stamp}
+		if stamp := stampOf(info); !hit || entry.stamp != stamp || now.Sub(entry.parsedAt) > collectorCacheTTL {
+			entry = commandCacheEntry{stamp: stamp, parsedAt: now}
 			var cs model.CommandState
 			if err := readYAML(path, &cs); err == nil {
 				entry.ok = true
@@ -182,7 +190,7 @@ func (c *Collector) collectCommands(maestroDir string) CommandsSection {
 		}
 		out.TotalCommands++
 		row := entry.row
-		row.Integration = c.integrationStatus(maestroDir, row.CommandID, nextWorktrees)
+		row.Integration = c.integrationStatus(maestroDir, row.CommandID, nextWorktrees, now)
 		if !row.terminal {
 			out.ActiveCount++
 		}
@@ -273,7 +281,7 @@ func bucketTasks(cs *model.CommandState) TaskCounts {
 // processes, so it is validated before use as a path component: a corrupted
 // or malicious state file must not make the HUD read YAML outside
 // state/worktrees/. Results are cached per file into next (mtime+size).
-func (c *Collector) integrationStatus(maestroDir, commandID string, next map[string]worktreeCacheEntry) string {
+func (c *Collector) integrationStatus(maestroDir, commandID string, next map[string]worktreeCacheEntry, now time.Time) string {
 	if commandID == "" || validate.ID(commandID) != nil {
 		return ""
 	}
@@ -290,11 +298,11 @@ func (c *Collector) integrationStatus(maestroDir, commandID string, next map[str
 	if entry, ok := next[path]; ok && entry.stamp == stamp {
 		return entry.status
 	}
-	if entry, ok := c.worktrees[path]; ok && entry.stamp == stamp {
+	if entry, ok := c.worktrees[path]; ok && entry.stamp == stamp && now.Sub(entry.parsedAt) <= collectorCacheTTL {
 		next[path] = entry
 		return entry.status
 	}
-	entry := worktreeCacheEntry{stamp: stamp}
+	entry := worktreeCacheEntry{stamp: stamp, parsedAt: now}
 	var ws model.WorktreeCommandState
 	if err := readYAML(path, &ws); err == nil {
 		entry.status = string(ws.Integration.Status)
