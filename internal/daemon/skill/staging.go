@@ -25,8 +25,30 @@ func StagingRoot(maestroDir string) string {
 }
 
 // ErrStagedSkillExists is returned by StageCandidate when the staging
-// directory for the requested skill name already exists.
+// directory for the requested skill name already exists and belongs to a
+// different candidate (its manifest names another candidate ID, or it has no
+// manifest at all).
 var ErrStagedSkillExists = errors.New("staged skill already exists")
+
+// CandidateManifestName is the marker file written inside every staged skill
+// directory recording the ID of the candidate the draft was generated from.
+// It lets a re-run approve distinguish an orphan draft left by an approve
+// that crashed between staging and the candidate-state write (resumable:
+// same candidate ID, candidate still pending) from a draft belonging to a
+// different candidate (duplicate). It deliberately lives next to SKILL.md —
+// not in the frontmatter — so the skill-anatomy validator and promotion copy
+// are unaffected.
+const CandidateManifestName = ".candidate_id"
+
+// StagedCandidateID reads the candidate manifest of an existing staged skill
+// directory and returns the recorded candidate ID.
+func StagedCandidateID(skillDir string) (string, error) {
+	data, err := os.ReadFile(filepath.Join(skillDir, CandidateManifestName)) //nolint:gosec // skillDir is under the daemon-owned staging root
+	if err != nil {
+		return "", fmt.Errorf("read staged candidate manifest: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
 
 // StagingValidationError reports that the generated SKILL.md failed the
 // skill-anatomy hard rules. The staged directory has already been cleaned up
@@ -135,12 +157,17 @@ func BuildStagedSkillMarkdown(name, description string, cand model.SkillCandidat
 	return sb.String(), nil
 }
 
-// StageCandidate writes the generated SKILL.md into
-// <stagingRoot>/<name>/SKILL.md and runs the skill-anatomy validator on it.
-// Hard-rule failures remove the staged directory and return a
-// *StagingValidationError; advisory warnings are returned on the StagedSkill
-// for the operator to review. An existing staged directory for the same name
-// returns ErrStagedSkillExists untouched.
+// StageCandidate writes the generated SKILL.md (plus the candidate manifest,
+// see CandidateManifestName) into <stagingRoot>/<name>/ and runs the
+// skill-anatomy validator on it. Hard-rule failures remove the staged
+// directory and return a *StagingValidationError; advisory warnings are
+// returned on the StagedSkill for the operator to review.
+//
+// An existing staged directory for the same name is handled by manifest:
+// when it records this same candidate's ID the previous approve crashed
+// before the candidate state was persisted, so the draft is regenerated in
+// place (resume); any other directory returns ErrStagedSkillExists untouched.
+// The caller is responsible for only staging pending candidates.
 func StageCandidate(stagingRoot, name, description string, cand model.SkillCandidate) (StagedSkill, error) {
 	markdown, err := BuildStagedSkillMarkdown(name, description, cand)
 	if err != nil {
@@ -151,11 +178,44 @@ func StageCandidate(stagingRoot, name, description string, cand model.SkillCandi
 		return StagedSkill{}, fmt.Errorf("create staging root: %w", err)
 	}
 	skillDir := filepath.Join(stagingRoot, name)
-	if err := os.Mkdir(skillDir, 0o750); err != nil {
-		if os.IsExist(err) {
+
+	// Build the draft in a temp dir and move it into place with a single
+	// rename so skillDir either fully exists (manifest + SKILL.md) or not at
+	// all: a crash mid-staging can never leave a manifest-less directory that
+	// would wedge subsequent approves. The "." prefix cannot collide with a
+	// real skill dir (names start with [a-z0-9]) and keeps the temp dir out
+	// of the anatomy validator's SKILL.md walk; a stale temp dir left by a
+	// crash is removed here on the next attempt.
+	tmpDir := filepath.Join(stagingRoot, ".staging-"+name)
+	if err := os.RemoveAll(tmpDir); err != nil {
+		return StagedSkill{}, fmt.Errorf("clean stale staging temp dir: %w", err)
+	}
+	if err := os.Mkdir(tmpDir, 0o750); err != nil {
+		return StagedSkill{}, fmt.Errorf("create staging temp dir: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(tmpDir) }() // no-op once the rename succeeds
+	if err := os.WriteFile(filepath.Join(tmpDir, CandidateManifestName), []byte(cand.ID+"\n"), 0o600); err != nil {
+		return StagedSkill{}, fmt.Errorf("write staged candidate manifest: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(tmpDir, "SKILL.md"), []byte(markdown), 0o600); err != nil {
+		return StagedSkill{}, fmt.Errorf("write staged SKILL.md: %w", err)
+	}
+
+	switch _, statErr := os.Lstat(skillDir); {
+	case statErr == nil:
+		stagedID, manifestErr := StagedCandidateID(skillDir)
+		if manifestErr != nil || stagedID != cand.ID {
 			return StagedSkill{}, fmt.Errorf("%w: %s", ErrStagedSkillExists, skillDir)
 		}
-		return StagedSkill{}, fmt.Errorf("create staged skill directory: %w", err)
+		// Orphan draft from this same candidate: replace it (resume).
+		if err := os.RemoveAll(skillDir); err != nil {
+			return StagedSkill{}, fmt.Errorf("replace orphan staged draft: %w", err)
+		}
+	case !os.IsNotExist(statErr):
+		return StagedSkill{}, fmt.Errorf("stat staged skill directory: %w", statErr)
+	}
+	if err := os.Rename(tmpDir, skillDir); err != nil {
+		return StagedSkill{}, fmt.Errorf("move staged skill into place: %w", err)
 	}
 
 	cleanup := func() {
@@ -163,10 +223,6 @@ func StageCandidate(stagingRoot, name, description string, cand model.SkillCandi
 	}
 
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, []byte(markdown), 0o600); err != nil {
-		cleanup()
-		return StagedSkill{}, fmt.Errorf("write staged SKILL.md: %w", err)
-	}
 
 	issues, err := ValidateSkillTree(os.DirFS(stagingRoot), ".")
 	if err != nil {

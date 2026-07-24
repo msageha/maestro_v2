@@ -329,6 +329,23 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 			continue
 		}
 		if len(candidates) > before {
+			// Retention cap: prune terminal (approved/rejected) entries oldest
+			// first so the state file stays structurally below the read-size
+			// guard; pending entries are protected. When pending entries alone
+			// fill the cap, the new registration (the appended tail) is
+			// skipped with a WARN — never a silent drop.
+			var pruned int
+			candidates, pruned = skill.EnforceCandidateCap(candidates, skill.MaxCandidates)
+			if pruned > 0 {
+				h.logFn(LogLevelInfo, "skill_candidates_pruned command=%s pruned=%d max=%d", params.CommandID, pruned, skill.MaxCandidates)
+			}
+			if len(candidates) > skill.MaxCandidates {
+				candidates = candidates[:len(candidates)-1]
+				h.logFn(LogLevelWarn,
+					"skill_candidate_skipped_capacity command=%s max=%d: pending candidates fill the retention cap; approve or reject existing candidates to admit new ones, skipped content=%q",
+					params.CommandID, skill.MaxCandidates, sanitizeContentForLog(content))
+				continue
+			}
 			added++
 		}
 	}

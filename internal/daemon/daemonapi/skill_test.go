@@ -265,6 +265,64 @@ func TestHandleApprove_RetryAfterCandidateWriteFailure(t *testing.T) {
 	}
 }
 
+func TestHandleApprove_ResumesAfterCrashBeforeStateWrite(t *testing.T) {
+	t.Parallel()
+	cand := pendingCandidate("skc_1", "pattern one with concrete steps and details", 2)
+	h, maestroDir := newTestSkillHandler(t, []model.SkillCandidate{cand}, nil)
+
+	// Simulate an approve that crashed (SIGKILL / power loss) after staging
+	// but before the candidate state write: the staged dir with its manifest
+	// exists while the candidate is still pending on disk.
+	stagingRoot := skill.StagingRoot(maestroDir)
+	if _, err := skill.StageCandidate(stagingRoot, "crash-skill", "", cand); err != nil {
+		t.Fatalf("simulate crashed staging: %v", err)
+	}
+
+	resp := h.HandleApprove(approveRequest(t, SkillApproveParams{CandidateID: "skc_1", SkillName: "crash-skill"}))
+	if !resp.Success {
+		t.Fatalf("approve after crash must resume, got %+v", resp.Error)
+	}
+	result := decodeApproveResult(t, resp)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(maestroDir), result.StagedPath)); err != nil {
+		t.Errorf("staged draft missing after resume: %v", err)
+	}
+	candidates, err := skill.ReadCandidates(filepath.Join(maestroDir, "state", "skill_candidates.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if candidates[0].Status != "approved" || candidates[0].SkillName != "crash-skill" {
+		t.Errorf("candidate not finalized after resume: %+v", candidates[0])
+	}
+}
+
+func TestHandleApprove_OrphanDraftFromOtherCandidateStaysDuplicate(t *testing.T) {
+	t.Parallel()
+	cands := []model.SkillCandidate{
+		pendingCandidate("skc_1", "pattern one with concrete steps and details", 2),
+		pendingCandidate("skc_2", "a completely different second pattern about database migrations", 2),
+	}
+	h, maestroDir := newTestSkillHandler(t, cands, nil)
+
+	// The staged dir under the requested name was generated from skc_1; an
+	// approve of skc_2 reusing that name must still be rejected as duplicate.
+	stagingRoot := skill.StagingRoot(maestroDir)
+	if _, err := skill.StageCandidate(stagingRoot, "contested-name", "", cands[0]); err != nil {
+		t.Fatalf("stage draft for skc_1: %v", err)
+	}
+
+	resp := h.HandleApprove(approveRequest(t, SkillApproveParams{CandidateID: "skc_2", SkillName: "contested-name"}))
+	if resp.Success {
+		t.Fatal("expected another candidate's draft to be rejected as duplicate")
+	}
+	if resp.Error.Code != uds.ErrCodeDuplicate {
+		t.Errorf("expected DUPLICATE code, got %+v", resp.Error)
+	}
+	// skc_1's draft must survive the rejected attempt.
+	if id, err := skill.StagedCandidateID(filepath.Join(stagingRoot, "contested-name")); err != nil || id != "skc_1" {
+		t.Errorf("existing draft manifest = (%q, %v), want (skc_1, nil)", id, err)
+	}
+}
+
 func TestHandleApprove_NonPendingAndMissing(t *testing.T) {
 	t.Parallel()
 	cand := pendingCandidate("skc_1", "some pattern content here", 2)

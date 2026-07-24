@@ -2,7 +2,9 @@ package skill
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -232,6 +234,146 @@ func TestAddOrUpdateCandidate_DistinctContentNotMerged(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Fatalf("expected distinct pattern to create a new candidate, got %d", len(got))
+	}
+}
+
+func TestAddOrUpdateCandidate_ContentTruncated(t *testing.T) {
+	t.Parallel()
+	idFunc := func() (string, error) { return "id-1", nil }
+	long := strings.Repeat("あ", MaxCandidateContentRunes+1000)
+
+	got, err := AddOrUpdateCandidate(nil, long, "cmd1", "2025-01-01T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	runes := []rune(got[0].Content)
+	if len(runes) > MaxCandidateContentRunes+len([]rune(candidateTruncationNotice)) {
+		t.Errorf("content not truncated: %d runes", len(runes))
+	}
+	if !strings.Contains(got[0].Content, "truncated") {
+		t.Error("expected a truncation notice appended to oversized content")
+	}
+
+	// An identical oversized re-report must truncate identically and merge.
+	got, err = AddOrUpdateCandidate(got, long, "cmd2", "2025-01-02T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Occurrences != 2 {
+		t.Errorf("oversized re-report must merge: len=%d occurrences=%d", len(got), got[0].Occurrences)
+	}
+}
+
+func TestAddOrUpdateCandidate_CommandIDsCapped(t *testing.T) {
+	t.Parallel()
+	cmds := make([]string, MaxCandidateCommandIDs)
+	for i := range cmds {
+		cmds[i] = fmt.Sprintf("cmd%03d", i)
+	}
+	candidates := []model.SkillCandidate{
+		{ID: "sc1", Content: "saturated grounding list", Occurrences: MaxCandidateCommandIDs, CommandIDs: cmds, Status: "pending"},
+	}
+	idFunc := func() (string, error) { return "unused", nil }
+
+	got, err := AddOrUpdateCandidate(candidates, "saturated grounding list", "cmd-overflow", "2025-01-02T00:00:00Z", idFunc, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got[0].CommandIDs) != MaxCandidateCommandIDs {
+		t.Errorf("CommandIDs = %d entries, want capped at %d", len(got[0].CommandIDs), MaxCandidateCommandIDs)
+	}
+	if got[0].Occurrences != MaxCandidateCommandIDs+1 {
+		t.Errorf("Occurrences must keep counting past the cap, got %d", got[0].Occurrences)
+	}
+}
+
+func TestEnforceCandidateCap_PrunesOldestTerminalFirst(t *testing.T) {
+	t.Parallel()
+	candidates := []model.SkillCandidate{
+		{ID: "p1", Status: "pending", UpdatedAt: "2025-01-01T00:00:00Z"},
+		{ID: "t-old", Status: "rejected", UpdatedAt: "2025-01-02T00:00:00Z"},
+		{ID: "t-new", Status: "approved", UpdatedAt: "2025-01-05T00:00:00Z"},
+		{ID: "p2", Status: "pending", UpdatedAt: "2025-01-03T00:00:00Z"},
+	}
+
+	got, pruned := EnforceCandidateCap(candidates, 3)
+	if pruned != 1 {
+		t.Fatalf("pruned = %d, want 1", pruned)
+	}
+	if len(got) != 3 || got[0].ID != "p1" || got[1].ID != "t-new" || got[2].ID != "p2" {
+		t.Errorf("expected oldest terminal (t-old) pruned with order preserved, got %+v", got)
+	}
+}
+
+func TestEnforceCandidateCap_ProtectsPending(t *testing.T) {
+	t.Parallel()
+	candidates := []model.SkillCandidate{
+		{ID: "p1", Status: "pending", UpdatedAt: "2025-01-01T00:00:00Z"},
+		{ID: "p2", Status: "pending", UpdatedAt: "2025-01-02T00:00:00Z"},
+		{ID: "p3", Status: "pending", UpdatedAt: "2025-01-03T00:00:00Z"},
+	}
+
+	got, pruned := EnforceCandidateCap(candidates, 1)
+	if pruned != 0 {
+		t.Fatalf("pending entries must never be pruned, pruned = %d", pruned)
+	}
+	if len(got) != 3 {
+		t.Errorf("expected all pending entries kept (over cap), got %d", len(got))
+	}
+}
+
+func TestWriteCandidates_RefusesOversizedState(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skill_candidates.yaml")
+
+	initial := []model.SkillCandidate{{ID: "sc1", Content: "small", Occurrences: 1, Status: "pending"}}
+	if err := WriteCandidates(path, initial); err != nil {
+		t.Fatalf("initial write: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bypass the registration-time content cap deliberately (the write-size
+	// check is the independent last line of defense).
+	huge := make([]model.SkillCandidate, 0, 20)
+	for i := 0; i < 20; i++ {
+		huge = append(huge, model.SkillCandidate{
+			ID: fmt.Sprintf("sc%d", i), Content: strings.Repeat("x", 300*1024), Occurrences: 1, Status: "pending",
+		})
+	}
+	err = WriteCandidates(path, huge)
+	if err == nil || !strings.Contains(err.Error(), "refusing to write") {
+		t.Fatalf("expected serialized-size refusal, got %v", err)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("on-disk state changed despite the refused write")
+	}
+}
+
+func TestReadCandidates_OversizeErrorMentionsRecovery(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "skill_candidates.yaml")
+	if err := os.WriteFile(path, make([]byte, model.DefaultMaxYAMLFileBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ReadCandidates(path)
+	if err == nil {
+		t.Fatal("expected size-guard error")
+	}
+	for _, want := range []string{path, "back the file up", "hand-prune"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("size-guard error missing recovery guidance %q: %v", want, err)
+		}
 	}
 }
 

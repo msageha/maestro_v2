@@ -122,15 +122,99 @@ func TestStageCandidate_SuccessPassesAnatomyValidator(t *testing.T) {
 	}
 }
 
-func TestStageCandidate_DuplicateName(t *testing.T) {
+func TestStageCandidate_DuplicateNameFromOtherCandidate(t *testing.T) {
 	t.Parallel()
 	root := filepath.Join(t.TempDir(), "skill_staging")
 	if _, err := StageCandidate(root, "dup-name", "", testCandidate()); err != nil {
 		t.Fatalf("first StageCandidate: %v", err)
 	}
-	_, err := StageCandidate(root, "dup-name", "", testCandidate())
+	other := testCandidate()
+	other.ID = "skc_2_other"
+	_, err := StageCandidate(root, "dup-name", "", other)
 	if !errors.Is(err, ErrStagedSkillExists) {
-		t.Fatalf("expected ErrStagedSkillExists, got %v", err)
+		t.Fatalf("expected ErrStagedSkillExists for a different candidate, got %v", err)
+	}
+}
+
+func TestStageCandidate_WritesCandidateManifest(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	cand := testCandidate()
+	if _, err := StageCandidate(root, "with-manifest", "", cand); err != nil {
+		t.Fatalf("StageCandidate: %v", err)
+	}
+	id, err := StagedCandidateID(filepath.Join(root, "with-manifest"))
+	if err != nil {
+		t.Fatalf("StagedCandidateID: %v", err)
+	}
+	if id != cand.ID {
+		t.Errorf("manifest candidate ID = %q, want %q", id, cand.ID)
+	}
+}
+
+func TestStageCandidate_ResumesOwnOrphanDraft(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	cand := testCandidate()
+	// First staging succeeded but the approve "crashed" before the candidate
+	// state write: the staged dir (with manifest) is left behind. Re-running
+	// StageCandidate for the same candidate must resume, not wedge.
+	if _, err := StageCandidate(root, "resume-name", "", cand); err != nil {
+		t.Fatalf("first StageCandidate: %v", err)
+	}
+	staged, err := StageCandidate(root, "resume-name", "", cand)
+	if err != nil {
+		t.Fatalf("resume StageCandidate: %v", err)
+	}
+	if _, err := os.Stat(staged.Path); err != nil {
+		t.Fatalf("resumed staged file missing: %v", err)
+	}
+	id, err := StagedCandidateID(filepath.Join(root, "resume-name"))
+	if err != nil || id != cand.ID {
+		t.Errorf("resumed manifest = (%q, %v), want (%q, nil)", id, err, cand.ID)
+	}
+}
+
+func TestStageCandidate_ManifestlessDirRejected(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	// A directory without a candidate manifest (operator-created, or from a
+	// pre-manifest version) must be treated as a foreign draft.
+	dir := filepath.Join(root, "manual-draft")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("manual"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := StageCandidate(root, "manual-draft", "", testCandidate())
+	if !errors.Is(err, ErrStagedSkillExists) {
+		t.Fatalf("expected ErrStagedSkillExists for manifest-less dir, got %v", err)
+	}
+	// The manual draft must be left untouched.
+	data, readErr := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if readErr != nil || string(data) != "manual" {
+		t.Errorf("manual draft modified: (%q, %v)", data, readErr)
+	}
+}
+
+func TestStageCandidate_StaleTempDirCleaned(t *testing.T) {
+	t.Parallel()
+	root := filepath.Join(t.TempDir(), "skill_staging")
+	// A crash between temp-dir creation and rename leaves .staging-<name>
+	// behind; the next attempt must clean it and still succeed.
+	stale := filepath.Join(root, ".staging-fresh-name")
+	if err := os.MkdirAll(stale, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "SKILL.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := StageCandidate(root, "fresh-name", "", testCandidate()); err != nil {
+		t.Fatalf("StageCandidate with stale temp dir: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale temp dir not cleaned (stat err: %v)", err)
 	}
 }
 

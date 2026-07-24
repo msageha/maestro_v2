@@ -921,8 +921,10 @@ candidates:
 - **集約時の dedup**: 同一内容（空白正規化後の一致、またはトークン類似度 >= 0.8 の近似一致）の報告は既存 pending 候補の `occurrences` に加算され、新規エントリを作らない。近似一致でも `content` は初回報告の原文を保持する
 - **既存 skill との類似検出**: 登録時に skill ライブラリ全体（bundled `.maestro/skills` + `skills.extra_dirs`）と内容類似を照合し、類似 skill を `similar_skills` に記録する（操作員への reject 推奨ヒント。自動 reject はしない）
 - **承認（`maestro skill approve`）の効果**: live library への書き込みでは**ない**。`state/skill_staging/<skill_name>/SKILL.md` に完全な frontmatter（name/description/version/tags/priority）付きの草稿を生成し、skill-anatomy validator（hard rule）を通過した場合のみ `status: approved` + `skill_name` / `staged_path` を記録する。validator 違反時は staging を掃除して承認自体が失敗する
+- **staged dir の candidate manifest と crash 復旧**: staged dir には SKILL.md と並んで `.candidate_id`（生成元候補 ID を記録するマニフェスト。frontmatter には入れず、anatomy validator・昇格コピーに影響しない）が置かれる。staging は temp dir + rename で原子的に作られるため、マニフェスト無しの中途半端な dir は残らない。approve が staging 成功後・candidate 状態確定前に crash した場合（candidate は pending のまま staged dir だけが残る）、同一候補の approve 再実行はマニフェスト一致を検出して草稿を再生成し承認を完了する（resume）。マニフェストが別候補を指す（またはマニフェストが無い）dir は従来どおり DUPLICATE で拒否される
 - **昇格は人間の git 操作**: staging の草稿を `skills.extra_dirs` 配下（または `templates/skills/`）へコピーして commit するのは人間の責務。デーモンは staging より先へ書き込まず、自動 commit もしない
 - **値ゲート**: `occurrences < 2` の候補、または `similar_skills` 相当の類似が承認時に検出された候補は、`--force` 無しでは承認できない。既存 skill との名前衝突は `--force` でも承認できない
+- **サイズ上限（read 側 5MB ガードの構造的保護）**: 通常運用で state ファイルが read 側サイズガード（5MB）に到達しないよう多層で制限する。(1) 登録時: `content` は 4096 runes で truncate（末尾に truncation 注記を付加）、`command_ids` は 50 件まで（超過後も `occurrences` は加算を継続する）。(2) 保持数: candidates 総数は 100 件まで。超過時は terminal（approved / rejected）エントリを `updated_at` 最古から prune し、pending は保護する。全件 pending で上限に達した場合、新規登録は WARN ログ付きで skip される（silent drop しない）。(3) 書き込み前検査: serialize 後サイズが 4MB を超える場合は書き込まず失敗させる（on-disk 状態は不変）。read 側で 5MB 超を検出した場合のエラーメッセージには復旧手段（ファイルの退避、または terminal エントリの手動 prune）が明記される
 
 ## 4.12 state/improvements.yaml（C-5 friction 駆動改善ループの idea 台帳）
 
