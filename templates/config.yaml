@@ -99,6 +99,18 @@ agents:
     # boost: Worker のブーストモード有効化
     # type: bool | default: false | range: true/false
     boost: false
+    # capabilities: Worker ごとの capability タグ (worker_id -> tags)。
+    # type: map[string][]string | default: runtime 既定
+    # タスクの required_capabilities / preferred_capabilities とのマッチングに使用 (完全一致)。
+    # 省略した worker は runtime 既定の capability を宣言する:
+    #   claude-code: code_quality, design_review, instruction_following, run_on_main
+    #   codex:       bulk_implementation, long_horizon_autonomy, refactor
+    #   gemini:      multimodal, long_context_ingest, research, cost_efficient
+    # 明示すると既定を上書きする (空リスト [] は「capability 無し」の宣言)。
+    # capabilities:
+    #   worker1: ["code_quality", "design_review", "instruction_following", "run_on_main"]
+    #   worker2: ["bulk_implementation", "long_horizon_autonomy", "refactor"]
+    #   worker3: ["multimodal", "long_context_ingest", "research", "cost_efficient"]
 
 # --- Continuous ---
 # 連続モードの設定。

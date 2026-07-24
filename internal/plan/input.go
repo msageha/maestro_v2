@@ -34,6 +34,19 @@ type TaskInput struct {
 	// surfaces as a VALIDATION_ERROR.
 	WorkerID string `yaml:"worker_id,omitempty"`
 
+	// RequiredCapabilities restricts auto-assignment to workers advertising
+	// every listed capability tag (agents.workers.capabilities, or the
+	// runtime defaults — see model.DefaultCapabilitiesForRuntime). Hard
+	// filter: when no configured worker satisfies the set, submit fails with
+	// an actionable ErrNoAvailableWorker instead of silently widening the
+	// pool. Ignored when WorkerID pins the task (the pin wins, with a WARN
+	// on mismatch).
+	RequiredCapabilities []string `yaml:"required_capabilities,omitempty"`
+	// PreferredCapabilities biases auto-assignment toward workers advertising
+	// more of the listed tags. Soft only: assignment still succeeds when no
+	// worker matches any tag.
+	PreferredCapabilities []string `yaml:"preferred_capabilities,omitempty"`
+
 	// RunOnMain instructs the dispatcher to run this task in the main working
 	// directory instead of the worker's worktree. Use for read-only verification
 	// tasks that must evaluate the merged state on the main branch.

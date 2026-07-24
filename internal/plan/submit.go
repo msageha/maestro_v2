@@ -159,10 +159,12 @@ func resolveAndAssignTasks(opts SubmitOptions, tasks []TaskInput) (nameToID map[
 	assignReqs := make([]TaskAssignmentRequest, 0, len(tasks))
 	for _, t := range tasks {
 		assignReqs = append(assignReqs, TaskAssignmentRequest{
-			Name:                 t.Name,
-			BloomLevel:           t.BloomLevel,
-			PinnedWorkerID:       t.WorkerID,
-			RequireClaudeRuntime: t.RunOnMain,
+			Name:                  t.Name,
+			BloomLevel:            t.BloomLevel,
+			PinnedWorkerID:        t.WorkerID,
+			RequireClaudeRuntime:  t.RunOnMain,
+			RequiredCapabilities:  t.RequiredCapabilities,
+			PreferredCapabilities: t.PreferredCapabilities,
 		})
 	}
 

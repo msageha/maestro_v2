@@ -51,6 +51,11 @@ agents:
       # worker1, worker2 → default_model (sonnet)
     boost: false # true → 全 Worker を opus に昇格
     base_prompt_mode: "append" # 全 Worker 共通。append | replace。既定 append
+# capabilities: Worker ごとの capability タグ（worker_id -> tags。省略可）
+# 省略した worker は runtime 既定の capability を宣言する（下記注参照）。空リスト [] は「capability 無し」の明示宣言
+# capabilities:
+#   worker1: ["code_quality", "design_review", "instruction_following", "run_on_main"]
+#   worker4: ["multimodal", "long_context_ingest", "research", "cost_efficient"]
 
 continuous:
   enabled: false # --continuous フラグで有効化
@@ -124,6 +129,8 @@ complexity:           # C-6 適応的計算深度
 
 > **`agents.workers.models` の値**: `worker3: opus` のような Claude モデル名のほか、`worker4: codex` / `gemini` で各ランタイムの既定モデル、`codex-5` / `gemini-2.5-pro` のように `codex-` / `gemini-` プレフィックス付きで明示モデルを指定して Worker のランタイムを切り替えられる（モデル名そのものへの exact / prefix マッチ。`codex/o4-mini` のようなスラッシュ区切りは claude-code 扱いになり起動失敗する。[§11](11-future-extensions.md) 参照）（[REQUIREMENTS.md](REQUIREMENTS.md) §5 C-7）。Orchestrator / Planner は claude-code 限定。
 
+> **`agents.workers.capabilities`**: Worker ごとの capability タグ（`map[string][]string`。省略可）。タスクの `required_capabilities` / `preferred_capabilities`（§4.3 参照）との完全一致マッチングに使われ、`plan submit` 時の worker 自動割当（`internal/plan/worker_assign.go` の `AssignWorkers`）が候補集合を絞る根拠となる。エントリの無い worker は、設定モデルから推定した runtime の既定 capability を宣言する — claude-code: `code_quality` / `design_review` / `instruction_following` / `run_on_main`、codex: `bulk_implementation` / `long_horizon_autonomy` / `refactor`、gemini: `multimodal` / `long_context_ingest` / `research` / `cost_efficient`（正本は `internal/model/capability.go` の `DefaultCapabilitiesForRuntime`）。明示エントリは既定を上書きし、空リスト `[]` は「capability 無し」の宣言。タグは自由文字列（カスタムタグ可）だが空文字・空白のみのタグは config validate で拒否される。capability 未使用時（タスク側未指定）は従来の Bloom Level + 最小負荷ロジックと完全に同一の挙動。
+
 ## 4.2 queue/planner.yaml（Orchestrator → Planner: コマンド）
 
 ```yaml
@@ -182,6 +189,8 @@ tasks:
     persona_hint: "" # Worker に適用する persona（省略可）
     skill_refs: [] # 参照する skill 名のリスト（省略可）
     operation_type: "" # 操作種別ヒント（省略可）
+    required_capabilities: [] # 割当先 worker が全て宣言すべき capability タグ（省略可。hard フィルタ）
+    preferred_capabilities: [] # 割当先選択で加点される capability タグ（省略可。soft スコアリング）
     run_on_main: false # 実 main checkout 上で実行するか（true は非 claude worker に割り当てない。C-7）
     run_on_integration: false # integration worktree 上で実行するか
     complexity_level: "" # simple | standard | complex | critical（C-8。未指定時 Planner 自動判定）
@@ -200,25 +209,27 @@ tasks:
 
 **タスクフィールド補足**:
 
-| フィールド            | 必須 | 説明                                                                                                                                                                                                                                               |
-| --------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `purpose`             | 必須 | タスクが全体の中で果たす役割。Worker が成果物を親コマンドの意図と照合するために使用                                                                                                                                                                |
-| `content`             | 必須 | 実行すべき具体的な作業内容                                                                                                                                                                                                                         |
-| `acceptance_criteria` | 必須 | 完了の検証条件（検証可能な形式で記述）                                                                                                                                                                                                             |
-| `constraints`         | 任意 | 実行時に守るべき制約条件のリスト                                                                                                                                                                                                                   |
-| `blocked_by`          | 必須 | 先行タスク ID のリスト。空配列 `[]` なら即時実行可能。依存先が全て `completed` で配信可能。依存先に `failed` / `cancelled` / `dead_letter` が出た場合、当該タスクは自動的に `cancelled` へ遷移する（[§5.8.1](05-script-responsibilities.md) 参照） |
-| `bloom_level`         | 必須 | Bloom's Taxonomy レベル (1-6)。Planner がモデル割当の根拠として設定。L1-L3 → Sonnet, L4-L6 → Opus                                                                                                                                                  |
-| `tools_hint`          | 任意 | Worker に推奨する MCP ツール名の文字列配列。省略時は空配列。Planner が `plan submit` で設定し、デーモンがそのまま queue に転記する。Worker は推奨に従いツールの活用を検討するが、強制ではない                                                      |
-| `definition_of_done`  | 任意 | 完了条件のリスト。省略時は `acceptance_criteria` を使用（`GetDoneConditions()`）                                                                                                                                                                   |
-| `definition_of_abort` | 必須 | 撤退条件（S3-1, S2-2）。`max_repair_count` / `max_wall_clock_sec` / `explicit_failure_conditions`。Circuit Breaker の閾値正本                                                                                                                      |
-| `expected_paths`      | 必須 | 想定変更パスのプレフィックスリスト（S3-1）。Path-overlap Heuristic（A-4）のコンフリクト予測に使用                                                                                                                                                  |
-| `persona_hint`        | 任意 | Worker に適用する persona 名                                                                                                                                                                                                                       |
-| `skill_refs`          | 任意 | Worker が参照する skill 名のリスト                                                                                                                                                                                                                 |
-| `operation_type`      | 任意 | 操作種別ヒント                                                                                                                                                                                                                                     |
-| `run_on_main`         | 任意 | 実 main checkout 上で実行するか（既定 false）。`true` は非 claude worker に割り当てない（C-7）                                                                                                                                                     |
-| `run_on_integration`  | 任意 | integration worktree 上で実行するか（既定 false）                                                                                                                                                                                                  |
-| `complexity_level`    | 任意 | `simple` / `standard` / `complex` / `critical`（C-8）。未指定時 Planner 自動判定、Orchestrator オーバーライド可                                                                                                                                    |
-| `priority`            | 任意 | 優先度（小さいほど高優先。デフォルト 100）。デーモンが自動設定。Agent は指定しない                                                                                                                                                                 |
+| フィールド               | 必須 | 説明                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------ | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `purpose`                | 必須 | タスクが全体の中で果たす役割。Worker が成果物を親コマンドの意図と照合するために使用                                                                                                                                                                                                                                                                       |
+| `content`                | 必須 | 実行すべき具体的な作業内容                                                                                                                                                                                                                                                                                                                                |
+| `acceptance_criteria`    | 必須 | 完了の検証条件（検証可能な形式で記述）                                                                                                                                                                                                                                                                                                                    |
+| `constraints`            | 任意 | 実行時に守るべき制約条件のリスト                                                                                                                                                                                                                                                                                                                          |
+| `blocked_by`             | 必須 | 先行タスク ID のリスト。空配列 `[]` なら即時実行可能。依存先が全て `completed` で配信可能。依存先に `failed` / `cancelled` / `dead_letter` が出た場合、当該タスクは自動的に `cancelled` へ遷移する（[§5.8.1](05-script-responsibilities.md) 参照）                                                                                                        |
+| `bloom_level`            | 必須 | Bloom's Taxonomy レベル (1-6)。Planner がモデル割当の根拠として設定。L1-L3 → Sonnet, L4-L6 → Opus                                                                                                                                                                                                                                                         |
+| `tools_hint`             | 任意 | Worker に推奨する MCP ツール名の文字列配列。省略時は空配列。Planner が `plan submit` で設定し、デーモンがそのまま queue に転記する。Worker は推奨に従いツールの活用を検討するが、強制ではない                                                                                                                                                             |
+| `definition_of_done`     | 任意 | 完了条件のリスト。省略時は `acceptance_criteria` を使用（`GetDoneConditions()`）                                                                                                                                                                                                                                                                          |
+| `definition_of_abort`    | 必須 | 撤退条件（S3-1, S2-2）。`max_repair_count` / `max_wall_clock_sec` / `explicit_failure_conditions`。Circuit Breaker の閾値正本                                                                                                                                                                                                                             |
+| `expected_paths`         | 必須 | 想定変更パスのプレフィックスリスト（S3-1）。Path-overlap Heuristic（A-4）のコンフリクト予測に使用                                                                                                                                                                                                                                                         |
+| `persona_hint`           | 任意 | Worker に適用する persona 名                                                                                                                                                                                                                                                                                                                              |
+| `skill_refs`             | 任意 | Worker が参照する skill 名のリスト                                                                                                                                                                                                                                                                                                                        |
+| `operation_type`         | 任意 | 操作種別ヒント                                                                                                                                                                                                                                                                                                                                            |
+| `required_capabilities`  | 任意 | 割当先 worker が全て宣言すべき capability タグのリスト（hard フィルタ）。`plan submit` の自動割当が候補を「全タグを宣言する worker」に絞る。満たす worker が構成に無い場合は submit がエラーで拒否される（silent drop しない）。`worker_id` pin と併用時は pin が優先（不一致は WARN ログ）。worker 側の宣言は `agents.workers.capabilities`（§4.1 参照） |
+| `preferred_capabilities` | 任意 | 割当先選択を加点する capability タグのリスト（soft スコアリング）。一致タグ数の多い worker が最小負荷 / 辞書順の tie-break より優先される。満たす worker が無くても割り当ては成立する                                                                                                                                                                     |
+| `run_on_main`            | 任意 | 実 main checkout 上で実行するか（既定 false）。`true` は非 claude worker に割り当てない（C-7）                                                                                                                                                                                                                                                            |
+| `run_on_integration`     | 任意 | integration worktree 上で実行するか（既定 false）                                                                                                                                                                                                                                                                                                         |
+| `complexity_level`       | 任意 | `simple` / `standard` / `complex` / `critical`（C-8）。未指定時 Planner 自動判定、Orchestrator オーバーライド可                                                                                                                                                                                                                                           |
+| `priority`               | 任意 | 優先度（小さいほど高優先。デフォルト 100）。デーモンが自動設定。Agent は指定しない                                                                                                                                                                                                                                                                        |
 
 **実装拡張フィールド（デーモン管理。Agent は指定しない。いずれも `omitempty`）**:
 

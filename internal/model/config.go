@@ -156,6 +156,14 @@ type WorkerConfig struct {
 	Models         map[string]string `yaml:"models,omitempty"`
 	Boost          bool              `yaml:"boost"`
 	BasePromptMode string            `yaml:"base_prompt_mode"`
+	// Capabilities optionally overrides the capability tags each worker
+	// advertises (worker_id → tags). Workers without an entry advertise the
+	// default capability set of their runtime — see
+	// DefaultCapabilitiesForRuntime. An explicit empty list declares "no
+	// capabilities", excluding the worker from every task that sets
+	// required_capabilities. Tags are matched by exact string comparison
+	// against task required/preferred capabilities.
+	Capabilities map[string][]string `yaml:"capabilities,omitempty"`
 }
 
 // EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
@@ -178,6 +186,19 @@ func (w WorkerConfig) ModelFor(workerID string) string {
 		return w.DefaultModel
 	}
 	return "sonnet"
+}
+
+// CapabilitiesFor returns the capability tags advertised by the given worker:
+// the explicit agents.workers.capabilities entry when one exists (including
+// an explicit empty list, which means "no capabilities"), otherwise the
+// default capability set of the runtime inferred from the worker's
+// configured model (ParseRuntimeFromModel over ModelFor).
+func (w WorkerConfig) CapabilitiesFor(workerID string) []string {
+	if caps, ok := w.Capabilities[workerID]; ok {
+		return caps
+	}
+	runtime, _ := ParseRuntimeFromModel(w.ModelFor(workerID))
+	return DefaultCapabilitiesForRuntime(runtime)
 }
 
 // --- ContinuousConfig ---

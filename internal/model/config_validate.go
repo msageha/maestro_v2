@@ -67,6 +67,17 @@ func (c Config) validateAgents(errs *[]error) {
 			*errs = append(*errs, fmt.Errorf("agents.workers.models.%s: invalid model name %q", workerID, m))
 		}
 	}
+	// Capability tags are free-form (custom tags beyond the documented
+	// vocabulary are allowed — matching is exact-string), but empty /
+	// whitespace-only entries can never match anything and always indicate a
+	// config mistake, so reject them at load time.
+	for workerID, caps := range c.Agents.Workers.Capabilities {
+		for i, capTag := range caps {
+			if strings.TrimSpace(capTag) == "" {
+				*errs = append(*errs, fmt.Errorf("agents.workers.capabilities.%s[%d]: capability tag must not be empty", workerID, i))
+			}
+		}
+	}
 
 	// Agent role constraints are enforced via Claude Code's
 	// --allowedTools / --disallowedTools CLI flags. codex and gemini have no
